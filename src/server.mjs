@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { GraphInputError } from './graph.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -21,27 +22,27 @@ function json(response, status, data) {
   response.end(JSON.stringify(data));
 }
 
-async function readImport(request, origin) {
-  if (request.headers.origin !== origin) throw new HttpError(403, 'Import requires the same origin.');
+async function readJson(request, origin, operation) {
+  if (request.headers.origin !== origin) throw new HttpError(403, `${operation} requires the same origin.`);
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
-    throw new HttpError(415, 'Import requires application/json.');
+    throw new HttpError(415, `${operation} requires application/json.`);
   }
   if (Number(request.headers['content-length']) > maxRequestBytes) {
-    throw new HttpError(413, 'Import exceeds the 8 MiB request limit.');
+    throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
   }
 
   const chunks = [];
   let size = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > maxRequestBytes) throw new HttpError(413, 'Import exceeds the 8 MiB request limit.');
+    if (size > maxRequestBytes) throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
     chunks.push(chunk);
   }
 
   try {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size)));
   } catch {
-    throw new HttpError(400, 'Import request must contain valid UTF-8 JSON.');
+    throw new HttpError(400, `${operation} request must contain valid UTF-8 JSON.`);
   }
 }
 
@@ -74,8 +75,13 @@ const server = createServer(async (request, response) => {
     }
 
     if (method === 'POST' && url.pathname === '/api/import') {
-      const input = await readImport(request, origin);
+      const input = await readJson(request, origin, 'Import');
       return json(response, 200, { session: store.importTranscript(input) });
+    }
+
+    if (method === 'POST' && url.pathname === '/api/graphs') {
+      const packet = await readJson(request, origin, 'Graph publication');
+      return json(response, 200, { graph: store.publishGraph(packet) });
     }
 
     if (method === 'GET' && url.pathname === '/api/sessions') {
@@ -92,6 +98,12 @@ const server = createServer(async (request, response) => {
       if (session) return json(response, 200, { session });
     }
 
+    const graphId = url.pathname.match(/^\/api\/graphs\/([a-f0-9]{64})$/u)?.[1];
+    if (method === 'GET' && graphId) {
+      const graph = store.getGraph(graphId);
+      if (graph) return json(response, 200, { graph });
+    }
+
     throw new HttpError(404, 'Not found.');
   } catch (error) {
     if (response.destroyed) return;
@@ -100,7 +112,9 @@ const server = createServer(async (request, response) => {
       request.resume();
     }
     if (error instanceof HttpError) return json(response, error.status, { error: error.message });
-    if (error instanceof InputError) return json(response, 400, { error: error.message });
+    if (error instanceof InputError || error instanceof GraphInputError) {
+      return json(response, 400, { error: error.message });
+    }
     return json(response, 500, { error: 'Local request failed.' });
   }
 });
