@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context Ledger</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#library">Skip to transcript library</a>
+  <div class="shell">
+    <header class="masthead">
+      <span class="mark" aria-hidden="true">CL</span>
+      <span>Context Ledger</span>
+      <span class="local-tag">Local library</span>
+    </header>
+
+    <main>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">Your working archive</p>
+          <h1>Transcript library</h1>
+          <p class="subtitle">Find a conversation and pick up the work where it left off.</p>
+        </div>
+        <section class="accession" aria-labelledby="import-heading">
+          <h2 id="import-heading">Add a transcript</h2>
+          <form id="import-form">
+            <label for="source-agent">Source agent</label>
+            <select id="source-agent" name="provider" required>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+            <label for="transcript-file">Transcript file</label>
+            <input id="transcript-file" name="transcript" type="file" accept=".jsonl,application/jsonl" required>
+            <button class="primary" type="submit">Import transcript</button>
+          </form>
+          <p id="import-status" class="status" role="status"></p>
+        </section>
+      </div>
+
+      <div class="ledger" id="library" tabindex="-1">
+        <section class="catalog" aria-labelledby="search-heading">
+          <h2 id="search-heading">Browse the archive</h2>
+          <form id="search-form" role="search" aria-labelledby="search-heading">
+            <label for="search-query">Search transcripts</label>
+            <div class="search-row">
+              <input id="search-query" name="query" type="search" placeholder="Enter keywords">
+              <button class="primary" type="submit">Search</button>
+            </div>
+            <label for="filter-agent">Filter by agent</label>
+            <select id="filter-agent" name="provider">
+              <option value="">All agents</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+          </form>
+          <p id="search-status" class="status" role="status"></p>
+          <ul id="search-results" class="result-list" aria-label="Transcripts"></ul>
+        </section>
+
+        <section class="reader" aria-labelledby="reader-heading">
+          <p class="eyebrow">Transcript reader</p>
+          <h2 id="reader-heading" tabindex="-1">No transcript selected</h2>
+          <p id="reader-source" class="source"></p>
+          <p id="reader-status" class="status" role="status">Open a transcript from the archive to read it here.</p>
+          <ol id="reader-messages" class="messages" aria-label="Messages"></ol>
+        </section>
+      </div>
+    </main>
+    <footer>Imported transcripts retain their original line references.</footer>
+  </div>
+</body>
+</html>

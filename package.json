@@ -1,0 +1,17 @@
+{
+  "name": "context-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "playwright test",
+    "ledger": "node src/cli.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  }
+}
