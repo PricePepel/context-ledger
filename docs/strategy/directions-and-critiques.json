@@ -1,0 +1,176 @@
+{
+  "directions": [
+    {
+      "name": "Ledger Handover: client-verifiable handoff packets for agencies",
+      "oneLiner": "Turns an agency's Claude Code and Codex sessions on a client project into a handover packet the client can check line by line. Every decision, open blocker and next action links to the transcript line it came from, and nothing leaves the agency's machines.",
+      "customer": "Small dev agencies and AI-native consultancies of 3–30 people whose deliverable is code built by agents (buyers research, segments 2 and 4, the recommended beachhead). The founder, delivery lead or managing partner owns the budget and can pass the cost into the project fee.",
+      "problem": "Handover documentation is already scoped, billable work: Scand advises reserving 10–15% of fixed-price scope for documentation and handover, and notes that clients now review handover deliverables with their own AI tools. Agencies are building their own handoff-document generators (Metal Toad). The available tools either compress history with an LLM, which can't be audited (claude-mem, Supermemory, Pieces), or archive raw history (SpecStory). Stack Overflow 2026 reports that 93% of developers say they can only trust AI output that has source attribution. Agencies hold client IP and often refuse cloud sync of transcripts.",
+      "mvpScope": [
+        "Foundation (about 1.5 weeks): extract createLedger({ dbPath }), add a migrations table, and key session identity on the provider's session UUID with one row per message. Every later feature depends on this (engineering research, risks 1, 4 and 6).",
+        "Project roll-up (about 1.5 weeks): group several imported sessions into one client project, and add a v2 graph schema with stable node IDs so packets can span sessions (risk 10). Build on the existing validateGraph, edge-kind, cycle and evidence-line checks.",
+        "LLM graph extraction (2–3 weeks): draft goals, decisions, actions and blockers from the transcripts. validateGraph rejects any node whose cited lines don't exist or don't support it, and a reviewer approves or edits each node before it ships. The engineering research names this as where most of the paid value is.",
+        "Secret and PII redaction (2 weeks): run it at ingest and again before export. A packet goes to a third party, so this is non-negotiable.",
+        "Packet export (about 1 week): a self-contained static HTML and Markdown bundle that reuses public/ rendering (textContent only, CSP). Each citation expands to the quoted, redacted transcript lines, and the bundle carries a content hash so the client can confirm it wasn't changed.",
+        "Packaging and licensing (about 1.5 weeks): npx/global CLI with an OS data directory and a Windows/macOS CI matrix, a LICENSE file with an open-core split, and an offline license key bought through Stripe payment links. No hosted accounts."
+      ],
+      "pricing": "These are the buyers research's own UNVERIFIED estimates, kept below Nessie Team's $80/seat/mo. Option A: a flat studio license of $99–199/mo, self-hosted. Option B: $99–299 per published client handover packet. Before more building, the research recommends 10 agency interviews testing willingness to pay for a $199 packet. Launch with a free pilot of one client handover in exchange for a case study.",
+      "whyWin": "It uses the repo's most reusable asset, the strict graph contract with line-cited evidence, for a buyer who values verifiability over convenience. The pitch is \"client-verifiable provenance\", not \"shared memory\", which puts distance between it and Nessie (cloud-first, on-prem tier custom-priced) and Entire (free hosted storage, but you must adopt its forge). Local, explicit import is a selling point for agencies that handle client IP, and the per-agency self-hosted license doesn't compete with Entire's free tier. The founder decides, so there's no SOC 2 gate and the sales cycle is short. Packets sent to enterprise clients reach those clients' governance teams, which opens a path to the audit segment later.",
+      "biggestRisk": "Willingness to pay is unvalidated: every segment price is an estimate. Agencies may also decide that a Markdown handoff written by their own agent is good enough. A second risk is that a client won't accept an LLM-drafted graph as trustworthy, even with citations, unless human review is visibly part of the process. Clean-room positioning matters too: the prototype is modelled on Nessie's public workflow, so get a legal review and keep the wording and UI original before selling."
+    },
+    {
+      "name": "Ledger Relay: an automatic cross-vendor handoff plugin for Claude Code and Codex",
+      "oneLiner": "A single plugin repo installs into both Claude Code and Codex. It captures each session when it ends, and when the next session starts, in either tool, it injects the current decisions, open blockers and ready actions with line citations. Switching agents mid-task no longer means re-explaining everything.",
+      "customer": "Individual professional developers who use more than one coding agent (buyers research, segment 1). Stack Overflow 2026 reports that 66% of respondents use coding agents and 27% use different models for different work. The developer pays personally. The buyers research says this segment is mainly a distribution channel, so the product has a free open-source core and a small paid tier.",
+      "problem": "Developers lose context between sessions and when handing work from Claude to Codex (the r/ClaudeCode and r/codex threads cited in the buyers research). Native memory stays inside one vendor: Claude Code's auto memory stays on one machine, Codex has resume, Windsurf memories are tied to one workspace, and Cursor removed Memories in v2.1. Today people work around it with hand-kept Markdown files or small, fragmented, often Claude-only tools.",
+      "mvpScope": [
+        "Foundation plus packaging (about 2.5 weeks): createLedger factory, migrations, session-UUID identity, an npx CLI that no longer needs a running server (risk 7), an OS data directory, and a Windows/macOS CI matrix.",
+        "Stdio MCP server (about 1.5 weeks): ledger_import, ledger_search, ledger_handoff, ledger_graph_read, ledger_graph_publish and ledger_sessions, plus a ledger://handoff/latest resource. Every tool except publish is marked read-only, following the distribution research's minimal tool set.",
+        "Consented auto-discovery (2 weeks): scan ~/.claude/projects and ~/.codex/sessions, keep a per-project opt-in list, and show a preview before anything is ingested.",
+        "Hooks (about 1 week): an opt-in SessionEnd/PreCompact hook imports the finished transcript (the whole file, so live incremental ingestion can wait), and a SessionStart hook injects ready actions and current decisions in under 10,000 characters, the hook limit.",
+        "FTS5 search with snippets, recency and project filters (about 1 week). This replaces the instr() scan.",
+        "Paid tier (about 1.5 weeks): LLM graph extraction in a lighter version (one session, drafts checked by validateGraph), unlocked by a license key bought on the project's own site. The plugin itself shows no plans or upsell, as OpenAI's plugin guidelines require. Ship one repo with plugin.json, mcp.json, skills/ and .claude-plugin/marketplace.json (read by both Claude Code and Codex), and list the npm package in the official MCP Registry so it appears in VS Code's @mcp gallery."
+      ],
+      "pricing": "Free open-source core covering capture, search, handoff and hooks. Pro at $5–12/mo for automatic graph extraction and cross-session ready actions; that range is the buyers research's estimate. The anchors are Nessie Plus at $28/mo and the UNVERIFIED claim that the category sustains $10–15/mo. Sell through the project's website, never inside the plugin.",
+      "whyWin": "Install takes two commands in Claude Code and one in Codex, with no review gate. One repo serves both tools because Codex reads .claude-plugin/marketplace.json, and the MCP Registry adds reach through VS Code. Hooks lock it in: capture happens automatically and the cited graph grows with every session. It is neutral across vendors where native memory isn't, and its handoffs are auditable and line-cited where claude-mem's compressed memory isn't. A permissive license also avoids the AGPL concern that puts companies off claude-mem. The typed packet format, published as an open spec and referenced from AGENTS.md, can become the interoperability wedge.",
+      "biggestRisk": "This is the segment least willing to pay. The buyers research concludes that a Markdown file is good enough, and Entire's free tier sets the price expectation. Platforms absorbing the feature is the main threat: Anthropic auto memory, Codex memories and Nessie's existing Claude Code and Codex MCP coverage. Channel risk is also real. Anthropic directory policy sections 1E and 1G (chat-history extraction) could block a directory listing, and parsers built on undocumented JSONL formats can silently break with each vendor release unless every format version has a contract test."
+    },
+    {
+      "name": "Ledger Trail: cited decision records on GitHub pull requests",
+      "oneLiner": "A self-hosted GitHub Action and CLI that attaches the agent session's typed, line-cited decision graph to the pull request it produced. Reviewers see why the code changed, which decisions were reversed, and which blockers are still open, and the team doesn't have to move to a new forge.",
+      "customer": "Engineering managers and tech leads at GitHub-based teams of roughly 10–100 developers that use several coding agents. The adoption figures are Stack Overflow's 66% using coding agents and JetBrains' 68% using them daily (the JetBrains number is UNVERIFIED). Later buyers are VP Engineering and GRC leads who want repository-level evidence for audits (buyers research, segment 3; competitive gaps 4 and 5).",
+      "problem": "A commit names the human who committed it, not the model that wrote the code, or the instruction and approval behind it (Axiom Studio). Codacy reports that auditors want repository-level evidence such as an AI bill of materials, not policy documents. Observability tools (Langfuse, PostHog, Coralogix) track tokens, cost and spans, but not intent or decisions. Entire offers Git-native session memory and review Trails, but only if you adopt its forge. Nothing reports, across agents, which decisions were made or reversed and which blockers are stale.",
+      "mvpScope": [
+        "Foundation (about 1.5 weeks): createLedger, migrations, session-UUID identity, and an npx CLI that works without a running server.",
+        "Graph v2 (about 2 weeks): stable node identity, revision history and multi-session graphs per branch, so a PR's graph can change over time (risk 10). Keep the existing validator and derived ready actions and current decisions.",
+        "Packet authoring with no LLM spend (about 1.5 weeks): a stdio MCP ledger_graph_publish tool and an agent skill let the coding agent write its own packet. validateGraph rejects anything with an uncited or invalid line. `ledger attach` commits a redacted packet to `.ledger/` (or Git notes) on the branch.",
+        "Redaction (2 weeks): mandatory secret and PII scrubbing before any transcript excerpt is committed to a repository.",
+        "GitHub Action and check (about 2 weeks): runs in the customer's own CI with no hosted service. It validates the packets, posts a PR summary of decisions, reversals, open blockers and ready actions with expandable citations, and can fail the check when a blocker is unresolved or a packet is invalid. It reuses the terminal and bidi escaping logic for safe rendering.",
+        "Agent Trace export (about 1 week): map packets onto Cursor's draft Agent Trace spec (v0.1.0), which Thoughtworks rates \"Assess\", plus a license-key gate for private repos. Leave hosted dashboards, SSO and SOC 2 out of v1."
+      ],
+      "pricing": "Free for public repos. For private repos, a self-hosted license at $20–40 per developer per year, the buyers research's UNVERIFIED estimate for audit and provenance buyers. The research's $15–50k/yr self-hosted org license is the later enterprise upsell once SSO and audit export exist. There are no hosted costs to recover because everything runs in the customer's CI.",
+      "whyWin": "It goes after the gap that Entire leaves open by requiring its forge: \"why\" context on plain GitHub, delivered as a CI check teams can adopt one repo at a time. It uses the strongest existing code directly: strict Ajv validation, evidence-line checks and derived ready actions. Line-cited typed nodes are the auditable middle ground between LLM summaries and raw logs that security-minded teams want. Agent Trace compatibility lets it plug into a standard instead of competing with Cursor, and covering decisions and blockers fills the intent gap the observability tools leave.",
+      "biggestRisk": "Entire, with a $60M seed, owns the Git-native narrative and could extend Trails or Checkpoints to plain GitHub. The governance and audit space is already crowded (Microsoft's Agent Governance Toolkit, Coder, Checkmarx, Codacy), and buyers there will soon expect SOC 2, SSO and a 3–9 month sales cycle, which is too slow for a small team's first revenue. Engineers may also resist committing transcript excerpts to the repo even after redaction. Agent Trace is still a draft RFC and its schema may change."
+    }
+  ],
+  "critiques": {
+    "skepticalBuyer": {
+      "scores": [
+        {
+          "name": "Ledger Handover: client-verifiable handoff packets for agencies",
+          "score": 4.5,
+          "fatalFlaws": [
+            "The incentives work against the buyer. Agencies billing hourly or at a fixed price usually don't want clients reading raw agent transcripts. Those transcripts show how little human time went in, the dead ends and mistakes, casual remarks about the client, and sometimes prompts that mention other clients. A citation that expands into transcript lines exposes exactly what the agency would rather keep private, so the product's main feature may be its biggest objection.",
+            "'Client-verifiable' is overstated. The content hash only proves the packet wasn't changed after export. It doesn't prove the packet is true or complete. The agency controls which sessions get imported and approves every node, so the client is checking the agency's evidence against the agency's own curated record. A skeptical client's governance team will notice this.",
+            "Demand is unvalidated, and the plan builds about 10 engineer-weeks (foundation, roll-up, LLM extraction, redaction, export, licensing) before the first dollar. The 10 agency interviews the research itself recommends haven't happened. Every price is an estimate.",
+            "The deal is small and infrequent. A 3–30 person agency does a few client handovers a year, so $199 per packet means about $1–3k a year per account. A flat $99–199/mo studio license has to beat a free substitute that is good enough: running 'write a handover doc from this repo, git log and PRs' in Claude Code or Codex.",
+            "Metal Toad building its own generator in 3 days is evidence of DIY behaviour, not of willingness to buy. It shows the job can be done in-house in a weekend.",
+            "Platform absorption within 90 days is plausible. Anthropic reportedly already has shareable session pages, and a 'session summary with citations' or 'export handoff' feature is an obvious next step for Claude Code or Codex. That would remove the drafting half of the value.",
+            "The target customer is still too vague. '3–30 person agencies whose deliverable is agent-built code' names no vertical, client type or trigger event. There's no answer to which agencies are contractually required to hand over documentation that their clients actually audit."
+          ],
+          "mustChange": [
+            "Run a concierge MVP before building anything. Within 2 weeks, hand-produce 3 packets using the existing CLI, the validator and Claude-drafted nodes that you review yourself. Charge $199–499 up front, not as a free pilot. Kill or pivot if fewer than 3 of 10 targeted agencies pay.",
+            "Narrow the customer to a trigger. Target fixed-price agencies delivering to enterprise or regulated clients whose contracts include handover or acceptance sign-off and AI-use disclosure. Find them by name (Clutch listings plus LinkedIn) before writing code.",
+            "Make the client-facing view curated by default. The client sees typed decisions, blockers and actions with short redacted quotes, and the full transcript is opt-in. Show the agency's review and approval step on every node so 'LLM-drafted' becomes 'agency-attested, machine-checked'.",
+            "Anchor evidence in artifacts the client owns, such as commits, PRs, tests and files in the client's repo, not only transcript lines. That gives the client something it can verify independently of the agency.",
+            "Price against the line item that already exists. Present it as a fraction of the 10–15% handover scope (per project, or $300–800 per handover) so the agency marks it up, rather than as a SaaS subscription competing with free alternatives.",
+            "Defer Stripe licensing, multi-OS packaging and multi-session graph v2 until there are 3 paying customers. Build only what the paid concierge packets prove is needed.",
+            "Get a clean-room and legal review against Nessie before any public marketing."
+          ]
+        },
+        {
+          "name": "Ledger Relay: automatic cross-vendor handoff plugin for Claude Code and Codex",
+          "score": 2,
+          "fatalFlaws": [
+            "The buyer won't pay. The research itself concludes this segment is a distribution channel, not revenue. A $5–12/mo Pro tier competes with claude-mem (free, 46K+ stars), Entire's free session storage, Supermemory's free plugins, native auto memory, and a hand-written Markdown or AGENTS.md file.",
+            "This is the segment most exposed to platform absorption. Anthropic and OpenAI are both shipping memory, resume and handoff natively, and AGENTS.md, now under the Linux Foundation, already works as the neutral cross-vendor handoff file. 'Vendor-neutral' is a thin moat when the shared file convention is free and both vendors back it.",
+            "The core user is a niche of a niche. 27% use different models for different work, but that is not the same as switching between Claude Code and Codex in the middle of a task, and nothing quantifies that behaviour.",
+            "The distribution channels block the business model. OpenAI bans in-plugin upsell and keeps plugins with hooks out of its public directory. Anthropic directory policy sections 1E and 1G (chat-history extraction) put the listing at risk. The free-to-paid conversion path barely exists inside the channels the plan depends on.",
+            "It is built on undocumented JSONL formats that each vendor release can break silently. The maintenance cost stays permanently high for a $5 product.",
+            "It needs about 9 engineer-weeks of build to reach a price point that might never cover hosting or support."
+          ],
+          "mustChange": [
+            "Stop treating it as a revenue line. If it ships at all, make it a free, permissively licensed funnel and open-spec carrier for the packet format, feeding a paid product (Handover) aimed at a buyer with a budget.",
+            "Cut the scope to the minimum that builds distribution: a stdio MCP server plus a SessionStart handoff injection that reads a packet file. Leave out paid graph extraction.",
+            "Before investing, test whether cross-vendor mid-task switching is common enough to matter, for example by watching install and retention from a weekend prototype posted to r/ClaudeCode and r/codex.",
+            "Add a contract-test corpus per format version before promising automatic capture, or limit it to the vendors' documented hook payloads."
+          ]
+        },
+        {
+          "name": "Ledger Trail: cited decision records on GitHub pull requests",
+          "score": 3,
+          "fatalFlaws": [
+            "Deal size and sales effort don't match. At $20–40 per developer per year, a 30-developer team pays about $600–1,200 a year. Yet committing transcript excerpts to a private repo, even redacted, sets off the security review and data-handling questions that need a sales process. That cost exceeds the deal value.",
+            "The free tier (public repos) generates no revenue, and the paid tier (private repos) can't be reached bottom-up without passing security approval. There's no realistic path to first revenue within 90 days without a sales team.",
+            "It sits right where the platforms are moving. Entire ($60M) already has Trails and Checkpoints, GitHub can attach agent session context to PRs natively, and Cursor leads Agent Trace. 'Decisions on plain GitHub' is a feature GitHub or Entire can ship in a sprint.",
+            "The audit claim is weak. The coding agent writes its own packet, so the evidence is self-reported. Real audit and GRC buyers will discount it and expect SOC 2, SSO, and tamper evidence that doesn't depend on the agent's own testimony.",
+            "Value to reviewers is unproven. Busy reviewers already skip PR descriptions, and engineers will resist transcript fragments in the repo or in Git notes.",
+            "The customer is vague and two-headed. EMs and tech leads hold no dedicated budget for this, and the VP Eng and GRC buyers belong to the slow, crowded enterprise segment the research says is too early."
+          ],
+          "mustChange": [
+            "Drop audit and compliance positioning for v1 and choose one acute reviewer pain with a measurable outcome, such as reduced review time on agent-authored PRs, tested with 5 named EMs who agree to install it within a week.",
+            "Don't commit transcript text to the repo. Store hashes and pointers, and keep excerpts in the customer's own storage, to remove the security-review blocker.",
+            "Price per org or per repo with a floor (for example $49–99/mo) so a deal justifies even light founder-led selling.",
+            "Revisit it as a later extension of Handover packets, once enterprise clients of paying agencies ask for PR-level provenance, rather than as a standalone entry point."
+          ]
+        }
+      ],
+      "preferred": "Ledger Handover: client-verifiable handoff packets for agencies"
+    },
+    "feasibility": {
+      "scores": [
+        {
+          "name": "Ledger Handover: client-verifiable handoff packets for agencies",
+          "score": 5,
+          "fatalFlaws": [
+            "The headline claim is not true of the code. validateGraph (src/graph.mjs indexNodes) only checks that each cited line number exists among the session's stored lines. It never checks that the line supports the node. Checking support is a semantic, LLM-or-human problem, and nothing for it exists yet. The mvpScope sentence saying validateGraph rejects nodes whose lines 'don't support it' describes unbuilt work, and that work is the product.",
+            "'Client-verifiable' is false as specified. The client never sees the transcript, only excerpts the agency picked and redacted. An unsigned content hash proves nothing, because the agency can rebuild the bundle and re-hash it. So the client can check that a quote matches a citation. They cannot check that the quote is complete, in context or unedited. If a client's governance team notices this, the positioning collapses and trust goes with it.",
+            "'Nothing leaves the agency's machines' contradicts the two things that make the product: an LLM extraction step that sends transcripts to a model API, and a packet whose whole purpose is to go to a third party. The privacy promise has to be restated honestly, or the first security-literate buyer will catch it.",
+            "The 10-week sum leaves out whole workstreams. The 'reviewer approves or edits each node' UI starts from zero: public/app.js has no graph view at all. There is no extraction-quality eval corpus. AGENTS.md mandates synthetic transcripts only, so precision and recall of extraction cannot be measured on realistic data. There are also docs, onboarding, a privacy policy and a legal clean-room review. A realistic estimate is 16–20 engineer-weeks.",
+            "Redaction is budgeted at 2 weeks, but one false negative in a document sent to a client is a breach of that client's own IP or credentials. Agent transcripts are dense with env values, keys, connection strings and pasted customer data. Regex and entropy scanners miss things. Without mandatory human sign-off on every exported excerpt, this is a liability product."
+          ],
+          "mustChange": [
+            "Change the claim from 'client-verifiable' to 'source-cited and human-approved'. If an integrity claim stays, sign packets with an agency-held Ed25519 key and publish the verification procedure. A bare hash is not enough.",
+            "Drop the in-house LLM extraction pipeline for v1. Let the agency's own Claude Code or Codex draft the packet through a stdio MCP ledger_graph_publish tool, which means no new data egress and no LLM bill. Spend the saved weeks on the reviewer UI, where each node shows its cited lines side by side and needs explicit approval.",
+            "Migrate citations from raw JSONL line integers to stable message identifiers (provider record UUID plus a content hash) before graph v2. Line numbers break as soon as identity moves to provider session UUIDs, resumed or forked session files, and per-message rows. Codex rollout items may lack stable per-item IDs (UNVERIFIED), so design for that case.",
+            "Export is allowlist-only: only the cited lines, each redacted, each shown to a human before export, with a diff of what redaction removed. Add delete and retention before any pilot, because a client will ask for project data to be purged.",
+            "Before building, do 3 concierge pilots, packet assembled by hand with the existing CLI plus manual review, and charge for them. If no agency pays $199 for a hand-built packet, it won't pay for a tool-built one.",
+            "Resolve the sidechain and compact-summary format question (docs/evals.md) before roll-up. Otherwise compacted summaries get cited as if they were primary evidence."
+          ]
+        },
+        {
+          "name": "Ledger Relay: an automatic cross-vendor handoff plugin for Claude Code and Codex",
+          "score": 3,
+          "fatalFlaws": [
+            "Automatic SessionStart injection of transcript-derived content is a persistent prompt-injection channel. Any text an agent read in one session, such as a web page, issue comment or dependency README, can land in a future session's context in either tool, with no human reading it first. For a product whose pitch is trust, this is the worst possible failure mode, and the plan has no mitigation.",
+            "There is no revenue. The research's own verdict is that this segment won't pay and that a Markdown file is good enough. Entire's free tier and native memory set the price at $0. At $5–12/mo, reaching even modest revenue needs thousands of paying individuals, and OpenAI's guidelines forbid upsell inside the plugin.",
+            "The value depends on the paid graph. Without extraction, the free 'handoff' is just recent turns, which native resume and CLAUDE.md already cover. With extraction, every session end triggers LLM spend on the user's private transcripts, which runs straight into the privacy and cost objections.",
+            "The hook mechanics are underestimated. SessionEnd defaults to a 1.5s timeout. Today's import reads the whole transcript, parses all of it, and keys identity on sha256 of the whole file, so a re-import after every session creates near-duplicate sessions until the identity redesign lands. There are concurrent writers to one node:sqlite file, and that driver is still experimental on Node 22. Codex-side lifecycle-hook parity for context injection is assumed, not shown, and hooks also make the plugin ineligible for OpenAI's public directory.",
+            "Auto-discovery of ~/.claude and ~/.codex history is exactly the behaviour Anthropic directory policy 1E and 1G target. It also widens the blast radius: an unauthenticated loopback API (server.mjs has no token) would expose months of every project's transcripts to any local process."
+          ],
+          "mustChange": [
+            "Never inject automatically. Show a ready-actions summary the user explicitly accepts, or have the agent fetch it through a read-only MCP call. Mark the content as untrusted data and strip instructions from it.",
+            "Treat it purely as a free distribution channel for a product sold elsewhere, not as a business. Budget 3–4 weeks for it, not 9.5, and don't build a paid tier.",
+            "Ship per-install bearer tokens, at-rest protection and a per-project opt-in list before any discovery or hook code.",
+            "Add contract tests per vendor format version, using a redacted real-format corpus, and wire them into CI on Windows, macOS and Linux. Without them, every vendor release is a potential silent data-loss or leak incident that this team has to support for free."
+          ]
+        },
+        {
+          "name": "Ledger Trail: cited decision records on GitHub pull requests",
+          "score": 3,
+          "fatalFlaws": [
+            "Committing transcript excerpts to a repository makes every redaction false negative permanent and widely replicated. The excerpts live in git history, forks, clones and CI caches, and for the free public-repo tier they are world-readable. Removing a leaked secret means rewriting history and rotating credentials. One incident ends the product's credibility.",
+            "The evidence is self-reported. The coding agent writes its own packet, and validateGraph only confirms that the cited line numbers exist. An auditor, who is the eventual buyer, will see a model asserting its own rationale with citations nobody has checked for support. That isn't audit evidence, and calling it audit-grade is a trust risk in itself.",
+            "The economics don't work. $20–40 per developer per year for a 10–100 developer team is $200–4,000 a year per customer, sold to EMs and GRC leads who expect SOC 2 and SSO and buy on a 3–9 month cycle. Entire, with $60M, owns the 'why on the PR' narrative and is one feature away from supporting plain GitHub.",
+            "The 10-week plan stacks graph v2 with revision history, multi-session-per-branch merging, redaction, a GitHub Action with safe Markdown rendering, and an export to a draft spec (Agent Trace v0.1.0) that may change. The repo has none of the v2 identity model. Schema v1 is a single sessionId with immutable, order-sensitive content-addressed graphs. Realistically this is 16+ weeks, then perpetual spec churn."
+          ],
+          "mustChange": [
+            "Commit no transcript text. Store only the typed graph plus salted hashes of the cited messages in .ledger/ or Git notes, and keep the transcripts local, so a reviewer who has them can verify on demand.",
+            "Drop the audit framing for v1. Position it as reviewer context, and add human attestation (a named reviewer approves the packet in the PR) before calling anything evidence.",
+            "Defer Agent Trace export until the spec stabilises. Build the PR check as a thin consumer of whatever packet format Ledger Handover ships, not as a separate product line."
+          ]
+        }
+      ],
+      "preferred": "Ledger Handover, but only in a reshaped form. None of the three can honestly ship as specified in 8–10 engineer-weeks from this roughly 810-line prototype (src/store.mjs, src/graph.mjs, src/server.mjs, src/cli.mjs). Handover is the only one with a buyer whose budget already exists, since handover is scoped, billable work. It is also the only one where the repo's one strong asset, the strict line-cited graph contract, is the thing being sold.\n\nIt still has three self-inflicted wounds. First, 'client-verifiable' overstates what an unsigned hash over agency-chosen excerpts proves. Second, validateGraph checks only that cited lines exist (indexNodes in src/graph.mjs), not that they support the node. Third, 'nothing leaves the machine' contradicts both LLM extraction and the act of sending a packet to a client.\n\nTo make it work:\n- Reposition as 'source-cited, human-approved'.\n- Let the agency's own coding agent draft packets through an MCP publish tool instead of building an extraction pipeline.\n- Spend the freed time on a reviewer UI that pairs each node with its cited lines, plus allowlist-only redacted export.\n- Move citations from JSONL line numbers to stable message IDs before graph v2.\n- Add delete, retention and a local auth token before any pilot.\n- Charge for 3 hand-assembled concierge packets before writing more code.\n\nA realistic estimate is 16–20 engineer-weeks to a sellable v1. Relay should be cut down to a free distribution plugin with no automatic context injection. Trail should be deferred until it can work without committing any transcript text to repositories."
+    }
+  }
+}
