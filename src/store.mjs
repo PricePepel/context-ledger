@@ -24,7 +24,7 @@ function isCodexContext(text, kind) {
 
   // Older rollouts omit per-block metadata, so check complete reserved envelopes.
   const value = text.trim();
-  return /^<environment_context>[\s\S]*<\/environment_context>$/u.test(value)
+  return /^<(environment_context|user_instructions|turn_aborted)>[\s\S]*<\/\1>$/u.test(value)
     || /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>$/u.test(value);
 }
 
@@ -87,7 +87,8 @@ function sourceName(source) {
 
 function titleFor(messages) {
   const first = messages.find(message => message.role === 'user') ?? messages[0];
-  return first.text.trim().replace(/\s+/gu, ' ').slice(0, 120);
+  // Cut by code point so a title never ends in half of a surrogate pair.
+  return Array.from(first.text.trim().replace(/\s+/gu, ' ')).slice(0, 120).join('');
 }
 
 function serializeGraphPacket(packet) {
