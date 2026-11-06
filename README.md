@@ -36,3 +36,30 @@ npm test
 ```
 
 Playwright uses synthetic records and a separate test database. See [the handoff notes](docs/handoff.md) and [eval log](docs/evals.md) for decisions and checkpoints.
+
+## Exchange a semantic graph
+
+Import a transcript first. Take its session ID from `npm run --silent ledger -- search`, then create a JSON packet with that ID and the original JSONL line numbers shown in the reader. For example, if line 1 states the rollout goal and line 2 gives the next action, the packet can contain:
+
+```json
+{
+  "version": 1,
+  "sessionId": "REPLACE_WITH_IMPORTED_SESSION_ID",
+  "nodes": [
+    { "id": "rollout", "kind": "goal", "label": "Continue the rollout", "evidenceLines": [1] },
+    { "id": "canary", "kind": "action", "label": "Run the Canary smoke test", "evidenceLines": [2], "status": "pending" }
+  ],
+  "edges": [
+    { "from": "canary", "to": "rollout", "type": "advances" }
+  ]
+}
+```
+
+```sh
+npm run --silent ledger -- graph publish packet.json
+npm run --silent ledger -- graph read GRAPH_ID
+```
+
+Both commands return JSON containing the graph ID, packet, ready action IDs, and current decision IDs. Use the ID from publish in the read command. Either agent can consume the returned packet. The ledger checks that cited lines exist in the chosen transcript. Review the source text to establish whether it supports the claim, and use the usual approval process before acting.
+
+Each packet is a snapshot of one imported session. An exact repeat returns its existing ID. A pending action is ready when its prerequisites are completed and its blockers are resolved. A decision becomes historical when another decision explicitly supersedes it. See the [packet schema](schemas/semantic-graph.schema.json) and [evals](docs/evals.md).

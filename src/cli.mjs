@@ -119,7 +119,15 @@ async function main() {
     throw new Error(`Cannot reach Context Ledger on port ${port}. Start it with npm start.`);
   }
   if (response.status === 404) throw new Error(action === 'graph' ? 'Graph not found.' : 'Session not found.');
-  if (!response.ok) throw new Error(`Context Ledger returned HTTP ${response.status}.`);
+  if (!response.ok) {
+    if (action === 'graph' && (response.status === 400 || response.status === 413)) {
+      const problem = await response.json().catch(() => null);
+      if (typeof problem?.error === 'string' && problem.error.length <= 160 && !/\p{C}/u.test(problem.error)) {
+        throw new Error(problem.error);
+      }
+    }
+    throw new Error(`Context Ledger returned HTTP ${response.status}.`);
+  }
   const data = await response.json();
   if (action === 'graph') {
     console.log(JSON.stringify(data, null, 2));

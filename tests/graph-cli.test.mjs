@@ -25,6 +25,7 @@ test('graph CLI publishes raw JSON to its local origin and reads the response as
 
   const envelope = { graph: { id: graphId, packet, readyActionIds: ['smoke-test'], currentDecisionIds: [] } };
   const requests = [];
+  let rejection;
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -33,7 +34,8 @@ test('graph CLI publishes raw JSON to its local origin and reads the response as
       contentType: request.headers['content-type'], body: Buffer.concat(chunks),
     });
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify(envelope));
+    if (rejection) response.statusCode = 400;
+    response.end(JSON.stringify(rejection ?? envelope));
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -75,4 +77,12 @@ test('graph CLI publishes raw JSON to its local origin and reads the response as
     return true;
   });
   assert.equal(requests.length, 2);
+
+  rejection = { error: 'Evidence must refer to stored lines in the source session.' };
+  await assert.rejects(cli('publish', packetPath), error => {
+    assert.equal(error.code, 1);
+    assert.equal(error.stderr.trim(), rejection.error);
+    assert.equal(error.stdout, '');
+    return true;
+  });
 });
