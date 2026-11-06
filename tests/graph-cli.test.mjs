@@ -86,3 +86,33 @@ test('graph CLI publishes raw JSON to its local origin and reads the response as
     return true;
   });
 });
+
+test('graph and search JSON escape terminal controls and bidi characters losslessly', async t => {
+  const hostile = 'Run' + String.fromCodePoint(0x1b) + '[2J' + String.fromCodePoint(0x7f, 0x9b) + '31m' +
+    String.fromCodePoint(0x202e) + 'gnp.exe' + String.fromCodePoint(0x200b, 0x2028) + 'end' + String.fromCodePoint(0xe0041);
+  const graph = {
+    graph: {
+      id: graphId,
+      packet: { version: 1, sessionId: 'c'.repeat(64), edges: [],
+        nodes: [{ id: 'x', kind: 'action', status: 'pending', label: hostile, evidenceLines: [1] }] },
+      readyActionIds: ['x'], currentDecisionIds: [],
+    },
+  };
+  const sessions = { sessions: [{ id: 'd'.repeat(64), provider: 'codex', source: hostile }] };
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify(request.url.startsWith('/api/graphs/') ? graph : sessions));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const env = { ...process.env, PORT: String(server.address().port) };
+
+  const outputs = [
+    [await execute(process.execPath, ['src/cli.mjs', 'graph', 'read', graphId], { env }), graph],
+    [await execute(process.execPath, ['src/cli.mjs', 'search', 'run'], { env }), sessions.sessions],
+  ];
+  for (const [{ stdout }, expected] of outputs) {
+    assert.doesNotMatch(stdout, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/u);
+    assert.deepEqual(JSON.parse(stdout), expected);
+  }
+});

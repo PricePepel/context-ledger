@@ -91,3 +91,74 @@ test('does not echo invalid packet content in the error', () => {
     error instanceof GraphInputError && !error.message.includes('private-content')
   ));
 });
+
+function derived(nodes, edges) {
+  const graph = { version: 1, sessionId: 'a'.repeat(64), nodes, edges };
+  for (const node of graph.nodes) node.evidenceLines = [1];
+  return validateGraph(graph, [1]);
+}
+
+test('an action waits while either an open blocker or an unfinished prerequisite remains', () => {
+  const nodes = () => [
+    { id: 'ship', kind: 'action', status: 'pending', label: 'Ship' },
+    { id: 'build', kind: 'action', status: 'pending', label: 'Build' },
+    { id: 'review', kind: 'blocker', status: 'open', label: 'Review' },
+  ];
+  const edges = [
+    { from: 'ship', to: 'build', type: 'depends_on' },
+    { from: 'review', to: 'ship', type: 'blocks' },
+  ];
+  assert.deepEqual(derived(nodes(), edges).readyActionIds, ['build']);
+
+  const builtOnly = nodes();
+  builtOnly[1].status = 'completed';
+  assert.deepEqual(derived(builtOnly, edges).readyActionIds, []);
+
+  const reviewedOnly = nodes();
+  reviewedOnly[2].status = 'resolved';
+  assert.deepEqual(derived(reviewedOnly, edges).readyActionIds, ['build']);
+
+  const both = nodes();
+  both[1].status = 'completed';
+  both[2].status = 'resolved';
+  assert.deepEqual(derived(both, edges).readyActionIds, ['ship']);
+});
+
+test('a resolved blocker alone does not hold an action back', () => {
+  const result = derived(
+    [
+      { id: 'deploy', kind: 'action', status: 'pending', label: 'Deploy' },
+      { id: 'freeze', kind: 'blocker', status: 'resolved', label: 'Change freeze' },
+    ],
+    [{ from: 'freeze', to: 'deploy', type: 'blocks' }],
+  );
+  assert.deepEqual(result.readyActionIds, ['deploy']);
+});
+
+test('supersession chains and shared targets leave only unsuperseded decisions current', () => {
+  const chain = derived(
+    [
+      { id: 'v1', kind: 'decision', label: 'Plan one' },
+      { id: 'v2', kind: 'decision', label: 'Plan two' },
+      { id: 'v3', kind: 'decision', label: 'Plan three' },
+    ],
+    [
+      { from: 'v2', to: 'v1', type: 'supersedes' },
+      { from: 'v3', to: 'v2', type: 'supersedes' },
+    ],
+  );
+  assert.deepEqual(chain.currentDecisionIds, ['v3']);
+
+  const shared = derived(
+    [
+      { id: 'old', kind: 'decision', label: 'Old lane' },
+      { id: 'east', kind: 'decision', label: 'East lane' },
+      { id: 'west', kind: 'decision', label: 'West lane' },
+    ],
+    [
+      { from: 'east', to: 'old', type: 'supersedes' },
+      { from: 'west', to: 'old', type: 'supersedes' },
+    ],
+  );
+  assert.deepEqual(shared.currentDecisionIds, ['east', 'west']);
+});
