@@ -152,39 +152,80 @@ const maxQuoteChars = 200;
 const maxQuoteLines = 12;
 const normalizeSpace = text => text.replace(/\s+/gu, ' ').trim();
 
-/** Smallest line windows of a file whose text contains the quote, as [start, end]. */
-function quoteWindows(lines, quote) {
+// A quote shorter than this (non-space characters) proves nothing: "}" occurs anywhere.
+const minQuoteSubstance = 8;
+// A quote that occurs several times relocates only this close to the cited lines.
+const maxRelocationLines = 30;
+const maxOccurrences = 20;
+
+/**
+ * The file's whitespace-normalized text, built once, with the offset at which each
+ * non-empty line starts. Matching on it is one indexOf pass, not a window per line
+ * (review: the window search took 257 s for a "}" quote on a 512 KiB file).
+ */
+function fileIndex(lines) {
+  const parts = [];
+  const starts = [];
+  let offset = 0;
+  lines.forEach((line, index) => {
+    const text = normalizeSpace(line);
+    if (!text) return;
+    if (parts.length) offset += 1;
+    starts.push([offset, index + 1]);
+    parts.push(text);
+    offset += text.length;
+  });
+  return { text: parts.join(' '), starts };
+}
+
+function lineAt(starts, offset) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (starts[middle][0] <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return starts[low][1];
+}
+
+/** Line windows where the quote occurs, at most maxOccurrences of them. */
+function quoteWindows(index, quote) {
   const needle = normalizeSpace(quote);
   const found = [];
-  for (let start = 0; start < lines.length; start += 1) {
-    for (let end = start; end < Math.min(lines.length, start + maxQuoteLines); end += 1) {
-      if (normalizeSpace(lines.slice(start, end + 1).join('\n')).includes(needle)) {
-        found.push([start + 1, end + 1]);
-        break;
-      }
-    }
+  for (let at = index.text.indexOf(needle); at !== -1 && found.length < maxOccurrences; at = index.text.indexOf(needle, at + 1)) {
+    const start = lineAt(index.starts, at);
+    const end = lineAt(index.starts, at + needle.length - 1);
+    if (end - start < maxQuoteLines && !found.some(([s, e]) => s === start && e === end)) found.push([start, end]);
   }
-  // Keep only minimal windows: drop any that contain another found window.
-  return found.filter(([s, e]) => !found.some(([s2, e2]) => (s2 !== s || e2 !== e) && s2 >= s && e2 <= e));
+  return found;
 }
 
 /**
- * Check a span's quote against the file. In place: verified. Elsewhere in the same
- * file: moved to the nearest occurrence (relocated). Nowhere, empty or oversized: bad.
- * A span without a quote is kept as cited, unverified.
+ * Check a span's quote against the file:
+ * - in its cited lines: verified;
+ * - elsewhere in the same file, once or within maxRelocationLines: moved there (relocated);
+ * - several far-away occurrences: kept as cited, unverified (ambiguous);
+ * - nowhere, empty or oversized: bad;
+ * - too short to mean anything, or absent: kept as cited, unverified.
+ * The stored quote is normalized to one line, so it cannot carry line breaks to agents.
  */
-function anchorSpan(span, lines) {
+function anchorSpan(span, lines, getIndex) {
   const base = { path: span.path, startLine: span.startLine, endLine: span.endLine };
   const { quote } = span;
   if (quote === undefined) return { span: base, verified: false };
-  if (typeof quote !== 'string' || quote.length > maxQuoteChars || !/\S/u.test(quote)) return { bad: true };
-  const cited = lines.slice(span.startLine - 1, span.endLine).join('\n');
-  if (normalizeSpace(cited).includes(normalizeSpace(quote))) return { span: { ...base, quote }, verified: true };
-  const windows = quoteWindows(lines, quote);
+  if (typeof quote !== 'string' || quote.length > maxQuoteChars) return { bad: true };
+  const stored = oneLine(quote);
+  if (!stored) return { bad: true };
+  if (stored.replace(/\s/gu, '').length < minQuoteSubstance) return { span: base, verified: false };
+  const cited = normalizeSpace(lines.slice(span.startLine - 1, span.endLine).join('\n'));
+  if (cited.includes(normalizeSpace(quote))) return { span: { ...base, quote: stored }, verified: true };
+  const windows = quoteWindows(getIndex(), quote);
   if (!windows.length) return { bad: true };
-  const [startLine, endLine] = windows.reduce((best, window) =>
-    (Math.abs(window[0] - span.startLine) < Math.abs(best[0] - span.startLine) ? window : best));
-  return { span: { path: span.path, startLine, endLine, quote }, verified: true, relocated: true };
+  const distance = ([start, end]) => (end < span.startLine ? span.startLine - end : start > span.endLine ? start - span.endLine : 0);
+  const nearest = windows.reduce((best, window) => (distance(window) < distance(best) ? window : best));
+  if (windows.length > 1 && distance(nearest) > maxRelocationLines) return { span: base, verified: false };
+  return { span: { path: span.path, startLine: nearest[0], endLine: nearest[1], quote: stored }, verified: true, relocated: true };
 }
 
 const numberPattern =/(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
@@ -235,6 +276,11 @@ export function validateSlice(slice, files, question) {
   }
   const lineCounts = new Map(files.map(file => [file.path, file.lines.length]));
   const linesByPath = new Map(files.map(file => [file.path, file.lines]));
+  const indexes = new Map();
+  const indexFor = path => {
+    if (!indexes.has(path)) indexes.set(path, fileIndex(linesByPath.get(path)));
+    return indexes.get(path);
+  };
   const suspects = suspiciousLines(files);
   const suspectKeys = new Set(suspects.map(({ path, line }) => `${path}:${line}`));
   const findings = [];
@@ -258,14 +304,21 @@ export function validateSlice(slice, files, question) {
     // lines, so a verbatim quote found elsewhere in the same file moves the span there
     // (relocated). A quote found nowhere in the file means the finding rests on text
     // that does not exist, and it is dropped.
-    const anchored = evidence.map(span => anchorSpan(span, linesByPath.get(span.path)));
+    const anchored = evidence.map(span => anchorSpan(span, linesByPath.get(span.path), () => indexFor(span.path)));
     if (anchored.some(entry => entry.bad)) {
       rejectedFindings += 1;
       badQuotes += 1;
       continue;
     }
-    const spans = anchored.map(entry => entry.span);
-    relocatedSpans += anchored.filter(entry => entry.relocated).length;
+    // Two spans can relocate onto the same lines; keep each window once.
+    const seenSpans = new Set();
+    const kept = anchored.filter(entry => {
+      const where = `${entry.span.path}:${entry.span.startLine}-${entry.span.endLine}`;
+      if (seenSpans.has(where)) return false;
+      seenSpans.add(where);
+      return true;
+    });
+    const spans = kept.map(entry => entry.span);
     const key = JSON.stringify([finding.label, spans.map(({ path, startLine, endLine }) => [path, startLine, endLine])]);
     if (unique.has(key)) {
       rejectedFindings += 1;
@@ -289,11 +342,12 @@ export function validateSlice(slice, files, question) {
       continue;
     }
     unique.add(key);
+    relocatedSpans += kept.filter(entry => entry.relocated).length;
     findings.push({
       id: `f${findings.length + 1}`,
       label: finding.label,
       evidence: spans,
-      quoteVerified: anchored.every(entry => entry.verified),
+      quoteVerified: kept.every(entry => entry.verified),
     });
   }
   rejectedFindings += Math.max(0, slice.findings.length - maxFindings);

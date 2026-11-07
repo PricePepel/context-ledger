@@ -65,9 +65,13 @@ for (let round = 1; round <= repeat; round += 1) {
   }
   const summary = summarize(results);
   const mean = key => results.reduce((sum, result) => sum + (result[key] ?? 0), 0) / results.length;
-  // Missing token stats must fail the gate, not count as zero (a vacuous "0% slice").
-  const complete = key => results.every(result => Number.isFinite(result[key]) && result[key] > 0);
-  const sliceShare = complete('sliceTokens') && complete('prefixTokens') ? mean('sliceTokens') / mean('prefixTokens') : NaN;
+  // Slice share is measured over the reads that returned a slice; failed reads already
+  // count as wrong and uncited. Missing stats on a returned slice fail the gate rather
+  // than counting as zero (a vacuous "0% slice").
+  const answered = results.filter(result => !result.error);
+  const complete = key => answered.length > 0 && answered.every(result => Number.isFinite(result[key]) && result[key] > 0);
+  const answeredMean = key => answered.reduce((sum, result) => sum + result[key], 0) / answered.length;
+  const sliceShare = complete('sliceTokens') && complete('prefixTokens') ? answeredMean('sliceTokens') / answeredMean('prefixTokens') : NaN;
   const promptTotal = results.reduce((s, r) => s + r.promptTokens, 0);
   const cachedShare = promptTotal > 0 ? results.reduce((s, r) => s + r.cachedTokens, 0) / promptTotal : NaN;
   const gate = {
