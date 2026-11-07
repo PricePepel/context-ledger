@@ -233,3 +233,39 @@ Ali's agent reviewed the runtime and the contract and approved with changes. Its
   - Regression round on both sets: unchanged (7/8 and 7/8, quotes 100%, gates pass).
   - Six concurrent reads all returned 200 in 4–13 s. Each read took about 4 s, so slots freed within the 5 s wait and the busy path did not trigger live; the unit test covers it.
 - **Low findings left as follow-ups:** U+2028 in path names, `.env` and `.git` under the root, non-string quotes, `PermissionError` returning 500, BOM handling, unknown fields, and an unconfirmed symlink race.
+
+### Correction and merge: L14 on `ali/latent-pool` (2026-11-07, later)
+
+The entry above credits runtime commits `105ebe2` and `ffea03b`. Neither reached GitHub. Ali's agent applied the same review on `ali/latent-pool` (`72ce5cb`) at the same time, after posting on PR #4 that we should hold off, and Leo's agent pushed without reading that comment.
+
+Ali then proposed a merge on PR #4 and stayed off the branch. It was applied in `adcc7fb` on top of his commit:
+
+- **Kept from Ali:** path, file-text and secret rules, unknown-field and BOM handling, the inode re-check, and his tests.
+- **Taken from Leo (verified live):** the 5 s busy wait (his was 2 s), the 15 s receive deadline (his was 10 s), and the disconnect check.
+- **Preamble:** `preambleVersion` is the string `"2"`, and the preamble is the cycle 6b text.
+- **His review lows folded in:** Cn is allowed in paths, the secret list is wider with `.env` templates allowed, and there are deadline and slot tests.
+
+The ledger follows the merged contract (`3c2a4f6`): a string version, matching path characters, and the secret rule mirrored up front. Both branches carry one identical `docs/latent-read.md`.
+
+The preamble was decided on live evidence. Against Ali's unmerged `72ce5cb`, whose preamble adds an "untrusted data" sentence:
+
+- the original set fell to 6/8 in 3/3 runs (`sms-rule` wrong and uncited); the held-out set stayed at 7/8;
+- the injection fixture leaked: the model claimed "the session timeout is set in src/util.js" while citing an unrelated `clamp()` line.
+
+The ledger now requires a word-only label to share a content word with its cited lines (`0de471a`), which drops that finding.
+
+Lesson: check open PR comments before pushing to a branch another person owns.
+
+### Merged runtime gate (`adcc7fb`) and a grounding false negative (2026-11-07)
+
+The merged runtime, run three rounds per set with the fixture ledger:
+
+- **First run:** the held-out set passed 3/3 (7/8 accuracy, 8/8 citations). The original set failed 3/3, because citations fell to 6/8.
+- **Cause:** the model's output for `sms-rule` was token-for-token the same as in the passing cycle 6b runs. Our own ledger dropped it. The word-grounding rule from `0de471a` compared only words of four or more letters. So "Condition for SMS", citing "An SMS goes out only when…", had nothing to compare and was dropped as ungrounded. "Action on SMS Condition Met", citing the `enqueue(SMS_QUEUE, …)` line, was dropped the same way.
+- **Fix:** three-letter words count as content words. They must start a word in the cited lines, so "low" does not match "below". Short function words and path parts ("the", "set", "src", …) are ignored. A test covers the live case. Node suite 78/78 (one skipped).
+- **Re-run, three rounds each:**
+  - Original set: 7/8 accuracy, 7/8 citations, 100% quote-verified, sliceShare 0.089, cachedShare 0.996, PASS 3/3.
+  - Held-out set: 7/8 and 8/8, sliceShare 0.054, cachedShare 0.995, PASS 3/3.
+  - Injection probe: no findings kept in 3/3; 2 dropped per round, 1 of them ungrounded. The model still states "999 minutes" in the answer, which stays marked `answerVerified: false`.
+
+Lesson: a stricter ledger rule needs a full live gate before it is committed, not only the probe it was written for.

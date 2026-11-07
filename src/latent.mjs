@@ -274,13 +274,21 @@ export function isGrounded(label, citedText) {
   // finding said "The session timeout is set in src/util.js" while citing an
   // unrelated clamp() line. Require at least one content word of the label (by its
   // first four letters) to appear in the cited lines.
-  const words = (label.toLowerCase().match(/[a-z]{4,}/gu) ?? []).filter(word => !stopWords.has(word));
+  // Merged gate: "Condition for SMS" was dropped while citing "An SMS goes out", so
+  // three-letter words count too. A short word must start a word in the cited lines
+  // ("low" does not match "below"); longer words compare their first four letters.
+  const words = (label.toLowerCase().match(/[a-z]{3,}/gu) ?? []).filter(word => !stopWords.has(word));
   if (!words.length) return true;
   const cited = citedText.toLowerCase();
-  return words.some(word => cited.includes(word.slice(0, 4)));
+  return words.some(word => (word.length === 3
+    ? new RegExp(`(?<![a-z])${word}`, 'u').test(cited)
+    : cited.includes(word.slice(0, 4))));
 }
 
-const stopWords = new Set(['this', 'that', 'with', 'from', 'when', 'then', 'than', 'only', 'which', 'there', 'their',
+const stopWords = new Set(['the', 'and', 'for', 'are', 'was', 'not', 'but', 'its', 'set', 'get', 'has', 'had', 'can',
+  'all', 'any', 'out', 'use', 'one', 'two', 'via', 'per', 'src', 'how', 'why', 'who', 'yes', 'may', 'our', 'you', 'met',
+  'new', 'now', 'too', 'own', 'off', 'see', 'way', 'lib', 'mjs', 'cjs', 'ts', 'js',
+  'this', 'that', 'with', 'from', 'when', 'then', 'than', 'only', 'which', 'there', 'their',
   'they', 'have', 'does', 'will', 'into', 'each', 'every', 'also', 'after', 'before', 'about', 'code', 'file', 'line',
   'lines', 'value', 'values', 'used', 'uses', 'using', 'sets', 'gets', 'returns', 'function', 'called', 'defined']);
 

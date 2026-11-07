@@ -393,6 +393,21 @@ test('live probe on preamble v2: a word-only label must share a content word wit
   assert.equal(isGrounded('Yes', clamp), true, 'nothing checkable: left to the other rules');
 });
 
+test('merged gate, sms-rule: three-letter words such as SMS count as content words', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  // Live findings on the merged runtime that were dropped because "SMS" was too short to compare.
+  const comment = '// has a verified phone number.\n// Every shipped order gets an email. An SMS goes out only when the customer';
+  assert.equal(isGrounded('Condition for SMS', comment), true);
+  const enqueue = "    enqueue(SMS_QUEUE, { to: order.customer.phone, template: 'shipped-sms' });\n  }";
+  assert.equal(isGrounded('Action on SMS Condition Met', enqueue), true);
+  // A short word must start a word in the cited lines, not sit inside one ("low" in "below").
+  assert.equal(isGrounded('Low stock alert', 'const below = 2;'), false);
+  // Short function words and path parts are not evidence.
+  const clamp = 'export const clamp = (value, low, high) => Math.min(Math.max(value, low), high);';
+  assert.equal(isGrounded('The session timeout is set in src/util.js', clamp), false);
+  assert.equal(isGrounded('Set and get are not met', 'const settings = get();'), true, 'only stop words: nothing checkable');
+});
+
 test('merged contract: secret paths are refused up front, templates and unassigned characters are not', async t => {
   const { isSecretPath } = await import('../src/latent.mjs');
   for (const path of ['.env', 'a/.env.local', '.git/config', '.git-credentials', '.docker/config.json', '.kube/config', 'keys/server.pem']) {
