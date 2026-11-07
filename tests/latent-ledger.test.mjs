@@ -71,9 +71,9 @@ test('the ledger proxies latent reads, validates slices and falls back to text o
   client = startMcp(ledger.port);
   const result = await client.call(1, 'latent_read', body);
   assert.equal(result.isError, undefined, result.content[0].text);
-  assert.match(result.content[0].text, /^Answer: A failed charge is retried 3 times/mu);
+  assert.match(result.content[0].text, /^Model answer \(unchecked prose; trust the findings, read cited lines before acting\): A failed charge is retried 3 times/mu);
   assert.match(result.content[0].text, /^- f1: RETRY_LIMIT is 3 \(src\/config\.js:21-22\)$/mu);
-  assert.match(result.content[0].text, /dropped by the ledger for bad citations: 1$/mu);
+  assert.match(result.content[0].text, /^Findings dropped by the ledger: 1 \(ungrounded: 0\)$/mu);
   assert.equal(JSON.parse(result.content[1].text).stats.cachedShare, 0.9);
   assert.deepEqual(seen, [{ url: '/latent/read', origin: undefined, body: { ...body, budgetTokens: 600, workers: 3 } }]);
 

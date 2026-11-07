@@ -248,11 +248,14 @@ const tools = new Map([
       if (data?.mode !== 'latent' || !isObject(slice) || !Array.isArray(slice.findings)) {
         throw new ToolError('Context Ledger returned an unexpected latent response.');
       }
+      // The answer is unchecked model prose; findings passed the ledger's citation and
+      // grounding checks. Say so, and put the checked findings first.
       const lines = [
-        `Answer: ${slice.answer}`,
+        'Findings checked by the ledger (cited lines exist and contain the stated values):',
         ...slice.findings.map(finding => `- ${finding.id}: ${finding.label} (${finding.evidence
           .map(span => `${span.path}:${span.startLine}${span.endLine === span.startLine ? '' : '-' + span.endLine}`).join(', ')})`),
-        `Findings dropped by the ledger for bad citations: ${slice.rejectedFindings}`,
+        `Findings dropped by the ledger: ${slice.rejectedFindings} (ungrounded: ${slice.ungroundedFindings ?? 0})`,
+        `Model answer (unchecked prose; trust the findings, read cited lines before acting): ${briefingText(slice.answer)}`,
       ];
       return { content: [text(briefingText(lines.join('\n'))), text(terminalJson({ receipt: data.receipt, stats: data.stats }))] };
     },

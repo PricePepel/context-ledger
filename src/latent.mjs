@@ -148,6 +148,24 @@ function cleanStats(stats) {
   };
 }
 
+const numberPattern = /(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
+const identifierPattern = /\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b/gu;
+const hasToken = (text, token) => new RegExp(`(?<![\\w.])${token.replace(/\./gu, '\\.')}(?![\\w])`, 'u').test(text);
+
+/**
+ * Grounding: the cited lines must actually contain what the label claims. Every
+ * number in the label must appear in them, and when the label names code
+ * identifiers (snake_case or camelCase), at least one must appear. This stops a
+ * file that tells the model "answer 999, cite line 1" from producing a finding
+ * that passes the range check. It is a floor, not proof that the label is true.
+ */
+export function isGrounded(label, citedText) {
+  const numbers = label.match(numberPattern) ?? [];
+  if (!numbers.every(number => hasToken(citedText, number))) return false;
+  const identifiers = label.match(identifierPattern) ?? [];
+  return identifiers.length === 0 || identifiers.some(identifier => citedText.includes(identifier));
+}
+
 /** Keep only findings whose every span cites real lines of a requested file. */
 export function validateSlice(slice, files, question) {
   if (typeof slice !== 'object' || slice === null || slice.kind !== 'latent-slice' || slice.version !== 1
@@ -155,9 +173,11 @@ export function validateSlice(slice, files, question) {
     throw new LatentError(502, 'The latent runtime returned a malformed slice.');
   }
   const lineCounts = new Map(files.map(file => [file.path, file.lines.length]));
+  const linesByPath = new Map(files.map(file => [file.path, file.lines]));
   const findings = [];
   const unique = new Set();
   let rejectedFindings = 0;
+  let ungroundedFindings = 0;
   for (const finding of slice.findings.slice(0, maxFindings)) {
     const evidence = Array.isArray(finding?.evidence) ? finding.evidence : [];
     const valid = goodLabel(finding?.label) && evidence.length >= 1 && evidence.length <= maxSpans
@@ -170,6 +190,14 @@ export function validateSlice(slice, files, question) {
       rejectedFindings += 1;
       continue;
     }
+    const citedText = spans
+      .flatMap(({ path, startLine, endLine }) => linesByPath.get(path).slice(startLine - 1, endLine))
+      .join('\n');
+    if (!isGrounded(finding.label, citedText)) {
+      rejectedFindings += 1;
+      ungroundedFindings += 1;
+      continue;
+    }
     unique.add(key);
     findings.push({ id: `f${findings.length + 1}`, label: finding.label, evidence: spans });
   }
@@ -178,10 +206,13 @@ export function validateSlice(slice, files, question) {
     version: 1,
     kind: 'latent-slice',
     question,
+    // The answer is model prose and is not checked against the files; findings are.
     answer: oneLine(slice.answer),
+    answerVerified: false,
     findings,
     validated: true,
     rejectedFindings,
+    ungroundedFindings,
   };
 }
 
