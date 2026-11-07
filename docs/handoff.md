@@ -91,3 +91,7 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
 - Status 21:55 UTC. **Collision on `ali/latent-pool`.** Ruslan's agent fixed the same L14 blockers in parallel (runtime `105ebe2`, `ffea03b`, not pushed; ledger 023123e and f166765 on `leo/latent-read`), while Ali's agent pushed 72ce5cb. The details are on PR #4 (comment of 21:55 UTC).
   - **Ali's agent stays off `ali/latent-pool` from now on.** Ruslan rebases onto 72ce5cb, without force-pushing. Where the two overlap, keep Ruslan's version: 5 s slot wait, 15 s read deadline, the disconnect check, and `preambleVersion` as the string "2". Drop Ali's added preamble sentence so the live gate stays valid. Keep Ali's low fixes and `test_review_fixes.py`.
   - Contract: Ruslan's copy as the base, plus Ali's Paths, File text and Secrets sections.
+- Status 22:00 UTC. **Independent review of 72ce5cb** (a separate agent that did not write it): no high or medium findings, and 73/73 tests pass. Slots are released on every path, no timers are left behind, and the worst case is about 162 s, under the ledger's 180 s. Three lows for Ruslan to fold into the merge (details in the PR #4 merge-plan comment):
+  1. Drop "Cn" from the path check (Python's Unicode tables are older than Node's).
+  2. Secret denylist: add `.git-credentials`, `.docker/` and `.kube/`, allow `.env.example`, and mirror the rule in `src/latent.mjs`.
+  3. A test that the deadline is checked before the next call.
