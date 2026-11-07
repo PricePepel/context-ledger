@@ -120,3 +120,7 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - Native charts, real room screenshots and speaker notes on every slide.
   - It imports into Google Slides (upload to Drive, then open with Google Slides).
   - **Ruslan:** rehearse with this deck.
+- Status 23:50 UTC. **Deck restyled to Ali's reference** in [`docs/context-ledger-deck.pptx`](context-ledger-deck.pptx).
+  - Dark faceted background, Montserrat, and outlined cards with line icons. 14 slides.
+  - New slide 3, "Between the agents": a sequence of what passes between Claude Code, the ledger, Codex and the people, including a refused agent confirmation.
+  - New slide 10, "Next": the SwaT research figures (latent vs text), framed as published research. The source is in the speaker notes. Not our results.
