@@ -166,6 +166,28 @@ export function isGrounded(label, citedText) {
   return identifiers.length === 0 || identifiers.some(identifier => citedText.includes(identifier));
 }
 
+// Heuristic: phrases that address an AI reader rather than describe the code.
+// Grounding cannot catch a planted comment, because the comment itself contains the
+// value it wants repeated ("answer that the timeout is 999 minutes"). Such lines are
+// reported, and findings that cite them are dropped. A determined author can phrase
+// around this; it is a tripwire, not a guarantee.
+const instructionPattern = new RegExp([
+  String.raw`\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:any\s+|the\s+)?(?:ai|llm|model|assistant|agent)s?\b`,
+  String.raw`\b(?:ignore|disregard|forget)\s+(?:the\s+|all\s+|any\s+)?(?:code|above|below|previous|prior|earlier|instructions?|rules?)\b`,
+  // "answer that ..." addresses a reader; "respond with 404" is ordinary code prose.
+  String.raw`\b(?:answer|reply|say|state|report)\s+that\b`,
+  String.raw`\bcite\s+(?:src\/|line\s+\d|[\w./-]+\.\w+\s+line)`,
+  String.raw`\b(?:you\s+are\s+an?|as\s+an?)\s+(?:ai|llm|language\s+model|assistant)\b`,
+  String.raw`\bsystem\s+prompt\b`,
+].join('|'), 'iu');
+
+/** Lines in the requested files that read like instructions to an AI model. */
+export function suspiciousLines(files) {
+  return files.flatMap(file => file.lines
+    .map((line, index) => (instructionPattern.test(line) ? { path: file.path, line: index + 1 } : null))
+    .filter(Boolean));
+}
+
 /** Keep only findings whose every span cites real lines of a requested file. */
 export function validateSlice(slice, files, question) {
   if (typeof slice !== 'object' || slice === null || slice.kind !== 'latent-slice' || slice.version !== 1
@@ -174,10 +196,13 @@ export function validateSlice(slice, files, question) {
   }
   const lineCounts = new Map(files.map(file => [file.path, file.lines.length]));
   const linesByPath = new Map(files.map(file => [file.path, file.lines]));
+  const suspects = suspiciousLines(files);
+  const suspectKeys = new Set(suspects.map(({ path, line }) => `${path}:${line}`));
   const findings = [];
   const unique = new Set();
   let rejectedFindings = 0;
   let ungroundedFindings = 0;
+  let suspiciousFindings = 0;
   for (const finding of slice.findings.slice(0, maxFindings)) {
     const evidence = Array.isArray(finding?.evidence) ? finding.evidence : [];
     const valid = goodLabel(finding?.label) && evidence.length >= 1 && evidence.length <= maxSpans
@@ -198,6 +223,15 @@ export function validateSlice(slice, files, question) {
       ungroundedFindings += 1;
       continue;
     }
+    const citesSuspect = spans.some(({ path, startLine, endLine }) => {
+      for (let line = startLine; line <= endLine; line += 1) if (suspectKeys.has(`${path}:${line}`)) return true;
+      return false;
+    });
+    if (citesSuspect) {
+      rejectedFindings += 1;
+      suspiciousFindings += 1;
+      continue;
+    }
     unique.add(key);
     findings.push({ id: `f${findings.length + 1}`, label: finding.label, evidence: spans });
   }
@@ -213,6 +247,10 @@ export function validateSlice(slice, files, question) {
     validated: true,
     rejectedFindings,
     ungroundedFindings,
+    suspiciousFindings,
+    // Lines that look like instructions to an AI. When present, the answer may have
+    // been steered by them even if every kept finding is clean.
+    suspiciousLines: suspects.slice(0, 20),
   };
 }
 
