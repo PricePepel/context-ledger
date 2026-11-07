@@ -105,3 +105,94 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 - F3 MCP adapter (964f70d). The builder's debug pass fixed a nesting crash and a Windows test hang. The integration test drives context_for, room_open and room_read against the real server. The review found nothing above low. Fixed in 0cc4e1d: U+2028/9 in ledger errors, distinct timeout and redirect messages, malformed notifications dropped, and the npm script removed.
 - F4 negotiation room (d5e5371). The debug pass found that a party named `constructor` lost its choice in the response; fixed with Maps in 83e3f2a, which also added a phone-width check. The review found one medium issue: the other party's labels could print a fake "State: agreed" with newlines and bidi controls. V2 labels now refuse control, separator and bidi characters, and the UI isolates labels in `<bdi>`. Low fixes in 1fbb3c5: focus returns after a decision, buttons are disabled while a decision is in flight, and a failed open clears the old room. Room journeys were sharing graphs across parallel and repeated runs, so each test now publishes its own.
 - Not done here: Linux CI for this branch (now configured to run every node test file), a live two-model MCP smoke test, and Ali's M0 benchmark.
+
+## Cycle 5 — M0 benchmark
+
+Card B1. `npm run bench` (`node bench/m0.mjs`) measures the cycle 4 graph context against the Markdown transcript handoff, end to end through the real HTTP API. All inputs are synthetic and generated from a seed; the benchmark builds the graph packets itself, so it measures the ledger's storage and rendering, not the quality of LLM extraction.
+
+Synthetic data: for each size (number of conversation turns per party, default 10, 50, 200 and 1000), a seeded PRNG (mulberry32, no `Math.random`) writes a two-party negotiation. Party A (`mara`) is a Claude Code JSONL transcript and party B (`teo`) is a Codex rollout. Most turns are filler work chatter, with a few non-message records that the importer skips. Planted facts (goals, constraints, offers, decisions, actions, questions addressed to the other party) sit at known line numbers, about sqrt(size) + 4 per party.
+
+| Eval | Expected |
+| --- | --- |
+| Harness | The benchmark starts `src/server.mjs` as a child process on a free loopback port with a fresh temp database under the OS temp directory, sends the correct Origin, and stops the server and deletes the database at the end, also on failure. |
+| Flow | Per size: import both transcripts, publish party A's v2 graph, publish party B's graph with `matches`, `conflicts` and `answers` links to A, open a room. Every request succeeds. |
+| Size | Characters and estimated tokens (ceil(chars/4), labelled as estimates) for the Markdown handoff and the graph context, taken from the API meter. The primary figure is the character ratio. The saved share grows with transcript size. |
+| Fact recall | Every planted fact's label and cited line appear in the graph context and in the handoff: recall 1.0 on both. This guards against compression dropping a planted fact; it is not a quality claim. |
+| Cache-prefix stability | After K appended turns (re-imported as a new session, because session IDs hash the transcript) and a revised graph with one more action, report the longest common prefix of old and new output as a share of the new output, for the graph context and for the handoff. |
+| Order invariance | A shuffled copy of each packet (nodes, edges, links, evidence) returns the same graph ID and byte-identical context. |
+| Latency | p50 and p95 over `--reps` for publish, context and room open, with Node version and platform recorded. Timings are excluded from determinism checks. |
+| Cost illustration | Estimated tokens times list input price for named models, with source and date, labelled as an illustration; unverified prices are marked. |
+| Determinism | Two runs with the same seed produce identical JSON apart from timings, date, commit and machine fields. |
+| Regression | `node --test tests/*.test.mjs` still passes; no file under `src/`, `public/`, `schemas/` or `tests/e2e/` changes; no new dependency. |
+
+Review-fix evals (added after the cycle 5 review, before the fixes):
+
+| Eval | Expected |
+| --- | --- |
+| Fair cache-prefix comparison | Besides the as-is prefix, report the prefix with session and graph IDs replaced by a fixed placeholder on both sides. The handoff's as-is prefix ends inside its `Session:` line; with IDs held constant it keeps most of its bytes and the share grows with size. No test or headline claims the graph is the more cache-stable format. |
+| Data-driven conclusion | The cache-prefix conclusion in `docs/benchmark.md` is computed from the results (which side reaches the cache minimum at which sizes), never fixed text. |
+| Signals | SIGINT, SIGTERM or SIGHUP to the benchmark process, at any point after it starts, kills the server child, deletes the temp directory, writes no report and exits with 128 + signal number. |
+| Failure path | An error thrown inside a size measurement still stops the server and deletes the temp directory. |
+| Order invariance coverage | The shuffled packet is checked to differ in order from the original. The identical-context column is labelled as implied by the same graph ID (the store keeps the first row for an ID). |
+| Input limits | `--sizes` above 9215 (the revised packet would exceed the v2 schema's 100 nodes) or an import body above 8 MiB is rejected before any import, with a message naming the limit. `--seed` must be an integer from 0 to 4294967295, and every seed gives the two parties different PRNG streams. |
+| Commit provenance | The report records whether the benchmark, server or schema files had uncommitted changes, and the committed report names a commit that contains `bench/m0.mjs`. |
+
+## Results — Cycle 5 M0 benchmark, 2026-11-07
+
+`node bench/m0.mjs --markdown docs/benchmark.md` (seed 42, sizes 10, 50, 200 and 1000 turns, 20 reps, 10 appended turns) on Node 22, Linux x64, at commit 715ae35. Full tables, method and limits are in [docs/benchmark.md](benchmark.md). These figures replace the first run's: the review changed the seed derivation, so the synthetic text (and every size) moved slightly, and the cache-prefix headline of the first run was wrong (see below). Figures are for party `teo` (Codex, with links); `mara` (Claude Code) is within a few points.
+
+| Turns | Handoff chars | Graph chars | Graph / handoff | Saved tokens (est.) | Recall graph / handoff | Prefix share graph / handoff, as is | Prefix share graph / handoff, IDs constant | Context p50 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 | 1,874 | 1,264 | 67.4% | 32.6% | 1 / 1 | 42.2% / 2.6% | 46.1% / 58.9% | under 1 ms |
+| 50 | 6,699 | 1,723 | 25.7% | 74.3% | 1 / 1 | 45.4% / 1.0% | 48.5% / 84.5% | under 1 ms |
+| 200 | 25,020 | 2,554 | 10.2% | 89.8% | 1 / 1 | 44.6% / 0.3% | 46.6% / 95.2% | under 1 ms |
+| 1000 | 119,357 | 4,577 | 3.8% | 96.2% | 1 / 1 | 47.6% / 0.1% | 48.8% / 99.0% | about 2 ms |
+
+What the benchmark measured:
+
+- Size: the graph context is 3.8% of the handoff's characters at 1000 turns (96.2% fewer estimated tokens); the saving grows with size because planted facts grow with about sqrt(turns) while the handoff grows linearly. The inputs are synthetic with short turns, so these ratios are not a prediction for real sessions.
+- Recall, order invariance and determinism: pass at every size. Recall 1.0 is a guard that rendering drops no planted fact; the benchmark builds the packets itself, not an LLM. Shuffled packets (checked to be reordered) return the same graph ID; the identical context follows from that ID.
+- Cache-prefix stability: the graph context is not the more cache-stable format. As is, the handoff's common prefix ends inside its `Session:` line (byte 81), because the session ID hashes the whole transcript. With IDs held constant the handoff keeps 59 to 99% of its bytes and is cache-eligible (at least 1,024 estimated tokens) from 50 turns, about 30,000 estimated tokens at 1000 turns. The graph context keeps 42 to 55% and is never cache-eligible here, because the new action's `advances` edge lands in the edges section before links and actions.
+- Cost illustration (estimated tokens, list prices seen 2026-11-07, GPT-5.5 unverified), Claude Opus 5.5, 1,000 handoffs at 1000 turns: handoff uncached $119.36, handoff steady state if its ID line moved to the end $5.08, graph $4.58 (no cache discount). The graph still wins on size, but by much less than the uncached comparison suggests once caching is allowed.
+
+Review and debug outcome. An independent subagent review with probes confirmed ten findings; all are fixed in `bench/` and `tests/bench.test.mjs` (commit 715ae35), each with a regression test where testable:
+
+- Medium, cache prefix: the comparison let one changed ID line make the handoff look 20 to 400 times less stable, and a test asserted that artifact. Fixed: the report also compares with session and graph IDs held constant, the test now checks that the as-is handoff prefix ends inside the `Session:` line and that the IDs-constant handoff share is above 50% and grows with size, and the cost table adds a handoff steady state.
+- Medium, fixed conclusion text: "below the cache minimum at every size" was printed whatever the data said. Fixed: the conclusion is computed from the results; a test renders a doctored report both ways.
+- Medium, SIGINT swallowed and low/medium SIGTERM and SIGHUP leaks: Ctrl-C during start-up let the run finish with exit 0, and SIGTERM or SIGHUP left an orphaned server and the temp database. Fixed: all three signals kill and reap the server, delete the temp directory, write no report and exit with 128 + the signal number. Tests send each signal mid-run, and SIGINT during start-up. While testing, killed servers stayed as zombies under this container's init, so the handler now waits for the child's exit.
+- Low, failure path untested: a test injects an error inside a size measurement and checks that the server stopped and the temp directory is gone.
+- Medium, size limits: sizes above 9215 failed with an opaque 400 after the imports. Fixed: sizes, the 8 MiB import body and the seed range are checked before the server starts, and the limits are documented.
+- Low, order invariance: the identical-context column only restated the graph ID. Fixed: it is labelled as implied, and an independent check confirms the shuffle reorders the input.
+- Low, seeds: large seeds gave both parties the same PRNG stream. Fixed: seeds are limited to 0 to 4294967295 and party and shuffle seeds use 32-bit integer mixing; a test checks independence for edge seeds.
+- Low, provenance: the committed report named a commit without `bench/`. Fixed: the report is generated after the code commit and records whether `bench/`, `src/`, `schemas/` or `package.json` had uncommitted changes.
+
+For Ruslan (src/, not changed here): `handoffMarkdown` prints the session ID on line 5, before the turns, so any append invalidates the whole handoff prefix; moving it after the turns (as the graph context already does with its IDs) would make the handoff cacheable. The graph context renders edges before links and actions, so a new action's edge breaks the prefix mid-output; ordering sections by how often they change, or appending new nodes and edges at the end, would keep more of it.
+
+Tests: `node --test tests/bench.test.mjs` 10 of 10; `node --test tests/*.test.mjs` 64 of 64 on Linux. Playwright and the live MCP smoke test were not run (out of scope for B1). The signal tests are skipped on Windows, where signals cannot be caught.
+
+## Cycle 5 — B3 demo-scale seed (defined 2026-11-07, before implementation)
+
+The live demo seeded two-turn toy transcripts, so the savings meter showed a negative saving (about -108%): the graph context was larger than the handoff. B3 seeds the demo with the benchmark's synthetic generator (`bench/synth.mjs`) at a realistic size. Synthetic data only. No change under `src/`.
+
+| Eval | Expected |
+| --- | --- |
+| Demo-scale meter | `driver.mjs check` (no browser) with the default 200 turns per party prints a meter whose `savedShare` is above 0.85 for both parties. |
+| Toy scale still available | `--turns 2` keeps the original hand-written two-turn scenario for a quick look at the UI. |
+| Room flow | `driver.mjs demo` at 200 turns opens the room, both people confirm the first match, one rejects the first conflict, the state survives a reload, and the page logs no errors. |
+| Clean exit | The server is stopped and the temp database removed after `check` and `demo`. |
+| Regression | `node --test tests/*.test.mjs` passes. |
+
+### Results — B3, 2026-11-07
+
+All B3 evals pass on Linux (Node 22.23.4). `driver.mjs check` at the default 200 turns reports a saved share of 0.916 for mara and 0.898 for teo (estimates, chars/4), up from -1.078 and -0.563 on the old two-turn seed. `driver.mjs demo` at 200 turns opens a room with 9 proposals, agrees and rejects one each, keeps both after a reload, logs no page errors and leaves no server or temp database. `tests/demo-seed.test.mjs` adds 3 tests (threshold, toy scenario, determinism); the full node suite passes 67 of 67. Observed while checking screenshots: the generator pairs facts by kind, not meaning, so the demo's proposals do not read sensibly on stage. That is logged as card B9 rather than widening B3. Not independently reviewed yet: Tenki is pending its repo link.
+
+### Review — Tenki Code Reviewer on PR #3, 2026-11-07
+
+This was an independent, non-Claude review of commit a619574. It found 1 high, 2 medium and 4 low issues. All three high and medium findings were confirmed against the code and fixed, each with a regression test:
+
+- **High, steady-state cost.** The steady-state price mixed UTF-8 bytes of the revised output with UTF-16 characters of the base output, so the uncached remainder went negative. The Opus handoff steady state at 1000 turns read $5.08. Prefixes are now measured in the meter's own units (characters, tokens = ceil(chars / 4)). Steady state now prices the actual next request, the revised output, and the cached part is capped at its total. Corrected figure for a cache-warm handoff at 1000 turns on Opus 5.5: $7.22, against $4.72 for the graph context (estimates).
+- **Medium, IDs-constant denominator.** Replacing 64-character IDs with a 4-character placeholder shrank the denominator. The graph's IDs-constant share read 56.6%, against a true 50.8%. Shares now map the placeholder back to the full ID and use the original text as the denominator.
+- **Medium, driver cleanup.** A failed server start left its temp database, and there were no signal handlers. The driver now removes the directory on every failure path and stops the server on SIGINT, SIGTERM and SIGHUP (exit 128 + signal). Writing the regression test found a second bug: the readiness probe had no timeout, so a port that accepts but never answers hung the driver. Each probe now times out after 500 ms.
+- **Low.** `flag()` swallowed a following flag; it now rejects a missing value (fixed, with a test). The other three were left as they are: the 2 s vs 2.5 s runtime in two documents, the free-port race (a failed start is now cleaned up and reported), and B3 marked Done before review (this entry records the review).
+
+Node suite: 73 of 73 on Linux. docs/benchmark.md was regenerated.
