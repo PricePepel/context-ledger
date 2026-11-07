@@ -106,7 +106,9 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 - F4 negotiation room (d5e5371). The debug pass found that a party named `constructor` lost its choice in the response; fixed with Maps in 83e3f2a, which also added a phone-width check. The review found one medium issue: the other party's labels could print a fake "State: agreed" with newlines and bidi controls. V2 labels now refuse control, separator and bidi characters, and the UI isolates labels in `<bdi>`. Low fixes in 1fbb3c5: focus returns after a decision, buttons are disabled while a decision is in flight, and a failed open clears the old room. Room journeys were sharing graphs across parallel and repeated runs, so each test now publishes its own.
 - Not done here: Linux CI for this branch (now configured to run every node test file), a live two-model MCP smoke test, and Ali's M0 benchmark.
 
-## Cycle 5 — M2a warm latent pool (defined 2026-11-07, before implementation)
+## Cycle 6 — M2a warm latent pool (defined 2026-11-07, before implementation)
+
+Cycle 5 is Ali's M0 benchmark (PR #3), so this cycle is numbered 6.
 
 Contract: [docs/latent-read.md](latent-read.md). Leo side on `leo/latent-read`, Ali side on `ali/latent-pool`. Data: the synthetic codebase in `evals/latent/fixture` and the eight questions in `evals/latent/questions.json`, graded by `evals/latent/grade.mjs`.
 

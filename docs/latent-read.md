@@ -106,4 +106,4 @@ If the runtime is not running, the ledger falls back to Tier 1. It returns `{ "m
 
 ## Gate (from the roadmap)
 
-On the synthetic codebase Q&A set in `evals/latent/`, `latent_read` matches the closed model's accuracy when that model reads everything, using a small fraction of its tokens. See `docs/evals.md`, cycle 5.
+On the synthetic codebase Q&A set in `evals/latent/`, `latent_read` matches the closed model's accuracy when that model reads everything, using a small fraction of its tokens. See `docs/evals.md`, cycle 6.
