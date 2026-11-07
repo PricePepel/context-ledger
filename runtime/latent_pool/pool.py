@@ -20,8 +20,11 @@ PREAMBLE = (
     "Each file starts with a line '=== FILE: <path> ===' and every line of a file "
     "starts with its 1-based line number followed by '| '. Answer only from these "
     "files. When they do not say, say so. Cite evidence as a file path with "
-    "startLine and endLine taken from the line numbers. Do the task in the user "
-    "message and reply with JSON only, in the requested shape."
+    "startLine and endLine taken from the line numbers, plus quote: the code from "
+    "those lines copied exactly, without the line-number prefix. State exact values "
+    "from the code (numbers with their units, names, strings) in answers and labels "
+    "rather than describing them. Do the task in the user message and reply with "
+    "JSON only, in the requested shape."
 )
 
 MIN_BUDGET, MAX_BUDGET, DEFAULT_BUDGET = 64, 2048, 600
@@ -33,6 +36,7 @@ MAX_SPANS = 4
 MAX_LABEL_CHARS = 500
 MAX_ANSWER_CHARS = 4000
 MAX_SUBQUESTION_CHARS = 300
+MAX_QUOTE_CHARS = 200
 PLANNER_MAX_TOKENS = 400
 WORKER_MAX_TOKENS = 600
 CONCURRENT_PIPELINES = 4
@@ -88,8 +92,9 @@ def _finding_schema(paths):
                         "path": {"type": "string", "enum": list(paths)},
                         "startLine": {"type": "integer", "minimum": 1},
                         "endLine": {"type": "integer", "minimum": 1},
+                        "quote": {"type": "string", "minLength": 1, "maxLength": MAX_QUOTE_CHARS},
                     },
-                    "required": ["path", "startLine", "endLine"],
+                    "required": ["path", "startLine", "endLine", "quote"],
                     "additionalProperties": False,
                 },
                 "minItems": 1,
@@ -190,6 +195,11 @@ def clean_findings(raw, line_counts, max_findings):
             exact = clamped and isinstance(span, dict) and clamped["startLine"] == span.get("startLine") \
                 and clamped["endLine"] == span.get("endLine")
             if exact and clamped not in spans:
+                # Pass the quote through for the ledger to verify; it is file text, so
+                # keep it on one line and bounded.
+                quote = span.get("quote")
+                if isinstance(quote, str) and quote.strip():
+                    clamped = {**clamped, "quote": one_line(quote, MAX_QUOTE_CHARS)}
                 spans.append(clamped)
         finding_key = (label, tuple((s["path"], s["startLine"], s["endLine"]) for s in spans))
         if not label or not spans or len(kept) >= max_findings or finding_key in seen:
@@ -392,7 +402,7 @@ class LatentPool:
                 f"{MAX_WORKER_FINDINGS} findings, each a one-line label with evidence spans "
                 "(path, startLine, endLine). Reply as JSON: "
                 "{\"answer\": string, \"findings\": [{\"label\": string, \"evidence\": "
-                "[{\"path\": string, \"startLine\": int, \"endLine\": int}]}]}.",
+                "[{\"path\": string, \"startLine\": int, \"endLine\": int, \"quote\": string}]}]}.",
             )
 
             def validate(value):
@@ -407,9 +417,9 @@ class LatentPool:
 
     def _synthesize(self, run, question, results, line_counts, budget):
         notes = json.dumps(results, ensure_ascii=False, separators=(",", ":"))
-        # A finding with one span costs roughly 60-80 tokens of JSON, so size the
+        # A finding with one quoted span costs roughly 90-110 tokens of JSON, so size the
         # list to the budget instead of letting the reply run past max_tokens.
-        fit = max(1, min(MAX_FINDINGS, budget // 80))
+        fit = max(1, min(MAX_FINDINGS, budget // 110))
 
         def request(count, extra):
             return _user(
@@ -418,9 +428,9 @@ class LatentPool:
                 f"Worker notes: {notes}",
                 "Check the notes against the files and write the final answer: a short answer "
                 f"and 1 to {count} findings, each a one-line label with 1 to {MAX_SPANS} "
-                "evidence spans (path, startLine, endLine). Reply as JSON: {\"answer\": string, "
+                "evidence spans (path, startLine, endLine, quote). Reply as JSON: {\"answer\": string, "
                 "\"findings\": [{\"label\": string, \"evidence\": [{\"path\": string, "
-                "\"startLine\": int, \"endLine\": int}]}]}." + extra,
+                "\"startLine\": int, \"endLine\": int, \"quote\": string}]}]}." + extra,
             )
 
         compact = max(1, fit // 2)

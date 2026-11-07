@@ -177,6 +177,29 @@ DUPLICATES = {
 }
 
 
+QUOTED = {
+    "answer": "a3 is 3.",
+    "findings": [{"label": "a3 is 3", "evidence": [
+        {"path": "src/a.js", "startLine": 3, "endLine": 3, "quote": "const a3 = 3;\nextra"},
+    ]}],
+}
+
+
+class QuotePassThroughTest(ServiceCase):
+    """Cycle 6b: quotes reach the ledger, on one line, for it to verify."""
+
+    replies = {"synthesizer": [json.dumps(QUOTED)]}
+
+    def test_quote_is_kept_on_one_line(self):
+        status, payload = self.read(workers=1)
+        self.assertEqual(status, 200, payload)
+        span = payload["graph"]["findings"][0]["evidence"][0]
+        self.assertEqual(span["quote"], "const a3 = 3; extra")
+        synth = [body for body in self.fake.requests if role_of(body) == "synthesizer"][0]
+        item = synth["response_format"]["json_schema"]["schema"]["properties"]["findings"]["items"]
+        self.assertIn("quote", item["properties"]["evidence"]["items"]["required"])
+
+
 class DuplicateFindingsTest(ServiceCase):
     replies = {"synthesizer": [json.dumps(DUPLICATES)]}
 
@@ -239,9 +262,9 @@ class CompactRetryTest(ServiceCase):
         synth = [body for body in self.fake.requests if role_of(body) == "synthesizer"]
         self.assertEqual(len(synth), 2)
         self.assertNotIn("too long", synth[0]["messages"][1]["content"])
-        self.assertIn("at most 2 findings", synth[1]["messages"][1]["content"])
+        self.assertIn("at most 1 findings", synth[1]["messages"][1]["content"])
         schema = synth[0]["response_format"]["json_schema"]["schema"]
-        self.assertEqual(schema["properties"]["findings"]["maxItems"], 5)  # 400 // 80
+        self.assertEqual(schema["properties"]["findings"]["maxItems"], 3)  # 400 // 110
 
 
 class BadPlannerTest(ServiceCase):
