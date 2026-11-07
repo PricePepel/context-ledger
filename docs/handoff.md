@@ -133,3 +133,8 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - Charts with invented data from the reference image (survey, adoption, usage pie, growth) were deliberately left out.
   - The run command on the slide stays `context-ledger`, the real name.
   - **Ruslan:** rehearse with this deck once Ali shares it.
+- Status 00:50 UTC. **The CTM deck was cut to 9 slides** after a design critique: problem → solution diagram (CTM between two agents, with human approval on top) → 3-step how → demo merged with the human gate → value & economics → technical advantage → use cases → call to action.
+  - Section labels no longer carry numbers, so they match the page numbers.
+  - The CLI commands moved to the speaker notes.
+  - Same link, still private until Ali shares it.
+  - The call-to-action slide needs Ali's and Ruslan's contact emails, and it links to the repo, which must be public.
