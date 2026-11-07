@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from . import ApiError
 from .prefix import load_files, prefix_id, render_prefix
@@ -40,6 +41,9 @@ MAX_QUOTE_CHARS = 200
 PLANNER_MAX_TOKENS = 400
 WORKER_MAX_TOKENS = 900
 CONCURRENT_PIPELINES = 4
+# Below the ledger's 180 s timeout, so no read outlives the caller (review finding 1).
+REQUEST_DEADLINE_S = 150.0
+SLOT_WAIT_S = 5.0
 
 _SPACE = re.compile(r"\s+")
 
@@ -259,16 +263,27 @@ def parse_read_body(body):
 # -------------------------------------------------------------------- pool
 
 class _Run:
-    """One warm or read: the shared system message and the call receipts."""
+    """One warm or read: the shared system message, its deadline and the call receipts."""
 
-    def __init__(self, client, system):
+    def __init__(self, client, system, deadline, is_cancelled=None):
         self.client = client
         self.system = system
+        self.deadline = deadline
+        self.is_cancelled = is_cancelled
         self.calls = []
         self._lock = threading.Lock()
 
     def call(self, role, user, max_tokens, schema=None):
-        result = self.client.chat(self.system, user, max_tokens, schema=schema, schema_name=role)
+        # Review finding 1: stop work nobody is waiting for. The ledger gives up at
+        # 180 s, so every read ends by REQUEST_DEADLINE_S, and each model call gets only
+        # the time that is left. A client that hung up stops the read between calls.
+        if self.is_cancelled is not None and self.is_cancelled():
+            raise ApiError(503, "The client went away, so the read was stopped.")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 1:
+            raise ApiError(504, f"The read ran past its {int(REQUEST_DEADLINE_S)} s deadline.")
+        result = self.client.chat(self.system, user, max_tokens, schema=schema, schema_name=role,
+                                  timeout=min(self.client.timeout, remaining))
         with self._lock:
             self.calls.append({
                 "role": role,
@@ -328,12 +343,23 @@ class LatentPool:
         reader = run.call("reader", _user("reader", "Read the files. Reply with OK."), 1)
         return reader.prompt_tokens
 
-    def warm(self, body):
+    @contextmanager
+    def _slot(self):
+        """A pipeline slot, or 503 busy after SLOT_WAIT_S (no unbounded queue)."""
+        if not self._slots.acquire(timeout=SLOT_WAIT_S):
+            raise ApiError(503, "The latent pool is busy; try again shortly.")
+        try:
+            yield
+        finally:
+            self._slots.release()
+
+    def warm(self, body, is_cancelled=None):
+        deadline = time.monotonic() + REQUEST_DEADLINE_S
         paths = _paths_field(body)
         prefix, _ = self._prepare(paths)
         pid = prefix_id(prefix)
-        with self._slots:
-            run = _Run(self.client, build_system(prefix))
+        with self._slot():
+            run = _Run(self.client, build_system(prefix), deadline, is_cancelled)
             prefix_tokens = self._warm(run)
         return {
             "prefixId": pid,
@@ -341,15 +367,16 @@ class LatentPool:
             "receipt": {"model": self.model, "prefixId": pid, "prefixTokens": prefix_tokens, "calls": run.calls},
         }
 
-    def read(self, body):
+    def read(self, body, is_cancelled=None):
         started = time.perf_counter()
+        deadline = time.monotonic() + REQUEST_DEADLINE_S
         paths, question, budget, workers = parse_read_body(body)
         prefix, line_counts = self._prepare(paths)
         if not any(line_counts.values()):
             raise ApiError(400, "The files are empty, so nothing can be cited.")
         pid = prefix_id(prefix)
-        with self._slots:
-            run = _Run(self.client, build_system(prefix))
+        with self._slot():
+            run = _Run(self.client, build_system(prefix), deadline, is_cancelled)
             prefix_tokens = self._warm(run)
             sub_questions = self._plan(run, question, workers)
             results = self._work(run, question, sub_questions, line_counts)

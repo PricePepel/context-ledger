@@ -7,6 +7,8 @@ every cross-origin and every POST request, so a web page cannot drive it.
 """
 
 import json
+import select
+import socket
 import os
 import sys
 import threading
@@ -20,6 +22,8 @@ from .pool import LatentPool
 from .vllm_client import VllmClient
 
 MAX_BODY_BYTES = 64 * 1024
+# A whole request (headers and body) must arrive within this many seconds.
+RECEIVE_DEADLINE_S = 15.0
 DRAIN_LIMIT = 1024 * 1024
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
@@ -70,6 +74,38 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ plumbing
 
+    def setup(self):
+        super().setup()
+        # Review finding 2: the per-recv timeout alone let a client trickle one byte
+        # every few seconds forever. A watchdog closes any connection whose request
+        # (headers and body) has not fully arrived within RECEIVE_DEADLINE_S.
+        self._received = threading.Event()
+        self._watchdog = threading.Timer(RECEIVE_DEADLINE_S, self._expire)
+        self._watchdog.daemon = True
+        self._watchdog.start()
+
+    def _expire(self):
+        if not self._received.is_set():
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def finish(self):
+        self._watchdog.cancel()
+        try:
+            super().finish()
+        except OSError:  # the client already hung up; nothing left to flush to
+            pass
+
+    def _client_gone(self):
+        """True once the client has closed its side of the connection."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
+
     def log_message(self, format, *args):
         if not getattr(self.server, "quiet", False):
             super().log_message(format, *args)
@@ -117,6 +153,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(413, f"The request body exceeds {MAX_BODY_BYTES // 1024} KiB.")
         raw = self.rfile.read(length)
         self._body_read = True
+        self._received.set()
         if content_type != "application/json":
             raise ApiError(400, "Content-Type must be application/json.")
         try:
@@ -158,7 +195,8 @@ class Handler(BaseHTTPRequestHandler):
             if handler is None:
                 raise ApiError(405, "Method not allowed.")
             body = self._read_json() if method == "POST" else None
-            self.send_json(200, handler(body))
+            self._received.set()
+            self.send_json(200, handler(body, self._client_gone))
         except ApiError as error:
             self._drain()
             self.send_json(error.status, {"error": error.message})
@@ -204,11 +242,12 @@ class LatentServer(ThreadingHTTPServer):
         client = client or VllmClient(config.vllm_url, config.model, config.timeout)
         self.pool = LatentPool(config.root, client)
         self.registry = registry or MapperRegistry()
+        # Each handler gets the body and a callable that reports a departed client.
         self.routes = {
             "/latent/warm": {"POST": self.pool.warm},
             "/latent/read": {"POST": self.pool.read},
-            "/latent/mappers": {"GET": lambda _body: {"pairs": self.registry.pairs()}},
-            "/latent/transfer": {"POST": self.registry.transfer},
+            "/latent/mappers": {"GET": lambda _body, _gone: {"pairs": self.registry.pairs()}},
+            "/latent/transfer": {"POST": lambda body, _gone: self.registry.transfer(body)},
         }
         super().__init__(("127.0.0.1", config.port), Handler)
 
