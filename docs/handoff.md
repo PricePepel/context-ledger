@@ -100,3 +100,8 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - The 61 s backup video is unchanged and still accurate, because that decision is never shown in the room.
   - Node suite 81/81.
   - **Ruslan:** rehearse with the new pitch. Section 5 (horizontal) is now the core of the pitch, not an afterthought.
+- Status 22:40 UTC. **Pitch deck built** (10 slides, product only, Expedite-style black and white): https://claude.ai/artifact/8V31nrtNkBWLLBoouFFk1e
+  - It follows the wildcard pitch, and the speaker notes hold the script with timings.
+  - It is private until Ali shares it, so Ruslan can't open the link yet.
+  - Fonts: Geist for text, Instrument Serif for headings, standing in for Expedite's paid PP Editorial Old.
+  - `expedite.now` was added to the cloud environment's allowed hosts so its stylesheet could be read.
