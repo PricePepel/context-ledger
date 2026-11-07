@@ -181,3 +181,7 @@ The live demo seeded two-turn toy transcripts, so the savings meter showed a neg
 | Room flow | `driver.mjs demo` at 200 turns opens the room, both people confirm the first match, one rejects the first conflict, the state survives a reload, and the page logs no errors. |
 | Clean exit | The server is stopped and the temp database removed after `check` and `demo`. |
 | Regression | `node --test tests/*.test.mjs` passes. |
+
+### Results — B3, 2026-11-07
+
+All B3 evals pass on Linux (Node 22.23.4). `driver.mjs check` at the default 200 turns reports a saved share of 0.916 for mara and 0.898 for teo (estimates, chars/4), up from -1.078 and -0.563 on the old two-turn seed. `driver.mjs demo` at 200 turns opens a room with 9 proposals, agrees and rejects one each, keeps both after a reload, logs no page errors and leaves no server or temp database. `tests/demo-seed.test.mjs` adds 3 tests (threshold, toy scenario, determinism); the full node suite passes 67 of 67. Observed while checking screenshots: the generator pairs facts by kind, not meaning, so the demo's proposals do not read sensibly on stage. That is logged as card B9 rather than widening B3. Not independently reviewed yet: Tenki is pending its repo link.

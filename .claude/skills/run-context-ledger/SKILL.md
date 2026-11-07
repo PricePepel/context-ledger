@@ -15,7 +15,7 @@ npm ci
 
 ## Run (agent path)
 
-One command runs the whole two-person demo. It starts the server, imports a Claude Code and a Codex transcript, publishes both v2 graphs with links (matches, conflicts, answers) and opens the room in Chromium. Then mara and teo both confirm the match, teo rejects the conflict, the page reloads to prove the decisions were stored, and the server stops. It takes about 2.5 s.
+One command runs the whole two-person demo. It starts the server, imports a Claude Code and a Codex transcript (200 synthetic turns each, from the M0 benchmark generator), publishes both v2 graphs with links (matches, conflicts, answers) and opens the room in Chromium (9 proposals). Then mara and teo both confirm the first match, teo rejects the first conflict, the page reloads to prove the decisions were stored, and the server stops. It takes about 2 s. Add `--turns 2` for the hand-written toy scenario (3 proposals).
 
 ```bash
 node .claude/skills/run-context-ledger/driver.mjs demo --out /tmp/ledger-shots
@@ -23,7 +23,7 @@ node .claude/skills/run-context-ledger/driver.mjs demo --out /tmp/ledger-shots
 
 It prints JSON with the room URL, both graph IDs, the savings `meter`, the agreed proposals, `pageErrors` (non-empty sets exit code 1) and the screenshot paths:
 
-- `1-room-open.png`: the room with 3 proposals, nothing decided yet.
+- `1-room-open.png`: the room with its proposals, nothing decided yet.
 - `2-room-decided.png`: after the reload. The match shows `State: agreed`, the conflict `State: rejected`, and the "answers" proposal is still `proposed`.
 - `3-full-page.png`: the whole page.
 
@@ -34,6 +34,12 @@ node .claude/skills/run-context-ledger/driver.mjs demo --keep --port 4399 --out 
 # last line: "Server kept running at http://127.0.0.1:4399 (pid N). Stop it with: kill N"
 ```
 
+Check the demo's savings meter without a browser. It exits 1 if either party saves 85% or less:
+
+```bash
+node .claude/skills/run-context-ledger/driver.mjs check     # 200 turns: mara 0.916, teo 0.898 saved (estimates)
+```
+
 Seed a server that is already running, with no browser:
 
 ```bash
@@ -42,8 +48,11 @@ node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:43
 
 | command | what it does |
 | --- | --- |
-| `demo [--out DIR] [--port N] [--keep]` | Server, seed and browser room flow with screenshots. Uses a free port unless `--port` is given. |
-| `seed --url URL` | Imports, publishes and opens a room on a running server, then prints the IDs and the meter. |
+| `demo [--turns N] [--out DIR] [--port N] [--keep]` | Server, seed and browser room flow with screenshots. Uses a free port unless `--port` is given. |
+| `check [--turns N] [--min-saved 0.85]` | Server and seed, no browser. Prints both meters and fails below the threshold. `tests/demo-seed.test.mjs` runs it. |
+| `seed --url URL [--turns N]` | Imports, publishes and opens a room on a running server, then prints the IDs and both meters. |
+
+`--turns` defaults to 200, and `--seed` (default 42) picks the synthetic content.
 
 ## Run (human path)
 
@@ -57,7 +66,7 @@ Without `CONTEXT_LEDGER_DB`, data goes to `.context-ledger/ledger.sqlite`, which
 ## Test
 
 ```bash
-node --test tests/*.test.mjs   # 64 pass on Linux, including the benchmark tests
+node --test tests/*.test.mjs   # 67 pass on Linux, including the benchmark and demo-seed tests
 npm run bench                  # M0 benchmark; rewrites nothing unless --markdown is given
 ```
 
@@ -65,7 +74,9 @@ npm run bench                  # M0 benchmark; rewrites nothing unless --markdow
 
 - **Playwright's browser build is missing.** The repo pins Playwright 1.65.0, which wants `chromium_headless_shell-1254`, but the container ships build 1243 at `/opt/pw-browsers/chromium`. So `chromium.launch()` fails with "Executable doesn't exist". The driver catches that and relaunches with `executablePath` set to `CHROMIUM_PATH` or `/opt/pw-browsers/chromium`. Do not run `npx playwright install`.
 - **The context API wraps its reply.** `GET /api/graphs/:id/context` returns `{ "context": { text, meter, ... } }`, not the fields at top level.
-- **The meter is negative on tiny transcripts.** On the 2-turn demo transcripts the graph context is larger than the handoff (`savedShare` about -1.08). The M0 benchmark shows savings only from roughly 50 turns. Don't present the meter from a toy session as the product's saving.
+- **The meter is negative on tiny transcripts.** With `--turns 2` the graph context is larger than the handoff (`savedShare` -1.08 for mara). Savings show from about 50 turns, which is why the demo defaults to 200. Never present a toy session's meter.
+- **Proposals re-sort when their state changes.** Agreed and rejected items move, so `.first()` can point at a different proposal after a click. The driver pins each proposal by its sentence text.
+- **Generated pairings don't read sensibly.** At 200 turns the links pair facts by kind, not meaning (an offer about one component "matches" a goal about another). They are fine for measuring but weak to read on stage.
 - **Writes need Origin, and the Host must be loopback.** Every POST must send `origin: http://127.0.0.1:PORT`. A request with another `Host` gets 403 "Unrecognized local host." Room decisions also require a browser same-origin fetch, so `curl` cannot confirm or reject. Use the browser (the driver does).
 - **Seeding is idempotent.** Graphs, rooms and sessions are content-addressed, so a second `seed` against the same server returns the same IDs and the existing decisions.
 - **`--keep` leaves the temp database.** Only the non-keep path deletes its `ledger-run-*` directory under the OS temp dir.

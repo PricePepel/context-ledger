@@ -2,8 +2,11 @@
 // Agent driver for Context Ledger: start the real server, seed a two-party
 // negotiation through the HTTP API, and drive the browser room with screenshots.
 //
-//   node .claude/skills/run-context-ledger/driver.mjs demo [--out DIR] [--port N] [--keep]
-//   node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:PORT
+//   node .claude/skills/run-context-ledger/driver.mjs demo [--turns N] [--out DIR] [--port N] [--keep]
+//   node .claude/skills/run-context-ledger/driver.mjs check [--turns N] [--min-saved 0.85]
+//   node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:PORT [--turns N]
+//
+// --turns defaults to 200 per party (benchmark generator); --turns 2 is the toy scenario.
 //
 // Synthetic data only. Paths are relative to the repository root.
 import { spawn } from 'node:child_process';
@@ -89,15 +92,49 @@ async function api(base, method, path, body) {
   return JSON.parse(text);
 }
 
-/** Import both transcripts, publish both graphs with links, open a room. */
-async function seed(base) {
+const meterOf = async (base, graphId) => (await api(base, 'GET', `/api/graphs/${graphId}/context`)).context.meter;
+
+/** The two-turn hand-written scenario: quick to read, but too small to show a saving. */
+async function seedToy(base) {
   const teoSession = (await api(base, 'POST', '/api/import', transcripts.teo)).session.id;
   const teo = (await api(base, 'POST', '/api/graphs', teoPacket(teoSession))).graph;
   const maraSession = (await api(base, 'POST', '/api/import', transcripts.mara)).session.id;
   const mara = (await api(base, 'POST', '/api/graphs', maraPacket(maraSession, teo.id))).graph;
-  const room = (await api(base, 'POST', '/api/rooms', { graphIds: [mara.id, teo.id] })).room;
-  const { context } = await api(base, 'GET', `/api/graphs/${mara.id}/context`);
-  return { maraGraph: mara.id, teoGraph: teo.id, room: room.id, meter: context.meter, contextText: context.text };
+  return { mara: mara.id, teo: teo.id };
+}
+
+/**
+ * Demo-scale scenario from the M0 benchmark generator (bench/synth.mjs): synthetic
+ * sessions of `turns` turns per party, mostly work chatter with planted facts.
+ * Party mara (Claude Code) publishes first; teo (Codex) links to mara.
+ */
+async function seedScaled(base, turns, seedValue) {
+  const { generateParty, packetFor } = await import(new URL('../../../bench/synth.mjs', import.meta.url));
+  const parts = { a: generateParty('a', turns, seedValue), b: generateParty('b', turns, seedValue) };
+  const importOne = generated => api(base, 'POST', '/api/import', {
+    provider: generated.party.provider, source: generated.party.source, transcript: generated.base,
+  });
+  const maraSession = (await importOne(parts.a)).session.id;
+  const mara = (await api(base, 'POST', '/api/graphs', packetFor(parts.a, maraSession))).graph;
+  const teoSession = (await importOne(parts.b)).session.id;
+  const teo = (await api(base, 'POST', '/api/graphs',
+    packetFor(parts.b, teoSession, { linkTo: mara.id, otherFacts: parts.a.facts }))).graph;
+  return { mara: mara.id, teo: teo.id };
+}
+
+/** Import both transcripts, publish both graphs with links, open a room. */
+async function seed(base, turns = Number(flag('--turns', 200)), seedValue = Number(flag('--seed', 42))) {
+  if (!Number.isInteger(turns) || turns < 2) throw new Error('--turns must be an integer of at least 2');
+  const graphs = turns === 2 ? await seedToy(base) : await seedScaled(base, turns, seedValue);
+  const room = (await api(base, 'POST', '/api/rooms', { graphIds: [graphs.mara, graphs.teo] })).room;
+  return {
+    turns,
+    maraGraph: graphs.mara,
+    teoGraph: graphs.teo,
+    room: room.id,
+    proposals: room.proposals?.length,
+    meter: { mara: await meterOf(base, graphs.mara), teo: await meterOf(base, graphs.teo) },
+  };
 }
 
 const freePort = () => new Promise((done, fail) => {
@@ -165,28 +202,38 @@ async function demo() {
     await page.getByLabel('First graph ID').fill(seeded.maraGraph);
     await page.getByLabel('Second graph ID').fill(seeded.teoGraph);
     await page.getByRole('button', { name: 'Open room' }).click();
-    await page.locator('#room-status').filter({ hasText: '3 proposals' }).waitFor();
+    await page.locator('#room-status').filter({ hasText: /\d+ proposals?/u }).waitFor();
     await page.locator('#room').screenshot({ path: join(out, '1-room-open.png') });
 
-    // Both people confirm the match; one rejects the conflict.
-    const match = page.locator('#room-proposals > li', { hasText: 'matches' });
+    // Proposals re-sort as their state changes, so pin each one by its own sentence.
+    const proposal = async kind => {
+      const first = page.locator('#room-proposals > li', { hasText: kind }).first();
+      const sentence = (await first.innerText()).split('\n')[0].trim();
+      return page.locator('#room-proposals > li', { hasText: sentence });
+    };
+
+    // Both people confirm the first match; one rejects the first conflict.
+    const match = await proposal('matches');
     await match.getByRole('button', { name: 'Confirm as mara' }).click();
     await match.filter({ hasText: 'mara: confirm' }).waitFor();
     await match.getByRole('button', { name: 'Confirm as teo' }).click();
     await match.filter({ hasText: 'State: agreed' }).waitFor();
-    const conflict = page.locator('#room-proposals > li', { hasText: 'conflicts with' });
+    const conflict = await proposal('conflicts with');
     await conflict.getByRole('button', { name: 'Reject as teo' }).click();
     await conflict.filter({ hasText: 'State: rejected' }).waitFor();
 
     // Reload proves the decisions were stored, not just rendered.
     await page.reload();
-    await page.locator('#room-proposals > li', { hasText: 'matches' }).filter({ hasText: 'State: agreed' }).waitFor();
+    await match.filter({ hasText: 'State: agreed' }).waitFor();
+    await conflict.filter({ hasText: 'State: rejected' }).waitFor();
     await page.locator('#room').screenshot({ path: join(out, '2-room-decided.png') });
     await page.screenshot({ path: join(out, '3-full-page.png'), fullPage: true });
 
     const agreed = await page.locator('#room-agreed').innerText();
     console.log(JSON.stringify({
       url: `${server.base}/#room=${seeded.room}`,
+      turns: seeded.turns,
+      proposals: seeded.proposals,
       maraGraph: seeded.maraGraph,
       teoGraph: seeded.teoGraph,
       room: seeded.room,
@@ -209,14 +256,31 @@ async function demo() {
   }
 }
 
+/** Server and seed only, no browser: prints the meters and exits 1 below --min-saved. */
+async function check() {
+  const server = await startServer(await freePort());
+  try {
+    const seeded = await seed(server.base);
+    const minSaved = Number(flag('--min-saved', 0.85));
+    const saved = { mara: seeded.meter.mara.savedShare, teo: seeded.meter.teo.savedShare };
+    const ok = Object.values(saved).every(share => share > minSaved);
+    console.log(JSON.stringify({ ok, minSaved, turns: seeded.turns, proposals: seeded.proposals, savedShare: saved, meter: seeded.meter }, null, 2));
+    if (!ok) process.exitCode = 1;
+  } finally {
+    await stopServer(server);
+  }
+}
+
 if (command === 'demo') {
   await demo();
+} else if (command === 'check') {
+  await check();
 } else if (command === 'seed') {
   const url = flag('--url');
   if (!url) throw new Error('seed needs --url http://127.0.0.1:PORT');
-  const { contextText, ...summary } = await seed(url.replace(/\/$/u, ''));
+  const summary = await seed(url.replace(/\/$/u, ''));
   console.log(JSON.stringify({ ...summary, open: `${url.replace(/\/$/u, '')}/#room=${summary.room}` }, null, 2));
 } else {
-  console.error('usage: driver.mjs demo [--out DIR] [--port N] [--keep] | seed --url http://127.0.0.1:PORT');
+  console.error('usage: driver.mjs demo [--turns N] [--out DIR] [--port N] [--keep] | check [--turns N] [--min-saved 0.85] | seed --url http://127.0.0.1:PORT [--turns N]');
   process.exitCode = 2;
 }
