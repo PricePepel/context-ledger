@@ -67,6 +67,28 @@
           <ol id="reader-messages" class="messages" aria-label="Messages"></ol>
         </section>
       </div>
+
+      <section class="room" id="room" aria-labelledby="room-heading">
+        <p class="eyebrow">Negotiation room</p>
+        <h2 id="room-heading" tabindex="-1">Two agents, two people</h2>
+        <p class="subtitle">Each agent publishes what its person wants, offers and cannot do. The people confirm what they agree to.</p>
+        <form id="room-form" class="room-form">
+          <label for="room-graph-a">First graph ID</label>
+          <input id="room-graph-a" name="graphA" required pattern="[a-f0-9]{64}" autocomplete="off" spellcheck="false">
+          <label for="room-graph-b">Second graph ID</label>
+          <input id="room-graph-b" name="graphB" required pattern="[a-f0-9]{64}" autocomplete="off" spellcheck="false">
+          <button class="primary" type="submit">Open room</button>
+        </form>
+        <p id="room-status" class="status" role="status"></p>
+        <div id="room-view" class="room-view" hidden>
+          <div id="room-parties" class="room-parties"></div>
+          <h3>Proposals</h3>
+          <p class="room-note">Agents propose these links. Only the two people decide: a proposal is agreed when both confirm.</p>
+          <ol id="room-proposals" class="proposals" aria-label="Proposals"></ol>
+          <h3>Agreed</h3>
+          <ul id="room-agreed" class="agreed" aria-label="Agreed proposals"></ul>
+        </div>
+      </section>
     </main>
     <footer>Imported transcripts retain their original line references.</footer>
   </div>

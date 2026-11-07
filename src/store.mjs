@@ -3,7 +3,11 @@ import { mkdirSync } from 'node:fs';
 import { basename, dirname, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
+import { InputError } from './errors.mjs';
 import { canonicalPacket, validateGraph } from './graph.mjs';
+import { mountRooms } from './rooms.mjs';
+
+export { InputError };
 
 const summaryColumns = 'id, provider, source, title, message_count AS messageCount';
 const codexContextKinds = new Set([
@@ -13,7 +17,6 @@ const codexContextKinds = new Set([
   'skills.selected_skill_instructions',
 ]);
 
-export class InputError extends Error {}
 
 export function isProvider(value) {
   return value === 'claude' || value === 'codex';
@@ -198,6 +201,8 @@ export function openStore(path) {
     },
 
     getGraph: readGraph,
+
+    ...mountRooms(database, readGraph),
 
     close() {
       database.close();

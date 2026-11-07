@@ -161,3 +161,123 @@ searchForm.addEventListener('submit', (event) => {
 });
 filterAgent.addEventListener('change', search);
 void search();
+
+const roomForm = document.querySelector('#room-form');
+const roomGraphA = document.querySelector('#room-graph-a');
+const roomGraphB = document.querySelector('#room-graph-b');
+const roomStatus = document.querySelector('#room-status');
+const roomView = document.querySelector('#room-view');
+const roomParties = document.querySelector('#room-parties');
+const roomProposals = document.querySelector('#room-proposals');
+const roomAgreed = document.querySelector('#room-agreed');
+const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
+let currentRoomId;
+
+function nodeSummary(endpoint) {
+  return `${endpoint.party} · ${endpoint.kind} “${endpoint.label}”`;
+}
+
+function partyColumn(party) {
+  const column = document.createElement('section');
+  column.className = 'party';
+  column.setAttribute('aria-label', `Party ${party.party}`);
+  column.append(textElement('h3', party.party), textElement('p', `Graph ${party.graphId.slice(0, 12)}…`, 'result-meta'));
+  const list = document.createElement('ul');
+  list.className = 'party-nodes';
+  renderRows(list, party.nodes, node => {
+    const item = document.createElement('li');
+    const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    item.append(textElement('span', detail, 'node-kind'), textElement('span', node.label, 'node-label'));
+    return item;
+  });
+  column.append(list);
+  return column;
+}
+
+function proposalRow(proposal, parties) {
+  const item = document.createElement('li');
+  item.dataset.proposal = proposal.id;
+  item.dataset.state = proposal.state;
+  const sentence = `${nodeSummary(proposal.from)} ${linkVerbs[proposal.type]} ${nodeSummary(proposal.to)}`;
+  item.append(
+    textElement('p', sentence, 'proposal-text'),
+    textElement('p', `State: ${proposal.state}`, 'proposal-state'),
+  );
+  const actions = document.createElement('div');
+  actions.className = 'proposal-actions';
+  for (const party of parties) {
+    const group = document.createElement('div');
+    group.className = 'choice-group';
+    const made = proposal.choices[party];
+    group.append(textElement('span', `${party}: ${made ?? 'undecided'}`, 'choice-made'));
+    for (const choice of ['confirm', 'reject']) {
+      const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(made === choice));
+      button.addEventListener('click', () => decide(proposal.id, party, choice));
+      group.append(button);
+    }
+    actions.append(group);
+  }
+  item.append(actions);
+  return item;
+}
+
+function renderRoom(room) {
+  currentRoomId = room.id;
+  const parties = room.parties.map(party => party.party);
+  renderRows(roomParties, room.parties, partyColumn);
+  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
+  const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
+  renderRows(roomAgreed, agreed, proposal => textElement('li',
+    `${nodeSummary(proposal.from)} ${linkVerbs[proposal.type]} ${nodeSummary(proposal.to)}`));
+  if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));
+  if (!room.proposals.length) roomProposals.append(textElement('li', 'These graphs have no links to each other yet.', 'room-note'));
+  roomView.hidden = false;
+  roomStatus.textContent = `Room ${room.id.slice(0, 12)}… · ${room.proposals.length} ${room.proposals.length === 1 ? 'proposal' : 'proposals'}`;
+}
+
+async function loadRoom(id) {
+  roomStatus.textContent = 'Opening room…';
+  try {
+    const { room } = await request(`/api/rooms/${encodeURIComponent(id)}`);
+    renderRoom(room);
+  } catch (error) {
+    roomView.hidden = true;
+    roomStatus.textContent = `Unable to open room. ${error.message}`;
+  }
+}
+
+async function decide(proposalId, party, choice) {
+  try {
+    const { room } = await request(`/api/rooms/${currentRoomId}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposalId, party, choice }),
+    });
+    renderRoom(room);
+    roomStatus.textContent = `Recorded ${party}: ${choice}.`;
+  } catch (error) {
+    roomStatus.textContent = `Decision failed. ${error.message}`;
+  }
+}
+
+roomForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  roomStatus.textContent = 'Opening room…';
+  try {
+    const { room } = await request('/api/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graphIds: [roomGraphA.value.trim(), roomGraphB.value.trim()] }),
+    });
+    history.replaceState(null, '', `#room=${room.id}`);
+    renderRoom(room);
+  } catch (error) {
+    roomView.hidden = true;
+    roomStatus.textContent = `Unable to open room. ${error.message}`;
+  }
+});
+
+const hashRoom = location.hash.match(/^#room=([a-f0-9]{64})$/u)?.[1];
+if (hashRoom) void loadRoom(hashRoom);

@@ -196,3 +196,29 @@ footer { padding-block: 1rem 1.5rem; color: var(--muted); }
   .catalog { padding-right: 0; }
   .reader { border-top: 1px solid var(--rule); border-left: 0; }
 }
+
+.room { padding-block: 2rem 3rem; border-top: 1px solid var(--ink); }
+.room h2 { margin-top: .45rem; font-family: var(--serif); font-size: clamp(1.6rem, 3vw, 2.2rem); }
+.room h3 { margin: 1.5rem 0 .5rem; font-family: var(--serif); font-size: 1.2rem; }
+.room .subtitle { margin-top: .35rem; max-width: 60ch; }
+.room-form { display: grid; gap: .3rem; max-width: 40rem; margin-top: 1.25rem; }
+.room-form input { min-width: 0; padding: .5rem .6rem; border: 1px solid var(--ink); background: var(--white); font-family: var(--mono); font-size: .85rem; }
+.room-form .primary { justify-self: start; margin-top: .45rem; }
+.room-parties { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); gap: 1.5rem; margin-top: 1.25rem; }
+.party { min-width: 0; padding: 1rem; border: 1px solid var(--rule); background: var(--white); }
+.party h3 { margin: 0; }
+.party-nodes, .proposals, .agreed { list-style: none; margin: 0; padding: 0; }
+.party-nodes li { display: grid; gap: .1rem; padding-block: .5rem; border-top: 1px solid var(--rule); }
+.node-kind { color: var(--accent-dark); font: bold .75rem var(--mono); text-transform: uppercase; }
+.node-label, .proposal-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+.room-note { color: var(--muted); font-size: .9rem; }
+.proposals li { padding-block: .85rem; border-top: 1px solid var(--rule); }
+.proposals li[data-state="agreed"] { padding-left: .75rem; border-left: 4px solid #2f6b46; }
+.proposals li[data-state="rejected"] { padding-left: .75rem; border-left: 4px solid var(--accent); }
+.proposal-state { margin-top: .2rem; color: var(--muted); font-size: .9rem; }
+.proposal-actions { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-top: .5rem; }
+.choice-group { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.choice-made { min-width: 8rem; font-family: var(--mono); font-size: .85rem; }
+.choice-button { padding: .3rem .7rem; border: 1px solid var(--ink); background: var(--white); color: var(--ink); cursor: pointer; }
+.choice-button[aria-pressed="true"] { background: var(--ink); color: var(--white); }
+.agreed li { padding-block: .4rem; border-top: 1px solid var(--rule); overflow-wrap: anywhere; }

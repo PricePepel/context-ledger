@@ -110,6 +110,30 @@ const server = createServer(async (request, response) => {
       if (context) return json(response, 200, { context });
     }
 
+    if (method === 'POST' && url.pathname === '/api/rooms') {
+      const input = await readJson(request, origin, 'Opening a room');
+      return json(response, 200, { room: store.openRoom(input) });
+    }
+
+    const roomId = url.pathname.match(/^\/api\/rooms\/([a-f0-9]{64})$/u)?.[1];
+    if (method === 'GET' && roomId) {
+      const room = store.getRoom(roomId);
+      if (room) return json(response, 200, { room });
+    }
+
+    const decisionRoomId = url.pathname.match(/^\/api\/rooms\/([a-f0-9]{64})\/decisions$/u)?.[1];
+    if (method === 'POST' && decisionRoomId) {
+      // People confirm proposals in the browser. Browsers set Sec-Fetch-Site and page
+      // scripts cannot forge it; a local process can, so this keeps honest agent
+      // clients (the CLI and MCP adapter) out rather than proving who clicked.
+      if (request.headers['sec-fetch-site'] !== 'same-origin') {
+        throw new HttpError(403, 'Proposals are confirmed by people in the browser.');
+      }
+      const input = await readJson(request, origin, 'A room decision');
+      const room = store.decide(decisionRoomId, input);
+      if (room) return json(response, 200, { room });
+    }
+
     throw new HttpError(404, 'Not found.');
   } catch (error) {
     if (response.destroyed) return;
