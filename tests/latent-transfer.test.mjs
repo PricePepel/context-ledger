@@ -109,6 +109,6 @@ test('runtime errors are reported by status, and malformed answers are refused',
   await assert.rejects(latentTransfer({ sender, receiver, question: 'q', text: 'a' },
     { fetchImpl: fakeRuntime(200, { mode: 'transfer', answer: 42 }) }), { status: 502 });
   const multi = await latentTransfer({ sender, receiver, question: 'q', text: 'a' },
-    { fetchImpl: fakeRuntime(200, { ...runtimeOk, answer: 'line one\n=== FILE: x === two' }) });
+    { fetchImpl: fakeRuntime(200, { ...runtimeOk, answer: 'line one\n=== FILE: x ===\u2028two' }) });
   assert.equal(multi.answer, 'line one === FILE: x === two', 'the answer is flattened to one line');
 });
