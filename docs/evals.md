@@ -105,3 +105,22 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 - F3 MCP adapter (964f70d). The builder's debug pass fixed a nesting crash and a Windows test hang. The integration test drives context_for, room_open and room_read against the real server. The review found nothing above low. Fixed in 0cc4e1d: U+2028/9 in ledger errors, distinct timeout and redirect messages, malformed notifications dropped, and the npm script removed.
 - F4 negotiation room (d5e5371). The debug pass found that a party named `constructor` lost its choice in the response; fixed with Maps in 83e3f2a, which also added a phone-width check. The review found one medium issue: the other party's labels could print a fake "State: agreed" with newlines and bidi controls. V2 labels now refuse control, separator and bidi characters, and the UI isolates labels in `<bdi>`. Low fixes in 1fbb3c5: focus returns after a decision, buttons are disabled while a decision is in flight, and a failed open clears the old room. Room journeys were sharing graphs across parallel and repeated runs, so each test now publishes its own.
 - Not done here: Linux CI for this branch (now configured to run every node test file), a live two-model MCP smoke test, and Ali's M0 benchmark.
+
+## Cycle 5 — M0 benchmark
+
+Card B1. `npm run bench` (`node bench/m0.mjs`) measures the cycle 4 graph context against the Markdown transcript handoff, end to end through the real HTTP API. All inputs are synthetic and generated from a seed; the benchmark builds the graph packets itself, so it measures the ledger's storage and rendering, not the quality of LLM extraction.
+
+Synthetic data: for each size (number of transcript lines per party, default 10, 50, 200 and 1000), a seeded PRNG (mulberry32, no `Math.random`) writes a two-party negotiation. Party A (`mara`) is a Claude Code JSONL transcript and party B (`teo`) is a Codex rollout. Most turns are filler work chatter, with a few non-message records that the importer skips. Planted facts (goals, constraints, offers, decisions, actions, questions addressed to the other party) sit at known line numbers, about sqrt(size) + 4 per party.
+
+| Eval | Expected |
+| --- | --- |
+| Harness | The benchmark starts `src/server.mjs` as a child process on a free loopback port with a fresh temp database under the OS temp directory, sends the correct Origin, and stops the server and deletes the database at the end, also on failure. |
+| Flow | Per size: import both transcripts, publish party A's v2 graph, publish party B's graph with `matches`, `conflicts` and `answers` links to A, open a room. Every request succeeds. |
+| Size | Characters and estimated tokens (ceil(chars/4), labelled as estimates) for the Markdown handoff and the graph context, taken from the API meter. The primary figure is the character ratio. The saved share grows with transcript size. |
+| Fact recall | Every planted fact's label and cited line appear in the graph context and in the handoff: recall 1.0 on both. This guards against compression dropping a planted fact; it is not a quality claim. |
+| Cache-prefix stability | After K appended turns (re-imported as a new session, because session IDs hash the transcript) and a revised graph with one more action, report the longest common prefix of old and new output as a share of the new output, for the graph context and for the handoff. |
+| Order invariance | A shuffled copy of each packet (nodes, edges, links, evidence) returns the same graph ID and byte-identical context. |
+| Latency | p50 and p95 over `--reps` for publish, context and room open, with Node version and platform recorded. Timings are excluded from determinism checks. |
+| Cost illustration | Estimated tokens times list input price for named models, with source and date, labelled as an illustration; unverified prices are marked. |
+| Determinism | Two runs with the same seed produce identical JSON apart from timings, date, commit and machine fields. |
+| Regression | `node --test tests/*.test.mjs` still passes; no file under `src/`, `public/`, `schemas/` or `tests/e2e/` changes; no new dependency. |
