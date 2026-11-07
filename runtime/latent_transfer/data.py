@@ -11,7 +11,6 @@ import random
 import re
 import string
 
-import pyarrow.parquet as pq
 
 HUB = os.path.expanduser(os.environ.get("HF_HUB_CACHE", "~/.cache/huggingface/hub"))
 DOC_PREFIX = "<|im_start|>user\nRead this passage.\n\n"
@@ -46,6 +45,7 @@ def _parquet(dataset, pattern):
 
 def squad(split):
     """[{id, context, question, answers}] from SQuAD v1.1 (train or validation)."""
+    import pyarrow.parquet as pq  # only needed for training and evals
     rows = []
     for path in _parquet("rajpurkar--squad", f"plain_text/{split}-*.parquet"):
         table = pq.read_table(path).to_pylist()
@@ -55,8 +55,9 @@ def squad(split):
     return rows
 
 
-def wikitext(split, min_chars=400, max_chars=1600):
+def wikitext(split, min_chars=400, max_chars=1600, max_docs=150000):
     """Paragraph documents from WikiText-103 (headings dropped, short lines merged)."""
+    import pyarrow.parquet as pq
     docs, current = [], []
     for path in _parquet("Salesforce--wikitext", f"wikitext-103-raw-v1/{split}-*.parquet"):
         for line in pq.read_table(path).column("text").to_pylist():
@@ -64,6 +65,8 @@ def wikitext(split, min_chars=400, max_chars=1600):
             if not line or line.startswith("="):
                 if sum(len(part) for part in current) >= min_chars:
                     docs.append(" ".join(current)[:max_chars])
+                    if len(docs) >= max_docs:
+                        return docs
                 current = []
                 continue
             current.append(line)

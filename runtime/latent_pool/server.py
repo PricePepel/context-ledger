@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from . import ApiError
 from .mappers import MapperRegistry
+from .transfer import register_from_env
 from .pool import REQUEST_DEADLINE_SECONDS, SLOT_WAIT_SECONDS, LatentPool
 from .vllm_client import VllmClient
 
@@ -279,6 +280,8 @@ class LatentServer(ThreadingHTTPServer):
 def main():
     config = load_config()
     server = LatentServer(config)
+    if register_from_env(server.registry, config.root, os.environ):
+        print(f"mapper pairs: {server.registry.pairs()}", flush=True)
     print(
         f"latent pool on http://127.0.0.1:{server.server_port} "
         f"(root {config.root}, model {config.model}, vLLM {config.vllm_url})",

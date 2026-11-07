@@ -60,8 +60,11 @@ class TransferPair:
         """Mapper output in calibrated units (keys before RoPE)."""
         sender = sender or self.sender_cache(batch)
         embeds = self.receiver.get_input_embeddings()(batch.receiver_ids)
-        return self.mapper(embeds, batch.receiver_mask, sender.keys, sender.values,
-                           batch.sender_pos, batch.cross_allowed & batch.sender_mask.bool()[:, None, :])
+        # The mapper keeps fp32 weights and runs in bf16 like the frozen models, in
+        # training and at inference alike.
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=str(self.device).startswith("cuda")):
+            return self.mapper(embeds, batch.receiver_mask, sender.keys, sender.values,
+                               batch.sender_pos, batch.cross_allowed & batch.sender_mask.bool()[:, None, :])
 
     def receiver_from_mapper(self, batch):
         keys, values = self.mapper.scaled(*self.predict(batch))
