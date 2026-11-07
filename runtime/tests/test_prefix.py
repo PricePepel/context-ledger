@@ -99,7 +99,7 @@ class ResolveTest(unittest.TestCase):
     def test_resolve_returns_request_order(self):
         write(self.root, "b.js", "b\n")
         resolved = resolve_paths(self.root, ["b.js", "src/a.js"])
-        self.assertEqual([path for path, _ in resolved], ["b.js", "src/a.js"])
+        self.assertEqual([path for path, *_ in resolved], ["b.js", "src/a.js"])
 
 
 class RenderTest(unittest.TestCase):

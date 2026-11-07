@@ -35,8 +35,11 @@ class VllmClient:
         self.model = model
         self.timeout = timeout
 
-    def chat(self, system, user, max_tokens, schema=None, schema_name="output"):
+    def chat(self, system, user, max_tokens, schema=None, schema_name="output", timeout=None):
         """Send one chat completion at temperature 0 and return a ChatResult.
+
+        timeout, when given, shortens this call's deadline below self.timeout
+        (the pool passes what is left of the request deadline).
 
         Raises ApiError(503) when vLLM cannot be reached or is still loading,
         ApiError(413) when the prompt does not fit the model's context, and
@@ -65,7 +68,7 @@ class VllmClient:
         )
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout if timeout is None else min(self.timeout, timeout)) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
             detail = ""

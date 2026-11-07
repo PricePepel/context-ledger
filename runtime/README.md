@@ -57,7 +57,10 @@ Errors are `{"error": string}`:
 - 413: more than 32 paths, more than 512 KiB of files, a request body over 64 KiB, or a prefix too long for the model's context.
 - 501: no mapper for the pair.
 - 502: the model's reply was invalid twice, or vLLM failed.
-- 503: `Model server is not ready.`
+- 503: `Model server is not ready.`, or `The latent pool is busy. Try again shortly.` when all 4 pipeline slots stay taken for 2 s.
+- 504: `The latent read ran out of time.` Each request has 150 s, under the ledger's 180 s. The deadline is checked before every model call and caps each vLLM call's timeout.
+
+The request line, headers and body must arrive within 10 s in total. Paths naming secret files (`.env*`, `.git/`, keys) are refused, but keep `LATENT_ROOT` to a curated code directory anyway. The full rules are in the contract.
 
 ## How a read runs
 

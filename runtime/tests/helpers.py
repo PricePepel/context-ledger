@@ -70,6 +70,8 @@ class FakeVllm:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
+        # A deadline test hangs up before the fake answers; the broken pipe is expected.
+        self.server.handle_error = lambda request, client_address: None
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
@@ -130,7 +132,7 @@ def free_port():
 class Service:
     """The latent pool on port 0 against a vLLM URL, with a temp LATENT_ROOT."""
 
-    def __init__(self, vllm_url, root=None, files=None, registry=None, timeout=10.0):
+    def __init__(self, vllm_url, root=None, files=None, registry=None, timeout=10.0, **limits):
         self._tmp = None
         if root is None:
             self._tmp = tempfile.TemporaryDirectory()
@@ -138,7 +140,7 @@ class Service:
         self.root = os.path.realpath(root)
         for rel, content in (files or {}).items():
             write(self.root, rel, content)
-        config = Config(root=self.root, vllm_url=vllm_url, model=MODEL, port=0, timeout=timeout)
+        config = Config(root=self.root, vllm_url=vllm_url, model=MODEL, port=0, timeout=timeout, **limits)
         self.server = LatentServer(config, client=VllmClient(vllm_url, MODEL, timeout), registry=registry, quiet=True)
         self.port = self.server.server_port
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)

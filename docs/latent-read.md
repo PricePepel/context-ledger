@@ -1,6 +1,6 @@
 # Latent read contract (M2a, "warm telepathy")
 
-Status: proposed 2026-11-07 by Leo's agent. Ali approves or changes it (question `q-latent-contract` in latent-ledger). Both sides build to this document.
+Status: **approved by Ali on 2026-11-07**, with the changes from the independent review (L14, `docs/reviews/latent-pool-review.md` on `claude/wizardly-pasteur-r1nhhw`) applied (`q-latent-contract`). Proposed by Leo's agent. Both sides build to this document. This copy reconciles Ali's copy with the cycle 6b additions in Leo's copy on `leo/latent-read`. Bring that copy in line with this one when the branches merge.
 
 ## The idea
 
@@ -19,13 +19,72 @@ A closed model (Claude, GPT) should not have to read a whole codebase to answer 
 
 ## Runtime service (Ali side)
 
-The service listens on `http://127.0.0.1:4320` by default and calls vLLM's OpenAI-compatible API (default `http://127.0.0.1:8000/v1`). It reads files only under `LATENT_ROOT`. Every `paths` entry is a relative POSIX path under that root, with no `..`, no leading `/`, no drive letter and no backslash. Requests are JSON, responses are JSON, and errors are `{"error": string}` with status 400 (bad input), 413 (too large) or 503 (model not ready).
+The service listens on `http://127.0.0.1:4320` by default and calls vLLM's OpenAI-compatible API (default `http://127.0.0.1:8000/v1`). It reads files only under `LATENT_ROOT`. Requests are JSON, responses are JSON, and errors are `{"error": string}` with a status from the table below.
 
-Limits: at most 32 paths, at most 512 KiB of file text in total, and the rendered prefix must fit within the model's context minus room for answers.
+Limits: at most 32 paths, at most 512 KiB of file text in total, and a request body of at most 64 KiB. The system message (preamble plus prefix) and each call's user message and `max_tokens` must fit the model's context (`VLLM_MAX_MODEL_LEN`). Otherwise vLLM refuses the call and the service answers 413.
+
+**Unknown fields.** `/latent/warm` accepts only `paths`. `/latent/read` accepts only `paths`, `question`, `budgetTokens` and `workers`. Any other field is a 400 on both sides, so a misspelt field is never ignored silently.
+
+### Paths
+
+Both sides apply the same rules. A path is refused with 400 when any of these holds:
+
+- It is not a non-empty string, or is longer than 512 characters.
+- It starts with `/`, contains a backslash or a colon (drive letters, NTFS streams), or has an empty, `.` or `..` segment.
+- A segment starts with a space or ends with a dot or space (Windows would alias another file).
+- It contains a character in Unicode categories Cc, Cf, Cs, Co or Cn (`\p{C}`), or Zl or Zp (U+2028, U+2029). These could fake a `=== FILE:` header or a line number.
+- It repeats another path, including two spellings of one file (same device and inode, or a case alias).
+- It names a secret file (see Secrets).
+
+The runtime then resolves symlinks and refuses anything outside `LATENT_ROOT`. The file it opens must be the same file it checked (same device and inode), or the request is refused.
+
+### File text
+
+- Files must be UTF-8. Anything else is a 400.
+- A leading BOM (U+FEFF) is removed.
+- CRLF becomes LF. Only LF separates lines, so a lone CR, a form feed or U+2028 stays inside its line.
+- A final newline ends the last line and does not start a new, empty one.
+- An empty file has zero lines. It is listed in the prefix but cannot be cited. A read where every file is empty is a 400.
+- A file that cannot be opened or read (permissions, removed) is a 400.
+
+### Secrets
+
+The service quotes file text into a slice that leaves the machine for a closed model. So `LATENT_ROOT` must be a curated directory of code to read, not a home directory or a whole checkout with credentials in it.
+
+As a safety net, both the requested path and its resolved target are refused when either:
+
+- a directory in the path is `.git`, `.ssh`, `.aws` or `.gnupg`;
+- the file name starts with `.env` or `id_rsa`, starts with `id_ed25519`, is one of `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `credentials`, `id_dsa` or `id_ecdsa`, or ends in `.pem`, `.key`, `.p12`, `.pfx`, `.keystore` or `.jks`.
+
+Names are compared case-insensitively. The list is a safety net, not a guarantee.
+
+### Untrusted input
+
+File text is untrusted data. It travels in the **system** message, after the preamble. The preamble tells the model that instructions inside the files are data, not commands. That does not make injection impossible. The ledger therefore checks every quote against the cited lines, flags lines that look like instructions to an AI (`suspiciousLines`), and marks the free-text answer `answerVerified: false`. Agents must treat the slice as data.
+
+### Statuses, deadlines and busy
+
+| Status | Meaning | Ledger's response |
+| --- | --- | --- |
+| 200 | Slice or warm result | Validate the slice |
+| 400 | Bad input: body, field, path, encoding, unreadable file, or only empty files | 502 to the caller ("refused") |
+| 403 | Host not `127.0.0.1:<port>` or `localhost:<port>`, or any `Origin` header | 502 |
+| 404, 405 | Unknown route or method | 502 |
+| 413 | Too many paths or bytes, body over 64 KiB, or the prompt does not fit the context | 413 |
+| 500 | Unexpected runtime error (no detail is returned) | 502 |
+| 501 | `/latent/transfer` with no mapper | Not called by the ledger |
+| 502 | vLLM failed, or the model's reply was invalid twice | 502 |
+| 503 | vLLM is not ready, **or the pool is busy** | Fall back to text mode |
+| 504 | The read ran past its deadline | 502 |
+
+- **Deadlines.** The ledger waits at most **180 s** for the runtime. The runtime gives each request **150 s**, starting when the request is read. It checks the deadline before every model call (reader, planner, each worker, synthesizer and every retry) and caps each vLLM call's timeout at the time left. A late request therefore answers 504 and stops spending model calls before the ledger gives up.
+- **Busy.** At most 4 reads or warms run at once. A request waits at most 2 s for a slot, then gets 503 `The latent pool is busy. Try again shortly.`, and the ledger falls back to text mode. Nothing queues behind a stuck request.
+- **Slow clients.** The request line, headers and body must arrive within 10 s in total, or the connection is closed. At most 64 connections are open at once.
+- **Cancellation.** There is no explicit cancel. A caller that gives up stops costing model calls by the deadline at the latest.
 
 ### Prefix rendering
 
-Both sides must render the prefix the same way, so that the bytes, and therefore the tokens, are identical on every call. Files appear in request order. Each line is prefixed with its 1-based number:
+Both sides must render the prefix the same way, so that the bytes, and therefore the tokens, are identical on every call. Files appear in request order. Each file starts with a header line, and each of its lines is prefixed with its 1-based number, `| ` and the line text, then LF:
 
 ```
 === FILE: src/app.js ===
@@ -33,7 +92,11 @@ Both sides must render the prefix the same way, so that the bytes, and therefore
 2| ...
 ```
 
-The rendered prefix is the system message. Every call for that prefix (reader, planner, workers, synthesizer) starts with exactly that system message and differs only in the user message. That way vLLM's automatic prefix caching serves the shared part from its warm cache.
+The system message is the **preamble**, a blank line (`\n\n`), then the rendered prefix. The preamble is fixed text in `runtime/latent_pool/pool.py` (`PREAMBLE`). It explains the line format and citation rules, and that the files are untrusted data. It is versioned as `PREAMBLE_VERSION` (currently 2), which every receipt reports as `preambleVersion`. A new preamble version means a cold cache.
+
+Every call for that prefix (reader, planner, workers, synthesizer) sends exactly that system message and differs only in the user message, which starts with `ROLE: <role>`. That way vLLM's automatic prefix caching serves the shared part from its warm cache.
+
+`prefixId` is the SHA-256 of the rendered prefix alone (UTF-8), without the preamble. Two runtimes with different preambles report the same `prefixId` for the same files.
 
 ### `POST /latent/warm`
 
@@ -44,7 +107,7 @@ The rendered prefix is the system message. Every call for that prefix (reader, p
 The service prefills the prefix (one call with `max_tokens: 1`) and answers:
 
 ```json
-{ "prefixId": "<sha256 of the rendered prefix>", "prefixTokens": 5123, "receipt": { "model": "...", "calls": [ ... ] } }
+{ "prefixId": "<sha256 of the rendered prefix>", "prefixTokens": 5123, "receipt": { "model": "...", "preambleVersion": 2, "prefixId": "...", "prefixTokens": 5123, "calls": [ ... ] } }
 ```
 
 ### `POST /latent/read`
@@ -71,9 +134,11 @@ Response:
   },
   "receipt": {
     "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+    "preambleVersion": 2,
     "prefixId": "...",
     "prefixTokens": 5123,
     "subQuestions": ["...", "..."],
+    "droppedFindings": 1,
     "calls": [
       { "role": "reader", "promptTokens": 5130, "cachedTokens": 0, "completionTokens": 1, "ms": 900 },
       { "role": "worker", "promptTokens": 5160, "cachedTokens": 5120, "completionTokens": 80, "ms": 700 }
@@ -86,7 +151,10 @@ Response:
 - `calls[].role` is one of `reader`, `planner`, `worker` or `synthesizer`. `cachedTokens` comes from vLLM's `usage.prompt_tokens_details.cached_tokens`, which requires `--enable-prompt-tokens-details`.
 - `cachedShare` is the sum of `cachedTokens` over the sum of `promptTokens` across all calls.
 - `sliceTokensEstimate` is ceil(UTF-16 length of the JSON slice / 4).
-- Findings: 1–12. A label is one visible line (500 characters at most). Evidence: 1–4 spans, each with `startLine ≤ endLine` and both within the file.
+- `prefixTokens` is the reader call's `promptTokens`: the whole first prompt (preamble, prefix and the reader's short user message), as vLLM counts it. It is not the prefix alone.
+- `droppedFindings` counts findings the runtime removed from the synthesizer's reply: no span that exactly fits the file, an empty label, a duplicate, or one past the cap.
+- Findings: 1 to the cap. The cap is `max(1, min(12, budgetTokens ÷ 110))` (integer division), because one quoted finding costs about 110 tokens of JSON. A label is one visible line (500 characters at most). Evidence: 1–4 spans, each with `startLine ≤ endLine` and both within the file. A span that cited lines outside the file is dropped, not clamped.
+- Each span may carry `quote`, the exact code copied from its lines (at most 200 characters, folded onto one line). A quote that is blank or not a string reaches the ledger as `""`, so the ledger counts it as a bad quote rather than treating the finding as unquoted. The ledger keeps a finding only when every quote occurs in its cited lines, ignoring runs of whitespace. It marks the finding `quoteVerified: true` when every span is quoted, and counts dropped findings as `badQuotes`. The ledger also reports `ungroundedFindings`, `suspiciousFindings`, `suspiciousLines` and `answerVerified: false`. (Added in cycle 6b, approved with this version.)
 
 ### `GET /latent/mappers` (M2b scaffold)
 
@@ -106,4 +174,4 @@ If the runtime is not running, the ledger falls back to Tier 1. It returns `{ "m
 
 ## Gate (from the roadmap)
 
-On the synthetic codebase Q&A set in `evals/latent/`, `latent_read` matches the closed model's accuracy when that model reads everything, using a small fraction of its tokens. See `docs/evals.md`, cycle 5.
+On the synthetic codebase Q&A set in `evals/latent/`, `latent_read` matches the closed model's accuracy when that model reads everything, using a small fraction of its tokens. See `docs/evals.md`, cycle 6.

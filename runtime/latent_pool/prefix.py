@@ -8,15 +8,41 @@ call so vLLM's automatic prefix caching can serve it from the warm cache.
 import hashlib
 import os
 import re
+import unicodedata
 
 from . import ApiError
 
 MAX_PATHS = 32
 MAX_TOTAL_BYTES = 512 * 1024
-MAX_PATH_CHARS = 1024
+MAX_PATH_CHARS = 512  # the ledger's limit; both sides must agree
+BOM = "\ufeff"
 
 _DRIVE = re.compile(r"^[A-Za-z]:")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# Unicode categories refused in paths: the ledger's \p{C} (Cc, Cf, Cs, Co, Cn)
+# plus line and paragraph separators (Zl, Zp). U+2028, U+0085 or U+202E in a
+# file name could otherwise fake a "=== FILE:" header or line numbers.
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+# Files that commonly hold secrets. Their text would be quoted into a slice that
+# leaves the machine for a closed model, so they are refused even under the root.
+_SECRET_DIRS = frozenset({".git", ".ssh", ".aws", ".gnupg"})
+_SECRET_NAMES = frozenset({".npmrc", ".pypirc", ".netrc", ".pgpass", "credentials", "id_rsa", "id_dsa",
+                           "id_ecdsa", "id_ed25519"})
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+
+
+def is_secret_path(segments):
+    """True when a path names a typical secret file (.env*, .git/, keys)."""
+    for segment in segments[:-1]:
+        if segment.lower() in _SECRET_DIRS:
+            return True
+    name = segments[-1].lower()
+    return (name.startswith(".env") or name in _SECRET_NAMES or name.startswith("id_rsa")
+            or name.startswith("id_ed25519") or name.endswith(_SECRET_SUFFIXES))
+
+
+def _has_bad_character(text):
+    return any(unicodedata.category(character) in _BAD_CATEGORIES for character in text)
 
 
 def check_path_syntax(path):
@@ -32,8 +58,8 @@ def check_path_syntax(path):
         raise ApiError(400, "Each path must be a non-empty string.")
     if len(path) > MAX_PATH_CHARS:
         raise ApiError(400, "A path is too long.")
-    if _CONTROL.search(path):
-        raise ApiError(400, "Paths must not contain control characters.")
+    if _has_bad_character(path):
+        raise ApiError(400, "Paths must not contain control, format or line separator characters.")
     if "\\" in path:
         raise ApiError(400, f"Paths must use forward slashes: {path!r}")
     if path.startswith("/"):
@@ -47,11 +73,13 @@ def check_path_syntax(path):
         if segment[-1] in ". " or segment[0] == " ":
             # Windows drops trailing dots and spaces, so "a.js." would read a.js
             raise ApiError(400, f"Path segments must not start with a space or end with a dot or space: {path!r}")
+    if is_secret_path(segments):
+        raise ApiError(400, f"Paths must not name secret files (.env, .git, keys): {path!r}")
     return segments
 
 
 def resolve_paths(root, paths):
-    """Check every path and return [(path, real_path)] in request order.
+    """Check every path and return [(path, real_path, (dev, ino) or None)] in request order.
 
     Raises ApiError(413) for too many paths and ApiError(400) for anything
     unsafe, missing or duplicated. Nothing is read here.
@@ -79,6 +107,9 @@ def resolve_paths(root, paths):
             inside = False
         if not inside:
             raise ApiError(400, f"Path leaves LATENT_ROOT: {path!r}")
+        # A symlink with an innocent name can still point at .env or a key file.
+        if is_secret_path(os.path.relpath(real, root_real).replace(os.sep, "/").split("/")):
+            raise ApiError(400, f"Paths must not name secret files (.env, .git, keys): {path!r}")
         if not os.path.isfile(real):
             raise ApiError(400, f"File not found: {path!r}")
         # Case-insensitive mounts (/mnt/c under WSL) give one file several spellings
@@ -90,7 +121,7 @@ def resolve_paths(root, paths):
         seen.add(key)
         if identity:
             seen.add(identity)
-        resolved.append((path, real))
+        resolved.append((path, real, identity))
     return resolved
 
 
@@ -112,15 +143,23 @@ def load_files(root, paths):
     """Resolve, size-check and read the files. Returns [(path, lines)]."""
     resolved = resolve_paths(root, paths)
     total = 0
-    for path, real in resolved:
+    for path, real, _ in resolved:
         total += os.path.getsize(real)
         if total > MAX_TOTAL_BYTES:
             raise ApiError(413, f"The files exceed {MAX_TOTAL_BYTES // 1024} KiB in total.")
     files = []
     total = 0
-    for path, real in resolved:
-        with open(real, "rb") as handle:
-            data = handle.read(MAX_TOTAL_BYTES - total + 1)
+    for path, real, identity in resolved:
+        try:
+            with open(real, "rb") as handle:
+                # The file checked above must be the file opened: if a component was
+                # swapped for a symlink in between, its identity changes.
+                info = os.fstat(handle.fileno())
+                if identity and (info.st_dev, info.st_ino) != identity:
+                    raise ApiError(400, f"File changed while it was being read: {path!r}")
+                data = handle.read(MAX_TOTAL_BYTES - total + 1)
+        except OSError:  # unreadable (permissions) or removed since the check
+            raise ApiError(400, f"File cannot be read: {path!r}") from None
         total += len(data)
         if total > MAX_TOTAL_BYTES:  # the file grew after the size check
             raise ApiError(413, f"The files exceed {MAX_TOTAL_BYTES // 1024} KiB in total.")
@@ -128,6 +167,10 @@ def load_files(root, paths):
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             raise ApiError(400, f"File is not UTF-8 text: {path!r}") from None
+        # The ledger's TextDecoder drops a leading BOM, so drop it here too, or the
+        # two sides would disagree about line 1.
+        if text.startswith(BOM):
+            text = text[1:]
         files.append((path, split_lines(text)))
     return files
 

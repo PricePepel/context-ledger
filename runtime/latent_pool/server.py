@@ -8,6 +8,7 @@ every cross-origin and every POST request, so a web page cannot drive it.
 
 import json
 import os
+import socket
 import sys
 import threading
 import traceback
@@ -16,10 +17,14 @@ from urllib.parse import urlsplit
 
 from . import ApiError
 from .mappers import MapperRegistry
-from .pool import LatentPool
+from .pool import REQUEST_DEADLINE_SECONDS, SLOT_WAIT_SECONDS, LatentPool
 from .vllm_client import VllmClient
 
 MAX_BODY_BYTES = 64 * 1024
+# Whole-request read deadline: the request line, headers and body must all arrive
+# within this many seconds. The per-receive timeout alone let a client trickle one
+# byte every few seconds and hold a connection (and one of the 64 slots) forever.
+READ_DEADLINE_SECONDS = 10.0
 DRAIN_LIMIT = 1024 * 1024
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
@@ -27,8 +32,11 @@ DEFAULT_PORT = 4320
 
 
 class Config:
-    def __init__(self, root, vllm_url=DEFAULT_VLLM_URL, model=DEFAULT_MODEL, port=DEFAULT_PORT, timeout=300.0):
+    def __init__(self, root, vllm_url=DEFAULT_VLLM_URL, model=DEFAULT_MODEL, port=DEFAULT_PORT, timeout=300.0,
+                 deadline=REQUEST_DEADLINE_SECONDS, slot_wait=SLOT_WAIT_SECONDS):
         self.root = root
+        self.deadline = deadline
+        self.slot_wait = slot_wait
         self.vllm_url = vllm_url
         self.model = model
         self.port = port
@@ -68,7 +76,30 @@ class Handler(BaseHTTPRequestHandler):
     # that trickles bytes is cut off quickly; the connection cap bounds the rest.
     timeout = 10
 
+    read_deadline = READ_DEADLINE_SECONDS
+
     # ------------------------------------------------------------ plumbing
+
+    def setup(self):
+        super().setup()
+        self._deadline_timer = threading.Timer(self.read_deadline, self._read_too_slow)
+        self._deadline_timer.daemon = True
+        self._deadline_timer.start()
+
+    def _read_too_slow(self):
+        """Cut a client that has not sent its whole request in time."""
+        try:
+            self.request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _request_read(self):
+        """The request is fully read: from here on, time belongs to the work."""
+        self._deadline_timer.cancel()
+
+    def finish(self):
+        self._deadline_timer.cancel()
+        super().finish()
 
     def log_message(self, format, *args):
         if not getattr(self.server, "quiet", False):
@@ -158,9 +189,11 @@ class Handler(BaseHTTPRequestHandler):
             if handler is None:
                 raise ApiError(405, "Method not allowed.")
             body = self._read_json() if method == "POST" else None
+            self._request_read()
             self.send_json(200, handler(body))
         except ApiError as error:
             self._drain()
+            self._request_read()
             self.send_json(error.status, {"error": error.message})
         except Exception:  # never leak internals to the caller
             traceback.print_exc(file=sys.stderr)
@@ -202,7 +235,8 @@ class LatentServer(ThreadingHTTPServer):
         self.quiet = quiet
         self._connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
         client = client or VllmClient(config.vllm_url, config.model, config.timeout)
-        self.pool = LatentPool(config.root, client)
+        self.pool = LatentPool(config.root, client, deadline_seconds=config.deadline,
+                               slot_wait_seconds=config.slot_wait)
         self.registry = registry or MapperRegistry()
         self.routes = {
             "/latent/warm": {"POST": self.pool.warm},
