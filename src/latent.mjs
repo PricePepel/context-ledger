@@ -148,7 +148,10 @@ function cleanStats(stats) {
   };
 }
 
-const numberPattern = /(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
+const maxQuoteChars = 200;
+const normalizeSpace = text => text.replace(/\s+/gu, ' ').trim();
+
+const numberPattern =/(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
 const identifierPattern = /\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b/gu;
 const hasToken = (text, token) => new RegExp(`(?<![\\w.])${token.replace(/\./gu, '\\.')}(?![\\w])`, 'u').test(text);
 
@@ -203,6 +206,7 @@ export function validateSlice(slice, files, question) {
   let rejectedFindings = 0;
   let ungroundedFindings = 0;
   let suspiciousFindings = 0;
+  let badQuotes = 0;
   for (const finding of slice.findings.slice(0, maxFindings)) {
     const evidence = Array.isArray(finding?.evidence) ? finding.evidence : [];
     const valid = goodLabel(finding?.label) && evidence.length >= 1 && evidence.length <= maxSpans
@@ -232,8 +236,29 @@ export function validateSlice(slice, files, question) {
       suspiciousFindings += 1;
       continue;
     }
+    // Verified quotes: a span may carry the exact code it relies on. It must occur in
+    // that span's lines, or the finding was built on text that is not there.
+    const quotes = evidence.map(span => span.quote);
+    const quoted = spans.map((span, index) => {
+      const quote = quotes[index];
+      if (quote === undefined) return { span, verified: false };
+      const lines = linesByPath.get(span.path).slice(span.startLine - 1, span.endLine).join('\n');
+      const ok = typeof quote === 'string' && quote.length <= maxQuoteChars && /\S/u.test(quote)
+        && normalizeSpace(lines).includes(normalizeSpace(quote));
+      return { span: ok ? { ...span, quote } : span, verified: ok, bad: !ok };
+    });
+    if (quoted.some(entry => entry.bad)) {
+      rejectedFindings += 1;
+      badQuotes += 1;
+      continue;
+    }
     unique.add(key);
-    findings.push({ id: `f${findings.length + 1}`, label: finding.label, evidence: spans });
+    findings.push({
+      id: `f${findings.length + 1}`,
+      label: finding.label,
+      evidence: quoted.map(entry => entry.span),
+      quoteVerified: quoted.every(entry => entry.verified),
+    });
   }
   rejectedFindings += Math.max(0, slice.findings.length - maxFindings);
   return {
@@ -248,6 +273,7 @@ export function validateSlice(slice, files, question) {
     rejectedFindings,
     ungroundedFindings,
     suspiciousFindings,
+    badQuotes,
     // Lines that look like instructions to an AI. When present, the answer may have
     // been steered by them even if every kept finding is clean.
     suspiciousLines: suspects.slice(0, 20),

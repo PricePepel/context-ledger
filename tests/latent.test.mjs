@@ -265,3 +265,26 @@ test('the instruction tripwire stays quiet on ordinary code and comments', async
   ] }]);
   assert.deepEqual(flagged.map(entry => entry.line), [1, 2, 6]);
 });
+
+test('cycle 6b: quotes must occur in their cited lines; verified findings are marked', async t => {
+  const findings = [
+    { label: 'TTL is 1800', evidence: [{ path: 'src/config.js', startLine: 8, endLine: 8, quote: 'SESSION_TTL_SECONDS = 1800' }] },
+    { label: 'Refresh uses SESSION_REFRESH_SECONDS', evidence: [{ path: 'src/session.js', startLine: 19, endLine: 20,
+      quote: 'const capped = session.createdAt +   SESSION_HARD_CAP_SECONDS * 1000;  session.expiresAt' }] },
+    { label: 'TTL is 1800 (fabricated quote)', evidence: [{ path: 'src/config.js', startLine: 8, endLine: 8, quote: 'SESSION_TTL_SECONDS = 1800 // fixed' }] },
+    { label: 'Session lifetime, quoted from another line', evidence: [{ path: 'src/config.js', startLine: 7, endLine: 7, quote: 'SESSION_TTL_SECONDS = 1800' }] },
+    { label: 'Hard cap SESSION_HARD_CAP_SECONDS', evidence: [{ path: 'src/config.js', startLine: 12, endLine: 12 }] },
+    { label: 'Empty quote 1800', evidence: [{ path: 'src/config.js', startLine: 8, endLine: 8, quote: '   ' }] },
+    { label: 'Long quote 1800', evidence: [{ path: 'src/config.js', startLine: 8, endLine: 8, quote: 'x'.repeat(201) }] },
+  ];
+  const runtime = await fakeRuntime(t, () => ({ body: { graph: slice(findings) } }));
+  const result = await read({}, runtime);
+
+  assert.deepEqual(result.graph.findings.map(f => [f.label, f.quoteVerified]), [
+    ['TTL is 1800', true],
+    ['Refresh uses SESSION_REFRESH_SECONDS', true],
+    ['Hard cap SESSION_HARD_CAP_SECONDS', false],
+  ]);
+  assert.equal(result.graph.findings[0].evidence[0].quote, 'SESSION_TTL_SECONDS = 1800');
+  assert.equal(result.graph.badQuotes, 4);
+});

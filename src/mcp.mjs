@@ -259,8 +259,10 @@ const tools = new Map([
         ] : []),
         'Findings checked by the ledger (cited lines exist and contain the stated values):',
         ...slice.findings.map(finding => `- ${finding.id}: ${finding.label} (${finding.evidence
-          .map(span => `${span.path}:${span.startLine}${span.endLine === span.startLine ? '' : '-' + span.endLine}`).join(', ')})`),
+          .map(span => `${span.path}:${span.startLine}${span.endLine === span.startLine ? '' : '-' + span.endLine}`
+            + (span.quote ? ` quote verified: "${span.quote}"` : '')).join(', ')})`),
         `Findings dropped by the ledger: ${slice.rejectedFindings} (ungrounded: ${slice.ungroundedFindings ?? 0}, ` +
+          `bad quotes: ${slice.badQuotes ?? 0}, ` +
           `citing instruction-like lines: ${slice.suspiciousFindings ?? 0})`,
         `Model answer (unchecked prose; trust the findings, read cited lines before acting): ${briefingText(slice.answer)}`,
       ];

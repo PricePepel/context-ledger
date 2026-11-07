@@ -87,6 +87,7 @@ Response:
 - `cachedShare` is the sum of `cachedTokens` over the sum of `promptTokens` across all calls.
 - `sliceTokensEstimate` is ceil(UTF-16 length of the JSON slice / 4).
 - Findings: 1–12. A label is one visible line (500 characters at most). Evidence: 1–4 spans, each with `startLine ≤ endLine` and both within the file.
+- Added in cycle 6b, proposed for Ali's approval: each span may carry `quote`, the exact code copied from its lines (at most 200 characters). The ledger keeps a finding only when every quote occurs in its cited lines, ignoring runs of whitespace. It marks the finding `quoteVerified: true` when every span is quoted, and counts dropped findings as `badQuotes`. The ledger also reports `ungroundedFindings`, `suspiciousFindings`, `suspiciousLines` and `answerVerified: false`. See the README section on latent reads.
 
 ### `GET /latent/mappers` (M2b scaffold)
 
