@@ -158,3 +158,21 @@ Live on Qwen2.5-7B-Instruct-AWQ with vLLM 0.33.0 (prefix caching on), on an RTX 
   - A cut-off synthesizer reply was retried with the identical request, giving a 502. The findings list is now sized to the budget, and the retry asks for a compact reply.
   - Ali's benchmark had claimed cycle 5, so this cycle was renumbered to 6.
 - Leo-side review: one high finding. The slice answer could print fake findings and a fake "dropped: 0" footer. Two medium: unbounded receipt pass-through, and the file size was checked only after reading. Several low: Windows `:` data streams, directories gave 500, duplicate findings, hidden label characters, runtime error text passed to agents. All were fixed with tests in 5adfbd9. Nothing could escape LATENT_ROOT: junctions, short names, reserved names and UNC paths were all refused.
+
+### Cycle 6 after the runtime review (2026-11-07, later)
+
+- **Runtime review (Ali side): one high finding.** A file with planted instructions steered the live model: it answered "999 minutes, set in src/util.js" with in-range citations.
+  - First fix (b11994e): grounding. Every number and named identifier in a finding must appear in the lines it cites.
+  - A live probe then showed the model citing the planted comment itself, which does contain 999. So 03c4985 adds an instruction tripwire: lines that address an AI reader are reported as `suspiciousLines`, findings citing them are dropped, and the agent is warned that the answer may be manipulated.
+  - Live on `evals/latent/injection`, the hijacked finding is dropped in 3 of 3 runs. The model's prose answer still says 999, but it is marked `answerVerified: false` and shown under the warning.
+- **Runtime review lows:** case aliases on /mnt/c (now deduplicated by inode), spans clamped quietly (now dropped), duplicate findings, slow clients (connection cap, 10 s receive timeout), and the cut-off retry (now a compact retry). All fixed in 390c294 and a8fdf81, with tests on Windows and WSL.
+- **Gate re-run after a vLLM restart, three runs:**
+
+  | Accuracy | Citations | Slice ÷ prefix tokens | Cached share | Gate |
+  | --- | --- | --- | --- | --- |
+  | 6/8 each run | 8/8 each run | 0.065 | 0.905–0.993 | fails on accuracy |
+
+  - The grounding check and tripwire dropped no legitimate finding: `rejectedFindings` was 0 on the missed questions.
+  - The two misses are the 7B model omitting concrete values (7200 s, 900 s) after the restart.
+  - Across all six live runs today the gate held in 2 of 6. Citations, slice size and caching passed every time, and accuracy is the open item.
+  - Next options: test a stronger open model, or add a general "state concrete values" synthesizer rule and validate it on held-out questions, not these eight. The closed-model baseline is still not run.
