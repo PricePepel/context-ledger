@@ -105,3 +105,35 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 - F3 MCP adapter (964f70d). The builder's debug pass fixed a nesting crash and a Windows test hang. The integration test drives context_for, room_open and room_read against the real server. The review found nothing above low. Fixed in 0cc4e1d: U+2028/9 in ledger errors, distinct timeout and redirect messages, malformed notifications dropped, and the npm script removed.
 - F4 negotiation room (d5e5371). The debug pass found that a party named `constructor` lost its choice in the response; fixed with Maps in 83e3f2a, which also added a phone-width check. The review found one medium issue: the other party's labels could print a fake "State: agreed" with newlines and bidi controls. V2 labels now refuse control, separator and bidi characters, and the UI isolates labels in `<bdi>`. Low fixes in 1fbb3c5: focus returns after a decision, buttons are disabled while a decision is in flight, and a failed open clears the old room. Room journeys were sharing graphs across parallel and repeated runs, so each test now publishes its own.
 - Not done here: Linux CI for this branch (now configured to run every node test file), a live two-model MCP smoke test, and Ali's M0 benchmark.
+
+## Cycle 5 — M2a warm latent pool (defined 2026-11-07, before implementation)
+
+Contract: [docs/latent-read.md](latent-read.md). Leo side on `leo/latent-read`, Ali side on `ali/latent-pool`. Data: the synthetic codebase in `evals/latent/fixture` and the eight questions in `evals/latent/questions.json`, graded by `evals/latent/grade.mjs`.
+
+### Ali side — warm pool runtime
+
+| Eval | Expected |
+| --- | --- |
+| Path safety | Absolute paths, `..`, backslashes, drive letters and symlinks that leave `LATENT_ROOT` are refused with 400 before any file is read. More than 32 paths or 512 KiB returns 413. |
+| Shared prefix | The reader, planner, workers and synthesizer all send a byte-identical system message for one prefix. A test against a fake vLLM checks this. |
+| Warm cache | Against real vLLM, every call after the reader reports `cachedTokens` of at least 90% of the prefix tokens, and a second `latent_read` on the same paths starts warm. |
+| Slice shape | The synthesizer output always matches the slice shape (vLLM structured output). A malformed model reply gives 502 with a clear error, never a broken slice. |
+| Mapper scaffold | `GET /latent/mappers` returns `{pairs: []}`. `POST /latent/transfer` returns 501. |
+
+### Leo side — ledger and MCP
+
+| Eval | Expected |
+| --- | --- |
+| Proxy | `POST /api/latent/read` requires the same origin and forwards to `LATENT_URL`. Agents call it through the `latent_read` MCP tool, which has no other powers. |
+| Slice validation | Findings citing a path not requested, or lines beyond the file, are removed and counted. Labels are escaped for agents. |
+| Fallback | With the runtime down, the response is `mode: "text"` with numbered file text, and the tool still answers. |
+
+### Gate (M2a)
+
+On the eight questions, live with Qwen2.5-7B-Instruct-AWQ on the RTX 4090 Laptop GPU:
+
+- accuracy ≥ 7/8 and citation rate ≥ 7/8;
+- the slice the closed model receives is at most 10% of the tokens it would read without it (the prefix);
+- the cached share across all calls is at least 0.6.
+
+The closed-model baseline is Claude answering the same questions with all files in context. That baseline is recorded when a Claude runner is available. Until then, the gate is reported as open-model numbers against the token budget.
