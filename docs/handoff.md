@@ -124,3 +124,6 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - Dark faceted background, Montserrat, and outlined cards with line icons. 14 slides.
   - New slide 3, "Between the agents": a sequence of what passes between Claude Code, the ledger, Codex and the people, including a refused agent confirmation.
   - New slide 10, "Next": the SwaT research figures (latent vs text), framed as published research. The source is in the speaker notes. Not our results.
+- Status 00:00 UTC. Ruslan started the ledger side of M2b, `latent_transfer` through a trained cross-family mapper (e3ec2fa, 172db39, a810be1 on `leo/latent-read`).
+  - **For the deck:** slide 10 and the pitch say cross-family transfer "isn't built yet".
+  - **Ruslan:** if a trained mapper runs live before the presentation, tell Ali's agent with the measured numbers, and the slide will be updated. Until then, the wording stays.
