@@ -10,8 +10,8 @@
 // demo/networking.mjs, challenge 5); --turns defaults to 200 per party; --turns 2 is the toy scenario.
 //
 // Synthetic data only. Paths are relative to the repository root.
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -249,19 +249,73 @@ async function demo() {
       if (!existsSync(executablePath)) throw error;
       browser = await chromium.launch({ executablePath, args: ['--headless=new', '--no-sandbox'] });
     }
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    // --record: the same flow, paced for people, with captions, saved as a video.
+    const record = args.includes('--record');
+    // Playwright's own recorder needs a pinned ffmpeg build that may be missing, so frames
+    // are captured here (about 10 per second) and encoded with the system ffmpeg.
+    const context = await browser.newContext({ viewport: record ? { width: 1280, height: 800 } : { width: 1280, height: 900 } });
+    const page = await context.newPage();
+    const frames = [];
+    let capturing = false;
+    let capture = Promise.resolve();
+    // Started once the page has loaded: early screenshots wait for the page to settle, and
+    // captions shown before the first frame would be missing from the video.
+    const startCapture = async () => {
+      if (!record) return;
+      await page.screenshot({ type: 'jpeg', quality: 80 });
+      capturing = true;
+      capture = (async () => {
+        while (capturing) {
+          const started = Date.now();
+          try { frames.push({ at: started, jpeg: await page.screenshot({ type: 'jpeg', quality: 80 }) }); } catch {}
+          await new Promise(r => setTimeout(r, Math.max(0, 100 - (Date.now() - started))));
+        }
+      })();
+      while (frames.length === 0) await new Promise(r => setTimeout(r, 20));
+    };
+    const beat = ms => (record ? page.waitForTimeout(ms) : undefined);
+    // Captions are drawn through the DevTools protocol, so the page's CSP does not apply.
+    const caption = async (text, ms = 3200) => {
+      if (!record) return;
+      await page.evaluate(line => {
+        let bar = document.getElementById('demo-caption');
+        if (!bar) {
+          bar = document.createElement('div');
+          bar.id = 'demo-caption';
+          Object.assign(bar.style, {
+            position: 'fixed', left: '0', right: '0', bottom: '0', zIndex: '9999', padding: '18px 28px',
+            background: 'rgba(20, 20, 20, 0.88)', color: '#fff', font: '600 22px/1.35 system-ui, sans-serif',
+          });
+          document.body.append(bar);
+        }
+        bar.textContent = line;
+      }, text);
+      await beat(ms);
+    };
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
 
     // The human flow: paste both graph IDs and open the room.
     await page.goto(server.base + '/');
+    await startCapture();
     const [first, second] = seeded.parties;
-    await page.getByLabel('First graph ID').fill(seeded.graphs[first]);
-    await page.getByLabel('Second graph ID').fill(seeded.graphs[second]);
+    const saved = name => `${Math.round(seeded.meter[name].savedShare * 100)}%`;
+    await page.locator('#room').scrollIntoViewIfNeeded();
+    await caption(`Two people, two agents. ${first}'s and ${second}'s agents each read a ${seeded.turns}-turn chat and published what their person wants, offers and can't do.`, 4500);
+    await caption('Every claim cites the chat line it came from. Now open a room with both graphs.', 3000);
+    const typeId = async (label, id) => (record
+      ? page.getByLabel(label).pressSequentially(id, { delay: 12 })
+      : page.getByLabel(label).fill(id));
+    await typeId('First graph ID', seeded.graphs[first]);
+    await typeId('Second graph ID', seeded.graphs[second]);
+    await beat(500);
     await page.getByRole('button', { name: 'Open room' }).click();
     await page.locator('#room-status').filter({ hasText: /\d+ proposals?/u }).waitFor();
     await page.locator('#room').screenshot({ path: join(out, '1-room-open.png') });
+    await caption(`The agents proposed ${seeded.proposals} links: matches, conflicts and answers. They decide nothing.`, 4000);
+    await page.locator('#room-proposals').scrollIntoViewIfNeeded();
+    await caption(`Handing over this graph instead of the full chat saves about ${saved(first)} and ${saved(second)} of the tokens (estimate).`, 4000);
 
     // Proposals re-sort as their state changes, so pin each one by its own sentence.
     const proposal = async (kind, pick) => {
@@ -273,22 +327,38 @@ async function demo() {
 
     // Both people confirm the first match; one rejects the first conflict.
     const match = await proposal('matches', seeded.picks.match);
+    await match.scrollIntoViewIfNeeded();
+    await caption(`Only the people decide. ${first} confirms this match...`, 2600);
     await match.getByRole('button', { name: `Confirm as ${first}` }).click();
     await match.filter({ hasText: `${first}: confirm` }).waitFor();
+    await caption(`...and ${second} confirms it too. Agreed only when both people say yes.`, 2200);
     await match.getByRole('button', { name: `Confirm as ${second}` }).click();
     await match.filter({ hasText: 'State: agreed' }).waitFor();
+    await beat(1800);
     const conflict = await proposal('conflicts with', seeded.picks.conflict);
+    await conflict.scrollIntoViewIfNeeded();
+    await caption(`${second} rejects this conflict. One "no" is enough.`, 2400);
     await conflict.getByRole('button', { name: `Reject as ${second}` }).click();
     await conflict.filter({ hasText: 'State: rejected' }).waitFor();
+    await beat(1800);
 
     // Reload proves the decisions were stored, not just rendered.
     await page.reload();
     await match.filter({ hasText: 'State: agreed' }).waitFor();
     await conflict.filter({ hasText: 'State: rejected' }).waitFor();
+    await page.locator('#room-agreed').scrollIntoViewIfNeeded();
+    await caption('After a reload the decisions are still there: stored, not just shown. Agents cannot click these buttons; the server refuses them.', 5000);
     await page.locator('#room').screenshot({ path: join(out, '2-room-decided.png') });
     await page.screenshot({ path: join(out, '3-full-page.png'), fullPage: true });
 
     const agreed = await page.locator('#room-agreed').innerText();
+    let video;
+    if (record) {
+      await page.waitForTimeout(1500);
+      capturing = false;
+      await capture;
+      video = encodeVideo(frames, out);
+    }
     console.log(JSON.stringify({
       url: `${server.base}/#room=${seeded.room}`,
       story: seeded.story,
@@ -300,6 +370,7 @@ async function demo() {
       agreed: agreed.trim(),
       pageErrors: errors,
       screenshots: ['1-room-open.png', '2-room-decided.png', '3-full-page.png'].map(f => join(out, f)),
+      ...(video ? { video } : {}),
     }, null, 2));
     if (errors.length) process.exitCode = 1;
   } finally {
@@ -313,6 +384,34 @@ async function demo() {
     } else {
       await stopServer(server);
     }
+  }
+}
+
+/**
+ * Encode the captured frames as a constant 10 fps MP4 with the system ffmpeg. Each output
+ * tick shows the latest frame captured by that moment, so the video keeps real-time pacing
+ * however long each screenshot took.
+ */
+function encodeVideo(frames, out) {
+  if (frames.length < 2) throw new Error('no frames were captured');
+  const dir = mkdtempSync(join(tmpdir(), 'ledger-frames-'));
+  try {
+    const step = 100;
+    const start = frames[0].at;
+    const end = frames.at(-1).at + step;
+    let source = 0;
+    let tick = 0;
+    for (let at = start; at < end; at += step, tick += 1) {
+      while (source + 1 < frames.length && frames[source + 1].at <= at) source += 1;
+      writeFileSync(join(dir, `${String(tick).padStart(6, '0')}.jpg`), frames[source].jpeg);
+    }
+    const mp4 = join(out, 'demo.mp4');
+    const result = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(1000 / step), '-i', join(dir, '%06d.jpg'),
+      '-vf', 'format=yuv420p', '-c:v', 'libx264', '-r', '25', '-movflags', '+faststart', mp4], { encoding: 'utf8' });
+    if (result.error || result.status !== 0) throw new Error(`ffmpeg failed: ${result.error?.message ?? result.stderr}`);
+    return mp4;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -341,6 +440,6 @@ if (command === 'demo') {
   const summary = await seed(url.replace(/\/$/u, ''));
   console.log(JSON.stringify({ ...summary, open: `${url.replace(/\/$/u, '')}/#room=${summary.room}` }, null, 2));
 } else {
-  console.error('usage: driver.mjs demo [--story sprint|networking] [--turns N] [--out DIR] [--port N] [--keep] | check [--turns N] [--min-saved 0.85] | seed --url http://127.0.0.1:PORT [--turns N]');
+  console.error('usage: driver.mjs demo [--story sprint|networking] [--turns N] [--out DIR] [--port N] [--keep] [--record] | check [--turns N] [--min-saved 0.85] | seed --url http://127.0.0.1:PORT [--turns N]');
   process.exitCode = 2;
 }

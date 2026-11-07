@@ -34,6 +34,13 @@ node .claude/skills/run-context-ledger/driver.mjs demo --keep --port 4399 --out 
 # last line: "Server kept running at http://127.0.0.1:4399 (pid N). Stop it with: kill N"
 ```
 
+Record the captioned backup video (about 60 s, 1280x800 MP4, real-time pacing) for when the live demo can't run:
+
+```bash
+node .claude/skills/run-context-ledger/driver.mjs demo --story networking --record --out /tmp/ledger-video
+# -> /tmp/ledger-video/demo.mp4; the committed copy is docs/demo/networking-demo.mp4
+```
+
 Check the demo's savings meter without a browser. It exits 1 if either party saves 85% or less:
 
 ```bash
@@ -81,6 +88,9 @@ npm run bench                  # M0 benchmark; rewrites nothing unless --markdow
 - **Seeding is idempotent.** Graphs, rooms and sessions are content-addressed, so a second `seed` against the same server returns the same IDs and the existing decisions.
 - **`--keep` leaves the temp database.** Only the non-keep path deletes its `ledger-run-*` directory under the OS temp dir.
 - **The graph ID inputs are empty after a reload.** The room reloads from `#room=…` in the URL, not from the form fields, so don't use the inputs to tell which room is open.
+
+- **Playwright's video recorder needs its own ffmpeg build.** The pinned Playwright asks for `/opt/pw-browsers/ffmpeg-1013`, and the container has 1011. `--record` therefore captures JPEG frames itself (about 10 per second) and encodes them with the system `/usr/bin/ffmpeg` on a constant 10 fps timeline.
+- **The first screenshots stall while the page settles.** Captions shown before the first frame vanish from the video, so capture starts after `goto` and one warm-up frame. ffmpeg's concat demuxer ignored per-image durations (a 61 s run came out as 26 s), which is why frames are laid onto fixed ticks instead.
 
 ## Troubleshooting
 
