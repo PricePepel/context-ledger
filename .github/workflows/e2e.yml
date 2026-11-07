@@ -11,8 +11,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npm run test:graph
-      - run: node --test tests/graph-cli.test.mjs tests/graph-restart.test.mjs tests/handoff-cli.test.mjs tests/store.test.mjs
+      - run: node --test tests/*.test.mjs
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - uses: actions/upload-artifact@v4
