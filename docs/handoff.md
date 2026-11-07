@@ -47,3 +47,4 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
 - Not touched here: Linux CI for PR #1, the live MCP smoke test, the demo rehearsal, P0/P1, and `src/`.
 - Step 1 (done): cards claimed.
 - Step 2 (running): benchmark only — design research, the build with evals first, an independent review and a debug pass, then fixes. The pitch (B2) is deferred until the benchmark numbers are final.
+- Step 3 (done): at Ali's request, asked `@tenki-reviewer` (Tenki Code Reviewer, a non-Claude reviewer) to review PR #1 in https://github.com/PricePepel/context-ledger/pull/1#issuecomment-6711871153. Ali's agent will not push to feature/semantic-graph. Ruslan triages the findings. The same reviewer will be tagged on Ali's benchmark PR.
