@@ -163,3 +163,53 @@ Context Ledger is the trust layer between any two AI agents. Today, when one per
 7. **Prompt injection?** Every quote must appear in its cited lines and instruction-like lines are flagged. In the injection test the hijacked finding was dropped 3 of 3 times.
 8. **Privacy?** Everything runs locally, files are imported only when chosen, and the latent model runs on your own GPU.
 9. **"Horizontal" sounds too broad: who first?** Developer teams that run Claude Code and Codex side by side and hand work between them.
+
+---
+
+## Part 3. Style prompts for other tools
+
+### For presentation tools (ChatGPT, Gamma, Canva, Claude, Keynote)
+
+```
+Design this presentation in the following exact style. Follow every rule.
+
+CANVAS: 16:9, 1920×1080. Margins 128px on all sides. One idea per slide.
+
+COLORS (no others, no gradients, no accent colors):
+- Near-black #0F0F0F: headings and text on light slides; background of statement slides
+- White #FFFFFF: main slide background; text on dark slides
+- Soft grey #F5F5F7: card and panel backgrounds on white slides
+- Mid grey #666666: body text and small labels on light backgrounds
+- Light grey #B3B3B3: body text on black backgrounds
+- Label grey #8C8C8C: small labels on black backgrounds
+- Hairline #E6E6E6: thin dividers, if any
+Rhythm: mostly white slides, with 3 black statement slides (cover, one key claim, closing).
+
+FONT: Montserrat only (Google Fonts).
+- Title: 128px, bold 700
+- Slide headings: 72px, semibold 600, line-height 1.1, sentence case. Italicize 1–3 key words in the heading for emphasis.
+- Big numbers/stats: 96px (or 64px in 4-column rows), bold 700
+- Card titles: 44px, semibold 600
+- Body text: 28–32px, regular 400, line-height 1.4, in mid grey
+- Eyebrow label above each heading: 24px, medium 500, UPPERCASE, letter-spacing 4px, mid grey
+- Footnotes/caveats: 24px, mid grey, pinned at the bottom of the slide
+Never go below 24px.
+
+LAYOUT:
+- Every content slide: eyebrow label at top left, heading below it, then content. Headings left-aligned and never centered on content slides.
+- Content sits in rounded cards: background #F5F5F7, corner radius 20px, padding 40px, no borders, no shadows, 24px gaps.
+- Highlight exactly one card per row by making it black (#0F0F0F) with white title and light grey text.
+- Prefer 2–4 cards in a row, big-number stat cards, or a 5-step row joined by thin black arrows over bullet lists.
+- Statement slides: black background, one large heading (96–120px) with an italic phrase, one short grey line under it, lots of empty space.
+- Code or commands: monospace (Courier New) in grey on a slightly lighter black card (#1C1C1C).
+
+FEEL: minimal, editorial, calm, premium, a lot of white space. Like a design-led AI company. No icons, no clip art, no emoji, no stock photos, no drop shadows, no decorative shapes.
+```
+
+### For image generators (ChatGPT images, Midjourney, Ideogram)
+
+```
+Minimal editorial illustration, strictly black and white with soft greys (#0F0F0F near-black, #FFFFFF white, #F5F5F7 soft grey). Generous white space, fine thin lines, simple geometric forms (circles, squares, nodes and connecting lines), subtle paper grain, flat with no 3D rendering and no shadows. Calm, premium, design-led, like an illustration for a modern AI company's website. No color, no gradients, no text, no letters, no numbers, no logos, no UI elements. Centered composition with empty space for a slide heading. 16:9.
+
+Subject: [describe the scene here; Part 1 has one per slide]
+```
