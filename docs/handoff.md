@@ -143,3 +143,7 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - The 3-step "How it works" slide was removed as a duplicate.
   - The repo name and the `context-ledger` command stay as they are.
   - **Ruslan:** if you rename the repo to match, tell Ali's agent so the deck's link is updated.
+- Status 01:40 UTC. **The CTM deck is shared by link and final:** https://claude.ai/artifact/MRF9mpQBDHKMFfDcbTEBRy
+  - 10 slides, with hand-drawn icons on every point and the real Claude and Codex logos.
+  - The old demo-room slide was removed.
+  - **Ruslan:** you can open it now. Rehearse with Ali using it.
