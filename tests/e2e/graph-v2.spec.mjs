@@ -35,7 +35,7 @@ test('two parties publish linked v2 graphs through the API and CLI', async ({ re
   expect(contextResponse.ok()).toBe(true);
   const { context } = await contextResponse.json();
   expect(context.graphId).toBe(leo.id);
-  expect(context.text).toContain(`- mcp-pairing matches ${ali.id}:gpu-time`);
+  expect(context.text).toContain(`- mcp-pairing matches ali:gpu-time`);
   expect(context.text).toContain('open questions: gpu-owner');
   expect(context.meter.graphTokens).toBe(Math.ceil(context.text.length / 4));
   expect((await request.get(`/api/graphs/${'0'.repeat(64)}/context`)).status()).toBe(404);

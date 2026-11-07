@@ -212,7 +212,7 @@ export function openStore(path) {
       const graph = readGraph(id);
       if (!graph) return;
       const row = getDetail.get(graph.packet.sessionId);
-      return graphContext(graph, { ...row, messages: JSON.parse(row.messages) });
+      return graphContext(graph, { ...row, messages: JSON.parse(row.messages) }, { lookupGraph: readGraph });
     },
   };
 }

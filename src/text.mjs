@@ -8,7 +8,8 @@ const keptFormatCharacters = new Set([0x200c, 0x200d]);
 // Handoff text is shown to people and agents. Escape controls, bidi overrides and
 // invisible tag characters so transcript text cannot spoof or hide what it says.
 export function visibleText(text) {
-  return text.replace(/\r\n/g, '\n').replace(/[\p{Cc}\p{Cf}]/gu, character => {
+  // U+2028/U+2029 (Zl/Zp) are line breaks to many readers, so they are escaped too.
+  return text.replace(/\r\n/g, '\n').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, character => {
     if (character === '\n' || character === '\t') return character;
     if (keptFormatCharacters.has(character.codePointAt(0))) return character;
     return escapeCodeUnits(character);

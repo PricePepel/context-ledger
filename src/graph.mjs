@@ -31,7 +31,7 @@ export class GraphInputError extends Error {}
 // rendered prefix stays identical across revisions and can be served from a cache.
 export const kindOrder = ['goal', 'constraint', 'decision', 'offer', 'action', 'blocker', 'question'];
 const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-const compareBy = (...keys) => (a, b) => {
+export const compareBy = (...keys) => (a, b) => {
   for (const key of keys) {
     const order = compareText(a[key], b[key]);
     if (order) return order;

@@ -117,8 +117,8 @@ test('review fixes: one link per node pair, no links from superseded decisions, 
     graph.edges.push({ from: 'port-8080', to: 'port-4317', type: 'supersedes' });
   }, /superseded decision/);
   rejects(graph => { graph.sessionId = remote.packet.sessionId; }, /another session/);
-  rejects(graph => { graph.nodes[0].label = '​'; });
-  rejects(graph => { graph.nodes[0].label = ' ‮ '; });
+  rejects(graph => { graph.nodes[0].label = '\u200b'; });
+  rejects(graph => { graph.nodes[0].label = ' \u202e '; });
 });
 
 test('a link may answer a remote question already marked answered', () => {
