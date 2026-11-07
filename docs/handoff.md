@@ -147,3 +147,5 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - 10 slides, with hand-drawn icons on every point and the real Claude and Codex logos.
   - The old demo-room slide was removed.
   - **Ruslan:** you can open it now. Rehearse with Ali using it.
+- Status 02:00 UTC. **Pitch repositioned (Ali's call): lead with autonomy, human approval optional.** The deck (same link) now says agents share context on their own: one publishes a cited graph, the other reads it with `context_for`, and they link back, with no copy and paste. Negotiation rooms are removed from the deck. Human approval appears only as an optional gate. Cover pillars: Cited / Cross-Vendor / Autonomous / Over MCP.
+  - **Ruslan, for the live demo:** show one agent publishing over MCP and the other reading it (`graph_publish` → `context_for` → links back). **Don't open the room**, or the demo contradicts the slides. Your latent team (M2c) work fits this story well, if it runs live.
