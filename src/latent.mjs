@@ -19,6 +19,22 @@ export class LatentError extends Error {
   }
 }
 
+// The contract's secret rule, mirrored from runtime/latent_pool/prefix.py so the
+// ledger refuses these paths up front with a clear 400.
+const secretDirs = new Set(['.git', '.ssh', '.aws', '.gnupg', '.docker', '.kube']);
+const secretNames = new Set(['.npmrc', '.pypirc', '.netrc', '.pgpass', '.git-credentials', 'credentials',
+  'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']);
+const secretSuffixes = ['.pem', '.key', '.p12', '.pfx', '.keystore', '.jks'];
+const envTemplates = new Set(['.env.example', '.env.sample', '.env.template']);
+
+export function isSecretPath(segments) {
+  if (segments.slice(0, -1).some(segment => secretDirs.has(segment.toLowerCase()))) return true;
+  const name = segments.at(-1).toLowerCase();
+  if (envTemplates.has(name)) return false;
+  return name.startsWith('.env') || secretNames.has(name) || name.startsWith('id_rsa') || name.startsWith('id_ed25519')
+    || secretSuffixes.some(suffix => name.endsWith(suffix));
+}
+
 function checkInput(input) {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new InputError('Latent read needs a JSON object.');
   const extra = Object.keys(input).filter(key => !['paths', 'question', 'budgetTokens', 'workers'].includes(key));
@@ -31,10 +47,15 @@ function checkInput(input) {
     // Relative POSIX paths only: no absolute, backslash, empty or dot segments. A colon is
     // refused anywhere: on Windows it names drives and alternate data streams (a.js:hidden).
     // A segment ending in a dot or space would silently alias another file on Windows.
+    // Character classes match the approved contract: Cc, Cf, Cs, Co, Zl, Zp, but not
+    // Cn, because Python's and Node's Unicode tables differ in age.
     if (typeof path !== 'string' || !path || path.length > 512 || path.startsWith('/') || path.includes('\\')
-      || path.includes(':') || /[\p{C}]/u.test(path)
-      || path.split('/').some(part => part === '' || part === '.' || part === '..' || /[. ]$/u.test(part))) {
+      || path.includes(':') || /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/u.test(path)
+      || path.split('/').some(part => part === '' || part === '.' || part === '..' || /^ |[. ]$/u.test(part))) {
       throw new InputError('Each path must be a relative POSIX path inside the latent root.');
+    }
+    if (isSecretPath(path.split('/'))) {
+      throw new InputError('Paths must not name secret files (.env, .git, keys).');
     }
   }
   if (new Set(paths).size !== paths.length) throw new InputError('Paths must be unique.');
@@ -126,8 +147,8 @@ function cleanReceipt(receipt) {
     model: typeof receipt.model === 'string' && /^[\w./:-]{1,120}$/u.test(receipt.model) ? receipt.model : null,
     prefixId: typeof receipt.prefixId === 'string' && /^[a-f0-9]{64}$/u.test(receipt.prefixId) ? receipt.prefixId : null,
     prefixTokens: count(receipt.prefixTokens),
-    // The approved contract reports an integer (PREAMBLE_VERSION = 2).
-    preambleVersion: Number.isInteger(receipt.preambleVersion) && receipt.preambleVersion >= 1 && receipt.preambleVersion <= 999
+    // The merged contract reports a short string (PREAMBLE_VERSION = "2").
+    preambleVersion: typeof receipt.preambleVersion === 'string' && /^[\w.-]{1,16}$/u.test(receipt.preambleVersion)
       ? receipt.preambleVersion : null,
     droppedFindings: count(receipt.droppedFindings),
     subQuestionCount: Array.isArray(receipt.subQuestions) ? Math.min(receipt.subQuestions.length, 16) : 0,

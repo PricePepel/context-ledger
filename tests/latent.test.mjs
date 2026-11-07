@@ -370,10 +370,10 @@ test('6b review: quotes are stored on one line, trivial quotes prove nothing, fa
   assert.equal(graph.relocatedSpans, 1);
 });
 
-test('receipts keep the integer preambleVersion of the approved contract', async t => {
+test('receipts keep the string preambleVersion of the merged contract', async t => {
   let version;
   const runtime = await fakeRuntime(t, () => ({ body: { graph: slice([]), receipt: { preambleVersion: version, droppedFindings: 2 } } }));
-  for (const [given, kept] of [[2, 2], ['2', null], [0, null], [2.5, null], [1000, null]]) {
+  for (const [given, kept] of [['2', '2'], [2, null], ['', null], ['2 3', null], ['x'.repeat(17), null]]) {
     version = given;
     const result = await read({}, runtime);
     assert.equal(result.receipt.preambleVersion, kept, JSON.stringify(given));
@@ -391,4 +391,21 @@ test('live probe on preamble v2: a word-only label must share a content word wit
   assert.equal(isGrounded('Charges are retried', '    const result = await provider({ orderId, amount, currency: CURRENCY });'), false);
   assert.equal(isGrounded('Charges are retried', 'export async function charge(orderId, amount) {'), true);
   assert.equal(isGrounded('Yes', clamp), true, 'nothing checkable: left to the other rules');
+});
+
+test('merged contract: secret paths are refused up front, templates and unassigned characters are not', async t => {
+  const { isSecretPath } = await import('../src/latent.mjs');
+  for (const path of ['.env', 'a/.env.local', '.git/config', '.git-credentials', '.docker/config.json', '.kube/config', 'keys/server.pem']) {
+    assert.equal(isSecretPath(path.split('/')), true, path);
+  }
+  for (const path of ['.env.example', '.env.sample', 'src/config.js', '.github/workflows/e2e.yml']) {
+    assert.equal(isSecretPath(path.split('/')), false, path);
+  }
+  const runtime = await fakeRuntime(t, () => ({ body: {} }));
+  await assert.rejects(read({ paths: ['.env'] }, runtime), /secret files/);
+  await assert.rejects(read({ paths: [' src/config.js'] }, runtime), InputError);
+  await assert.rejects(read({ paths: [`src/a${String.fromCharCode(0x2028)}b.js`] }, runtime), InputError);
+  // U+1C89 (assigned in Unicode 16) is not refused as a path character; it just does not exist here.
+  await assert.rejects(read({ paths: [`src/a${String.fromCodePoint(0x1c89)}.js`] }, runtime), /File not found/);
+  assert.equal(runtime.requests.length, 0);
 });
