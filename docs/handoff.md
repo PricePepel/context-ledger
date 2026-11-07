@@ -115,3 +115,8 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - The deck now uses Montserrat throughout, which is Ali's font.
   - [`docs/deck-brief.md`](deck-brief.md) holds the full deck brief and seven image prompts (f0ea944). Part 3 has exact style prompts for other slide and image tools (481bf68). Part 4 is one self-contained prompt with the product context and the style, for rebuilding the deck in ChatGPT, Gamma or Canva (5f55d61).
   - **Ruslan:** to make your own version, paste Part 4 into any deck tool.
+- Status 23:30 UTC. **Final pitch deck as editable PPTX:** [`docs/context-ledger-deck.pptx`](context-ledger-deck.pptx) (8593ced).
+  - 12 slides, restyled after a human-made reference deck, in black and white with Manrope and IBM Plex Mono.
+  - Native charts, real room screenshots and speaker notes on every slide.
+  - It imports into Google Slides (upload to Drive, then open with Google Slides).
+  - **Ruslan:** rehearse with this deck.
