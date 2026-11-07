@@ -24,9 +24,9 @@ const listSizes = sizes => (sizes.length ? `${sizes.join(', ')} turns` : 'no siz
 
 function verdict(handoffAhead, total) {
   if (handoffAhead.length === total) {
-    return 'So the graph context is smaller, but it is not the more cache-stable format here: at every size a handoff with its IDs held constant keeps a larger share of its bytes as a common prefix than the graph context.';
+    return 'So the graph context is smaller, but it is not the more cache-stable format here: at every size a handoff with its IDs held constant keeps a larger share of its characters as a common prefix than the graph context.';
   }
-  if (handoffAhead.length === 0) return 'At every size the graph context keeps a larger share of its bytes as a common prefix than the handoff, even with the handoff\'s IDs held constant.';
+  if (handoffAhead.length === 0) return 'At every size the graph context keeps a larger share of its characters as a common prefix than the handoff, even with the handoff\'s IDs held constant.';
   return `With IDs held constant the handoff keeps the larger prefix share at ${listSizes(handoffAhead)} and the graph context at the other sizes.`;
 }
 
@@ -37,7 +37,7 @@ function cacheConclusion(report) {
   const handoffAsIsEligible = sizesWhere(report, party => party.cachePrefix.handoff.cacheEligible);
   const endsAtId = report.results.every(result => Object.values(result.parties).every(party => party.cachePrefix.handoffPrefixEndsInSessionLine));
   return [
-    `As is, the handoff keeps ${shareRange(report, party => party.cachePrefix.handoff.share)} of its bytes as a common prefix`
+    `As is, the handoff keeps ${shareRange(report, party => party.cachePrefix.handoff.share)} of its characters as a common prefix`
       + (endsAtId ? ', and at every size the prefix ends inside its `Session:` line, because the session ID is a hash of the whole transcript and changes with every append. ' : '. ')
       + `With session and graph IDs held constant the handoff keeps ${shareRange(report, party => party.cachePrefix.idsHeldConstant.handoff.share)}: after the ID line it is append-only. `
       + `The graph context keeps ${shareRange(report, party => party.cachePrefix.graph.share)} as is and ${shareRange(report, party => party.cachePrefix.idsHeldConstant.graph.share)} with IDs held constant; `
@@ -91,9 +91,10 @@ export function renderMarkdown(report) {
     '',
     `Method: ${report.appendTurns} turns are appended to the transcript and it is imported again. The store keys a session by the hash of its transcript, `
       + 'so the longer transcript becomes a new session. A revised graph with the same nodes plus one new action is published against it. '
-      + 'The table shows the longest common leading byte prefix of the old and new output as a share of the new output, '
-      + 'once as is and once with every session and graph ID replaced by the same placeholder on both sides ("IDs constant"), '
-      + 'so a single changed ID line does not decide the comparison. '
+      + 'The table shows the longest common leading prefix of the old and new output, in characters, as a share of the new output, '
+      + 'once as is and once comparing the texts with every session and graph ID replaced by the same placeholder on both sides ("IDs constant"), '
+      + 'so a single changed ID line does not decide the comparison. Both shares use the original new output as the denominator: '
+      + 'a placeholder inside the matching prefix counts as the full ID it stands for. Tokens are estimated as characters / 4, like the meter. '
       + `A prefix counts as cache-eligible only from ${report.cacheMinimumTokens} estimated tokens, the safe minimum across Anthropic's older models and OpenAI (the newest Claude models accept 512).`,
     '',
     ...table(['Turns', 'Party', 'Graph share', 'Graph tokens (est.)', 'Graph share, IDs constant', 'Handoff share', 'Handoff tokens (est.)',
@@ -139,7 +140,7 @@ export function renderMarkdown(report) {
     '## 7. Cost illustration',
     '',
     `Illustration only, on estimated tokens: input cost in USD per 1,000 handoffs of \`teo\`'s context at list prices seen on ${report.prices.seen}. `
-      + 'Steady state prices the cache-eligible stable prefix (section 3) at the cache-hit rate and the rest at the base rate; it assumes the next request arrives within the cache lifetime '
+      + 'Uncached prices the base output. Steady state prices the next request (the revised output from section 3) with its cache-eligible stable prefix at the cache-hit rate and the rest at the base rate; prefix and total are both estimated from characters, and the cached part never exceeds the total. It assumes the next request arrives within the cache lifetime '
       + '(5 minutes by default) and ignores cache-write premiums. Below the cache minimum it equals the uncached cost. '
       + 'The graph uses its as-is prefix (its IDs are already at the end). The handoff steady state uses the prefix with IDs held constant, '
       + 'that is, a handoff whose session ID line were moved after the turns; the current handoff format cannot reach it.',

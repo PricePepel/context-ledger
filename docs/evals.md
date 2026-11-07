@@ -185,3 +185,14 @@ The live demo seeded two-turn toy transcripts, so the savings meter showed a neg
 ### Results — B3, 2026-11-07
 
 All B3 evals pass on Linux (Node 22.23.4). `driver.mjs check` at the default 200 turns reports a saved share of 0.916 for mara and 0.898 for teo (estimates, chars/4), up from -1.078 and -0.563 on the old two-turn seed. `driver.mjs demo` at 200 turns opens a room with 9 proposals, agrees and rejects one each, keeps both after a reload, logs no page errors and leaves no server or temp database. `tests/demo-seed.test.mjs` adds 3 tests (threshold, toy scenario, determinism); the full node suite passes 67 of 67. Observed while checking screenshots: the generator pairs facts by kind, not meaning, so the demo's proposals do not read sensibly on stage. That is logged as card B9 rather than widening B3. Not independently reviewed yet: Tenki is pending its repo link.
+
+### Review — Tenki Code Reviewer on PR #3, 2026-11-07
+
+This was an independent, non-Claude review of commit a619574. It found 1 high, 2 medium and 4 low issues. All three high and medium findings were confirmed against the code and fixed, each with a regression test:
+
+- **High, steady-state cost.** The steady-state price mixed UTF-8 bytes of the revised output with UTF-16 characters of the base output, so the uncached remainder went negative. The Opus handoff steady state at 1000 turns read $5.08. Prefixes are now measured in the meter's own units (characters, tokens = ceil(chars / 4)). Steady state now prices the actual next request, the revised output, and the cached part is capped at its total. Corrected figure for a cache-warm handoff at 1000 turns on Opus 5.5: $7.22, against $4.72 for the graph context (estimates).
+- **Medium, IDs-constant denominator.** Replacing 64-character IDs with a 4-character placeholder shrank the denominator. The graph's IDs-constant share read 56.6%, against a true 50.8%. Shares now map the placeholder back to the full ID and use the original text as the denominator.
+- **Medium, driver cleanup.** A failed server start left its temp database, and there were no signal handlers. The driver now removes the directory on every failure path and stops the server on SIGINT, SIGTERM and SIGHUP (exit 128 + signal). Writing the regression test found a second bug: the readiness probe had no timeout, so a port that accepts but never answers hung the driver. Each probe now times out after 500 ms.
+- **Low.** `flag()` swallowed a following flag; it now rejects a missing value (fixed, with a test). The other three were left as they are: the 2 s vs 2.5 s runtime in two documents, the free-port race (a failed start is now cleaned up and reported), and B3 marked Done before review (this entry records the review).
+
+Node suite: 73 of 73 on Linux. docs/benchmark.md was regenerated.

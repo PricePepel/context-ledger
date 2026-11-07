@@ -98,18 +98,43 @@ function commonPrefixBytes(a, b) {
 
 const ratio = (part, whole) => (whole ? Math.round((part / whole) * 1000) / 1000 : 0);
 
+const idPlaceholder = '<id>';
+
 /** Replace volatile IDs (session and graph hashes) with a fixed placeholder. */
 function withIdsHeldConstant(text, ids) {
   let result = text;
-  for (const id of ids) if (id) result = result.split(id).join('<id>');
+  for (const id of ids) if (id) result = result.split(id).join(idPlaceholder);
   return result;
 }
 
-function prefixStability(before, after) {
-  const bytes = commonPrefixBytes(before, after);
-  const total = Buffer.byteLength(after, 'utf8');
-  const tokens = Math.ceil(bytes / 4);
-  return { prefixBytes: bytes, newBytes: total, share: ratio(bytes, total), prefixTokensEstimate: tokens, cacheEligible: tokens >= cacheMinimumTokens };
+/**
+ * Longest common prefix of `before` and `after`, reported in the units of the API meter
+ * (UTF-16 code units of the original `after` text, estimated tokens = ceil(chars / 4)), so
+ * prefix and total can be compared and priced together.
+ *
+ * With `ids`, both texts are compared with every ID replaced by one placeholder, but the
+ * prefix and the share are mapped back to the original `after` text: each placeholder
+ * inside the matching prefix counts as the full ID it replaced. The share therefore has
+ * the same denominator as the as-is share.
+ */
+export function prefixStability(before, after, ids) {
+  const left = ids ? withIdsHeldConstant(before, ids) : before;
+  const right = ids ? withIdsHeldConstant(after, ids) : after;
+  const bytes = commonPrefixBytes(left, right);
+  // Back to characters, dropping a code point the byte prefix may have cut in half.
+  const prefix = Buffer.from(right, 'utf8').subarray(0, bytes).toString('utf8').replace(/\uFFFD$/u, '');
+  let chars = prefix.length;
+  if (ids) {
+    const lengths = new Set(ids.filter(Boolean).map(id => id.length));
+    if (lengths.size !== 1) throw new Error('IDs held constant must all have one length.');
+    const [idLength] = lengths;
+    const placeholders = prefix.split(idPlaceholder).length - 1;
+    chars += placeholders * (idLength - idPlaceholder.length);
+  }
+  const total = after.length;
+  chars = Math.min(chars, total);
+  const tokens = Math.ceil(chars / 4);
+  return { prefixChars: chars, newChars: total, share: ratio(chars, total), prefixTokensEstimate: tokens, cacheEligible: tokens >= cacheMinimumTokens };
 }
 
 /** Shares of characters that usually tokenize densely, to show which way chars/4 may err. */
@@ -167,17 +192,25 @@ async function timed(reps, call) {
   return { p50: percentile(samples, 0.5), p95: percentile(samples, 0.95), reps };
 }
 
-function costs(handoffTokens, graphTokens, graphPrefixTokens, handoffPrefixTokens) {
-  const cached = tokens => (tokens >= cacheMinimumTokens ? tokens : 0);
+/**
+ * Input cost per 1,000 handoffs. Uncached prices the base output. Steady state prices
+ * the next request, the revised output, with its cache-eligible stable prefix at the
+ * cache-hit rate and the rest at the base rate. Prefix and total share one unit
+ * (estimated tokens from UTF-16 characters), and the prefix never exceeds the total.
+ */
+export function costs({ handoffTokens, graphTokens, revisedHandoffTokens, revisedGraphTokens, graphPrefixTokens, handoffPrefixTokens }) {
   const perThousand = (tokens, price) => Math.round(tokens * price) / 1000; // tokens * $/MTok * 1000 calls / 1e6
-  const steady = (total, prefix, price) => Math.round(cached(prefix) * price.cacheHit + (total - cached(prefix)) * price.input) / 1000;
+  const steady = (total, prefix, price) => {
+    const cachedTokens = prefix >= cacheMinimumTokens ? Math.min(prefix, total) : 0;
+    return Math.round(cachedTokens * price.cacheHit + (total - cachedTokens) * price.input) / 1000;
+  };
   return prices.map(price => ({
     model: price.model,
     verified: price.verified,
     handoffUncached: perThousand(handoffTokens, price.input),
     graphUncached: perThousand(graphTokens, price.input),
-    graphSteadyState: steady(graphTokens, graphPrefixTokens, price),
-    handoffSteadyStateIdsConstant: steady(handoffTokens, handoffPrefixTokens, price),
+    graphSteadyState: steady(revisedGraphTokens, graphPrefixTokens, price),
+    handoffSteadyStateIdsConstant: steady(revisedHandoffTokens, handoffPrefixTokens, price),
   }));
 }
 
@@ -249,8 +282,8 @@ async function measureSize(api, size, { seed, reps, append, beforeSize }) {
     // The same comparison with session and graph IDs replaced by one placeholder on both
     // sides, so a single changed ID line does not decide the result.
     const ids = [session.id, appendedSession.id, graph.id, revised.id];
-    const graphPrefixIdsConstant = prefixStability(withIdsHeldConstant(context.text, ids), withIdsHeldConstant(revisedContext.text, ids));
-    const handoffPrefixIdsConstant = prefixStability(withIdsHeldConstant(handoff, ids), withIdsHeldConstant(revisedHandoff, ids));
+    const graphPrefixIdsConstant = prefixStability(context.text, revisedContext.text, ids);
+    const handoffPrefixIdsConstant = prefixStability(handoff, revisedHandoff, ids);
     const sessionLineEnd = handoff.indexOf('\n', handoff.indexOf(`Session: ${session.id}`));
 
     const factsWithAppended = [...generated.facts];
@@ -283,7 +316,7 @@ async function measureSize(api, size, { seed, reps, append, beforeSize }) {
         revisedGraphId: revised.id,
         graph: graphPrefix,
         handoff: handoffPrefix,
-        handoffPrefixEndsInSessionLine: handoffPrefix.prefixBytes < Buffer.byteLength(handoff.slice(0, sessionLineEnd), 'utf8'),
+        handoffPrefixEndsInSessionLine: handoffPrefix.prefixChars < sessionLineEnd,
         idsHeldConstant: { graph: graphPrefixIdsConstant, handoff: handoffPrefixIdsConstant },
         revisedRecall: contextRecall(revisedContext.text, [...generated.facts, generated.appended]),
       },
@@ -295,8 +328,14 @@ async function measureSize(api, size, { seed, reps, append, beforeSize }) {
         // re-reads the same row. Kept as an end-to-end guard, not a separate guarantee.
         identicalContext: reorderedContext.text === context.text,
       },
-      costPerThousandHandoffsUsd: costs(context.meter.handoffTokens, context.meter.graphTokens,
-        graphPrefix.prefixTokensEstimate, handoffPrefixIdsConstant.prefixTokensEstimate),
+      costPerThousandHandoffsUsd: costs({
+        handoffTokens: context.meter.handoffTokens,
+        graphTokens: context.meter.graphTokens,
+        revisedHandoffTokens: estimateTokens(revisedHandoff),
+        revisedGraphTokens: revisedContext.meter.graphTokens,
+        graphPrefixTokens: graphPrefix.prefixTokensEstimate,
+        handoffPrefixTokens: handoffPrefixIdsConstant.prefixTokensEstimate,
+      }),
     };
   }
 

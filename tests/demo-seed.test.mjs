@@ -46,3 +46,47 @@ test('the seed is deterministic for a seed value', async () => {
   const second = (await check('--turns', '50', '--min-saved', '0')).report;
   assert.deepEqual(first, second);
 });
+
+// Tenki review of PR #3, finding 2: a failed start or a signal left the temp database behind.
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+
+const serverPids = async () => {
+  try {
+    return (await run('pgrep', ['-f', 'src/server.mjs'])).stdout.trim().split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+test('a server that fails to start leaves no temp database behind', async () => {
+  const blocker = createServer();
+  await new Promise(done => blocker.listen(0, '127.0.0.1', done));
+  const { port } = blocker.address();
+  const before = runDirs();
+  try {
+    await assert.rejects(run(process.execPath, [driver, 'demo', '--port', String(port), '--out', tmpdir()]),
+      error => /server exited early/u.test(error.stderr));
+  } finally {
+    blocker.close();
+  }
+  assert.deepEqual(runDirs(), before);
+});
+
+test('SIGTERM during a run stops the server and removes the temp database', { skip: process.platform === 'win32' }, async () => {
+  const before = runDirs();
+  const pidsBefore = await serverPids();
+  const child = spawn(process.execPath, [driver, 'check', '--turns', '1000'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Wait until the run has created its temp database, then interrupt it.
+  for (let i = 0; i < 100 && runDirs().length === before.length; i++) await new Promise(r => setTimeout(r, 20));
+  child.kill('SIGTERM');
+  const code = await new Promise(done => child.once('exit', (exitCode, signal) => done(exitCode ?? signal)));
+  assert.equal(code, 143);
+  assert.deepEqual(runDirs(), before);
+  assert.deepEqual(await serverPids(), pidsBefore, 'no server left running');
+});
+
+test('a flag without a value is rejected instead of swallowing the next flag', async () => {
+  await assert.rejects(run(process.execPath, [driver, 'check', '--turns', '--min-saved', '0.5']),
+    error => /--turns needs a value/u.test(error.stderr));
+});

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { checkInputs, deterministicPart, handledSignals, maxSize, runBenchmark } from '../bench/m0.mjs';
+import { checkInputs, costs, deterministicPart, handledSignals, maxSize, prefixStability, prices, runBenchmark } from '../bench/m0.mjs';
 import { renderMarkdown } from '../bench/report.mjs';
 import { deriveSeed, generateParty } from '../bench/synth.mjs';
 
@@ -75,7 +75,7 @@ test('the M0 benchmark is deterministic, lossless on planted facts and cleans up
 
 test('the cache-prefix conclusion follows the data, not fixed text', async () => {
   const { report } = await runBenchmark({ seed: 7, sizes: [10], reps: 1, append: 3 });
-  const eligible = { prefixBytes: 8000, newBytes: 9000, share: 0.889, prefixTokensEstimate: 2000, cacheEligible: true };
+  const eligible = { prefixChars: 8000, newChars: 9000, share: 0.889, prefixTokensEstimate: 2000, cacheEligible: true };
   for (const party of Object.values(report.results[0].parties)) party.cachePrefix.graph = { ...eligible, share: 0.99 };
   const markdown = renderMarkdown(report);
   assert.match(markdown, /graph context at 10 turns/u);
@@ -178,4 +178,51 @@ test('a signal during server start-up still ends the run without a report', { sk
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+// Tenki review of PR #3, finding 1: the steady-state cost mixed bytes of the revised
+// output with characters of the base output, so the uncached remainder went negative.
+test('steady-state cost never prices a negative uncached remainder', () => {
+  const [price] = prices;
+  const [cost] = costs({
+    handoffTokens: 1000, graphTokens: 1000, revisedHandoffTokens: 2000, revisedGraphTokens: 2000,
+    graphPrefixTokens: 5000, handoffPrefixTokens: 5000,
+  });
+  const allCached = Math.round(2000 * price.cacheHit) / 1000;
+  assert.equal(cost.handoffSteadyStateIdsConstant, allCached);
+  assert.equal(cost.graphSteadyState, allCached);
+});
+
+test('in a real run the cached prefix never exceeds the revised output it prices', async () => {
+  const { report } = await runBenchmark({ seed: 7, sizes: [10, 60], reps: 1, append: 3 });
+  for (const result of report.results) {
+    for (const party of Object.values(result.parties)) {
+      const { graph, handoff, idsHeldConstant } = party.cachePrefix;
+      for (const prefix of [graph, handoff, idsHeldConstant.graph, idsHeldConstant.handoff]) {
+        assert.ok(prefix.prefixChars <= prefix.newChars);
+      }
+      for (const cost of party.costPerThousandHandoffsUsd) {
+        const floor = price => Math.round(Math.ceil(idsHeldConstant.handoff.newChars / 4) * price) / 1000;
+        const price = prices.find(entry => entry.model === cost.model);
+        assert.ok(cost.handoffSteadyStateIdsConstant >= floor(price.cacheHit), `${cost.model} below the all-cached floor`);
+      }
+    }
+  }
+});
+
+// Tenki review of PR #3, finding 3: replacing 64-character IDs with a 4-character
+// placeholder shrank the denominator and inflated the IDs-constant share.
+test('the IDs-constant share keeps the original text as its denominator', () => {
+  const oldId = 'a'.repeat(64);
+  const newId = 'b'.repeat(64);
+  const before = `head\n${oldId}\nbody`;
+  const after = `head\n${newId}\nbody and more`;
+  const asIs = prefixStability(before, after);
+  const constant = prefixStability(before, after, [oldId, newId]);
+  assert.equal(asIs.prefixChars, 5);
+  assert.equal(constant.newChars, after.length, 'same denominator as the as-is share');
+  assert.equal(constant.prefixChars, `head\n${newId}\nbody`.length, 'the placeholder counts as the full ID');
+  assert.equal(constant.share, Math.round((constant.prefixChars / after.length) * 1000) / 1000);
+  // An ID-free text gives the same result either way.
+  assert.deepEqual(prefixStability('same text', 'same text, longer', [oldId]), prefixStability('same text', 'same text, longer'));
 });

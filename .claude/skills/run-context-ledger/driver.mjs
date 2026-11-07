@@ -21,7 +21,10 @@ const args = process.argv.slice(2);
 const command = args[0];
 const flag = (name, fallback) => {
   const at = args.indexOf(name);
-  return at === -1 ? fallback : args[at + 1];
+  if (at === -1) return fallback;
+  const value = args[at + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} needs a value`);
+  return value;
 };
 
 const claudeTurn = (role, content) => JSON.stringify({ type: role, message: { role, content } });
@@ -144,6 +147,9 @@ const freePort = () => new Promise((done, fail) => {
   });
 });
 
+// Servers this process started, so a signal can stop them and remove their databases.
+const running = new Set();
+
 async function startServer(port) {
   const dir = mkdtempSync(join(tmpdir(), 'ledger-run-'));
   const child = spawn(process.execPath, ['src/server.mjs'], {
@@ -151,26 +157,48 @@ async function startServer(port) {
     env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const server = { child, dir };
+  running.add(server);
   let log = '';
   child.stdout.on('data', chunk => { log += chunk; });
   child.stderr.on('data', chunk => { log += chunk; });
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
-    if (child.exitCode !== null) throw new Error(`server exited early:\n${log}`);
-    try { if ((await fetch(base + '/')).ok) return { base, child, dir, log: () => log }; } catch {}
+    if (child.exitCode !== null) {
+      await stopServer(server);
+      throw new Error(`server exited early:\n${log}`);
+    }
+    // A timeout per probe: a port that accepts but never answers must not hang the driver.
+    try { if ((await fetch(base + '/', { signal: AbortSignal.timeout(500) })).ok) return Object.assign(server, { base, log: () => log }); } catch {}
     await new Promise(r => setTimeout(r, 100));
   }
-  child.kill();
+  await stopServer(server);
   throw new Error(`server did not answer on ${base}:\n${log}`);
 }
 
-async function stopServer({ child, dir }) {
-  if (child.exitCode === null) {
+async function stopServer(server) {
+  const { child, dir } = server;
+  if (child.exitCode === null && child.signalCode === null) {
     const exited = new Promise(r => child.once('exit', r));
     child.kill('SIGTERM');
-    await exited;
+    await Promise.race([exited, new Promise(r => setTimeout(r, 2000))]);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
   rmSync(dir, { recursive: true, force: true });
+  running.delete(server);
+}
+
+// Ctrl-C or a supervisor's SIGTERM must not orphan the server or its temp database.
+const signalNumbers = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
+let interrupted = false;
+for (const [signal, number] of Object.entries(signalNumbers)) {
+  process.on(signal, async () => {
+    if (interrupted) return;
+    interrupted = true;
+    await Promise.all([...running].map(stopServer));
+    process.stderr.write(`driver: stopped by ${signal}, server and temp database removed\n`);
+    process.exit(128 + number);
+  });
 }
 
 async function demo() {
@@ -247,6 +275,7 @@ async function demo() {
     await browser?.close();
     if (keep) {
       console.log(`Server kept running at ${server.base} (pid ${server.child.pid}). Stop it with: kill ${server.child.pid}`);
+      running.delete(server);
       server.child.unref();
       server.child.stdout.destroy();
       server.child.stderr.destroy();
