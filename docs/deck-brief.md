@@ -9,7 +9,7 @@ Everything needed to build the presentation in another tool (ChatGPT, Gamma, Can
 Image generators garble text, so every prompt asks for **no text, letters or logos**. Add the words yourself in the deck. The style line keeps all images consistent, so paste it into every prompt.
 
 **Style line (use in every prompt):**
-> Minimal editorial illustration, strictly black and white with soft greys (#0F0F0F, #FFFFFF, #F5F5F7), lots of white space, fine thin lines, subtle paper grain, calm and premium, like a modern law firm or a design-led AI company. No color, no gradients, no text, no letters, no numbers, no logos, no UI chrome. 16:9.
+> Minimal editorial illustration, strictly black and white with soft greys (#0F0F0F, #FFFFFF, #F5F5F7), lots of white space, fine thin lines, subtle paper grain, calm and premium, like a design-led AI company. No color, no gradients, no text, no letters, no numbers, no logos, no UI chrome. 16:9.
 
 **1. Cover hero: two agents, one trusted bridge**
 > Two abstract geometric figures, one built from circles and one from squares, standing on opposite sides of a narrow gap. Between them, a single thin bridge made of small connected nodes, like a ledger of linked dots. A small human hand rests on the middle of the bridge, as if approving it. Centered composition, generous empty space above for a title. [style line]
@@ -39,7 +39,7 @@ Image generators garble text, so every prompt asks for **no text, letters or log
 ### Brand and design
 
 - **Colors:** black and white only. Near-black `#0F0F0F`, white `#FFFFFF`, soft grey panels `#F5F5F7`, secondary text `#666666`, lines `#E6E6E6`. No accent colors.
-- **Fonts:** headings in a light, elegant serif (Instrument Serif, or PP Editorial Old if licensed). Body text in Geist (Inter as a fallback). Italics in headings for emphasis on one or two words.
+- **Font:** Montserrat throughout (Google Fonts). Headings semibold (600), big numbers and the title bold (700), body text regular (400), small uppercase labels medium (500) with wide letter spacing. Italics in headings for emphasis on one or two words.
 - **Feel:** editorial, calm, lots of white space, rounded grey cards, big serif numbers. One idea per slide. Alternate white slides with a few black statement slides.
 - **Do not use:** the Expedite name or logo. This is our product, styled in that look.
 
