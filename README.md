@@ -2,6 +2,12 @@
 
 A local transcript library for handing work between Claude Code and Codex. Import a selected JSONL transcript, find a conversation by keyword, and give another agent the relevant turns with their original line numbers.
 
+> **For judges: 30 seconds.** Each person's agent (Claude Code or Codex) publishes a **cited graph** of what its person wants, offers and can't do, over MCP. The agents propose matches and conflicts, and **only the two people can agree**.
+> - **Watch:** [61 s demo video](docs/demo/networking-demo.mp4), recorded from the real app.
+> - **Run it:** `npm ci && node .claude/skills/run-context-ledger/driver.mjs demo --story networking --out /tmp/shots`
+> - **Numbers:** the graph is 3.8% of a 1000-turn handoff's size, and $4.72 vs $119.36 per 1,000 handoffs on Opus 5.5 (estimates, synthetic data). Method and limits are in [docs/benchmark.md](docs/benchmark.md).
+> - **Built today, reviewed by a second model:** [docs/built-today.md](docs/built-today.md).
+
 ## Run locally
 
 Requires Node.js 22.14 or later.
