@@ -31,14 +31,14 @@ MIN_BUDGET, MAX_BUDGET, DEFAULT_BUDGET = 64, 2048, 600
 MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS = 1, 4, 3
 MAX_QUESTION_CHARS = 2000
 MAX_FINDINGS = 12
-MAX_WORKER_FINDINGS = 6
+MAX_WORKER_FINDINGS = 3  # each quoted finding costs about 110 tokens
 MAX_SPANS = 4
 MAX_LABEL_CHARS = 500
 MAX_ANSWER_CHARS = 4000
 MAX_SUBQUESTION_CHARS = 300
 MAX_QUOTE_CHARS = 200
 PLANNER_MAX_TOKENS = 400
-WORKER_MAX_TOKENS = 600
+WORKER_MAX_TOKENS = 900
 CONCURRENT_PIPELINES = 4
 
 _SPACE = re.compile(r"\s+")
@@ -387,8 +387,10 @@ class LatentPool:
             f"Split the question into exactly {count} focused sub-question(s) that, answered "
             "from the files, together answer it. Reply as JSON: {\"subQuestions\": [string, ...]}.",
         )
+        # Live debug: the planner was cut off once at 400 tokens; retry compactly.
+        compact = user + " Your previous reply was too long: keep each sub-question under 15 words."
         return run.call_json("planner", user, PLANNER_MAX_TOKENS, planner_schema(count),
-                             lambda value: validate_plan(value, count))
+                             lambda value: validate_plan(value, count), compact_user=compact)
 
     def _work(self, run, question, sub_questions, line_counts):
         schema = findings_schema(_citable(line_counts), 0, MAX_WORKER_FINDINGS)
@@ -400,7 +402,7 @@ class LatentPool:
                 f"Sub-question: {sub_question}",
                 "Answer the sub-question from the files. List up to "
                 f"{MAX_WORKER_FINDINGS} findings, each a one-line label with evidence spans "
-                "(path, startLine, endLine). Reply as JSON: "
+                "(path, startLine, endLine, quote). Reply as JSON: "
                 "{\"answer\": string, \"findings\": [{\"label\": string, \"evidence\": "
                 "[{\"path\": string, \"startLine\": int, \"endLine\": int, \"quote\": string}]}]}.",
             )
@@ -409,7 +411,8 @@ class LatentPool:
                 text, findings, _ = validate_answer(value, line_counts, MAX_WORKER_FINDINGS, False)
                 return {"subQuestion": sub_question, "answer": text, "findings": findings}
 
-            return run.call_json("worker", user, WORKER_MAX_TOKENS, schema, validate)
+            compact = user + " Your previous reply was too long: give one finding with one short quote."
+            return run.call_json("worker", user, WORKER_MAX_TOKENS, schema, validate, compact_user=compact)
 
         with ThreadPoolExecutor(max_workers=len(sub_questions)) as executor:
             futures = [executor.submit(answer, sub_question) for sub_question in sub_questions]
