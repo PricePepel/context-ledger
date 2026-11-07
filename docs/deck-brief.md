@@ -213,3 +213,60 @@ Minimal editorial illustration, strictly black and white with soft greys (#0F0F0
 
 Subject: [describe the scene here; Part 1 has one per slide]
 ```
+
+---
+
+## Part 4. One self-contained prompt: context plus style
+
+Paste this whole block into any deck tool.
+
+````
+You are designing a 10-slide, 3-minute pitch deck for a product called Context Ledger. Use ONLY the content below (do not invent numbers, customers, quotes or features) and follow the style rules exactly.
+
+=== PRODUCT CONTEXT ===
+Context Ledger is the trust layer between any two AI agents.
+Problem: teams now run AI agents from more than one vendor (for example Claude Code and Codex). When one person's agent must share what it knows with another person's agent, the only way today is pasting the whole chat: huge, impossible to check, and nobody controls what the agents agree to on the people's behalf.
+Solution: a layer over MCP (Model Context Protocol), with two parts:
+1. Text layer, for people (built): each agent turns its session into a small graph of goals, offers, constraints, decisions, actions, blockers and questions. Every claim cites the exact chat line it came from, and the ledger refuses citations that point at no real line. Agents can link two people's graphs as matches, conflicts and answers, but those links are only proposals. Only the two people can agree: a proposal is agreed when both confirm, rejected when either rejects, and decisions are stored. Decisions are accepted only from the person's browser; agents, the command line and the MCP tools cannot confirm anything.
+2. Latent layer, for machines (first version built): a local open model reads the files once and keeps its memory (KV cache) warm; later calls reuse it instead of re-reading. Only a small, quote-checked slice of findings reaches the closed model.
+It runs locally (loopback only), imports only files the person picks, and works with any agent that speaks MCP.
+Tagline: "The trust layer between any two agents." Sub-line: "Cited, cross-vendor, human-approved, over MCP."
+First users: developer teams that run Claude Code and Codex side by side and hand work between them. Other uses of the same layer: team-forming (shown in the demo), hiring, and coordination between companies whose agents come from different vendors.
+
+=== NUMBERS (always show the caveat with the number) ===
+Text layer (estimates: characters ÷ 4, synthetic sessions, list prices):
+- The graph is 3.8% of the full chat's size at 1,000 turns (10.2% at 200 turns, 25.7% at 50).
+- $4.72 vs $119.36 per 1,000 handoffs of a 1,000-turn session on Claude Opus 5.5: about 96% cheaper.
+- Building the graph pays for itself from the 2nd handoff.
+- In the benchmark, every planted fact was recalled and every claim cited.
+- Caveat to print: a cache-friendly chat handoff would cost $7.22, so at 50–200 turns it would be about as cheap.
+Latent layer (measured with Qwen2.5-7B on a laptop GPU, synthetic codebase):
+- 426 ms, down from 1,972 ms on the warm prefix.
+- 98–99% of prompt tokens served from cache.
+- 5–9% of the tokens reach the closed model.
+- 3/3 quality gates passed, with quotes verified against the cited lines.
+
+=== SLIDES ===
+1. Cover (black): "Context Ledger" / "The trust layer between *any* two agents." / "Cited, cross-vendor, human-approved, over MCP."
+2. The problem: heading "Every team runs agents from more than one vendor, and they *can't share* what they know." Three cards: Huge (the only bridge today is pasting the whole chat), Uncheckable (nobody can tell which claim came from where), Uncontrolled (nobody controls what agents agree to on our behalf).
+3. The layer: heading "A layer over MCP that *any* two agents can share." Two cards: Text layer: cited graphs (for people, built). Latent layer: warm memory (for machines, first version built; make this card black).
+4. How it works: heading "From a chat to a decision *both people* own." Five steps joined by arrows: Import, Publish, Check, Propose, Decide (make Decide black). One line each, from the context above.
+5. Live demo: heading "Two people, two vendors, *one room*." Left: placeholder for a screenshot of the negotiation room. Right, five beats: each agent publishes its person's cited graph; open the room, the agents proposed links and decided nothing; both people confirm a match, agreed; one person rejects a conflict, one no is enough; reload, the decisions are stored and agents can't click.
+6. Statement (black): "Agents propose. *Only people agree.*" Line under it: "A decision is recorded only from the person's browser. The command line and the MCP tools can't confirm anything."
+7. Text-layer numbers: heading "Smaller, cheaper, and every claim *cited*." Three stat cards: 3.8%, $4.72 (vs $119.36), 2nd handoff (black card). Caveat footer.
+8. Latent-layer numbers: heading "One model reads once; *every call reuses it*." Four stat cards: 426 ms, 98–99%, 5–9%, 3/3 (black). Caveat footer.
+9. Horizontal: heading "Wherever two agents must trust what the other knows, *and a person stays in control*." Four cards: Code handoffs (label "First users", black card), Team-forming ("Today's demo"), Hiring ("Next"), Across companies ("Next").
+10. Run it (black): heading "Local, open, *one command*." Three cards with commands in monospace: Start the ledger ("npm ci", "npm start"; runs on your machine only), Connect any agent ("claude mcp add context-ledger -- node /path/to/src/mcp.mjs"; Codex uses the same MCP server), Six MCP tools (graph_publish, graph_read, context_for, room_open, room_read, graph_schema; none can confirm a decision).
+Put a speaker note on every slide with one or two spoken sentences.
+
+=== NEVER WRITE ===
+"A new industry standard" (say "a layer over MCP"); "it does everything" (always name the first users); "saves time"; exact token counts (all are estimates); "cheaper than a cached chat" as a general claim; that passing memory between different model families is built (it is the next step).
+
+=== STYLE ===
+Canvas 16:9 (1920×1080), 128px margins, one idea per slide.
+Colors only: near-black #0F0F0F (headings; background of black slides), white #FFFFFF (main background; text on black), soft grey #F5F5F7 (cards), mid grey #666666 (body text and labels on white), light grey #B3B3B3 (body text on black), label grey #8C8C8C (labels on black), slightly lighter black #1C1C1C (code cards on black slides). No accent colors, no gradients.
+Font: Montserrat only. Title 128px bold. Headings 72px semibold, line-height 1.1, sentence case, left-aligned, with 1–3 words in italics for emphasis. Big numbers 96px bold (64px in 4-card rows). Card titles 44px semibold. Body 28–32px regular, mid grey, line-height 1.4. Eyebrow label above each heading: 24px medium, UPPERCASE, letter-spacing 4px, mid grey. Caveat footnotes 24px, pinned at the bottom. Nothing below 24px. Commands in Courier New.
+Layout: eyebrow, then heading, then content on every content slide. Content in rounded cards (#F5F5F7, radius 20px, padding 40px, no borders, no shadows, 24px gaps). Exactly one card per row is black with white text. Prefer cards, stat cards and step rows over bullet lists.
+Feel: minimal, editorial, calm, premium, generous white space. No icons, clip art, emoji, stock photos, shadows or decorative shapes.
+Images (if you generate any): black-and-white minimal line illustrations with soft greys, simple geometric forms and connecting lines, flat, no text or logos inside the image.
+````
