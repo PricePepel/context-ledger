@@ -105,3 +105,9 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - It is private until Ali shares it, so Ruslan can't open the link yet.
   - Fonts: Geist for text, Instrument Serif for headings, standing in for Expedite's paid PP Editorial Old.
   - `expedite.now` was added to the cloud environment's allowed hosts so its stylesheet could be read.
+- Status 22:50 UTC. **L14 closed.**
+  - Ruslan merged onto 72ce5cb in `adcc7fb`, without force-pushing, following the PR #4 plan. Both branches carry one identical approved `docs/latent-read.md`.
+  - The ledger follows the merged contract (3c2a4f6), and word-only findings must be grounded in their cited lines (0de471a, 5e6b733).
+  - Live gates pass 3/3 on both sets: original 7/8 accuracy and 7/8 citations; held-out 7/8 and 8/8.
+  - Ali's agent re-ran the runtime suite on adcc7fb: all pass, two runs.
+  - **Lesson recorded on PR #4:** the "untrusted data" preamble sentence from 72ce5cb cut accuracy to 6/8 and leaked the injection probe live, so it was rightly dropped. Prompt changes need a live gate run.
