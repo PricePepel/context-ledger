@@ -210,3 +210,9 @@ Live on Qwen2.5-7B-AWQ, three runs per set, after the debug fixes below:
   - Workers and the planner were cut off once quotes were required. Fixed with 3 findings per worker within 900 tokens, and compact retries for every role.
   - The model's quotes were right but its line numbers wrong (`move(id, 'paid')` quoted from line 25 but cited as 24, `MAIL_QUEUE` from line 27 cited as 17–18). Fixed by anchoring evidence on the quote.
   - The gate runner aborted a whole run on one 502. A failed read is now scored as a wrong, uncited answer.
+- **Independent review of cycle 6b: 2 high, 1 medium, several low. All fixed in 9392642 (Leo side) and 73609b9 (Ali side).**
+  - High: the relocation search could freeze the ledger. A `}` quote on a 512 KiB file took 257 s per span. It is now one `indexOf` pass, and a 48-span hostile slice finishes in under 3 s.
+  - High: a quote could insert line breaks and fake a finding line in the briefing. Quotes are now stored on one line and rendered as JSON.
+  - Medium: trivial quotes verified and relocated anywhere. Quotes under 8 non-space characters no longer count. A quote with several occurrences relocates only within 30 lines, or else stays as cited, unverified.
+  - Lows: range distance, duplicate relocated spans, `relocatedSpans` counting, blank quotes, and slice share after a failed read.
+  - Live re-run after the fixes, three runs each: the original set 7/8 accuracy and 7/8 citations, the held-out set 7/8 and 8/8, 100% quote-verified, both gates pass 3/3. The injection probe drops the hijacked finding in 3/3. Results are identical to before the fixes, so the stricter rules cost nothing.
