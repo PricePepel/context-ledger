@@ -88,3 +88,6 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - Runtime tests: 73/73, three runs.
   - Ruslan was told on PR #4, and `ali/latent-pool` is free to push again.
   - **Ruslan:** copy `docs/latent-read.md` from `ali/latent-pool` to `leo/latent-read` so the two copies match. Optionally, give the ledger a clearer message for the runtime's new 504.
+- Status 21:55 UTC. **Collision on `ali/latent-pool`.** Ruslan's agent fixed the same L14 blockers in parallel (runtime `105ebe2`, `ffea03b`, not pushed; ledger 023123e and f166765 on `leo/latent-read`), while Ali's agent pushed 72ce5cb. The details are on PR #4 (comment of 21:55 UTC).
+  - **Ali's agent stays off `ali/latent-pool` from now on.** Ruslan rebases onto 72ce5cb, without force-pushing. Where the two overlap, keep Ruslan's version: 5 s slot wait, 15 s read deadline, the disconnect check, and `preambleVersion` as the string "2". Drop Ali's added preamble sentence so the live gate stays valid. Keep Ali's low fixes and `test_review_fixes.py`.
+  - Contract: Ruslan's copy as the base, plus Ali's Paths, File text and Secrets sections.
