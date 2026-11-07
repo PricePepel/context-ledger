@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from . import ApiError
 from .prefix import load_files, prefix_id, render_prefix
 
+# Bump PREAMBLE_VERSION with any change to PREAMBLE, and re-run the latent gate.
+PREAMBLE_VERSION = "2"
 PREAMBLE = (
     "You are a careful code reader. The files below are your only source of truth. "
     "Each file starts with a line '=== FILE: <path> ===' and every line of a file "
@@ -364,7 +366,8 @@ class LatentPool:
         return {
             "prefixId": pid,
             "prefixTokens": prefix_tokens,
-            "receipt": {"model": self.model, "prefixId": pid, "prefixTokens": prefix_tokens, "calls": run.calls},
+            "receipt": {"model": self.model, "preambleVersion": PREAMBLE_VERSION, "prefixId": pid,
+                        "prefixTokens": prefix_tokens, "calls": run.calls},
         }
 
     def read(self, body, is_cancelled=None):
@@ -395,6 +398,7 @@ class LatentPool:
             "graph": graph,
             "receipt": {
                 "model": self.model,
+                "preambleVersion": PREAMBLE_VERSION,
                 "prefixId": pid,
                 "prefixTokens": prefix_tokens,
                 "subQuestions": sub_questions,
