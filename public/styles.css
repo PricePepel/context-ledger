@@ -222,3 +222,7 @@ footer { padding-block: 1rem 1.5rem; color: var(--muted); }
 .choice-button { padding: .3rem .7rem; border: 1px solid var(--ink); background: var(--white); color: var(--ink); cursor: pointer; }
 .choice-button[aria-pressed="true"] { background: var(--ink); color: var(--white); }
 .agreed li { padding-block: .4rem; border-top: 1px solid var(--rule); overflow-wrap: anywhere; }
+
+@media (max-width: 40rem) {
+  .choice-made { flex-basis: 100%; }
+}

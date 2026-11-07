@@ -47,10 +47,12 @@ export function mountRooms(database, readGraph) {
     const graphs = [readGraph(row.a), readGraph(row.b)].sort((x, y) => (x.packet.party < y.packet.party ? -1 : 1));
     const parties = graphs.map(graph => graph.packet.party);
 
+    // Maps, not objects: a party may be named "constructor", and an inherited
+    // property must never stand in for a person's missing choice.
     const recorded = new Map();
     for (const { proposalId, party, choice } of selectChoices.all(id)) {
-      if (!recorded.has(proposalId)) recorded.set(proposalId, {});
-      recorded.get(proposalId)[party] = choice;
+      if (!recorded.has(proposalId)) recorded.set(proposalId, new Map());
+      recorded.get(proposalId).set(party, choice);
     }
 
     const proposals = [];
@@ -59,8 +61,8 @@ export function mountRooms(database, readGraph) {
       for (const link of graph.packet.links ?? []) {
         if (link.graph !== other.id) continue;
         const proposalId = digest('proposal', graph.id, link.type, link.from, link.to);
-        const made = recorded.get(proposalId) ?? {};
-        const partyChoices = Object.fromEntries(parties.map(party => [party, made[party] ?? null]));
+        const made = recorded.get(proposalId) ?? new Map();
+        const partyChoices = Object.fromEntries(parties.map(party => [party, made.get(party) ?? null]));
         const values = Object.values(partyChoices);
         proposals.push({
           id: proposalId,

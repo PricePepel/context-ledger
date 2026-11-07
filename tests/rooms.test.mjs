@@ -105,6 +105,23 @@ test('rooms reject bad graph sets and decisions reject unknown proposals, partie
   assert.equal(store.getRoom('0'.repeat(64)), undefined);
 });
 
+test('debug fix: a party named like an inherited property still reports its own choice', () => {
+  const store = openStore(':memory:');
+  const a = store.importTranscript({ provider: 'claude', source: 'a.jsonl', transcript: say('A synthetic.') });
+  const b = store.importTranscript({ provider: 'claude', source: 'b.jsonl', transcript: say('B synthetic.') });
+  const odd = store.publishGraph({ version: 2, sessionId: a.id, party: 'constructor', nodes: [{ id: 'x', kind: 'offer', label: 'X', evidenceLines: [1] }], edges: [] });
+  const leo = store.publishGraph({
+    version: 2, sessionId: b.id, party: 'leo',
+    nodes: [{ id: 'y', kind: 'goal', label: 'Y', evidenceLines: [1] }], edges: [],
+    links: [{ from: 'y', graph: odd.id, to: 'x', type: 'matches' }],
+  });
+  const room = store.openRoom({ graphIds: [odd.id, leo.id] });
+  assert.deepEqual(room.proposals[0].choices, { constructor: null, leo: null });
+  const view = store.decide(room.id, { proposalId: room.proposals[0].id, party: 'leo', choice: 'confirm' });
+  assert.deepEqual(JSON.parse(JSON.stringify(view.proposals[0].choices)), { constructor: null, leo: 'confirm' });
+  assert.equal(view.proposals[0].state, 'proposed');
+});
+
 test('a room with no links between its graphs has no proposals', () => {
   const { store, ali, aliSession, leoSession } = setup();
   void aliSession;

@@ -47,6 +47,17 @@ test('two people open a room, confirm a match, reject a conflict and see it afte
   await expect(page.locator('#room-proposals > li', { hasText: 'answers' })).toContainText('State: proposed');
 });
 
+test('the room view fits a phone-width screen without sideways scrolling', async ({ page, request, baseURL }) => {
+  const { ali, leo } = await publishPair(request, baseURL);
+  const opened = await request.post('/api/rooms', { headers: { origin: baseURL }, data: { graphIds: [ali.id, leo.id] } });
+  const { room } = await opened.json();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/#room=' + room.id);
+  await expect(page.locator('#room-proposals > li')).toHaveCount(3);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
 test('room API rejects agent decisions, foreign origins and invalid rooms', async ({ request, baseURL }) => {
   const { ali, leo } = await publishPair(request, baseURL);
   const opened = await request.post('/api/rooms', { headers: { origin: baseURL }, data: { graphIds: [ali.id, leo.id] } });
