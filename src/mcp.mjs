@@ -39,7 +39,8 @@ if (port === undefined) {
 const origin = `http://127.0.0.1:${port}`;
 
 function validLedgerMessage(message) {
-  return typeof message === 'string' && message.length > 0 && message.length <= 200 && !/\p{C}/u.test(message);
+  // Zl/Zp are line breaks to many readers; a message with one is not passed through.
+  return typeof message === 'string' && message.length > 0 && message.length <= 200 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(message);
 }
 
 async function ledger(path, { body, notFound } = {}) {
@@ -52,8 +53,15 @@ async function ledger(path, { body, notFound } = {}) {
   let response;
   try {
     response = await fetch(origin + path, init);
-  } catch {
-    throw new ToolError(`Cannot reach Context Ledger on port ${port}. Start it with npm start.`);
+  } catch (error) {
+    // A timed-out publish may still have been stored; an exact retry returns the same ID.
+    if (error?.name === 'TimeoutError') {
+      throw new ToolError('Context Ledger did not answer within 5 seconds. Retrying is safe: an identical publish returns the same ID.');
+    }
+    if (error?.cause?.code === 'ECONNREFUSED') {
+      throw new ToolError(`Cannot reach Context Ledger on port ${port}. Start it with npm start.`);
+    }
+    throw new ToolError(`Context Ledger request to port ${port} failed (for example, a redirect, which is refused).`);
   }
   if (response.status === 404 && notFound) {
     await response.body?.cancel().catch(() => {});
@@ -269,6 +277,8 @@ async function dispatch(message) {
   const validId = typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id));
   // A message without a method is a response; this server sends no requests, so ignore it.
   if (method === undefined && hasId && (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'))) return;
+  // Without an id nothing can correlate a reply, so even a malformed notification is dropped.
+  if (!hasId && typeof method === 'string') return;
   if (message.jsonrpc !== '2.0' || typeof method !== 'string') {
     return sendError(validId ? id : null, -32600, 'Invalid JSON-RPC 2.0 request.');
   }
