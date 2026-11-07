@@ -21,14 +21,21 @@ _DRIVE = re.compile(r"^[A-Za-z]:")
 # Unicode categories refused in paths: the ledger's \p{C} (Cc, Cf, Cs, Co, Cn)
 # plus line and paragraph separators (Zl, Zp). U+2028, U+0085 or U+202E in a
 # file name could otherwise fake a "=== FILE:" header or line numbers.
-_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# "Cn" (unassigned) is left out on purpose: Python's Unicode tables are older than
+# Node's, so a newly assigned character would pass the ledger and then fail here
+# with 400, a hard 502 instead of the text fallback (Ali's review of 72ce5cb, low 1).
+# Cc, Cf, Zl and Zp already block fake headers.
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
 
 # Files that commonly hold secrets. Their text would be quoted into a slice that
 # leaves the machine for a closed model, so they are refused even under the root.
-_SECRET_DIRS = frozenset({".git", ".ssh", ".aws", ".gnupg"})
-_SECRET_NAMES = frozenset({".npmrc", ".pypirc", ".netrc", ".pgpass", "credentials", "id_rsa", "id_dsa",
-                           "id_ecdsa", "id_ed25519"})
+# The ledger (src/latent.mjs) mirrors this rule so it refuses them up front.
+_SECRET_DIRS = frozenset({".git", ".ssh", ".aws", ".gnupg", ".docker", ".kube"})
+_SECRET_NAMES = frozenset({".npmrc", ".pypirc", ".netrc", ".pgpass", ".git-credentials", "credentials",
+                           "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"})
 _SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+# Templates meant to be committed are not secrets.
+_ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
 
 
 def is_secret_path(segments):
@@ -37,6 +44,8 @@ def is_secret_path(segments):
         if segment.lower() in _SECRET_DIRS:
             return True
     name = segments[-1].lower()
+    if name in _ENV_TEMPLATES:
+        return False
     return (name.startswith(".env") or name in _SECRET_NAMES or name.startswith("id_rsa")
             or name.startswith("id_ed25519") or name.endswith(_SECRET_SUFFIXES))
 
@@ -108,7 +117,11 @@ def resolve_paths(root, paths):
         if not inside:
             raise ApiError(400, f"Path leaves LATENT_ROOT: {path!r}")
         # A symlink with an innocent name can still point at .env or a key file.
-        if is_secret_path(os.path.relpath(real, root_real).replace(os.sep, "/").split("/")):
+        try:
+            relative = os.path.relpath(real, root_real)
+        except ValueError:  # Windows device names (NUL, CON) resolve to another "mount"
+            raise ApiError(400, f"Path leaves LATENT_ROOT: {path!r}") from None
+        if is_secret_path(relative.replace(os.sep, "/").split("/")):
             raise ApiError(400, f"Paths must not name secret files (.env, .git, keys): {path!r}")
         if not os.path.isfile(real):
             raise ApiError(400, f"File not found: {path!r}")

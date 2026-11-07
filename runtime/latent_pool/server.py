@@ -8,6 +8,7 @@ every cross-origin and every POST request, so a web page cannot drive it.
 
 import json
 import os
+import select
 import socket
 import sys
 import threading
@@ -24,7 +25,7 @@ MAX_BODY_BYTES = 64 * 1024
 # Whole-request read deadline: the request line, headers and body must all arrive
 # within this many seconds. The per-receive timeout alone let a client trickle one
 # byte every few seconds and hold a connection (and one of the 64 slots) forever.
-READ_DEADLINE_SECONDS = 10.0
+READ_DEADLINE_SECONDS = 15.0  # merged: Leo's live-verified value
 DRAIN_LIMIT = 1024 * 1024
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
@@ -99,7 +100,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def finish(self):
         self._deadline_timer.cancel()
-        super().finish()
+        try:
+            super().finish()
+        except OSError:  # the client already hung up; nothing left to flush to
+            pass
+
+    def _client_gone(self):
+        """True once the client has closed its side (Leo's disconnect check)."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
 
     def log_message(self, format, *args):
         if not getattr(self.server, "quiet", False):
@@ -190,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(405, "Method not allowed.")
             body = self._read_json() if method == "POST" else None
             self._request_read()
-            self.send_json(200, handler(body))
+            self.send_json(200, handler(body, self._client_gone))
         except ApiError as error:
             self._drain()
             self._request_read()
@@ -241,8 +253,9 @@ class LatentServer(ThreadingHTTPServer):
         self.routes = {
             "/latent/warm": {"POST": self.pool.warm},
             "/latent/read": {"POST": self.pool.read},
-            "/latent/mappers": {"GET": lambda _body: {"pairs": self.registry.pairs()}},
-            "/latent/transfer": {"POST": self.registry.transfer},
+            # Handlers get the body and a callable that reports a departed client.
+            "/latent/mappers": {"GET": lambda _body, _gone: {"pairs": self.registry.pairs()}},
+            "/latent/transfer": {"POST": lambda body, _gone: self.registry.transfer(body)},
         }
         super().__init__(("127.0.0.1", config.port), Handler)
 

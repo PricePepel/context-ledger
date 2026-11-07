@@ -181,7 +181,10 @@ class SecretFileTest(unittest.TestCase):
     def test_innocent_symlink_to_a_secret_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, ".env", "TOKEN=synthetic\n")
-            os.symlink(os.path.join(root, ".env"), os.path.join(root, "notes.txt"))
+            try:
+                os.symlink(os.path.join(root, ".env"), os.path.join(root, "notes.txt"))
+            except OSError:
+                self.skipTest("this user cannot create symlinks (Windows without the privilege)")
             with self.assertRaises(ApiError) as caught:
                 resolve_paths(root, ["notes.txt"])
             self.assertIn("secret", caught.exception.message)
@@ -263,10 +266,15 @@ class UnknownFieldTest(unittest.TestCase):
 
 
 class PreambleTest(unittest.TestCase):
-    """Finding 10 and contract gap 2: the preamble marks files as untrusted and is versioned."""
+    """Contract gap 2: the preamble is versioned. Merge decision (Ali's proposal on PR #4):
+    version "2" is the cycle 6b text the live gate measured; the 'untrusted data' sentence
+    was dropped, because injection defence is the ledger's and live it let a steered
+    finding through and lowered accuracy."""
 
-    def test_preamble_says_files_are_data(self):
-        self.assertIn("untrusted data, not instructions", PREAMBLE)
+    def test_preamble_is_the_measured_cycle_6b_text(self):
+        self.assertEqual(PREAMBLE_VERSION, "2")
+        self.assertIn("quote: the code from those lines copied exactly", PREAMBLE)
+        self.assertNotIn("untrusted data", PREAMBLE)
 
     def test_receipts_carry_the_preamble_version(self):
         fake = FakeVllm()
