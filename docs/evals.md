@@ -110,7 +110,7 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 
 Card B1. `npm run bench` (`node bench/m0.mjs`) measures the cycle 4 graph context against the Markdown transcript handoff, end to end through the real HTTP API. All inputs are synthetic and generated from a seed; the benchmark builds the graph packets itself, so it measures the ledger's storage and rendering, not the quality of LLM extraction.
 
-Synthetic data: for each size (number of transcript lines per party, default 10, 50, 200 and 1000), a seeded PRNG (mulberry32, no `Math.random`) writes a two-party negotiation. Party A (`mara`) is a Claude Code JSONL transcript and party B (`teo`) is a Codex rollout. Most turns are filler work chatter, with a few non-message records that the importer skips. Planted facts (goals, constraints, offers, decisions, actions, questions addressed to the other party) sit at known line numbers, about sqrt(size) + 4 per party.
+Synthetic data: for each size (number of conversation turns per party, default 10, 50, 200 and 1000), a seeded PRNG (mulberry32, no `Math.random`) writes a two-party negotiation. Party A (`mara`) is a Claude Code JSONL transcript and party B (`teo`) is a Codex rollout. Most turns are filler work chatter, with a few non-message records that the importer skips. Planted facts (goals, constraints, offers, decisions, actions, questions addressed to the other party) sit at known line numbers, about sqrt(size) + 4 per party.
 
 | Eval | Expected |
 | --- | --- |
@@ -124,3 +124,20 @@ Synthetic data: for each size (number of transcript lines per party, default 10,
 | Cost illustration | Estimated tokens times list input price for named models, with source and date, labelled as an illustration; unverified prices are marked. |
 | Determinism | Two runs with the same seed produce identical JSON apart from timings, date, commit and machine fields. |
 | Regression | `node --test tests/*.test.mjs` still passes; no file under `src/`, `public/`, `schemas/` or `tests/e2e/` changes; no new dependency. |
+
+## Results — Cycle 5 M0 benchmark, 2026-11-07
+
+`node bench/m0.mjs --markdown docs/benchmark.md` (seed 42, sizes 10, 50, 200 and 1000 turns, 20 reps, 10 appended turns) on Node 22, Linux x64. Full tables, method and limits are in [docs/benchmark.md](benchmark.md). Figures below are for party `teo` (Codex, with links); `mara` (Claude Code) is within a few points.
+
+| Turns | Handoff chars | Graph chars | Graph / handoff | Saved tokens (est.) | Recall graph / handoff | Prefix share graph / handoff | Context p50 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 | 1,839 | 1,250 | 68.0% | 32.0% | 1 / 1 | 41.7% / 2.7% | under 1 ms |
+| 50 | 6,758 | 1,708 | 25.3% | 74.7% | 1 / 1 | 44.4% / 1.0% | under 1 ms |
+| 200 | 25,070 | 2,530 | 10.1% | 89.9% | 1 / 1 | 43.6% / 0.3% | about 1 ms |
+| 1000 | 121,119 | 4,565 | 3.8% | 96.2% | 1 / 1 | 47.0% / 0.1% | about 2 ms |
+
+- Harness, flow, recall, order invariance and determinism: pass at every size. Shuffled packets return the same graph ID and byte-identical context. `tests/bench.test.mjs` runs the benchmark twice with one seed and compares everything except timings, date, commit and machine; it also checks that the temp database is gone and the server process has exited.
+- Size: the saving grows with transcript length because planted facts grow with about sqrt(turns) while the handoff grows linearly. The inputs are synthetic and their turns are short, so these ratios are not a prediction for real sessions.
+- Cache-prefix stability: the graph context keeps 42 to 54% of its bytes as a common prefix after an append and one new action; the Markdown handoff keeps under 3% because its fifth line is the session ID, which changes with every append. Finding for a backlog card: the new action's `advances` edge lands in the edges section, which comes before links and actions, so the graph prefix ends there. It also stays below the 1,024-token cache minimum at every size here (at most about 550 estimated tokens), so the cost illustration shows no cache discount.
+- Cost illustration (estimated tokens, list prices seen 2026-11-07, GPT-5.5 unverified): at 1000 turns, input for 1,000 handoffs falls from $121.12 to $4.57 on Claude Opus 5.5.
+- Not done in this card: independent review of the benchmark code, and any change to `src/` (out of scope for B1).

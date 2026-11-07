@@ -10,7 +10,8 @@
     "start": "node src/server.mjs",
     "test": "playwright test",
     "test:graph": "node --test tests/graph.test.mjs",
-    "ledger": "node src/cli.mjs"
+    "ledger": "node src/cli.mjs",
+    "bench": "node bench/m0.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.0"
