@@ -65,3 +65,25 @@ Both commands return JSON containing the graph ID, packet, ready action IDs, and
 Evidence must cite a line that produced a stored user or assistant turn. Lines that held only tool output or injected context are not stored, so citing them is rejected.
 
 Each packet is a snapshot of one imported session. An exact repeat returns its existing ID. Object key order does not matter, but the order of `nodes`, `edges` and `evidenceLines` does: reordering them produces a separate graph. A pending action is ready when its prerequisites are completed and its blockers are resolved. A decision becomes historical when another decision explicitly supersedes it. See the [packet schema](schemas/semantic-graph.schema.json) and [evals](docs/evals.md).
+
+## Connect an agent over MCP
+
+`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+
+Claude Code:
+
+```sh
+claude mcp add context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs
+```
+
+Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.context-ledger]
+command = "node"
+args = ["/absolute/path/to/context-ledger/src/mcp.mjs"]
+# Only needed when the ledger runs on another port.
+env = { PORT = "4317" }
+```
+
+Point clients at `node` directly rather than `npm run mcp`: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
