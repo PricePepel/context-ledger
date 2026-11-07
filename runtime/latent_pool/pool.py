@@ -197,8 +197,10 @@ def clean_findings(raw, line_counts, max_findings):
             if exact and clamped not in spans:
                 # Pass the quote through for the ledger to verify; it is file text, so
                 # keep it on one line and bounded.
+                # A blank quote is passed on as "" so the ledger counts it as a bad
+                # quote instead of seeing an unquoted finding (6b review).
                 quote = span.get("quote")
-                if isinstance(quote, str) and quote.strip():
+                if isinstance(quote, str):
                     clamped = {**clamped, "quote": one_line(quote, MAX_QUOTE_CHARS)}
                 spans.append(clamped)
         finding_key = (label, tuple((s["path"], s["startLine"], s["endLine"]) for s in spans))
