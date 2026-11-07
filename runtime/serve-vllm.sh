@@ -19,6 +19,17 @@ if [ ! -x "$VENV/bin/vllm" ]; then
   exit 1
 fi
 
+# Verified live on 2026-11-07 (RTX 4090 Laptop, WSL Ubuntu 24.04, vLLM 0.33.0):
+# - torch.compile and Triton need a C compiler and Python headers:
+#   apt-get install -y build-essential python3-dev
+# - FlashInfer's sampler JIT-compiles with nvcc, which a pip-only setup lacks, so
+#   use vLLM's built-in sampler unless the caller opts back in.
+if ! command -v cc > /dev/null; then
+  echo "No C compiler: run apt-get install -y build-essential python3-dev" >&2
+  exit 1
+fi
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+
 exec "$VENV/bin/vllm" serve "$MODEL" \
   --enable-prefix-caching \
   --enable-prompt-tokens-details \
