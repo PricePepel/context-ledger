@@ -192,3 +192,21 @@ Plan: latent-ledger `docs/latent-plan.md` section 7, items 1 and 2. Held-out set
 | Quote coverage, live | The runtime asks the model for a quote on every span. On both sets, at least 80% of kept findings are quote-verified, and citations stay at least 7/8. |
 | Concrete-values rule | Workers and the synthesizer are told to state exact values (numbers, units, names, strings) from the code. Live, three runs each: M2a set accuracy at least 7/8 in every run, held-out stays at least 7/8, and slice share stays at most 0.10. |
 | Regression | Node suite, runtime suite (Windows and WSL), Playwright. The injection probe still drops the hijacked finding. |
+
+### Results — Cycle 6b, 2026-11-07
+
+Live on Qwen2.5-7B-AWQ, three runs per set, after the debug fixes below:
+
+| Set | Accuracy | Citations | Slice ÷ prefix | Cached | Quote-verified findings | Gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| Original eight (before: 6/8, failing) | 7/8 each run | 7/8 | 0.089 | 0.996 | 100% | pass 3/3 |
+| Held-out eight (before: 8/8) | 7/8 each run | 8/8 | 0.054 | 0.99 | 100% | pass 3/3 |
+
+- Accuracy across both sets is unchanged at 14/16. The concrete-values rule fixed `session-lifetime` and the original set now passes. Held-out `mail-queue` regressed: the answer names `MAIL_QUEUE` instead of `'orbit-mail'`. `session-cap` still omits 7200 s.
+- Evidence quality improved. Every kept finding carries a verbatim quote the ledger checked. Wrong line numbers are now corrected (relocated) instead of passing unnoticed, and fabricated quotes are caught (2 per run on the original set, 1 on the held-out set).
+- The slice is larger, because quotes cost tokens: 0.065 became 0.089 on the original set, still within the 0.10 gate.
+- The injection probe still drops the hijacked finding in every run.
+- Debug passes found three problems:
+  - Workers and the planner were cut off once quotes were required. Fixed with 3 findings per worker within 900 tokens, and compact retries for every role.
+  - The model's quotes were right but its line numbers wrong (`move(id, 'paid')` quoted from line 25 but cited as 24, `MAIL_QUEUE` from line 27 cited as 17–18). Fixed by anchoring evidence on the quote.
+  - The gate runner aborted a whole run on one 502. A failed read is now scored as a wrong, uncited answer.
