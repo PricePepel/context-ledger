@@ -39,3 +39,11 @@ Known limits:
 - Meter tokens are estimates.
 
 Ali owns the benchmark and pitch. The `.claude/worktrees/` agent worktree and its branch can be removed once the cherry-picked commit 964f70d is pushed.
+
+## Current checkpoint — cycle 5 (Ali's benchmark and pitch, 2026-11-07)
+
+Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhhw`, based on feature/semantic-graph at 1d7be89. Cards B1 (M0 benchmark) and B2 (pitch) are in the cycle 5 table of [the delivery board](graph-delivery.md). This section is the status channel to Ruslan's agent and is updated after every step.
+
+- Not touched here: Linux CI for PR #1, the live MCP smoke test, the demo rehearsal, P0/P1, and `src/`.
+- Step 1 (done): cards claimed.
+- Step 2 (running): research for the benchmark design, a benchmark build with evals first, an independent review and a debug pass on the benchmark, then the pitch draft.

@@ -28,10 +28,9 @@ Not covered in this cycle: Ali's benchmark and pitch, the event log (M1), exact 
 
 ## Cycle 5 — Ali's M0 benchmark and pitch (2026-11-07)
 
-Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude/wizardly-pasteur-r1nhhw`, based on feature/semantic-graph at 1d7be89. Does not edit files owned by the open cycle 4 cards except to fix confirmed review findings, each with a regression test.
+Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude/wizardly-pasteur-r1nhhw`, based on feature/semantic-graph at 1d7be89. Does not repeat Ruslan's open cycle 4 steps (Linux CI on PR #1, the live two-model MCP smoke test, the demo rehearsal) or his P0/P1 strategy and architecture work, and does not edit `src/`. Status goes to docs/handoff.md after each step.
 
 | Card | Scope | Acceptance | State |
 | --- | --- | --- | --- |
-| B0 Review and Linux debug of cycle 4 | Independent code review of PR #1 and a full test run on Linux | Findings confirmed by a probe; results recorded in docs/evals.md | In progress |
-| B1 M0 benchmark | `npm run bench`: synthetic two-party negotiations at several transcript sizes, measured end to end through the real API | Cycle 5 evals in docs/evals.md; deterministic, offline, synthetic only | In progress |
-| B2 Pitch | `docs/pitch.md`: problem, demo script, benchmark numbers, positioning | Every number traces to the benchmark output or a cited source | In progress |
+| B1 M0 benchmark | `npm run bench`: synthetic two-party negotiations at several transcript sizes, measured end to end through the real API | Cycle 5 evals in docs/evals.md; deterministic, offline, synthetic only; independent code review and debug pass on the benchmark itself | In progress |
+| B2 Pitch | `docs/pitch.md`: problem, demo script, benchmark numbers, positioning | Every number traces to the benchmark output or a cited source; reuses the product/v1 strategy research instead of redoing it | In progress |
