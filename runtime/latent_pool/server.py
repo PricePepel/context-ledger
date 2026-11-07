@@ -9,6 +9,7 @@ every cross-origin and every POST request, so a web page cannot drive it.
 import json
 import os
 import sys
+import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -63,7 +64,9 @@ def _reject_constant(name):
 class Handler(BaseHTTPRequestHandler):
     server_version = "latent-pool"
     sys_version = ""
-    timeout = 60
+    # Per-recv deadline. The ledger sends each request in one burst, so a client
+    # that trickles bytes is cut off quickly; the connection cap bounds the rest.
+    timeout = 10
 
     # ------------------------------------------------------------ plumbing
 
@@ -185,12 +188,19 @@ class Handler(BaseHTTPRequestHandler):
         self._route("HEAD")
 
 
+MAX_CONNECTIONS = 64
+
+
 class LatentServer(ThreadingHTTPServer):
+    """Caps open connections: each holds a thread, so slow or idle clients
+    (slowloris) are refused once the cap is reached instead of piling up."""
+
     daemon_threads = True
 
     def __init__(self, config, client=None, registry=None, quiet=False):
         self.config = config
         self.quiet = quiet
+        self._connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
         client = client or VllmClient(config.vllm_url, config.model, config.timeout)
         self.pool = LatentPool(config.root, client)
         self.registry = registry or MapperRegistry()
@@ -201,6 +211,22 @@ class LatentServer(ThreadingHTTPServer):
             "/latent/transfer": {"POST": self.registry.transfer},
         }
         super().__init__(("127.0.0.1", config.port), Handler)
+
+    def process_request(self, request, client_address):
+        if not self._connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connections.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connections.release()
 
 
 def main():

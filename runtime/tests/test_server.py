@@ -55,7 +55,9 @@ class ServiceCase(unittest.TestCase):
 class ReadFlowTest(ServiceCase):
     replies = {"synthesizer": [json.dumps(SLICE)]}
 
-    def test_full_read_produces_a_clamped_slice(self):
+    def test_full_read_keeps_only_exact_spans(self):
+        # Review fix: spans past the file, at line zero or reversed are dropped, not
+        # clamped, so an invented line number is never silently repaired.
         status, payload = self.read()
         self.assertEqual(status, 200, payload)
         graph = payload["graph"]
@@ -65,14 +67,11 @@ class ReadFlowTest(ServiceCase):
         self.assertEqual(graph["answer"], SLICE["answer"])
         self.assertEqual(graph["findings"], [
             {"id": "f1", "label": "valid span", "evidence": [{"path": "src/a.js", "startLine": 2, "endLine": 3}]},
-            {"id": "f2", "label": "end past the file", "evidence": [{"path": "src/a.js", "startLine": 8, "endLine": 10}]},
-            {"id": "f3", "label": "line zero", "evidence": [{"path": "src/b.js", "startLine": 1, "endLine": 1}]},
-            {"id": "f4", "label": "reversed across lines", "evidence": [{"path": "src/a.js", "startLine": 2, "endLine": 3}]},
         ])
         receipt = payload["receipt"]
         self.assertEqual(receipt["model"], MODEL)
         self.assertEqual(receipt["prefixId"], prefix_id(EXPECTED_PREFIX))
-        self.assertEqual(receipt["droppedFindings"], 2)
+        self.assertEqual(receipt["droppedFindings"], 5)
         self.assertEqual(receipt["subQuestions"], ["Sub-question 1?", "Sub-question 2?", "Sub-question 3?"])
         roles = [call["role"] for call in receipt["calls"]]
         self.assertEqual(roles, ["reader", "planner", "worker", "worker", "worker", "synthesizer"])
@@ -169,6 +168,31 @@ class MalformedSynthTest(ServiceCase):
         self.assertEqual(self.fake.roles().count("synthesizer"), 2)
 
 
+DUPLICATES = {
+    "answer": "a3 is 3.",
+    "findings": [
+        {"label": "a3 is 3", "evidence": [{"path": "src/a.js", "startLine": 3, "endLine": 3}]},
+        {"label": "a3 is 3", "evidence": [{"path": "src/a.js", "startLine": 3, "endLine": 3}]},
+    ],
+}
+
+
+class DuplicateFindingsTest(ServiceCase):
+    replies = {"synthesizer": [json.dumps(DUPLICATES)]}
+
+    def test_identical_findings_are_kept_once(self):
+        status, payload = self.read(workers=1)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(len(payload["graph"]["findings"]), 1)
+        self.assertEqual(payload["receipt"]["droppedFindings"], 1)
+
+    def test_case_aliases_of_one_file_are_duplicates(self):
+        # On case-insensitive filesystems (Windows, /mnt/c under WSL) these name one
+        # file. On a case-sensitive one the alias does not exist. Never a 200.
+        status, payload = self.read(paths=["src/a.js", "SRC/A.JS"], workers=1)
+        self.assertEqual(status, 400, payload)
+
+
 class RecoveringSynthTest(ServiceCase):
     replies = {"synthesizer": ['{"answer": 3, "findings": []}', json.dumps(SLICE)]}
 
@@ -176,7 +200,7 @@ class RecoveringSynthTest(ServiceCase):
         status, payload = self.read(workers=1)
         self.assertEqual(status, 200, payload)
         self.assertEqual(self.fake.roles().count("synthesizer"), 2)
-        self.assertEqual(len(payload["graph"]["findings"]), 4)
+        self.assertEqual(len(payload["graph"]["findings"]), 1)
 
 
 class NoValidEvidenceTest(ServiceCase):

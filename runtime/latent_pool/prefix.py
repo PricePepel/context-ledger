@@ -81,9 +81,15 @@ def resolve_paths(root, paths):
             raise ApiError(400, f"Path leaves LATENT_ROOT: {path!r}")
         if not os.path.isfile(real):
             raise ApiError(400, f"File not found: {path!r}")
-        if key in seen:
+        # Case-insensitive mounts (/mnt/c under WSL) give one file several spellings
+        # that realpath and normcase do not fold, so compare file identity too.
+        info = os.stat(real)
+        identity = (info.st_dev, info.st_ino) if info.st_ino else None
+        if key in seen or (identity and identity in seen):
             raise ApiError(400, f"paths must not repeat (two names for one file): {path!r}")
         seen.add(key)
+        if identity:
+            seen.add(identity)
         resolved.append((path, real))
     return resolved
 

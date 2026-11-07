@@ -174,7 +174,7 @@ def clean_findings(raw, line_counts, max_findings):
     """
     if not isinstance(raw, list):
         raise InvalidOutput("findings is not an array")
-    kept, dropped = [], 0
+    kept, dropped, seen = [], 0, set()
     for finding in raw:
         if not isinstance(finding, dict):
             raise InvalidOutput("finding is not an object")
@@ -185,11 +185,17 @@ def clean_findings(raw, line_counts, max_findings):
         spans = []
         for span in evidence:
             clamped = clamp_span(span, line_counts)
-            if clamped and clamped not in spans:
+            # A span that needed clamping cited lines that do not exist. Clamping it
+            # would hide the invention from the ledger, so the span is dropped instead.
+            exact = clamped and isinstance(span, dict) and clamped["startLine"] == span.get("startLine") \
+                and clamped["endLine"] == span.get("endLine")
+            if exact and clamped not in spans:
                 spans.append(clamped)
-        if not label or not spans or len(kept) >= max_findings:
+        finding_key = (label, tuple((s["path"], s["startLine"], s["endLine"]) for s in spans))
+        if not label or not spans or len(kept) >= max_findings or finding_key in seen:
             dropped += 1
             continue
+        seen.add(finding_key)
         kept.append({"label": label, "evidence": spans[:MAX_SPANS]})
     return kept, dropped
 
