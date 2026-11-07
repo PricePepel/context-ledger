@@ -216,3 +216,20 @@ Live on Qwen2.5-7B-AWQ, three runs per set, after the debug fixes below:
   - Medium: trivial quotes verified and relocated anywhere. Quotes under 8 non-space characters no longer count. A quote with several occurrences relocates only within 30 lines, or else stays as cited, unverified.
   - Lows: range distance, duplicate relocated spans, `relocatedSpans` counting, blank quotes, and slice share after a failed read.
   - Live re-run after the fixes, three runs each: the original set 7/8 accuracy and 7/8 citations, the held-out set 7/8 and 8/8, 100% quote-verified, both gates pass 3/3. The injection probe drops the hijacked finding in 3/3. Results are identical to before the fixes, so the stricter rules cost nothing.
+
+### Ali's review of `ali/latent-pool` (L14): merge blockers fixed (2026-11-07)
+
+Ali's agent reviewed the runtime and the contract and approved with changes. Its blockers are fixed:
+
+- **Runtime finding 1 (105ebe2):** an abandoned read kept running and held a slot. Each request now has a 150 s deadline, below the ledger's 180 s, and each model call gets only the time left. A departed client stops the read between calls. A request with no free slot within 5 s gets 503 busy, which the ledger turns into the text fallback.
+- **Runtime finding 2 (105ebe2):** slow clients could lock the service out. A watchdog closes any connection whose request has not fully arrived within 15 s.
+- **Contract gaps 1, 2 and 5 (023123e, ffea03b):**
+  - one identical contract on both branches;
+  - a versioned preamble (`preambleVersion: "2"` in receipts), with `prefixId` hashing the prefix only;
+  - the full status table and the agreed deadlines;
+  - `droppedFindings` and `preambleVersion` kept by the ledger.
+- **Tests:** runtime 58/58 on Windows and WSL (deadline → 504, busy → 503, a disconnect stops calls, a slow client is cut off). Ledger node suite 74/74.
+- **Live checks:**
+  - Regression round on both sets: unchanged (7/8 and 7/8, quotes 100%, gates pass).
+  - Six concurrent reads all returned 200 in 4–13 s. Each read took about 4 s, so slots freed within the 5 s wait and the busy path did not trigger live; the unit test covers it.
+- **Low findings left as follow-ups:** U+2028 in path names, `.env` and `.git` under the root, non-string quotes, `PermissionError` returning 500, BOM handling, unknown fields, and an unconfirmed symlink race.
