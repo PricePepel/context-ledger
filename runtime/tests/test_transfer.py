@@ -175,7 +175,8 @@ class ScoringTest(unittest.TestCase):
     def test_f1_and_contains(self):
         from latent_transfer.data import contains, f1
         self.assertEqual(f1("Denver Broncos", ["Denver Broncos"]), 1.0)
-        self.assertLess(f1("The team that won was the Denver Broncos", ["Denver Broncos"]), 0.5)
+        # Articles are dropped: 2 of 6 words match, so F1 = 2PR/(P+R) = 0.5 for a correct reply.
+        self.assertAlmostEqual(f1("The team that won was the Denver Broncos", ["Denver Broncos"]), 0.5)
         self.assertEqual(contains("The team that won was the Denver Broncos", ["Denver Broncos"]), 1.0)
         self.assertEqual(contains("Broncos", ["Denver Broncos"]), 0.0)
         self.assertEqual(contains("Geminis", ["Gemini"]), 0.0)
