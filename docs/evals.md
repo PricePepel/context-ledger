@@ -125,6 +125,18 @@ Synthetic data: for each size (number of conversation turns per party, default 1
 | Determinism | Two runs with the same seed produce identical JSON apart from timings, date, commit and machine fields. |
 | Regression | `node --test tests/*.test.mjs` still passes; no file under `src/`, `public/`, `schemas/` or `tests/e2e/` changes; no new dependency. |
 
+Review-fix evals (added after the cycle 5 review, before the fixes):
+
+| Eval | Expected |
+| --- | --- |
+| Fair cache-prefix comparison | Besides the as-is prefix, report the prefix with session and graph IDs replaced by a fixed placeholder on both sides. The handoff's as-is prefix ends inside its `Session:` line; with IDs held constant it keeps most of its bytes and the share grows with size. No test or headline claims the graph is the more cache-stable format. |
+| Data-driven conclusion | The cache-prefix conclusion in `docs/benchmark.md` is computed from the results (which side reaches the cache minimum at which sizes), never fixed text. |
+| Signals | SIGINT, SIGTERM or SIGHUP to the benchmark process, at any point after it starts, kills the server child, deletes the temp directory, writes no report and exits with 128 + signal number. |
+| Failure path | An error thrown inside a size measurement still stops the server and deletes the temp directory. |
+| Order invariance coverage | The shuffled packet is checked to differ in order from the original. The identical-context column is labelled as implied by the same graph ID (the store keeps the first row for an ID). |
+| Input limits | `--sizes` above 9215 (the revised packet would exceed the v2 schema's 100 nodes) or an import body above 8 MiB is rejected before any import, with a message naming the limit. `--seed` must be an integer from 0 to 4294967295, and every seed gives the two parties different PRNG streams. |
+| Commit provenance | The report records whether the benchmark, server or schema files had uncommitted changes, and the committed report names a commit that contains `bench/m0.mjs`. |
+
 ## Results — Cycle 5 M0 benchmark, 2026-11-07
 
 `node bench/m0.mjs --markdown docs/benchmark.md` (seed 42, sizes 10, 50, 200 and 1000 turns, 20 reps, 10 appended turns) on Node 22, Linux x64. Full tables, method and limits are in [docs/benchmark.md](benchmark.md). Figures below are for party `teo` (Codex, with links); `mara` (Claude Code) is within a few points.

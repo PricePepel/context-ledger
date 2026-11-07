@@ -18,6 +18,19 @@ export function prng(seed) {
   };
 }
 
+/**
+ * Derive an independent 32-bit seed from a user seed (0..2^32-1) and a small salt,
+ * in 32-bit integer arithmetic (murmur3 fmix32). For a fixed seed, different salts
+ * always give different results, so the parties never share a PRNG stream.
+ */
+export function deriveSeed(seed, salt) {
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) throw new RangeError('The seed must be an integer from 0 to 4294967295.');
+  let hash = (seed ^ Math.imul(salt, 0x9e3779b9)) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+  hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
+  return (hash ^ (hash >>> 16)) >>> 0;
+}
+
 /** Fisher-Yates shuffle with a seeded generator, returning a new array. */
 export function shuffled(list, rng) {
   const copy = [...list];
@@ -129,7 +142,7 @@ const codexNoise = index => ({ type: 'event_msg', payload: { type: 'token_count'
  */
 export function generateParty(key, turns, seed, extraTurns = 0) {
   const party = parties[key];
-  const rng = prng((seed * 2654435761 + (key === 'a' ? 1 : 2)) >>> 0);
+  const rng = prng(deriveSeed(seed, key === 'a' ? 1 : 2));
   const facts = plantFacts(key, turns, rng);
   const appended = {
     id: 'action-appended', kind: 'action', status: 'pending',

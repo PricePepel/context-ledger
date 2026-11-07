@@ -2,16 +2,18 @@
 // to end through the real HTTP API on synthetic two-party negotiations.
 // Usage: node bench/m0.mjs [--seed N] [--sizes 10,50,200,1000] [--reps N]
 //                         [--append K] [--json out.json] [--markdown docs/benchmark.md]
+// Limits: sizes from 2 to 9215 turns (the revised packet must fit the v2 schema's 100
+// nodes), import bodies up to 8 MiB, seeds from 0 to 4294967295.
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { cpus, tmpdir } from 'node:os';
+import { constants, cpus, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { handoffMarkdown } from '../src/handoff.mjs';
 import { renderMarkdown } from './report.mjs';
-import { factCount, generateParty, packetFor, prng, shuffledPacket } from './synth.mjs';
+import { deriveSeed, factCount, generateParty, packetFor, prng, shuffledPacket } from './synth.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export const defaults = { seed: 42, sizes: [10, 50, 200, 1000], reps: 20, append: 10 };
@@ -24,17 +26,23 @@ export const prices = [
 ];
 export const pricesSeen = '2026-11-07';
 const cacheMinimumTokens = 1024;
+// Server and schema limits the benchmark must stay inside (src/server.mjs, schemas/semantic-graph-v2.schema.json).
+export const limits = { maxNodes: 100, maxRequestBytes: 8 * 1024 * 1024, minSize: 2, maxSeed: 0xffffffff };
+// factCount(size) planted facts plus the appended action must fit in maxNodes.
+export const maxSize = (limits.maxNodes - 4) ** 2 - 1;
+export const handledSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 const estimateTokens = text => Math.ceil(text.length / 4);
 
 // ---------------------------------------------------------------- server harness
 
-async function startServer(database) {
+async function startServer(database, onSpawn) {
   const child = spawn(process.execPath, [join(root, 'src/server.mjs')], {
     cwd: root,
     env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: database },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  onSpawn(child);
   let output = '';
   const base = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Server did not start within 10 s.')), 10_000);
@@ -89,6 +97,13 @@ function commonPrefixBytes(a, b) {
 }
 
 const ratio = (part, whole) => (whole ? Math.round((part / whole) * 1000) / 1000 : 0);
+
+/** Replace volatile IDs (session and graph hashes) with a fixed placeholder. */
+function withIdsHeldConstant(text, ids) {
+  let result = text;
+  for (const id of ids) if (id) result = result.split(id).join('<id>');
+  return result;
+}
 
 function prefixStability(before, after) {
   const bytes = commonPrefixBytes(before, after);
@@ -152,21 +167,46 @@ async function timed(reps, call) {
   return { p50: percentile(samples, 0.5), p95: percentile(samples, 0.95), reps };
 }
 
-function costs(handoffTokens, graphTokens, prefixTokens) {
-  const cachedPrefix = prefixTokens >= cacheMinimumTokens ? prefixTokens : 0;
+function costs(handoffTokens, graphTokens, graphPrefixTokens, handoffPrefixTokens) {
+  const cached = tokens => (tokens >= cacheMinimumTokens ? tokens : 0);
   const perThousand = (tokens, price) => Math.round(tokens * price) / 1000; // tokens * $/MTok * 1000 calls / 1e6
+  const steady = (total, prefix, price) => Math.round(cached(prefix) * price.cacheHit + (total - cached(prefix)) * price.input) / 1000;
   return prices.map(price => ({
     model: price.model,
     verified: price.verified,
     handoffUncached: perThousand(handoffTokens, price.input),
     graphUncached: perThousand(graphTokens, price.input),
-    graphSteadyState: Math.round((cachedPrefix * price.cacheHit + (graphTokens - cachedPrefix) * price.input)) / 1000,
+    graphSteadyState: steady(graphTokens, graphPrefixTokens, price),
+    handoffSteadyStateIdsConstant: steady(handoffTokens, handoffPrefixTokens, price),
   }));
+}
+
+const orderKey = packet => JSON.stringify([packet.nodes.map(node => [node.id, node.evidenceLines]), packet.edges, packet.links ?? []]);
+
+/** Fail before any import when a size would break a server or schema limit. */
+export function checkInputs({ seed, sizes, append }) {
+  if (!Number.isInteger(seed) || seed < 0 || seed > limits.maxSeed) throw new RangeError(`--seed must be an integer from 0 to ${limits.maxSeed}.`);
+  if (!Number.isInteger(append) || append < 1) throw new RangeError('--append must be an integer of at least 1.');
+  if (!Array.isArray(sizes) || sizes.length === 0) throw new RangeError('--sizes needs at least one size.');
+  for (const size of sizes) {
+    if (!Number.isInteger(size) || size < limits.minSize || size > maxSize) {
+      throw new RangeError(`--sizes ${size} is out of range: sizes run from ${limits.minSize} to ${maxSize} turns, `
+        + `because the revised packet (about sqrt(turns) + 5 nodes) must fit the v2 schema limit of ${limits.maxNodes} nodes.`);
+    }
+    for (const key of ['a', 'b']) {
+      const generated = generateParty(key, size, seed, append);
+      const body = JSON.stringify({ provider: generated.party.provider, source: generated.party.source, transcript: generated.extended });
+      if (Buffer.byteLength(body, 'utf8') > limits.maxRequestBytes) {
+        throw new RangeError(`--sizes ${size} makes an import body larger than the server's 8 MiB request limit.`);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------- one size
 
-async function measureSize(api, size, { seed, reps, append }) {
+async function measureSize(api, size, { seed, reps, append, beforeSize }) {
+  await beforeSize?.(size);
   const generatedA = generateParty('a', size, seed, append);
   const generatedB = generateParty('b', size, seed, append);
   const importParty = (generated, transcript) => api('POST', '/api/import', {
@@ -181,7 +221,7 @@ async function measureSize(api, size, { seed, reps, append }) {
   const graphB = (await api('POST', '/api/graphs', packetB)).graph;
   const room = (await api('POST', '/api/rooms', { graphIds: [graphB.id, graphA.id] })).room;
 
-  const shuffleRng = prng((seed ^ (size * 7919)) >>> 0);
+  const shuffleRng = prng(deriveSeed(seed, 16 + size));
   const parties = {};
   for (const [generated, session, packet, graph] of [[generatedA, sessionA, packetA, graphA], [generatedB, sessionB, packetB, graphB]]) {
     const name = generated.party.name;
@@ -191,7 +231,8 @@ async function measureSize(api, size, { seed, reps, append }) {
     if (handoff.length !== context.meter.handoffCharacters) throw new Error('Handoff rendering does not match the API meter.');
 
     // Order invariance: a shuffled copy must be the same graph with the same bytes.
-    const reordered = (await api('POST', '/api/graphs', shuffledPacket(packet, shuffleRng))).graph;
+    const shuffledCopy = shuffledPacket(packet, shuffleRng);
+    const reordered = (await api('POST', '/api/graphs', shuffledCopy)).graph;
     const reorderedContext = (await api('GET', `/api/graphs/${reordered.id}/context`)).context;
 
     // Cache-prefix stability: append turns, re-import (a new session, since session
@@ -204,6 +245,13 @@ async function measureSize(api, size, { seed, reps, append }) {
     const revisedContext = (await api('GET', `/api/graphs/${revised.id}/context`)).context;
     const revisedHandoff = handoffMarkdown((await api('GET', `/api/sessions/${appendedSession.id}`)).session);
     const graphPrefix = prefixStability(context.text, revisedContext.text);
+    const handoffPrefix = prefixStability(handoff, revisedHandoff);
+    // The same comparison with session and graph IDs replaced by one placeholder on both
+    // sides, so a single changed ID line does not decide the result.
+    const ids = [session.id, appendedSession.id, graph.id, revised.id];
+    const graphPrefixIdsConstant = prefixStability(withIdsHeldConstant(context.text, ids), withIdsHeldConstant(revisedContext.text, ids));
+    const handoffPrefixIdsConstant = prefixStability(withIdsHeldConstant(handoff, ids), withIdsHeldConstant(revisedHandoff, ids));
+    const sessionLineEnd = handoff.indexOf('\n', handoff.indexOf(`Session: ${session.id}`));
 
     const factsWithAppended = [...generated.facts];
     parties[name] = {
@@ -234,14 +282,21 @@ async function measureSize(api, size, { seed, reps, append }) {
         appendedTurns: append,
         revisedGraphId: revised.id,
         graph: graphPrefix,
-        handoff: prefixStability(handoff, revisedHandoff),
+        handoff: handoffPrefix,
+        handoffPrefixEndsInSessionLine: handoffPrefix.prefixBytes < Buffer.byteLength(handoff.slice(0, sessionLineEnd), 'utf8'),
+        idsHeldConstant: { graph: graphPrefixIdsConstant, handoff: handoffPrefixIdsConstant },
         revisedRecall: contextRecall(revisedContext.text, [...generated.facts, generated.appended]),
       },
       orderInvariance: {
+        // Independent check that the shuffle really changed the input order.
+        inputReordered: orderKey(shuffledCopy) !== orderKey(packet),
         sameGraphId: reordered.id === graph.id,
+        // Implied by sameGraphId: the store keeps the first row for an ID, so this
+        // re-reads the same row. Kept as an end-to-end guard, not a separate guarantee.
         identicalContext: reorderedContext.text === context.text,
       },
-      costPerThousandHandoffsUsd: costs(context.meter.handoffTokens, context.meter.graphTokens, graphPrefix.prefixTokensEstimate),
+      costPerThousandHandoffsUsd: costs(context.meter.handoffTokens, context.meter.graphTokens,
+        graphPrefix.prefixTokensEstimate, handoffPrefixIdsConstant.prefixTokensEstimate),
     };
   }
 
@@ -264,11 +319,18 @@ async function measureSize(api, size, { seed, reps, append }) {
 
 // ---------------------------------------------------------------- run
 
-function gitCommit() {
+function git(args) {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+/** HEAD plus whether files that shape the numbers have uncommitted changes. */
+function gitState() {
   try {
-    return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const commit = git(['rev-parse', '--short=12', 'HEAD']);
+    const dirty = git(['status', '--porcelain', '--', 'bench', 'src', 'schemas', 'package.json']) !== '';
+    return { commit, dirty };
   } catch {
-    return 'unknown';
+    return { commit: 'unknown', dirty: true };
   }
 }
 
@@ -277,20 +339,42 @@ function gitCommit() {
  * details (temp directory and server PID) so tests can check the cleanup.
  */
 export async function runBenchmark(options = {}) {
-  const { seed, sizes, reps, append } = { ...defaults, ...options };
+  const { seed, sizes, reps, append, beforeSize, log } = { ...defaults, ...options };
+  checkInputs({ seed, sizes, append });
   const tempDir = mkdtempSync(join(tmpdir(), 'context-ledger-bench-'));
   const database = join(tempDir, 'bench.sqlite');
+  const harness = { tempDir, serverPid: undefined };
+  let child;
   let server;
-  const cleanup = () => {
-    server?.child.kill();
-    rmSync(tempDir, { recursive: true, force: true });
+  // A signal ends the run: kill the server, delete the temp database, write nothing
+  // and exit with 128 + signal number, as the shell would.
+  let interrupted = false;
+  const onSignal = signal => {
+    if (interrupted) return;
+    interrupted = true;
+    const finish = () => {
+      rmSync(tempDir, { recursive: true, force: true });
+      process.stderr.write(`bench: interrupted by ${signal}; server stopped, temp database removed, no report written.\n`);
+      process.exit(128 + constants.signals[signal]);
+    };
+    if (!child || child.exitCode !== null || child.signalCode !== null) return finish();
+    // Wait for the exit so this process reaps the child, with a short fallback.
+    child.once('exit', finish);
+    setTimeout(finish, 2000);
+    child.kill('SIGKILL');
   };
-  process.once('SIGINT', cleanup);
+  for (const signal of handledSignals) process.on(signal, onSignal);
+  log?.(`bench: temp directory ${tempDir}`);
   try {
-    server = await startServer(database);
+    server = await startServer(database, spawned => {
+      child = spawned;
+      harness.serverPid = spawned.pid;
+    });
+    log?.(`bench: server pid ${server.child.pid} at ${server.base}`);
     const api = client(server.base);
     const results = [];
-    for (const size of sizes) results.push(await measureSize(api, size, { seed, reps, append }));
+    for (const size of sizes) results.push(await measureSize(api, size, { seed, reps, append, beforeSize }));
+    const git = gitState();
     const report = {
       benchmark: 'context-ledger M0',
       seed,
@@ -299,24 +383,28 @@ export async function runBenchmark(options = {}) {
       appendTurns: append,
       command: `node bench/m0.mjs --seed ${seed} --sizes ${sizes.join(',')} --reps ${reps} --append ${append}`,
       machine: { node: process.version, platform: `${process.platform} ${process.arch}`, cpu: cpus()[0]?.model ?? 'unknown', cpus: cpus().length },
-      gitCommit: gitCommit(),
+      gitCommit: git.commit,
+      gitDirty: git.dirty,
       date: new Date().toISOString().slice(0, 10),
       tokenEstimate: 'ceil(UTF-16 code units / 4); an estimate, not a tokenizer count',
       cacheMinimumTokens,
       prices: { seen: pricesSeen, models: prices },
       results,
     };
-    return { report, markdown: renderMarkdown(report), harness: { tempDir, serverPid: server.child.pid } };
+    return { report, markdown: renderMarkdown(report), harness };
+  } catch (error) {
+    error.harness = harness;
+    throw error;
   } finally {
-    await stopServer(server?.child);
+    await stopServer(child);
     rmSync(tempDir, { recursive: true, force: true });
-    process.removeListener('SIGINT', cleanup);
+    for (const signal of handledSignals) process.removeListener(signal, onSignal);
   }
 }
 
 /** The report without fields that legitimately differ between runs. */
 export function deterministicPart(report) {
-  const { machine: _machine, gitCommit: _commit, date: _date, ...rest } = report;
+  const { machine: _machine, gitCommit: _commit, gitDirty: _dirty, date: _date, ...rest } = report;
   return { ...rest, results: rest.results.map(({ latencyMs: _latency, ...result }) => result) };
 }
 
@@ -338,14 +426,15 @@ async function main() {
     reps: values.reps === undefined ? defaults.reps : integer(values.reps, 'reps', 1),
     append: values.append === undefined ? defaults.append : integer(values.append, 'append', 1),
   };
-  const { report, markdown } = await runBenchmark(options);
+  const { report, markdown } = await runBenchmark({ ...options, log: message => console.error(message) });
   if (values.json) writeFileSync(values.json, JSON.stringify(report, null, 2) + '\n');
   if (values.markdown) writeFileSync(values.markdown, markdown);
   for (const result of report.results) {
     const teo = result.parties.teo;
     console.log(`size ${result.size}: handoff ${teo.size.handoffCharacters} chars, graph ${teo.size.graphCharacters} chars, `
       + `saved ${teo.size.savedShare} (est.), recall ${teo.recall.graph.recall}/${teo.recall.handoff.recall}, `
-      + `prefix ${teo.cachePrefix.graph.share} vs ${teo.cachePrefix.handoff.share}, `
+      + `prefix graph ${teo.cachePrefix.graph.share} vs handoff ${teo.cachePrefix.handoff.share} as is, `
+      + `${teo.cachePrefix.idsHeldConstant.graph.share} vs ${teo.cachePrefix.idsHeldConstant.handoff.share} with IDs constant, `
       + `context p50 ${result.latencyMs.context.p50} ms`);
   }
   if (!values.json && !values.markdown) console.log('Add --json <file> or --markdown <file> to save the full report.');
