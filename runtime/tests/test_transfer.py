@@ -168,5 +168,18 @@ class MapperTest(unittest.TestCase):
         self.assertTrue(all(p.grad is None for p in self.receiver.parameters()))
 
 
+
+class ScoringTest(unittest.TestCase):
+    """SQuAD scoring, including the length-insensitive containment metric (no torch needed)."""
+
+    def test_f1_and_contains(self):
+        from latent_transfer.data import contains, f1
+        self.assertEqual(f1("Denver Broncos", ["Denver Broncos"]), 1.0)
+        self.assertLess(f1("The team that won was the Denver Broncos", ["Denver Broncos"]), 0.5)
+        self.assertEqual(contains("The team that won was the Denver Broncos", ["Denver Broncos"]), 1.0)
+        self.assertEqual(contains("Broncos", ["Denver Broncos"]), 0.0)
+        self.assertEqual(contains("Geminis", ["Gemini"]), 0.0)
+        self.assertEqual(contains("anything", [""]), 0.0)
+
 if __name__ == "__main__":
     unittest.main()

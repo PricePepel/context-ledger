@@ -104,3 +104,13 @@ def f1(prediction, answers):
             score = 2 * precision * recall / (precision + recall)
         best = max(best, score)
     return best
+
+
+def contains(prediction, answers):
+    """1.0 when a normalized gold answer appears inside the normalized prediction.
+
+    Unlike F1, this does not punish a long but correct reply, so it separates "the
+    passage reached the receiver" from "the receiver learned SQuAD's short answer style".
+    """
+    pred = f" {normalize(prediction)} "
+    return float(any(f" {normalize(answer)} " in pred for answer in answers if normalize(answer)))

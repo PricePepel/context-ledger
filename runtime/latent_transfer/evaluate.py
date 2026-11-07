@@ -21,7 +21,7 @@ import time
 
 import torch
 
-from .data import closed_prompt, doc_text, f1, question_suffix, sample, squad, summary_prompt
+from .data import closed_prompt, contains, doc_text, f1, question_suffix, sample, squad, summary_prompt
 from .pair import TransferPair
 
 GATE_RETENTION = 0.90
@@ -78,6 +78,7 @@ def run(pair, items, conditions, log_every=50):
             record["t2t"] = pair.answer_from_text(doc_text(summary), suffix)
         for condition in conditions:
             record[f"{condition}F1"] = f1(record[condition], row["answers"])
+            record[f"{condition}Contains"] = contains(record[condition], row["answers"])
         results.append(record)
         if log_every and (index + 1) % log_every == 0:
             means = {c: round(sum(r[f"{c}F1"] for r in results) / len(results), 3) for c in conditions}
@@ -87,7 +88,10 @@ def run(pair, items, conditions, log_every=50):
 
 def summarize(results, conditions):
     mean = {c: sum(r[f"{c}F1"] for r in results) / len(results) for c in conditions}
-    summary = {"items": len(results), "f1": {c: round(v, 4) for c, v in mean.items()}}
+    summary = {"items": len(results), "f1": {c: round(v, 4) for c, v in mean.items()},
+               # Length-insensitive companion to F1 (see data.contains).
+               "contains": {c: round(sum(r[f"{c}Contains"] for r in results) / len(results), 4) for c in conditions},
+               "meanAnswerWords": {c: round(sum(len(r[c].split()) for r in results) / len(results), 1) for c in conditions}}
     if "text" in mean and mean["text"] > 0:
         for c in ("swat", "t2t"):
             if c in mean:
