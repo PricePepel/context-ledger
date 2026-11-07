@@ -139,17 +139,33 @@ Review-fix evals (added after the cycle 5 review, before the fixes):
 
 ## Results — Cycle 5 M0 benchmark, 2026-11-07
 
-`node bench/m0.mjs --markdown docs/benchmark.md` (seed 42, sizes 10, 50, 200 and 1000 turns, 20 reps, 10 appended turns) on Node 22, Linux x64. Full tables, method and limits are in [docs/benchmark.md](benchmark.md). Figures below are for party `teo` (Codex, with links); `mara` (Claude Code) is within a few points.
+`node bench/m0.mjs --markdown docs/benchmark.md` (seed 42, sizes 10, 50, 200 and 1000 turns, 20 reps, 10 appended turns) on Node 22, Linux x64, at commit 715ae35. Full tables, method and limits are in [docs/benchmark.md](benchmark.md). These figures replace the first run's: the review changed the seed derivation, so the synthetic text (and every size) moved slightly, and the cache-prefix headline of the first run was wrong (see below). Figures are for party `teo` (Codex, with links); `mara` (Claude Code) is within a few points.
 
-| Turns | Handoff chars | Graph chars | Graph / handoff | Saved tokens (est.) | Recall graph / handoff | Prefix share graph / handoff | Context p50 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 10 | 1,839 | 1,250 | 68.0% | 32.0% | 1 / 1 | 41.7% / 2.7% | under 1 ms |
-| 50 | 6,758 | 1,708 | 25.3% | 74.7% | 1 / 1 | 44.4% / 1.0% | under 1 ms |
-| 200 | 25,070 | 2,530 | 10.1% | 89.9% | 1 / 1 | 43.6% / 0.3% | about 1 ms |
-| 1000 | 121,119 | 4,565 | 3.8% | 96.2% | 1 / 1 | 47.0% / 0.1% | about 2 ms |
+| Turns | Handoff chars | Graph chars | Graph / handoff | Saved tokens (est.) | Recall graph / handoff | Prefix share graph / handoff, as is | Prefix share graph / handoff, IDs constant | Context p50 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 | 1,874 | 1,264 | 67.4% | 32.6% | 1 / 1 | 42.2% / 2.6% | 46.1% / 58.9% | under 1 ms |
+| 50 | 6,699 | 1,723 | 25.7% | 74.3% | 1 / 1 | 45.4% / 1.0% | 48.5% / 84.5% | under 1 ms |
+| 200 | 25,020 | 2,554 | 10.2% | 89.8% | 1 / 1 | 44.6% / 0.3% | 46.6% / 95.2% | under 1 ms |
+| 1000 | 119,357 | 4,577 | 3.8% | 96.2% | 1 / 1 | 47.6% / 0.1% | 48.8% / 99.0% | about 2 ms |
 
-- Harness, flow, recall, order invariance and determinism: pass at every size. Shuffled packets return the same graph ID and byte-identical context. `tests/bench.test.mjs` runs the benchmark twice with one seed and compares everything except timings, date, commit and machine; it also checks that the temp database is gone and the server process has exited.
-- Size: the saving grows with transcript length because planted facts grow with about sqrt(turns) while the handoff grows linearly. The inputs are synthetic and their turns are short, so these ratios are not a prediction for real sessions.
-- Cache-prefix stability: the graph context keeps 42 to 54% of its bytes as a common prefix after an append and one new action; the Markdown handoff keeps under 3% because its fifth line is the session ID, which changes with every append. Finding for a backlog card: the new action's `advances` edge lands in the edges section, which comes before links and actions, so the graph prefix ends there. It also stays below the 1,024-token cache minimum at every size here (at most about 550 estimated tokens), so the cost illustration shows no cache discount.
-- Cost illustration (estimated tokens, list prices seen 2026-11-07, GPT-5.5 unverified): at 1000 turns, input for 1,000 handoffs falls from $121.12 to $4.57 on Claude Opus 5.5.
-- Not done in this card: independent review of the benchmark code, and any change to `src/` (out of scope for B1).
+What the benchmark measured:
+
+- Size: the graph context is 3.8% of the handoff's characters at 1000 turns (96.2% fewer estimated tokens); the saving grows with size because planted facts grow with about sqrt(turns) while the handoff grows linearly. The inputs are synthetic with short turns, so these ratios are not a prediction for real sessions.
+- Recall, order invariance and determinism: pass at every size. Recall 1.0 is a guard that rendering drops no planted fact; the benchmark builds the packets itself, not an LLM. Shuffled packets (checked to be reordered) return the same graph ID; the identical context follows from that ID.
+- Cache-prefix stability: the graph context is not the more cache-stable format. As is, the handoff's common prefix ends inside its `Session:` line (byte 81), because the session ID hashes the whole transcript. With IDs held constant the handoff keeps 59 to 99% of its bytes and is cache-eligible (at least 1,024 estimated tokens) from 50 turns, about 30,000 estimated tokens at 1000 turns. The graph context keeps 42 to 55% and is never cache-eligible here, because the new action's `advances` edge lands in the edges section before links and actions.
+- Cost illustration (estimated tokens, list prices seen 2026-11-07, GPT-5.5 unverified), Claude Opus 5.5, 1,000 handoffs at 1000 turns: handoff uncached $119.36, handoff steady state if its ID line moved to the end $5.08, graph $4.58 (no cache discount). The graph still wins on size, but by much less than the uncached comparison suggests once caching is allowed.
+
+Review and debug outcome. An independent subagent review with probes confirmed ten findings; all are fixed in `bench/` and `tests/bench.test.mjs` (commit 715ae35), each with a regression test where testable:
+
+- Medium, cache prefix: the comparison let one changed ID line make the handoff look 20 to 400 times less stable, and a test asserted that artifact. Fixed: the report also compares with session and graph IDs held constant, the test now checks that the as-is handoff prefix ends inside the `Session:` line and that the IDs-constant handoff share is above 50% and grows with size, and the cost table adds a handoff steady state.
+- Medium, fixed conclusion text: "below the cache minimum at every size" was printed whatever the data said. Fixed: the conclusion is computed from the results; a test renders a doctored report both ways.
+- Medium, SIGINT swallowed and low/medium SIGTERM and SIGHUP leaks: Ctrl-C during start-up let the run finish with exit 0, and SIGTERM or SIGHUP left an orphaned server and the temp database. Fixed: all three signals kill and reap the server, delete the temp directory, write no report and exit with 128 + the signal number. Tests send each signal mid-run, and SIGINT during start-up. While testing, killed servers stayed as zombies under this container's init, so the handler now waits for the child's exit.
+- Low, failure path untested: a test injects an error inside a size measurement and checks that the server stopped and the temp directory is gone.
+- Medium, size limits: sizes above 9215 failed with an opaque 400 after the imports. Fixed: sizes, the 8 MiB import body and the seed range are checked before the server starts, and the limits are documented.
+- Low, order invariance: the identical-context column only restated the graph ID. Fixed: it is labelled as implied, and an independent check confirms the shuffle reorders the input.
+- Low, seeds: large seeds gave both parties the same PRNG stream. Fixed: seeds are limited to 0 to 4294967295 and party and shuffle seeds use 32-bit integer mixing; a test checks independence for edge seeds.
+- Low, provenance: the committed report named a commit without `bench/`. Fixed: the report is generated after the code commit and records whether `bench/`, `src/`, `schemas/` or `package.json` had uncommitted changes.
+
+For Ruslan (src/, not changed here): `handoffMarkdown` prints the session ID on line 5, before the turns, so any append invalidates the whole handoff prefix; moving it after the turns (as the graph context already does with its IDs) would make the handoff cacheable. The graph context renders edges before links and actions, so a new action's edge breaks the prefix mid-output; ordering sections by how often they change, or appending new nodes and edges at the end, would keep more of it.
+
+Tests: `node --test tests/bench.test.mjs` 10 of 10; `node --test tests/*.test.mjs` 64 of 64 on Linux. Playwright and the live MCP smoke test were not run (out of scope for B1). The signal tests are skipped on Windows, where signals cannot be caught.
