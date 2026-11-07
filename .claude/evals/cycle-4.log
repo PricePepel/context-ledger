@@ -1,2 +1,7 @@
 # Cycle 4 eval run history (definitions live in docs/evals.md)
 2026-11-07 defined F1-F4; baseline 30770de (graph unit 9/9, node CLI/store 6/6, Playwright 5/5)
+2026-11-07 F1 pass@1 after debug fix; review fixes 36ed799
+2026-11-07 F2 pass@1; review fixes 9126daf
+2026-11-07 F3 pass@1 (worktree agent) + live integration; review fixes 0cc4e1d
+2026-11-07 F4 pass@1; debug fix 83e3f2a; review fixes 1fbb3c5 (room tests isolated for pass^3)
+2026-11-07 final regression pass^3 = 1.00: node 54/54 x3, Playwright 9/9 x3 (27/27)

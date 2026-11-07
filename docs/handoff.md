@@ -14,4 +14,28 @@ The initial import/search and CLI handoff cycles are implemented and tested. Cla
 
 ## Current checkpoint — cycle 3 (semantic graph)
 
-Branch feature/semantic-graph is pushed to origin and is waiting for Linux CI and a draft PR. Read [the delivery board](graph-delivery.md) and the cycle 3 results in [the eval log](evals.md). G1–G4 are done. G5 is being closed by Claude Code because Codex hit its usage limit mid-release. The next owner picks up G6: a read-only product review that recommends cycle 4 and names the eval that would justify it. Candidates already noted are bidi-safe handoff Markdown, semantic deduplication of reordered packets, and graph viewing in the browser UI. The graph/* worktree branches are kept for history and are not merge targets.
+Superseded by cycle 4 below. Branch feature/semantic-graph is pushed to origin and is waiting for Linux CI and a draft PR. Read [the delivery board](graph-delivery.md) and the cycle 3 results in [the eval log](evals.md). G1–G4 are done. G5 is being closed by Claude Code because Codex hit its usage limit mid-release. The next owner picks up G6: a read-only product review that recommends cycle 4 and names the eval that would justify it. Candidates already noted are bidi-safe handoff Markdown, semantic deduplication of reordered packets, and graph viewing in the browser UI. The graph/* worktree branches are kept for history and are not merge targets.
+
+## Current checkpoint — cycle 4 (M0 two-party negotiation, 2026-11-07)
+
+Leo's M0 items from the latent-ledger roadmap are implemented on feature/semantic-graph:
+
+- Schema v2: parties, offers, questions and cross-graph links.
+- Canonical v2 identity, cache-stable graph context and an estimated savings meter.
+- The stdio MCP adapter (`node src/mcp.mjs`).
+- Negotiation rooms, where people confirm proposals in the browser.
+
+Read the cycle 4 card table in [the delivery board](graph-delivery.md) and the cycle 4 results in [the eval log](evals.md). The work is committed locally and not pushed. Next steps:
+
+1. Push, then watch Linux CI. The workflow now runs every node test file.
+2. Run a live smoke test with Claude Code and Codex both connected over MCP to one ledger.
+3. Rehearse the two-person demo flow from the README section "Negotiation room".
+
+Known limits:
+
+- Party names are self-asserted.
+- The decisions route keeps honest agents out (it requires a browser same-origin fetch) but does not prove who clicked.
+- A room is tied to two graph snapshots.
+- Meter tokens are estimates.
+
+Ali owns the benchmark and pitch. The `.claude/worktrees/` agent worktree and its branch can be removed once the cherry-picked commit 964f70d is pushed.
