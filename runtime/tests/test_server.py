@@ -5,7 +5,7 @@ import unittest
 
 from latent_pool.pool import PREAMBLE
 from latent_pool.prefix import prefix_id, render_prefix
-from tests.helpers import MODEL, FakeVllm, Service, free_port, request
+from tests.helpers import MODEL, FakeVllm, Service, default_reply, free_port, request, role_of
 
 A_JS = "".join(f"const a{n} = {n};\n" for n in range(1, 11))  # 10 lines
 B_JS = "one\r\ntwo\r\nthree"  # 3 lines, CRLF, no final newline
@@ -195,6 +195,29 @@ class CutOffSynthTest(ServiceCase):
         status, payload = self.read(workers=1, budgetTokens=64)
         self.assertEqual(status, 502)
         self.assertIn("cut off", payload["error"])
+
+
+def _long_then_compact(body):
+    """Cut off at max_tokens unless the request asks for a shorter reply."""
+    if "too long" in body["messages"][1]["content"]:
+        return default_reply("synthesizer", body)
+    return ('{"answer": "trunc', "length")
+
+
+class CompactRetryTest(ServiceCase):
+    """Live debug fix: a cut-off synthesizer reply is retried with a compact request."""
+
+    replies = {"synthesizer": _long_then_compact}
+
+    def test_cut_off_reply_is_retried_compactly(self):
+        status, payload = self.read(workers=1, budgetTokens=400)
+        self.assertEqual(status, 200, payload)
+        synth = [body for body in self.fake.requests if role_of(body) == "synthesizer"]
+        self.assertEqual(len(synth), 2)
+        self.assertNotIn("too long", synth[0]["messages"][1]["content"])
+        self.assertIn("at most 2 findings", synth[1]["messages"][1]["content"])
+        schema = synth[0]["response_format"]["json_schema"]["schema"]
+        self.assertEqual(schema["properties"]["findings"]["maxItems"], 5)  # 400 // 80
 
 
 class BadPlannerTest(ServiceCase):

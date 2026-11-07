@@ -261,11 +261,16 @@ class _Run:
             })
         return result
 
-    def call_json(self, role, user, max_tokens, schema, validate):
-        """Call, parse and validate; retry once on invalid output, then 502."""
+    def call_json(self, role, user, max_tokens, schema, validate, compact_user=None):
+        """Call, parse and validate; retry once on invalid output, then 502.
+
+        A reply cut off at max_tokens would be cut off again by the same request,
+        so the retry uses compact_user (a request for a shorter reply) when given.
+        """
         cut_off = False
         for _ in range(2):
-            result = self.call(role, user, max_tokens, schema)
+            prompt = compact_user if cut_off and compact_user else user
+            result = self.call(role, prompt, max_tokens, schema)
             cut_off = result.finish_reason == "length"
             try:
                 return validate(parse_json_object(result.content))
@@ -396,16 +401,27 @@ class LatentPool:
 
     def _synthesize(self, run, question, results, line_counts, budget):
         notes = json.dumps(results, ensure_ascii=False, separators=(",", ":"))
-        user = _user(
-            "synthesizer",
-            f"Question: {question}",
-            f"Worker notes: {notes}",
-            "Check the notes against the files and write the final answer: a short answer "
-            f"and 1 to {MAX_FINDINGS} findings, each a one-line label with 1 to {MAX_SPANS} "
-            "evidence spans (path, startLine, endLine). Reply as JSON: {\"answer\": string, "
-            "\"findings\": [{\"label\": string, \"evidence\": [{\"path\": string, "
-            "\"startLine\": int, \"endLine\": int}]}]}.",
+        # A finding with one span costs roughly 60-80 tokens of JSON, so size the
+        # list to the budget instead of letting the reply run past max_tokens.
+        fit = max(1, min(MAX_FINDINGS, budget // 80))
+
+        def request(count, extra):
+            return _user(
+                "synthesizer",
+                f"Question: {question}",
+                f"Worker notes: {notes}",
+                "Check the notes against the files and write the final answer: a short answer "
+                f"and 1 to {count} findings, each a one-line label with 1 to {MAX_SPANS} "
+                "evidence spans (path, startLine, endLine). Reply as JSON: {\"answer\": string, "
+                "\"findings\": [{\"label\": string, \"evidence\": [{\"path\": string, "
+                "\"startLine\": int, \"endLine\": int}]}]}." + extra,
+            )
+
+        compact = max(1, fit // 2)
+        schema = findings_schema(_citable(line_counts), 1, fit)
+        return run.call_json(
+            "synthesizer", request(fit, ""), budget, schema,
+            lambda value: validate_answer(value, line_counts, fit, True),
+            compact_user=request(compact, " Your previous reply was too long: answer in one sentence, "
+                                 f"give at most {compact} findings, and keep each label under 15 words."),
         )
-        schema = findings_schema(_citable(line_counts), 1, MAX_FINDINGS)
-        return run.call_json("synthesizer", user, budget, schema,
-                             lambda value: validate_answer(value, line_counts, MAX_FINDINGS, True))
