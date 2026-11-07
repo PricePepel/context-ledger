@@ -112,11 +112,11 @@ test('a slow request does not hold back a later one', async t => {
   assert.deepEqual(JSON.parse((await slow).content[0].text), { graph: { id: graphId } });
 });
 
-test('tools/list offers exactly the seven ledger tools with closed input schemas', async t => {
+test('tools/list offers exactly the eight ledger tools with closed input schemas', async t => {
   const client = mcp(t, await freePort());
   const { result } = await client.request(1, 'tools/list');
   assert.deepEqual(result.tools.map(tool => tool.name),
-    ['graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open', 'room_read', 'latent_read']);
+    ['graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open', 'room_read', 'latent_read', 'latent_transfer']);
   for (const tool of result.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');

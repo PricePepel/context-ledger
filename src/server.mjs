@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
-import { LatentError, latentRead } from './latent.mjs';
+import { LatentError, latentRead, latentTransfer } from './latent.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -114,6 +114,14 @@ const server = createServer(async (request, response) => {
     if (method === 'POST' && url.pathname === '/api/latent/read') {
       const input = await readJson(request, origin, 'A latent read');
       return json(response, 200, await latentRead(input, {
+        latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320',
+        latentRoot: process.env.LATENT_ROOT,
+      }));
+    }
+
+    if (method === 'POST' && url.pathname === '/api/latent/transfer') {
+      const input = await readJson(request, origin, 'A latent transfer');
+      return json(response, 200, await latentTransfer(input, {
         latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320',
         latentRoot: process.env.LATENT_ROOT,
       }));

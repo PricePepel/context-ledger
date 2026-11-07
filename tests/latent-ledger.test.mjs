@@ -90,3 +90,55 @@ test('the ledger proxies latent reads, validates slices and falls back to text o
   assert.match(fallback.content[0].text, /not running\. Read the numbered files below\./u);
   assert.match(fallback.content[0].text, /^13\| {3}if \(order\.customer\.phone && order\.customer\.phoneVerified\) \{$/mu);
 });
+
+test('latent_transfer over MCP: the ledger forwards, flattens the answer, and falls back to text', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'latent-transfer-'));
+  const seen = [];
+  const runtime = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    seen.push({ url: request.url, body });
+    if (body.receiver === 'acme/untrained') {
+      response.writeHead(501, { 'Content-Type': 'application/json' });
+      return response.end(JSON.stringify({ error: 'No trained mapper for this model pair.' }));
+    }
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({
+      mode: 'transfer', answer: 'only when the phone\nis verified', answerVerified: false,
+      receipt: { sender: body.sender, receiver: body.receiver, mapperId: 'm1', senderTokens: 90, receiverTokens: 95,
+        senderMs: 10, mapperMs: 5, totalMs: 120 },
+    }));
+  });
+  await new Promise(resolve => runtime.listen(0, '127.0.0.1', resolve));
+  let ledger;
+  let client;
+  t.after(async () => {
+    try {
+      if (client && client.child.exitCode === null) await client.close();
+    } finally {
+      await ledger?.stop();
+      await new Promise(resolve => runtime.close(resolve));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  ledger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'a.sqlite'), LATENT_ROOT: root,
+    LATENT_URL: `http://127.0.0.1:${runtime.address().port}` });
+  client = startMcp(ledger.port);
+  const pair = { sender: 'Qwen/Qwen2.5-0.5B-Instruct', receiver: 'HuggingFaceTB/SmolLM2-360M-Instruct' };
+
+  const result = await client.call(1, 'latent_transfer', { ...pair, paths: ['src/notify.js'], question: 'When is an SMS sent?' });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.match(result.content[0].text, /^Receiver answer \(from the transferred cache; unchecked, no citations\): only when the phone is verified$/mu);
+  assert.equal(JSON.parse(result.content[1].text).receipt.mapperId, 'm1');
+  assert.deepEqual(seen[0], { url: '/latent/transfer', body: { ...pair, paths: ['src/notify.js'], question: 'When is an SMS sent?' } });
+
+  const untrained = await client.call(2, 'latent_transfer', { ...pair, receiver: 'acme/untrained', text: 'Hello there.', question: 'q' });
+  assert.equal(untrained.isError, undefined);
+  assert.match(untrained.content[0].text, /No trained mapper exists for this model pair\. Read the document below\./u);
+  assert.match(untrained.content[0].text, /=== TEXT ===\nHello there\./u);
+
+  const secret = await client.call(3, 'latent_transfer', { ...pair, paths: ['.env'], question: 'q' });
+  assert.equal(secret.isError, true);
+  assert.equal(seen.length, 2, 'refused paths never reach the runtime');
+});

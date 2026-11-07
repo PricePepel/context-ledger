@@ -40,8 +40,21 @@ function checkInput(input) {
   const extra = Object.keys(input).filter(key => !['paths', 'question', 'budgetTokens', 'workers'].includes(key));
   if (extra.length) throw new InputError('Latent read accepts only paths, question, budgetTokens and workers.');
   const { paths, question, budgetTokens = 600, workers = 3 } = input;
+  checkPaths(paths, 'Latent read');
+  if (typeof question !== 'string' || !question.trim() || question.length > 2000) {
+    throw new InputError('Question must be 1 to 2000 characters.');
+  }
+  if (!Number.isInteger(budgetTokens) || budgetTokens < 64 || budgetTokens > 2048) {
+    throw new InputError('budgetTokens must be an integer from 64 to 2048.');
+  }
+  if (!Number.isInteger(workers) || workers < 1 || workers > 4) throw new InputError('workers must be an integer from 1 to 4.');
+  return { paths, question, budgetTokens, workers };
+}
+
+/** The approved path rules, shared by latent read and latent transfer. */
+function checkPaths(paths, what) {
   if (!Array.isArray(paths) || paths.length < 1 || paths.length > maxPaths) {
-    throw new InputError(`Latent read needs 1 to ${maxPaths} paths.`);
+    throw new InputError(`${what} needs 1 to ${maxPaths} paths.`);
   }
   for (const path of paths) {
     // Relative POSIX paths only: no absolute, backslash, empty or dot segments. A colon is
@@ -59,14 +72,6 @@ function checkInput(input) {
     }
   }
   if (new Set(paths).size !== paths.length) throw new InputError('Paths must be unique.');
-  if (typeof question !== 'string' || !question.trim() || question.length > 2000) {
-    throw new InputError('Question must be 1 to 2000 characters.');
-  }
-  if (!Number.isInteger(budgetTokens) || budgetTokens < 64 || budgetTokens > 2048) {
-    throw new InputError('budgetTokens must be an integer from 64 to 2048.');
-  }
-  if (!Number.isInteger(workers) || workers < 1 || workers > 4) throw new InputError('workers must be an integer from 1 to 4.');
-  return { paths, question, budgetTokens, workers };
 }
 
 /** Read the requested files under the root, refusing anything that resolves outside it. */
@@ -477,4 +482,100 @@ async function readBody(response) {
 
 function fallback(files, reason) {
   return { mode: 'text', reason, files: files.map(file => ({ path: file.path, text: numbered(file) })) };
+}
+
+// M2b, Leo side: the ledger's proxy to a trained cross-family mapper
+// (docs/m2b-transfer.md on leo/m2b-transfer). The sender model prefills the document,
+// the mapper writes the receiver model's KV cache, and the receiver answers. The
+// runtime returns text and numbers only; the answer has no citations, so it is
+// flattened to one line and marked unverified, like the M2a answer.
+const transferFields = ['sender', 'receiver', 'question', 'text', 'paths', 'maxNewTokens'];
+const maxTransferText = 8000;
+const modelId = /^[\w.-]{1,96}\/[\w.-]{1,96}$/u;
+
+function checkTransfer(input) {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new InputError('Latent transfer needs a JSON object.');
+  const extra = Object.keys(input).filter(key => !transferFields.includes(key));
+  if (extra.length) throw new InputError(`Latent transfer accepts only ${transferFields.join(', ')}.`);
+  const { sender, receiver, question, text, paths, maxNewTokens } = input;
+  for (const [name, value] of [['sender', sender], ['receiver', receiver]]) {
+    if (typeof value !== 'string' || !modelId.test(value)) throw new InputError(`${name} must be a model id such as org/name.`);
+  }
+  if (typeof question !== 'string' || !question.trim() || question.length > 2000) {
+    throw new InputError('Question must be 1 to 2000 characters.');
+  }
+  if ((text === undefined) === (paths === undefined)) throw new InputError('Send exactly one of text or paths.');
+  if (text !== undefined && (typeof text !== 'string' || !text.trim() || text.length > maxTransferText)) {
+    throw new InputError(`text must be 1 to ${maxTransferText} characters.`);
+  }
+  if (paths !== undefined) checkPaths(paths, 'Latent transfer');
+  if (maxNewTokens !== undefined && (!Number.isInteger(maxNewTokens) || maxNewTokens < 1 || maxNewTokens > 64)) {
+    throw new InputError('maxNewTokens must be an integer from 1 to 64.');
+  }
+  const request = { sender, receiver, question };
+  if (text !== undefined) request.text = text;
+  if (paths !== undefined) request.paths = paths;
+  if (maxNewTokens !== undefined) request.maxNewTokens = maxNewTokens;
+  return request;
+}
+
+const ms = value => (Number.isFinite(value) && value >= 0 && value <= 1e7 ? value : null);
+
+function cleanTransferReceipt(receipt) {
+  if (typeof receipt !== 'object' || receipt === null) return null;
+  return {
+    sender: typeof receipt.sender === 'string' && modelId.test(receipt.sender) ? receipt.sender : null,
+    receiver: typeof receipt.receiver === 'string' && modelId.test(receipt.receiver) ? receipt.receiver : null,
+    mapperId: typeof receipt.mapperId === 'string' && /^[\w.-]{1,64}$/u.test(receipt.mapperId) ? receipt.mapperId : null,
+    senderTokens: count(receipt.senderTokens),
+    receiverTokens: count(receipt.receiverTokens),
+    senderMs: ms(receipt.senderMs),
+    mapperMs: ms(receipt.mapperMs),
+    totalMs: ms(receipt.totalMs),
+  };
+}
+
+export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320', latentRoot, fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
+  const request = checkTransfer(input);
+  const files = request.paths ? await readFiles(latentRoot, request.paths)
+    : [{ path: 'text', lines: request.text.split(/\r\n|\n|\r/u) }];
+  const suspects = suspiciousLines(files);
+  const textFallback = reason => (request.paths ? fallback(files, reason) : { mode: 'text', reason, text: request.text });
+  let response;
+  try {
+    response = await fetchImpl(`${latentUrl}/latent/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
+    return textFallback('The latent runtime is not running.');
+  }
+  let body;
+  try {
+    body = await readBody(response);
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
+    if (error instanceof LatentError) throw error;
+    body = null;
+  }
+  if (response.status === 503) return textFallback('The transfer model is busy or not ready.');
+  if (response.status === 501) return textFallback('No trained mapper exists for this model pair.');
+  if (!response.ok) {
+    if (response.status === 413) throw new LatentError(413, 'The document is too long for this mapper.');
+    throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
+  }
+  if (body?.mode !== 'transfer' || typeof body.answer !== 'string') {
+    throw new LatentError(502, 'The latent runtime returned an unexpected transfer response.');
+  }
+  return {
+    mode: 'transfer',
+    answer: oneLine(body.answer).slice(0, 2000),
+    answerVerified: false,
+    receipt: cleanTransferReceipt(body.receipt),
+    suspiciousLines: suspects,
+  };
 }
