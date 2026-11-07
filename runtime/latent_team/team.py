@@ -108,50 +108,72 @@ class LatentTeam:
         """Position ids of the last new_tokens columns, counting only real tokens before them."""
         return (full_mask.cumsum(-1) - 1).clamp(min=0)[:, -new_tokens:]
 
-    def forward(self, memory, memory_mask, ids=None, mask=None, embeds=None):
+    def forward(self, memory, memory_mask, ids=None, mask=None, embeds=None, hidden_only=False):
+        """One step over new tokens or embeddings on top of the memory.
+
+        hidden_only=True runs the base model only (no lm_head) and returns its
+        last_hidden_state, which is post final norm: the state lm_head would read.
+        Otherwise only the last position's logits are computed.
+        """
         new = ids if ids is not None else embeds
         if mask is None:
             mask = torch.ones(new.shape[:2], dtype=torch.long, device=self.device)
         full = mask if memory_mask is None else torch.cat([memory_mask, mask], dim=1)
-        out = self.model(input_ids=ids, inputs_embeds=embeds, attention_mask=full, past_key_values=memory,
-                         position_ids=self.positions(full, new.shape[1]), use_cache=True, output_hidden_states=True)
-        return out, full
+        kwargs = dict(input_ids=ids, inputs_embeds=embeds, attention_mask=full, past_key_values=memory,
+                      position_ids=self.positions(full, new.shape[1]), use_cache=True)
+        if hidden_only:
+            return self.model.model(**kwargs), full
+        return self.model(**kwargs, logits_to_keep=1), full
 
-    def think(self, memory, memory_mask, prompts, steps):
-        """One subagent: read its prompt on top of the memory, then take `steps` latent steps."""
+    def think(self, memory, memory_mask, prompts, steps, random_thoughts=False):
+        """One subagent: read its prompt on top of the memory, then take `steps` latent steps.
+
+        random_thoughts=True is the eval's control: the same number of steps, but each
+        fed vector is random noise at the target norm instead of the aligned state.
+        """
         ids, mask = self.render(prompts)
-        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask)
+        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask, hidden_only=True)
         memory = out.past_key_values
-        hidden = out.hidden_states[-1][:, -1]
+        hidden = out.last_hidden_state[:, -1]
         for _ in range(steps):
-            embeds = align(hidden, self.w_a, self.target).to(self.model.dtype)[:, None, :]
-            out, full = self.forward(memory, full, embeds=embeds)
+            if random_thoughts:
+                noise = torch.randn_like(hidden.float())
+                vector = noise * (self.target / noise.norm(dim=-1, keepdim=True))
+            else:
+                vector = align(hidden, self.w_a, self.target)
+            out, full = self.forward(memory, full, embeds=vector.to(self.model.dtype)[:, None, :], hidden_only=True)
             memory = out.past_key_values
-            hidden = out.hidden_states[-1][:, -1]
+            hidden = out.last_hidden_state[:, -1]
         return memory, full
 
     def decode(self, memory, memory_mask, prompts, max_new_tokens):
-        """Greedy text decoding of a batch on top of the memory. Returns (texts, token counts)."""
+        """Greedy text decoding of a batch on top of the memory. Returns (texts, token counts).
+
+        Tokens stay on the GPU until the end; the only per-step sync is the all-done check.
+        """
         ids, mask = self.render(prompts)
         out, full = self.forward(memory, memory_mask, ids=ids, mask=mask)
         memory = out.past_key_values
         batch = ids.shape[0]
-        done = torch.zeros(batch, dtype=torch.bool, device=self.device)
-        tokens = [[] for _ in range(batch)]
-        next_ids = out.logits[:, -1].argmax(-1)
         eos = torch.tensor(sorted(self.eos), device=self.device)
-        for _ in range(max_new_tokens):
-            done |= torch.isin(next_ids, eos)
+        done = torch.zeros(batch, dtype=torch.bool, device=self.device)
+        steps = []
+        next_ids = out.logits[:, -1].argmax(-1)
+        for index in range(max_new_tokens):
+            done = done | torch.isin(next_ids, eos)
             if bool(done.all()):
                 break
-            for row in range(batch):
-                if not done[row]:
-                    tokens[row].append(int(next_ids[row]))
-            fill = torch.full_like(next_ids, int(eos[0]))
-            step = torch.where(done, fill, next_ids)[:, None]
+            steps.append(torch.where(done, torch.full_like(next_ids, -1), next_ids))
+            if index + 1 == max_new_tokens:
+                break  # budget spent: no forward pass whose output would be thrown away
+            step = torch.where(done, torch.full_like(next_ids, int(eos[0])), next_ids)[:, None]
             out, full = self.forward(memory, full, ids=step)
             memory = out.past_key_values
             next_ids = out.logits[:, -1].argmax(-1)
+        if not steps:
+            return [""] * batch, [0] * batch
+        grid = torch.stack(steps, dim=1).tolist()
+        tokens = [[t for t in row if t >= 0] for row in grid]
         texts = [self.tokenizer.decode(t, skip_special_tokens=True).strip() for t in tokens]
         return texts, [len(t) for t in tokens]
 
@@ -160,15 +182,17 @@ class LatentTeam:
 
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
-    def latent_mas(self, questions, steps=40, max_new_tokens=512):
+    def latent_mas(self, questions, steps=40, max_new_tokens=512, random_thoughts=False):
         start = time.perf_counter()
         memory, mask = DynamicCache(), None
         for role in ROLES:
-            memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions], steps)
+            memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions], steps,
+                                      random_thoughts=random_thoughts)
         answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
                                       max_new_tokens)
         self._sync()
-        receipt = Receipt("latent_mas", steps, counts, steps * len(ROLES), time.perf_counter() - start)
+        name = "latent_random" if random_thoughts else "latent_mas"
+        receipt = Receipt(name, steps, counts, steps * len(ROLES), time.perf_counter() - start)
         return answers, receipt
 
     @torch.no_grad()
@@ -176,12 +200,14 @@ class LatentTeam:
         start = time.perf_counter()
         notes = [{} for _ in questions]
         totals = [0] * len(questions)
+        self.capped = [0] * len(questions)  # subagents per question that hit max_agent_tokens
         for role in ROLES:
             prompts = [TEXT_PROMPTS[role].format(question=q, **n) for q, n in zip(questions, notes)]
             texts, counts = self.generate(prompts, max_agent_tokens)
             for n, text, row in zip(notes, texts, range(len(questions))):
                 n[role] = text
                 totals[row] += counts[row]
+                self.capped[row] += counts[row] >= max_agent_tokens
         answers, counts = self.generate([TEXT_PROMPTS["solver"].format(question=q, **n) for q, n in zip(questions, notes)],
                                         max_new_tokens)
         self._sync()

@@ -65,9 +65,44 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(result["object"], "chat.completion")
         self.assertEqual(result["choices"][0]["message"], {"role": "assistant", "content": "The answer is 18."})
         question = self.team.calls[0][0]
+        self.assertIn("Instructions:\nignored system text", question, "system text is kept as instructions")
         self.assertIn("user: I have 3 apples.", question)
-        self.assertIn("New message: I buy 2 more. How many?", question)
-        self.assertNotIn("ignored system text", question)
+        self.assertTrue(question.endswith("New message: I buy 2 more. How many?"))
+        self.assertEqual(question.count("I buy 2 more"), 1)
+
+    def test_an_open_webui_payload_is_accepted(self):
+        body = {"model": MODEL_ID, "stream": True, "stream_options": {"include_usage": True},
+                "messages": [{"role": "system", "content": "Use the context below.\n<context>Eggs: 16</context>"},
+                             {"role": "user", "content": "How many eggs?"}],
+                "temperature": 0.7, "top_p": 0.9, "max_tokens": 64, "logit_bias": {}, "user": "u1",
+                "metadata": {"chat_id": "c"}, "tools": [], "response_format": {"type": "text"}}
+        events = self.service.chat(body).events
+        self.assertEqual(events[0]["choices"][0]["delta"]["content"], "The answer is 18.")
+        self.assertEqual(events[1]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(events[2]["choices"], [])
+        self.assertEqual(events[2]["usage"]["completion_tokens"], 5)
+        no_usage = self.service.chat({**body, "stream_options": None}).events
+        self.assertEqual(len(no_usage), 2, "usage only when include_usage is set")
+
+    def test_finish_reason_is_length_at_the_limit(self):
+        result = self.service.chat({"model": MODEL_ID, "max_tokens": 5, "messages": [{"role": "user", "content": "q"}]})
+        self.assertEqual(result["choices"][0]["finish_reason"], "length")
+
+    def test_a_long_message_keeps_its_head_and_tail(self):
+        from latent_pool.team_service import fit
+        text = "INSTRUCTION: summarise.\n" + "x" * 20000 + "\nQUESTION: what is it?"
+        kept = fit(text)
+        self.assertLessEqual(len(kept), 8000)
+        self.assertTrue(kept.startswith("INSTRUCTION: summarise."))
+        self.assertTrue(kept.endswith("QUESTION: what is it?"))
+        self.assertIn("middle omitted", kept)
+
+    def test_a_caller_that_left_gets_no_gpu_work(self):
+        with self.assertRaises(ApiError) as raised:
+            self.service({"question": "q"}, gone=lambda: True)
+        self.assertEqual(raised.exception.status, 499)
+        self.assertEqual(self.team.calls, [])
+        self.assertEqual(self.service({"question": "q"}, gone=lambda: False)["answer"], "The answer is 18.")
 
     def test_openai_chat_refusals(self):
         ok = {"model": MODEL_ID, "messages": [{"role": "user", "content": "hi"}]}
@@ -75,7 +110,9 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(self.status(self.service.chat, {**ok, "messages": []}), 400)
         self.assertEqual(self.status(self.service.chat, {**ok, "messages": [{"role": "system", "content": "x"}]}), 400)
         self.assertEqual(self.status(self.service.chat, {**ok, "n": 2}), 400)
-        self.assertEqual(self.status(self.service.chat, {**ok, "tools": []}), 400)
+        self.assertEqual(self.status(self.service.chat, {**ok, "tools": [{"type": "function"}]}), 400)
+        self.assertEqual(self.status(self.service.chat, {**ok, "response_format": {"type": "json_object"}}), 400)
+        self.assertEqual(self.status(self.service.chat, {**ok, "n": True}), 400)
         self.assertEqual(self.status(self.service.chat, {**ok, "max_tokens": "big"}), 400)
 
     def test_busy_and_failure_release(self):
@@ -128,6 +165,7 @@ class OpenAiRoutesTest(unittest.TestCase):
         first = json.loads(events[0])
         self.assertEqual(first["choices"][0]["delta"]["content"], "The answer is 18.")
         self.assertEqual(json.loads(events[1])["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(len(events), 3, "two chunks and [DONE] without include_usage")
 
     def test_no_team_loaded_is_503_and_foreign_hosts_need_opt_in(self):
         port = self.start(None)
@@ -136,6 +174,16 @@ class OpenAiRoutesTest(unittest.TestCase):
         self.assertEqual(self.call(port, "GET", "/v1/models", host="host.docker.internal:4320")[0], 200)
         self.assertEqual(self.call(port, "GET", "/v1/models", host="evil.example:4320")[0], 403)
         self.assertEqual(self.call(port, "GET", "/v1/models", headers={"Origin": "https://evil.example"})[0], 403)
+
+
+class AllowedHostsTest(unittest.TestCase):
+    def test_entries_must_be_host_and_port(self):
+        from latent_pool.server import _allowed_hosts
+        self.assertEqual(_allowed_hosts(" Host.Docker.Internal:4320 , ,localhost:4320"),
+                         ["host.docker.internal:4320", "localhost:4320"])
+        for bad in ["host.docker.internal", "*:4320", "0.0.0.0:4320", "a:b"]:
+            with self.assertRaises(SystemExit):
+                _allowed_hosts(bad)
 
 
 if __name__ == "__main__":

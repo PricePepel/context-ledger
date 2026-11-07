@@ -58,7 +58,17 @@ No training is needed: all agents are the same frozen model.
 | `text_mas` | Planner, critic and refiner write text (up to 256 tokens each); each next agent's prompt includes the earlier texts; the solver answers |
 | `latent_mas` | Planner, critic and refiner each take `m` latent steps (m = 40); KV working memory passes forward; the solver answers |
 
-**Metrics.** Accuracy, total generated tokens (latent steps count as zero tokens; they are reported separately), and wall time per question.
+**Control.** `latent_random` runs the same pipeline, but each latent step feeds a random vector at the same norm instead of the aligned hidden state. If `latent_mas` does not beat it, the gain comes from the extra prompts and memory, not from latent thinking. The `m = 0` point of the step sweep separates "memory of the prompts" from "thinking".
+
+**Metrics.**
+- Accuracy, with a paired 95% bootstrap interval of `latent_mas` minus `text_mas` over the same questions. At n = 200 one standard error is about 3 points, so the 2-point gate is read together with the interval.
+- Generated text tokens, plus `meanLatentVectors` and `meanForwardSteps`, so the token saving is read next to the forward passes latent thinking still costs.
+- Wall time per question, which is batch time divided by batch size. A batch is as slow as its longest row, and this weighs most on `text_mas` with its four generating agents.
+- The share of text subagents that hit their 256-token cap. A high share would mean truncated plans handicap `text_mas`.
+
+**Notes.**
+- Qwen2.5-3B ties its input and output embeddings, so `W_a` is close to the identity and alignment is mostly the norm rescaling. The ridge solve matters for untied models (Qwen3, Llama 3.1 8B); a result here is not evidence for it.
+- Decoding is greedy, where the paper samples at 0.6: one deterministic path per question, the same for every system.
 
 **Gate.**
 - `latent_mas` accuracy ≥ `text_mas` accuracy − 2 points.
@@ -77,4 +87,11 @@ No training is needed: all agents are the same frozen model.
 
 - **Runtime.** `POST /latent/team` with `{question, latentSteps?}` returns the solver's answer and a receipt.
 - **OpenAI-compatible endpoint for Open WebUI.** `POST /v1/chat/completions` with model `ctm-latent-team`, plus `GET /v1/models`. Open WebUI adds it as an OpenAI connection with no plugin.
+  - Like vLLM and Ollama, the endpoint ignores unknown fields and sampling knobs. It refuses only tool calling, non-text `response_format` and `n > 1`.
+  - System and developer messages, where Open WebUI puts its RAG and file context, become the team's instructions. Earlier turns become context.
+  - An oversized conversation keeps its head and its tail.
+  - Streaming sends the reply as one chunk, then the finish reason, then usage only when `stream_options.include_usage` is set.
+  - Set a separate task model in Open WebUI for titles, tags and follow-ups. Otherwise each of those runs a full team pass and holds the one GPU slot.
+  - There is no authentication. The server listens on 127.0.0.1, and `LATENT_ALLOWED_HOSTS=host.docker.internal:4320` opts in Open WebUI running in Docker Desktop. On Linux Docker, `host.docker.internal` is the bridge gateway, so run Open WebUI with host networking instead.
+  - A caller that leaves while waiting for the slot gets no GPU work.
 - **Ledger.** The `latent_team` MCP tool forwards a question. The answer comes back on one line, marked unverified.

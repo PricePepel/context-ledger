@@ -77,8 +77,8 @@ class WorkingMemoryTest(unittest.TestCase):
         ids_b, mask_b = team.render(["solve it"])
         out, _ = team.forward(memory, mask, ids=ids_b, mask=mask_b)
         ids_a, _ = team.render(["plan the sum"])
-        reference = team.model(input_ids=torch.cat([ids_a, ids_b], 1)).logits[:, -ids_b.shape[1]:]
-        torch.testing.assert_close(out.logits, reference, atol=1e-4, rtol=1e-4)
+        reference = team.model(input_ids=torch.cat([ids_a, ids_b], 1)).logits[:, -1:]
+        torch.testing.assert_close(out.logits, reference, atol=1e-4, rtol=1e-4)  # forward keeps the last position only
 
     def test_latent_steps_extend_the_memory_by_one_position_each(self):
         from transformers import DynamicCache
@@ -95,6 +95,21 @@ class WorkingMemoryTest(unittest.TestCase):
         self.assertEqual(together, alone)
         self.assertEqual(receipt.latent_vectors, 9)
         self.assertEqual(len(receipt.generated_tokens), 2)
+
+    def test_the_random_control_changes_the_memory_but_not_its_length(self):
+        from transformers import DynamicCache
+        team = tiny_team()
+        aligned, _ = team.think(DynamicCache(), None, ["abc"], steps=4)
+        random, _ = team.think(DynamicCache(), None, ["abc"], steps=4, random_thoughts=True)
+        self.assertEqual(aligned.get_seq_length(), random.get_seq_length())
+        self.assertFalse(torch.allclose(aligned.layers[0].keys[:, :, -4:], random.layers[0].keys[:, :, -4:]))
+        torch.testing.assert_close(aligned.layers[0].keys[:, :, :-4], random.layers[0].keys[:, :, :-4])
+
+    def test_decoding_stops_at_the_budget_and_counts_exactly(self):
+        team = tiny_team()
+        texts, counts = team.generate(["count please"], max_new_tokens=5)
+        self.assertLessEqual(counts[0], 5)
+        self.assertEqual(len(texts[0].split()) if texts[0] else 0, counts[0])
 
     def test_text_systems_run_and_count_tokens(self):
         team = tiny_team()

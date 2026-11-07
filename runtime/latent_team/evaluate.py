@@ -48,7 +48,9 @@ def predicted_number(text):
     lowered = text.lower()
     if "answer is" in lowered:
         # "The answer is 7, not 72" answers 7: the first number after the phrase.
-        return to_number(text[lowered.rindex("answer is"):], first=True)
+        value = to_number(text[lowered.rindex("answer is"):], first=True)
+        if value is not None:
+            return value
     boxed = re.findall(r"\\boxed\{([^}]*)\}", text)
     if boxed:
         return to_number(boxed[-1], first=True)
@@ -65,15 +67,19 @@ def run_system(team, system, items, batch, steps):
     for start in range(0, len(items), batch):
         chunk = items[start:start + batch]
         questions = [item["question"] for item in chunk]
-        if system == "latent_mas":
-            answers, receipt = team.latent_mas(questions, steps=steps)
+        capped = [0] * len(chunk)
+        if system in ("latent_mas", "latent_random"):
+            answers, receipt = team.latent_mas(questions, steps=steps, random_thoughts=system == "latent_random")
         elif system == "text_mas":
             answers, receipt = team.text_mas(questions)
+            capped = team.capped
         else:
             answers, receipt = team.single(questions)
-        for item, answer, tokens in zip(chunk, answers, receipt.generated_tokens):
+        for row, (item, answer, tokens) in enumerate(zip(chunk, answers, receipt.generated_tokens)):
+            # Batch time is set by the longest row; per question it is the batch time / rows.
             results.append({"question": item["question"], "gold": item["gold"], "answer": answer,
                             "correct": correct(answer, item["gold"]), "tokens": tokens,
+                            "latentVectors": receipt.latent_vectors, "cappedAgents": capped[row],
                             "seconds": receipt.seconds / len(chunk)})
         done = len(results)
         print(f"{system} m={steps}: {done}/{len(items)} acc={sum(r['correct'] for r in results) / done:.3f}", flush=True)
@@ -84,7 +90,21 @@ def summarize(results):
     n = len(results)
     return {"items": n, "accuracy": round(sum(r["correct"] for r in results) / n, 4),
             "meanTokens": round(sum(r["tokens"] for r in results) / n, 1),
+            # Latent steps are forward passes without a token; reported so the token
+            # saving is read next to the compute it still costs.
+            "meanLatentVectors": round(sum(r["latentVectors"] for r in results) / n, 1),
+            "meanForwardSteps": round(sum(r["tokens"] + r["latentVectors"] for r in results) / n, 1),
+            "cappedAgentShare": round(sum(r["cappedAgents"] for r in results) / (3 * n), 4),
             "secondsPerQuestion": round(sum(r["seconds"] for r in results) / n, 3)}
+
+
+def paired_interval(a, b, rounds=2000, seed=0):
+    """95% bootstrap interval of accuracy(a) - accuracy(b) over the same questions."""
+    rng = random.Random(seed)
+    n = len(a)
+    diffs = sorted(sum(a[i]["correct"] - b[i]["correct"] for i in (rng.randrange(n) for _ in range(n))) / n
+                   for _ in range(rounds))
+    return [round(diffs[int(0.025 * rounds)], 4), round(diffs[int(0.975 * rounds)], 4)]
 
 
 def main():
@@ -102,11 +122,15 @@ def main():
     items = items[:args.count]
     from .team import LatentTeam  # torch is only needed to run the models, not to score answers
     team = LatentTeam(args.model)
-    team.single(["What is 1 + 1?"], max_new_tokens=4)  # warm-up, so the first batch's timing is fair
+    # Warm-up at the real batch size, so the first system does not pay kernel set-up costs.
+    warm = [item["question"] for item in items[:args.batch]]
+    team.single(warm, max_new_tokens=8)
+    team.latent_mas(warm, steps=2, max_new_tokens=8)
     report = {"model": args.model, "systems": {}}
     for system in args.systems.split(","):
-        for steps in ([int(s) for s in args.steps.split(",")] if system == "latent_mas" else [0]):
-            key = f"{system}@{steps}" if system == "latent_mas" else system
+        latent = system in ("latent_mas", "latent_random")
+        for steps in ([int(s) for s in args.steps.split(",")] if latent else [0]):
+            key = f"{system}@{steps}" if latent else system
             results = run_system(team, system, items, args.batch, steps)
             report["systems"][key] = {"summary": summarize(results), "results": results}
             print(key, json.dumps(report["systems"][key]["summary"]), flush=True)
@@ -115,6 +139,8 @@ def main():
     if text and latents:
         gate = {}
         for key, latent in latents.items():
+            gate[key + " minus text_mas (95%)"] = paired_interval(report["systems"][key]["results"],
+                                                                   report["systems"]["text_mas"]["results"])
             gate[key] = {
                 "accuracyWithin2": latent["accuracy"] >= text["accuracy"] - 0.02,
                 "tokensHalved": latent["meanTokens"] <= 0.5 * text["meanTokens"],

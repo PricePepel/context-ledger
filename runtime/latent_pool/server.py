@@ -68,8 +68,22 @@ def load_config(env=None):
         vllm_url=env.get("VLLM_URL") or DEFAULT_VLLM_URL,
         model=env.get("LATENT_MODEL") or DEFAULT_MODEL,
         port=port,
-        allowed_hosts=[h.strip().lower() for h in env.get("LATENT_ALLOWED_HOSTS", "").split(",") if h.strip()],
+        allowed_hosts=_allowed_hosts(env.get("LATENT_ALLOWED_HOSTS", "")),
     )
+
+
+def _allowed_hosts(text):
+    """Comma-separated host:port names, e.g. host.docker.internal:4320. Wildcards,
+    bare names and unspecified addresses are refused at startup."""
+    hosts = []
+    for entry in (part.strip().lower() for part in text.split(",")):
+        if not entry:
+            continue
+        name, _, port = entry.rpartition(":")
+        if not name or not port.isdigit() or "*" in name or name in ("0.0.0.0", "[::]"):
+            raise SystemExit(f"LATENT_ALLOWED_HOSTS entries must be host:port names, not {entry!r}.")
+        hosts.append(entry)
+    return hosts
 
 
 def _reject_constant(name):
@@ -284,9 +298,9 @@ class LatentServer(ThreadingHTTPServer):
             "/latent/mappers": {"GET": lambda _body, _gone: {"pairs": self.registry.pairs()}},
             "/latent/transfer": {"POST": lambda body, _gone: self.registry.transfer(body)},
             # M2c: the latent agent team, and the same team as an OpenAI-compatible model.
-            "/latent/team": {"POST": lambda body, _gone: self._team()(body)},
+            "/latent/team": {"POST": lambda body, gone: self._team()(body, gone)},
             "/v1/models": {"GET": lambda _body, _gone: self._team().models()},
-            "/v1/chat/completions": {"POST": lambda body, _gone: self._team().chat(body)},
+            "/v1/chat/completions": {"POST": lambda body, gone: self._team().chat(body, gone)},
         }
         self.team = team
         super().__init__(("127.0.0.1", config.port), Handler)
