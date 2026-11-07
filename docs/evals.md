@@ -196,3 +196,16 @@ This was an independent, non-Claude review of commit a619574. It found 1 high, 2
 - **Low.** `flag()` swallowed a following flag; it now rejects a missing value (fixed, with a test). The other three were left as they are: the 2 s vs 2.5 s runtime in two documents, the free-port race (a failed start is now cleaned up and reported), and B3 marked Done before review (this entry records the review).
 
 Node suite: 73 of 73 on Linux. docs/benchmark.md was regenerated.
+
+## Cycle 5 — B9 demo storyline, theme fit (defined 2026-11-07, before implementation)
+
+The hackathon's challenge 5, "Your Agent, My Agent", asks what happens when AI agents network on our behalf. The generated sprint chatter from B3 shows a real saving, but its pairings don't make sense to a reader. B9 adds a hand-written storyline: two attendees, `ali` (Codex) and `ruslan` (Claude Code), whose agents network for them at a hackathon. The transcripts are synthetic (seeded filler plus hand-written facts), and nothing under `src/` changes.
+
+| Eval | Expected |
+| --- | --- |
+| Default story | `driver.mjs check` and `demo` use the networking storyline by default. `--story sprint` keeps the B3 generator, and `--turns 2` keeps the toy scenario. |
+| Sensible proposals | Every link is one of a fixed, reviewed list of pairs (for example ruslan's offer to build the MCP adapter matches ali's goal of finding a technical co-builder), so each proposal reads as a real networking match, conflict or answer. |
+| Meter | At the default 200 turns both parties save more than 85% (estimate). |
+| Live flow | `demo` opens the room, both people confirm the co-builder match, ruslan rejects the conflict over the Sunday video, the state survives a reload, and no page errors occur. |
+| Determinism | The same seed gives the same graph IDs and room. |
+| Regression | `node --test tests/*.test.mjs` passes. |
