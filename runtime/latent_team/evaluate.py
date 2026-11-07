@@ -13,10 +13,6 @@ import os
 import random
 import re
 
-import torch
-
-from .team import LatentTeam
-
 HUB = os.path.expanduser(os.environ.get("HF_HUB_CACHE", "~/.cache/huggingface/hub"))
 NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
@@ -104,6 +100,7 @@ def main():
     items = gsm8k("test")
     random.Random(args.seed).shuffle(items)
     items = items[:args.count]
+    from .team import LatentTeam  # torch is only needed to run the models, not to score answers
     team = LatentTeam(args.model)
     team.single(["What is 1 + 1?"], max_new_tokens=4)  # warm-up, so the first batch's timing is fair
     report = {"model": args.model, "systems": {}}

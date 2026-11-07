@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from . import ApiError
 from .mappers import MapperRegistry
 from .transfer import register_from_env
+from .team_service import SseResponse, register_team_from_env, sse_bytes
 from .pool import REQUEST_DEADLINE_SECONDS, SLOT_WAIT_SECONDS, LatentPool
 from .vllm_client import VllmClient
 
@@ -35,8 +36,11 @@ DEFAULT_PORT = 4320
 
 class Config:
     def __init__(self, root, vllm_url=DEFAULT_VLLM_URL, model=DEFAULT_MODEL, port=DEFAULT_PORT, timeout=300.0,
-                 deadline=REQUEST_DEADLINE_SECONDS, slot_wait=SLOT_WAIT_SECONDS):
+                 deadline=REQUEST_DEADLINE_SECONDS, slot_wait=SLOT_WAIT_SECONDS, allowed_hosts=()):
         self.root = root
+        # Extra Host header values to accept, e.g. "host.docker.internal:4320" for Open WebUI
+        # in Docker. The server still listens on 127.0.0.1 only.
+        self.allowed_hosts = tuple(allowed_hosts)
         self.deadline = deadline
         self.slot_wait = slot_wait
         self.vllm_url = vllm_url
@@ -64,6 +68,7 @@ def load_config(env=None):
         vllm_url=env.get("VLLM_URL") or DEFAULT_VLLM_URL,
         model=env.get("LATENT_MODEL") or DEFAULT_MODEL,
         port=port,
+        allowed_hosts=[h.strip().lower() for h in env.get("LATENT_ALLOWED_HOSTS", "").split(",") if h.strip()],
     )
 
 
@@ -134,6 +139,22 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self.close_connection = True
 
+    def send_sse(self, response):
+        """An OpenAI-style event stream (the whole reply is ready, so it is sent at once)."""
+        data = sse_bytes(response)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        self.close_connection = True
+
     def send_error(self, code, message=None, explain=None):
         """Malformed request lines and headers also get a JSON error body."""
         self.send_json(code, {"error": message or "Bad request."})
@@ -141,7 +162,8 @@ class Handler(BaseHTTPRequestHandler):
     def _allowed(self):
         port = self.server.server_port
         host = (self.headers.get("Host") or "").strip().lower()
-        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+        extra = getattr(getattr(self.server, "config", None), "allowed_hosts", ())
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}", *extra):
             raise ApiError(403, "Host not allowed.")
         if self.headers.get("Origin") is not None:
             raise ApiError(403, "Cross-origin requests are not allowed.")
@@ -203,7 +225,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(405, "Method not allowed.")
             body = self._read_json() if method == "POST" else None
             self._request_read()
-            self.send_json(200, handler(body, self._client_gone))
+            result = handler(body, self._client_gone)
+            if isinstance(result, SseResponse):
+                self.send_sse(result)
+            else:
+                self.send_json(200, result)
         except ApiError as error:
             self._drain()
             self._request_read()
@@ -243,7 +269,7 @@ class LatentServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, config, client=None, registry=None, quiet=False):
+    def __init__(self, config, client=None, registry=None, quiet=False, team=None):
         self.config = config
         self.quiet = quiet
         self._connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
@@ -257,8 +283,18 @@ class LatentServer(ThreadingHTTPServer):
             # Handlers get the body and a callable that reports a departed client.
             "/latent/mappers": {"GET": lambda _body, _gone: {"pairs": self.registry.pairs()}},
             "/latent/transfer": {"POST": lambda body, _gone: self.registry.transfer(body)},
+            # M2c: the latent agent team, and the same team as an OpenAI-compatible model.
+            "/latent/team": {"POST": lambda body, _gone: self._team()(body)},
+            "/v1/models": {"GET": lambda _body, _gone: self._team().models()},
+            "/v1/chat/completions": {"POST": lambda body, _gone: self._team().chat(body)},
         }
+        self.team = team
         super().__init__(("127.0.0.1", config.port), Handler)
+
+    def _team(self):
+        if self.team is None:
+            raise ApiError(503, "No latent team is loaded. Start the runtime with LATENT_TEAM_MODEL set.")
+        return self.team
 
     def process_request(self, request, client_address):
         if not self._connections.acquire(blocking=False):
@@ -279,7 +315,7 @@ class LatentServer(ThreadingHTTPServer):
 
 def main():
     config = load_config()
-    server = LatentServer(config)
+    server = LatentServer(config, team=register_team_from_env(os.environ))
     if register_from_env(server.registry, config.root, os.environ):
         print(f"mapper pairs: {server.registry.pairs()}", flush=True)
     print(
