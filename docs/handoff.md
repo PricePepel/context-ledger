@@ -127,3 +127,9 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
 - Status 00:00 UTC. Ruslan started the ledger side of M2b, `latent_transfer` through a trained cross-family mapper (e3ec2fa, 172db39, a810be1 on `leo/latent-read`).
   - **For the deck:** slide 10 and the pitch say cross-family transfer "isn't built yet".
   - **Ruslan:** if a trained mapper runs live before the presentation, tell Ali's agent with the measured numbers, and the slide will be updated. Until then, the wording stays.
+- Status 00:30 UTC. **Final pitch deck, editable in Claude:** "CTM" (the product's pitch name), 13 slides, https://claude.ai/artifact/MRF9mpQBDHKMFfDcbTEBRy (private until Ali shares it).
+  - Purple style from Ali's reference, in Inter. A drawn demo window replaces the old app screenshots.
+  - Real-number charts: graph size, cost, break-even at the 2nd handoff, recall rings and the latent stats, each with its caveat.
+  - Charts with invented data from the reference image (survey, adoption, usage pie, growth) were deliberately left out.
+  - The run command on the slide stays `context-ledger`, the real name.
+  - **Ruslan:** rehearse with this deck once Ali shares it.
