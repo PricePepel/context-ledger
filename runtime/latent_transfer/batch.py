@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .align import causal_mask, sender_positions
+from .align import sender_positions
 
 
 @dataclass
@@ -62,5 +62,8 @@ def make_pair(sender_tokenizer, receiver_tokenizer, texts, max_tokens=384):
     allowed = torch.zeros(batch, r_len, s_len, dtype=torch.bool)
     for row, ((_, s_spans), (_, r_spans)) in enumerate(zip(sender_rows, receiver_rows)):
         positions[row, :len(s_spans)] = torch.tensor(sender_positions(s_spans, r_spans))
-        allowed[row, :len(r_spans), :len(s_spans)] = torch.tensor(causal_mask(s_spans, r_spans))
+        # align.causal_mask, vectorized: sender token end <= receiver token end.
+        s_ends = torch.tensor([end for _, end in s_spans])
+        r_ends = torch.tensor([end for _, end in r_spans])
+        allowed[row, :len(r_spans), :len(s_spans)] = s_ends[None, :] <= r_ends[:, None]
     return Pair(sender_ids, sender_mask, receiver_ids, receiver_mask, positions, allowed)

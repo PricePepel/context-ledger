@@ -87,12 +87,21 @@ class TransferPair:
                                               max_new_tokens, self.eos))
 
     @torch.no_grad()
-    def answer_from_sender(self, document, suffix, max_new_tokens=24):
-        """Sender prefills the document, the mapper writes the receiver cache, the receiver answers."""
+    def answer_from_sender(self, document, suffix, max_new_tokens=24, zero_sender=False):
+        """Sender prefills the document, the mapper writes the receiver cache, the receiver answers.
+
+        zero_sender=True is the eval's control: the same mapper and receiver tokens, but the
+        sender's keys and values are zeros, so whatever survives did not come from the sender.
+        """
         timings = {}
         start = time.perf_counter()
         batch = self.pair([document])
+        timings["alignMs"] = (time.perf_counter() - start) * 1000
+        start = time.perf_counter()
         sender = self.sender_cache(batch)
+        if zero_sender:
+            sender.keys = [torch.zeros_like(k) for k in sender.keys]
+            sender.values = [torch.zeros_like(v) for v in sender.values]
         self._sync()
         timings["senderMs"] = (time.perf_counter() - start) * 1000
         start = time.perf_counter()
@@ -115,7 +124,7 @@ class TransferPair:
         return self.decode(out[0, ids.shape[1]:].tolist())
 
     @torch.no_grad()
-    def sender_generate(self, prompt, max_new_tokens=64):
+    def sender_generate(self, prompt, max_new_tokens=96):
         ids = torch.tensor([self.sender_tok(prompt, add_special_tokens=False)["input_ids"]], device=self.device)
         out = self.sender.generate(ids, attention_mask=torch.ones_like(ids), max_new_tokens=max_new_tokens,
                                    do_sample=False, pad_token_id=self.sender_tok.pad_token_id or 0)

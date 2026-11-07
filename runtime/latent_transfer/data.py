@@ -32,6 +32,7 @@ def closed_prompt(question):
 
 
 def summary_prompt(passage, words=40):
+    """The T2T baseline's request; pair.sender_generate allows 96 tokens, enough for 40 words."""
     return (f"<|im_start|>user\nSummarize this passage in at most {words} words. Keep every name, number "
             f"and date.\n\n{passage.strip()}{END}\n<|im_start|>assistant\n")
 

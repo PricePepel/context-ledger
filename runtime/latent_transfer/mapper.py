@@ -86,7 +86,8 @@ class Block(nn.Module):
         self.out = nn.Linear(dim, receiver_width, bias=False)
 
     def forward(self, h, memory, receiver_pos, sender_pos, self_allowed, cross_allowed):
-        h = h + self.self_attn(self.ln1(h), self.ln1(h), receiver_pos, receiver_pos, self_allowed)
+        x = self.ln1(h)
+        h = h + self.self_attn(x, x, receiver_pos, receiver_pos, self_allowed)
         m = self.mem(self.mem_norm(memory))
         m = torch.cat([self.sink.to(m.dtype).expand(m.shape[0], 1, -1), m], dim=1)
         h = h + self.cross_attn(self.ln2(h), m, receiver_pos, sender_pos, cross_allowed)

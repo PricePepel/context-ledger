@@ -71,8 +71,11 @@ def stage2_loss(pair, batch, suffixes, targets):
     out = continue_from_cache(pair.receiver, cache, batch.receiver_mask, ids, mask)
     logits = out.logits[:, :-1].float()
     gold, weight = ids[:, 1:], labels[:, 1:].float()
-    loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), gold.reshape(-1), reduction="none")
-    return (loss * weight.reshape(-1)).sum() / weight.sum().clamp(min=1)
+    loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), gold.reshape(-1), reduction="none").view_as(weight)
+    # Eq. 11 averages over each example's own target tokens (1/|y|), then over the batch,
+    # so a 47-token continuation does not outweigh a 3-token answer.
+    per_row = (loss * weight).sum(1) / weight.sum(1).clamp(min=1)
+    return per_row[weight.sum(1) > 0].mean()
 
 
 def qa_sample(pair, row):

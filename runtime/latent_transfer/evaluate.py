@@ -7,10 +7,12 @@ Conditions (same receiver, same question text):
   text    receiver prefills the passage itself           (upper reference)
   closed  no passage                                     (floor)
   swat    mapped sender cache of the passage             (the transfer)
+  zeroed  the mapper with the sender cache set to zero   (control: the mapper also sees the
+          receiver's token embeddings, so this is what it can do without the sender)
   t2t     sender's summary of the passage, as text       (text-to-text baseline)
 
-Gate (docs/m2b-transfer.md): retention = F1(swat)/F1(text) >= 0.90, and swat beats
-closed with the bootstrap 95% interval of the difference above zero.
+Gate (docs/m2b-transfer.md): retention = F1(swat)/F1(text) >= 0.90, and swat beats both
+closed and zeroed with the bootstrap 95% interval of the difference above zero.
 """
 import argparse
 import json
@@ -68,6 +70,8 @@ def run(pair, items, conditions, log_every=50):
             start = time.perf_counter()
             record["swat"], record["receipt"] = pair.answer_from_sender(document, suffix)
             record["swatMs"] = (time.perf_counter() - start) * 1000
+        if "zeroed" in conditions:
+            record["zeroed"], _ = pair.answer_from_sender(document, suffix, zero_sender=True)
         if "t2t" in conditions:
             summary = pair.sender_generate(summary_prompt(row["context"]))
             record["summary"] = summary
@@ -93,11 +97,15 @@ def summarize(results, conditions):
     if "swat" in mean and "closed" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["closedF1"] for r in results])
         summary["swatMinusClosed95"] = [round(low, 4), round(high, 4)]
+    if "swat" in mean and "zeroed" in mean:
+        low, high = bootstrap([r["swatF1"] for r in results], [r["zeroedF1"] for r in results])
+        summary["swatMinusZeroed95"] = [round(low, 4), round(high, 4)]
     if "swat" in mean and "text" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["textF1"] for r in results])
         summary["swatMinusText95"] = [round(low, 4), round(high, 4)]
         receipts = [r["receipt"] for r in results]
         summary["meanMs"] = {
+            "align": round(sum(x["alignMs"] for x in receipts) / len(receipts), 2),
             "sender": round(sum(x["senderMs"] for x in receipts) / len(receipts), 2),
             "mapper": round(sum(x["mapperMs"] for x in receipts) / len(receipts), 2),
             "swatTotal": round(sum(r["swatMs"] for r in results) / len(results), 2),
@@ -106,6 +114,7 @@ def summarize(results, conditions):
         summary["gate"] = {
             "retention": summary.get("swatRetention", 0) >= GATE_RETENTION,
             "beatsClosed": "swatMinusClosed95" in summary and summary["swatMinusClosed95"][0] > 0,
+            "beatsZeroed": "swatMinusZeroed95" in summary and summary["swatMinusZeroed95"][0] > 0,
         }
         summary["passed"] = all(summary["gate"].values())
     return summary
@@ -114,18 +123,22 @@ def summarize(results, conditions):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint")
-    parser.add_argument("--conditions", default="text,closed,swat")
+    parser.add_argument("--conditions", default="text,closed,swat,zeroed,t2t")
     parser.add_argument("--count", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     conditions = [c for c in args.conditions.split(",") if c]
-    if "swat" in conditions and not args.checkpoint:
-        parser.error("--checkpoint is required for the swat condition")
+    if ({"swat", "zeroed"} & set(conditions)) and not args.checkpoint:
+        parser.error("--checkpoint is required for the swat and zeroed conditions")
     torch.manual_seed(args.seed)
     pair = TransferPair(checkpoint=args.checkpoint)
     items = eval_items(pair, args.count, args.seed, args.max_tokens)
+    # Warm-up (CUDA kernels, allocator) on a training-free text, so item 1's timing is fair.
+    pair.answer_from_text(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)
+    if args.checkpoint:
+        pair.answer_from_sender(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)
     results = run(pair, items, conditions)
     summary = summarize(results, conditions)
     summary["checkpoint"] = pair.checkpoint_id

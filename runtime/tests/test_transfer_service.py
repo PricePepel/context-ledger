@@ -28,7 +28,10 @@ class FakePair:
     def answer_from_sender(self, document, suffix, max_new_tokens):
         self.calls.append((document, suffix, max_new_tokens))
         time.sleep(self.delay)
-        return "Denver Broncos", {"senderTokens": 7, "receiverTokens": 8, "senderMs": 1.234, "mapperMs": 2.345}
+        if "boom" in suffix:
+            raise RuntimeError("CUDA error")
+        return "Denver Broncos", {"senderTokens": 7, "receiverTokens": 8, "alignMs": 0.5, "senderMs": 1.234,
+                                  "mapperMs": 2.345}
 
 
 class TransferServiceTest(unittest.TestCase):
@@ -98,6 +101,18 @@ class TransferServiceTest(unittest.TestCase):
         first.join()
         self.assertEqual(raised.exception.status, 503)
         self.assertEqual(slow(self.body)["answer"], "Denver Broncos", "the slot is released")
+
+    def test_long_files_are_refused_before_tokenizing(self):
+        with open(os.path.join(self.dir.name, "long.txt"), "w", encoding="utf-8") as handle:
+            handle.write("x" * 9000)
+        body = {k: v for k, v in self.body.items() if k != "text"}
+        self.assertEqual(self.status({**body, "paths": ["long.txt"]}), 413)
+        self.assertEqual(self.pair.calls, [])
+
+    def test_a_failure_inside_the_model_releases_the_slot(self):
+        with self.assertRaises(RuntimeError):
+            self.service({**self.body, "question": "boom"})
+        self.assertEqual(self.service(self.body)["answer"], "Denver Broncos")
 
     def test_registry_routes_to_the_registered_pair_and_refuses_others(self):
         registry = MapperRegistry()

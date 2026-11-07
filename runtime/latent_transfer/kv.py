@@ -23,18 +23,21 @@ def rope_tables(model, positions, dtype):
     so any rope scaling in its config is honoured."""
     rotary = model.model.rotary_emb
     dummy = torch.zeros(1, device=positions.device, dtype=dtype)
-    cos, sin = rotary(dummy, positions)
-    return cos.to(dtype), sin.to(dtype)
+    cos, sin = rotary(dummy.float(), positions)
+    return cos.float(), sin.float()
 
 
 def apply_rope(keys, cos, sin):
-    """keys [B, H, T, D]; cos/sin [B, T, D]."""
-    return keys * cos[:, None] + rotate_half(keys) * sin[:, None]
+    """keys [B, H, T, D]; cos/sin [B, T, D]. Rotates in fp32 and casts back, so a bf16
+    remove-then-apply round trip adds no rounding beyond the final cast."""
+    k, c, s = keys.float(), cos.float()[:, None], sin.float()[:, None]
+    return (k * c + rotate_half(k) * s).to(keys.dtype)
 
 
 def remove_rope(keys, cos, sin):
-    """Inverse of apply_rope: rotate each pair by the negative angle."""
-    return keys * cos[:, None] - rotate_half(keys) * sin[:, None]
+    """Inverse of apply_rope: rotate each pair by the negative angle (in fp32)."""
+    k, c, s = keys.float(), cos.float()[:, None], sin.float()[:, None]
+    return (k * c - rotate_half(k) * s).to(keys.dtype)
 
 
 @dataclass

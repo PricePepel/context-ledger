@@ -45,7 +45,11 @@ class TransferService:
                 raise ApiError(413, f"text is longer than {MAX_TEXT_CHARS} characters.")
             return text, None
         files = load_files(self.root, body["paths"])
-        return "\n\n".join("\n".join(lines) for _, lines in files), [path for path, _ in files]
+        passage = "\n\n".join("\n".join(lines) for _, lines in files)
+        # The same character cap as text mode, checked before any tokenizing (review finding 2).
+        if len(passage) > MAX_TEXT_CHARS:
+            raise ApiError(413, f"The files hold more than {MAX_TEXT_CHARS} characters.")
+        return passage, [path for path, _ in files]
 
     def __call__(self, body):
         extra = sorted(set(body) - FIELDS)
@@ -63,14 +67,15 @@ class TransferService:
 
         from latent_transfer.data import doc_text, question_suffix  # torch is only needed when serving M2b
         document = doc_text(passage)
-        tokens = len(self.pair.receiver_tok(document, add_special_tokens=False)["input_ids"])
-        sender_tokens = len(self.pair.sender_tok(document, add_special_tokens=False)["input_ids"])
-        if max(tokens, sender_tokens) > self.max_tokens:
-            raise ApiError(413, f"The document is {max(tokens, sender_tokens)} tokens; this mapper was trained "
-                                f"on at most {self.max_tokens}.")
         if not self._slot.acquire(timeout=self.slot_wait):
             raise ApiError(503, BUSY)
         try:
+            # Tokenizers are not shared across threads: count tokens inside the slot.
+            tokens = len(self.pair.receiver_tok(document, add_special_tokens=False)["input_ids"])
+            sender_tokens = len(self.pair.sender_tok(document, add_special_tokens=False)["input_ids"])
+            if max(tokens, sender_tokens) > self.max_tokens:
+                raise ApiError(413, f"The document is {max(tokens, sender_tokens)} tokens; this mapper was "
+                                    f"trained on at most {self.max_tokens}.")
             started = time.perf_counter()
             answer, receipt = self.pair.answer_from_sender(document, question_suffix(question), limit)
             receipt["totalMs"] = round((time.perf_counter() - started) * 1000, 2)
@@ -78,7 +83,7 @@ class TransferService:
             self._slot.release()
         receipt.update({"sender": self.pair.sender_name, "receiver": self.pair.receiver_name,
                         "mapperId": self.pair.checkpoint_id})
-        for key in ("senderMs", "mapperMs"):
+        for key in ("alignMs", "senderMs", "mapperMs"):
             receipt[key] = round(receipt[key], 2)
         result = {"mode": "transfer", "answer": answer, "answerVerified": False, "receipt": receipt}
         if paths:
@@ -93,10 +98,13 @@ def register_from_env(registry, root, env):
         return None
     from latent_transfer.pair import TransferPair
     import torch
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    try:
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        sender, receiver = state["sender"], state["receiver"]
+    except (OSError, RuntimeError, KeyError, TypeError) as error:
+        raise SystemExit(f"LATENT_MAPPER is not a usable mapper checkpoint: {checkpoint} ({error})") from None
     device = env.get("LATENT_MAPPER_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
-    pair = TransferPair(state["sender"], state["receiver"], device=device, checkpoint=checkpoint)
+    pair = TransferPair(sender, receiver, device=device, checkpoint=checkpoint)
     service = TransferService(root, pair)
-    registry.register(state["sender"], state["receiver"], service, name=f"{state['sender']} -> {state['receiver']} "
-                                                                       f"({pair.checkpoint_id})")
+    registry.register(sender, receiver, service, name=f"{sender} -> {receiver} ({pair.checkpoint_id})")
     return service
