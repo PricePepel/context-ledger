@@ -39,3 +39,26 @@ Known limits:
 - Meter tokens are estimates.
 
 Ali owns the benchmark and pitch. The `.claude/worktrees/` agent worktree and its branch can be removed once the cherry-picked commit 964f70d is pushed.
+
+## Current checkpoint — cycle 6 (M2a warm latent pool, 2026-11-07)
+
+Every milestone is now split into a Leo side and an Ali side (latent-ledger `leo/split-roadmap`). M2a follows that split:
+
+- **Leo side** (`leo/latent-read`): the `latent_read` MCP tool, the `POST /api/latent/read` proxy with slice validation, the text fallback, and the gate runner `evals/latent/run.mjs`.
+- **Ali side** (`ali/latent-pool`, worktree `context-ledger-ali`): the stdlib Python warm pool in `runtime/` behind vLLM. Leo's agent built it for Ali's review. Ali owns it and should approve the contract (`q-latent-contract`) before it merges.
+- Neither branch is pushed. Ali's M0 benchmark (cycle 5) is PR #3. Ali requested a Tenki review on PR #1 and PR #3, and none has arrived yet.
+
+To run M2a live from WSL:
+
+```sh
+bash runtime/serve-vllm.sh
+cd runtime && LATENT_ROOT=<folder> ~/venvs/latent/bin/python -m latent_pool.server
+```
+
+Then start the ledger with `LATENT_ROOT` set to the same folder (Windows path) and `LATENT_URL=http://127.0.0.1:4320`.
+
+Results are in the cycle 6 section of [the eval log](evals.md). Next steps:
+
+1. Run the closed-model baseline.
+2. Ali reviews the runtime.
+3. Triage Ali's benchmark finding that the graph context's stable prefix stays under the 1,024-token cache minimum (causes named in his handoff: session-ID line position, edge section order).

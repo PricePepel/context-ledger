@@ -139,3 +139,22 @@ On the eight questions, live with Qwen2.5-7B-Instruct-AWQ on the RTX 4090 Laptop
 - the cached share across all calls is at least 0.6.
 
 The closed-model baseline is Claude answering the same questions with all files in context. That baseline is recorded when a Claude runner is available. Until then, the gate is reported as open-model numbers against the token budget.
+
+## Results — Cycle 6 (M2a), 2026-11-07
+
+Live on Qwen2.5-7B-Instruct-AWQ with vLLM 0.33.0 (prefix caching on), on an RTX 4090 Laptop GPU (16 GB) under WSL Ubuntu 24.04. The ledger (Leo side, `leo/latent-read`) ran in front of the warm pool runtime (Ali side, `ali/latent-pool`, built by Leo's agent for Ali's review). The questions were the eight synthetic codebase questions, graded by `evals/latent/grade.mjs`.
+
+| Run | Accuracy | Citations | Slice ÷ prefix tokens | Cached share | Gate |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 7/8 | 8/8 | 0.065 | 0.987 | pass |
+| 2 | 6/8 | 8/8 | 0.064 | 0.989 | fail (accuracy) |
+| 3 | 7/8 | 8/8 | 0.065 | 0.995 | pass |
+
+- The gate held in 2 of 3 runs, so pass@3 passes and pass^3 does not. The misses were real model omissions. The model answered "there is a hard cap" without 7200 s, and once said "extended by the refresh window" without 900 s. Prompts were not tuned to these questions, because that would overfit the gate.
+- Warm sharing works. A direct probe showed the second call reusing 1,760 of 1,786 prompt tokens, and latency fell from 1,972 ms to 426 ms. In the runs, 98–99% of all prompt tokens came from the warm prefix, and the agent received about 6.5% of the tokens it would otherwise read.
+- The closed-model baseline (Claude reading all five files) has not been run yet, so the gate's "matches the closed model" half is still open.
+- Live debug fixes:
+  - vLLM needed a C compiler and Python headers in WSL (installed with approval) and vLLM's own sampler instead of FlashInfer's JIT; `serve-vllm.sh` now handles both.
+  - A cut-off synthesizer reply was retried with the identical request, giving a 502. The findings list is now sized to the budget, and the retry asks for a compact reply.
+  - Ali's benchmark had claimed cycle 5, so this cycle was renumbered to 6.
+- Leo-side review: one high finding. The slice answer could print fake findings and a fake "dropped: 0" footer. Two medium: unbounded receipt pass-through, and the file size was checked only after reading. Several low: Windows `:` data streams, directories gave 500, duplicate findings, hidden label characters, runtime error text passed to agents. All were fixed with tests in 5adfbd9. Nothing could escape LATENT_ROOT: junctions, short names, reserved names and UNC paths were all refused.
