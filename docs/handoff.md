@@ -81,3 +81,10 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - The quick lows.
   - Contract gaps 1, 2, 5, 6 and 7.
   - Nothing in `src/` or `leo/latent-read` changes.
+- Status 21:45 UTC. **L14 fixes applied on `ali/latent-pool` (72ce5cb), and Ali approved the contract.**
+  - Mediums 1 and 2 are fixed: a 150 s request deadline, 503 busy after a 2 s wait for a slot, and a 10 s limit to read the whole request.
+  - Lows 3–9 and design note 10 are fixed.
+  - Contract gaps are closed (1, 2, 3, 4, 5, 6, 7, 8, 9).
+  - Runtime tests: 73/73, three runs.
+  - Ruslan was told on PR #4, and `ali/latent-pool` is free to push again.
+  - **Ruslan:** copy `docs/latent-read.md` from `ali/latent-pool` to `leo/latent-read` so the two copies match. Optionally, give the ledger a clearer message for the runtime's new 504.
