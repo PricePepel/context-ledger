@@ -283,8 +283,30 @@ test('cycle 6b: quotes must occur in their cited lines; verified findings are ma
   assert.deepEqual(result.graph.findings.map(f => [f.label, f.quoteVerified]), [
     ['TTL is 1800', true],
     ['Refresh uses SESSION_REFRESH_SECONDS', true],
+    ['Session lifetime, quoted from another line', true],
     ['Hard cap SESSION_HARD_CAP_SECONDS', false],
   ]);
   assert.equal(result.graph.findings[0].evidence[0].quote, 'SESSION_TTL_SECONDS = 1800');
-  assert.equal(result.graph.badQuotes, 4);
+  // The quote was on line 8, not the cited line 7: the span moves to where it is.
+  assert.deepEqual(result.graph.findings[2].evidence[0], { path: 'src/config.js', startLine: 8, endLine: 8, quote: 'SESSION_TTL_SECONDS = 1800' });
+  assert.equal(result.graph.relocatedSpans, 1);
+  assert.equal(result.graph.badQuotes, 3);
+});
+
+test('cycle 6b live finding: off-by-one citations are re-anchored to their verbatim quote', async t => {
+  // What the live 7B model returned: true code, wrong line numbers.
+  const findings = [
+    { label: 'An order moves to paid after the charge', evidence: [{ path: 'src/orders.js', startLine: 24, endLine: 24, quote: "move(id, 'paid');" }] },
+    { label: 'MAIL_QUEUE is orbit-mail', evidence: [{ path: 'src/config.js', startLine: 17, endLine: 18, quote: "export const MAIL_QUEUE = 'orbit-mail';" }] },
+    { label: 'Pending orders can be cancelled', evidence: [{ path: 'src/orders.js', startLine: 9, endLine: 11,
+      quote: "const transitions = { pending: ['paid', 'cancelled'], paid: ['shipped'], shipped: [], cancelled: [] };" }] },
+  ];
+  const runtime = await fakeRuntime(t, () => ({ body: { graph: slice(findings) } }));
+  const result = await latentRead({ paths: ['src/orders.js', 'src/config.js'], question: 'q' }, { latentRoot: root, latentUrl: runtime.latentUrl });
+  const where = result.graph.findings.map(f => f.evidence.map(s => `${s.path}:${s.startLine}-${s.endLine}`).join());
+  // The third "quote" drops the trailing comma after cancelled: [] in the file, so it is
+  // not verbatim and the finding is dropped: the check stays strict.
+  assert.deepEqual(where, ['src/orders.js:25-25', 'src/config.js:27-27']);
+  assert.equal(result.graph.relocatedSpans, 2);
+  assert.equal(result.graph.badQuotes, 1);
 });

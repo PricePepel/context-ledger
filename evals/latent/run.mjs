@@ -32,7 +32,17 @@ for (let round = 1; round <= repeat; round += 1) {
   const results = [];
   for (const question of set.questions) {
     const started = Date.now();
-    const data = await ask(question);
+    let data;
+    try {
+      data = await ask(question);
+    } catch (error) {
+      // A failed read is a wrong, uncited answer; record it instead of aborting the run.
+      console.log(`round ${round} ${question.id}: FAILED ${error.message}`);
+      results.push({ id: question.id, correct: false, cited: false, error: error.message, ms: Date.now() - started,
+        prefixTokens: null, sliceTokens: null, cachedShare: null, promptTokens: 0, cachedTokens: 0,
+        rejectedFindings: 0, badQuotes: 0, kept: 0, quoted: 0, answer: '', labels: [] });
+      continue;
+    }
     const grade = gradeSlice(question, data.graph);
     const calls = data.receipt?.calls ?? [];
     results.push({
@@ -44,7 +54,11 @@ for (let round = 1; round <= repeat; round += 1) {
       promptTokens: calls.reduce((sum, call) => sum + (call.promptTokens ?? 0), 0),
       cachedTokens: calls.reduce((sum, call) => sum + (call.cachedTokens ?? 0), 0),
       rejectedFindings: data.graph.rejectedFindings,
+      badQuotes: data.graph.badQuotes ?? 0,
+      kept: data.graph.findings.length,
+      quoted: data.graph.findings.filter(finding => finding.quoteVerified).length,
       answer: data.graph.answer,
+      labels: data.graph.findings.map(finding => finding.label),
     });
     const last = results.at(-1);
     console.log(`round ${round} ${question.id}: correct=${grade.correct} cited=${grade.cited} slice=${last.sliceTokens}/${last.prefixTokens} cached=${last.cachedShare} ${last.ms}ms`);
@@ -62,8 +76,11 @@ for (let round = 1; round <= repeat; round += 1) {
     sliceShare: Number.isFinite(sliceShare) && sliceShare <= 0.1,
     cachedShare: Number.isFinite(cachedShare) && cachedShare >= 0.6,
   };
-  runs.push({ round, summary, sliceShare, cachedShare, meanMs: mean('ms'), gate, passed: Object.values(gate).every(Boolean), results });
-  console.log(`round ${round}: accuracy ${summary.accuracy} citations ${summary.citationRate} sliceShare ${sliceShare.toFixed(3)} cachedShare ${cachedShare.toFixed(3)} -> ${runs.at(-1).passed ? 'PASS' : 'FAIL'}`);
+  const kept = results.reduce((s, r) => s + r.kept, 0);
+  const quoteShare = kept ? results.reduce((s, r) => s + r.quoted, 0) / kept : 0;
+  const badQuotes = results.reduce((s, r) => s + r.badQuotes, 0);
+  runs.push({ round, summary, sliceShare, cachedShare, quoteShare, badQuotes, meanMs: mean('ms'), gate, passed: Object.values(gate).every(Boolean), results });
+  console.log(`round ${round}: accuracy ${summary.accuracy} citations ${summary.citationRate} sliceShare ${sliceShare.toFixed(3)} cachedShare ${cachedShare.toFixed(3)} quoted ${quoteShare.toFixed(2)} badQuotes ${badQuotes} -> ${runs.at(-1).passed ? 'PASS' : 'FAIL'}`);
 }
 if (values.out) await writeFile(values.out, JSON.stringify({ ledger, runs }, null, 2) + '\n');
 process.exitCode = runs.every(run => run.passed) ? 0 : 1;

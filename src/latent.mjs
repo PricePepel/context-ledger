@@ -149,7 +149,43 @@ function cleanStats(stats) {
 }
 
 const maxQuoteChars = 200;
+const maxQuoteLines = 12;
 const normalizeSpace = text => text.replace(/\s+/gu, ' ').trim();
+
+/** Smallest line windows of a file whose text contains the quote, as [start, end]. */
+function quoteWindows(lines, quote) {
+  const needle = normalizeSpace(quote);
+  const found = [];
+  for (let start = 0; start < lines.length; start += 1) {
+    for (let end = start; end < Math.min(lines.length, start + maxQuoteLines); end += 1) {
+      if (normalizeSpace(lines.slice(start, end + 1).join('\n')).includes(needle)) {
+        found.push([start + 1, end + 1]);
+        break;
+      }
+    }
+  }
+  // Keep only minimal windows: drop any that contain another found window.
+  return found.filter(([s, e]) => !found.some(([s2, e2]) => (s2 !== s || e2 !== e) && s2 >= s && e2 <= e));
+}
+
+/**
+ * Check a span's quote against the file. In place: verified. Elsewhere in the same
+ * file: moved to the nearest occurrence (relocated). Nowhere, empty or oversized: bad.
+ * A span without a quote is kept as cited, unverified.
+ */
+function anchorSpan(span, lines) {
+  const base = { path: span.path, startLine: span.startLine, endLine: span.endLine };
+  const { quote } = span;
+  if (quote === undefined) return { span: base, verified: false };
+  if (typeof quote !== 'string' || quote.length > maxQuoteChars || !/\S/u.test(quote)) return { bad: true };
+  const cited = lines.slice(span.startLine - 1, span.endLine).join('\n');
+  if (normalizeSpace(cited).includes(normalizeSpace(quote))) return { span: { ...base, quote }, verified: true };
+  const windows = quoteWindows(lines, quote);
+  if (!windows.length) return { bad: true };
+  const [startLine, endLine] = windows.reduce((best, window) =>
+    (Math.abs(window[0] - span.startLine) < Math.abs(best[0] - span.startLine) ? window : best));
+  return { span: { path: span.path, startLine, endLine, quote }, verified: true, relocated: true };
+}
 
 const numberPattern =/(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
 const identifierPattern = /\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b/gu;
@@ -207,15 +243,31 @@ export function validateSlice(slice, files, question) {
   let ungroundedFindings = 0;
   let suspiciousFindings = 0;
   let badQuotes = 0;
+  let relocatedSpans = 0;
   for (const finding of slice.findings.slice(0, maxFindings)) {
     const evidence = Array.isArray(finding?.evidence) ? finding.evidence : [];
     const valid = goodLabel(finding?.label) && evidence.length >= 1 && evidence.length <= maxSpans
       && evidence.every(span => lineCounts.has(span?.path)
         && Number.isInteger(span.startLine) && Number.isInteger(span.endLine)
         && span.startLine >= 1 && span.startLine <= span.endLine && span.endLine <= lineCounts.get(span.path));
-    const spans = valid ? evidence.map(({ path, startLine, endLine }) => ({ path, startLine, endLine })) : [];
-    const key = JSON.stringify([valid && finding.label, spans]);
-    if (!valid || unique.has(key)) {
+    if (!valid) {
+      rejectedFindings += 1;
+      continue;
+    }
+    // Quotes anchor the evidence. The model copies code more reliably than it counts
+    // lines, so a verbatim quote found elsewhere in the same file moves the span there
+    // (relocated). A quote found nowhere in the file means the finding rests on text
+    // that does not exist, and it is dropped.
+    const anchored = evidence.map(span => anchorSpan(span, linesByPath.get(span.path)));
+    if (anchored.some(entry => entry.bad)) {
+      rejectedFindings += 1;
+      badQuotes += 1;
+      continue;
+    }
+    const spans = anchored.map(entry => entry.span);
+    relocatedSpans += anchored.filter(entry => entry.relocated).length;
+    const key = JSON.stringify([finding.label, spans.map(({ path, startLine, endLine }) => [path, startLine, endLine])]);
+    if (unique.has(key)) {
       rejectedFindings += 1;
       continue;
     }
@@ -236,28 +288,12 @@ export function validateSlice(slice, files, question) {
       suspiciousFindings += 1;
       continue;
     }
-    // Verified quotes: a span may carry the exact code it relies on. It must occur in
-    // that span's lines, or the finding was built on text that is not there.
-    const quotes = evidence.map(span => span.quote);
-    const quoted = spans.map((span, index) => {
-      const quote = quotes[index];
-      if (quote === undefined) return { span, verified: false };
-      const lines = linesByPath.get(span.path).slice(span.startLine - 1, span.endLine).join('\n');
-      const ok = typeof quote === 'string' && quote.length <= maxQuoteChars && /\S/u.test(quote)
-        && normalizeSpace(lines).includes(normalizeSpace(quote));
-      return { span: ok ? { ...span, quote } : span, verified: ok, bad: !ok };
-    });
-    if (quoted.some(entry => entry.bad)) {
-      rejectedFindings += 1;
-      badQuotes += 1;
-      continue;
-    }
     unique.add(key);
     findings.push({
       id: `f${findings.length + 1}`,
       label: finding.label,
-      evidence: quoted.map(entry => entry.span),
-      quoteVerified: quoted.every(entry => entry.verified),
+      evidence: spans,
+      quoteVerified: anchored.every(entry => entry.verified),
     });
   }
   rejectedFindings += Math.max(0, slice.findings.length - maxFindings);
@@ -274,6 +310,7 @@ export function validateSlice(slice, files, question) {
     ungroundedFindings,
     suspiciousFindings,
     badQuotes,
+    relocatedSpans,
     // Lines that look like instructions to an AI. When present, the answer may have
     // been steered by them even if every kept finding is clean.
     suspiciousLines: suspects.slice(0, 20),
