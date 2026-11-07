@@ -43,3 +43,28 @@ Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude
 | B8 Demo video and judge Q&A | 90-second recording of the room flow made from the driver, plus answers to the hardest judge questions | Video: `docs/demo/networking-demo.mp4` (61 s, captioned, from the real app). Q&A after B2 | Video done; Q&A after B2 |
 | B9 Demo storyline (theme fit) | Hackathon brief, challenge 5 "Your Agent, My Agent": two attendees' agents network on their behalf (skills, offers, constraints, questions) at demo scale (about 200 turns). Every match, conflict and answer makes sense to a judge, and the two people confirm live | Fixture data only; meter above 85%; checked with `driver.mjs check` and a screenshot read | Done as an option (`--story networking`); default stays `sprint` until the team picks challenge 5 or wildcard |
 | B10 Built-today slide | Commit timeline for cycles 4–6 plus the review scorecard (tests, findings fixed, Tenki on every PR) | Every number links to a commit, PR or eval entry | Ready |
+
+## Closing the gaps before judging (2026-11-07, 12:55 PT, event ends 20:00 PT)
+
+Owner key: **Ali** (person), **Ali's agent** (this session), **Ruslan**, **both**. P0 blocks the demo or submission; P1 is a Q&A hole a judge will find; P2 is polish.
+
+| ID | P | Gap | Close it by | Owner | State |
+| --- | --- | --- | --- | --- | --- |
+| L1 | P0 | Track and positioning not decided; it blocks the pitch | Pick the showcase: challenge 1+2 serendipity, challenge 5 trust layer, or wildcard. Thesis: a text layer for people plus a latent layer for machines | both | Open |
+| L2 | P0 | Submission rules unknown: deadline, form or Devpost, demo slot length | Ask an organizer or check the event Discord/Luma; book the demo slot | Ali | Open |
+| L3 | P0 | **The repo is private**, so judges can't open it | Make it public or add judges, after a secret scan; or submit a public mirror of the demo branch | Ruslan (owner) | Open |
+| L4 | P0 | `main` is stale: the README and code predate cycles 4–6 | Merge PR #1, then #4 and #3 into `main` (or point judges at one branch). Drafts must be marked ready, and CI is already green | Ruslan, Ali approves | Open |
+| L5 | P0 | The live demo has never been run on the stage laptop (the driver was only verified on Linux) | Rehearse on Ruslan's laptop: the ledger, both agents over MCP, the room, both people confirm. Pre-seed a room as fallback; keep the video ready offline | both | Open |
+| L6 | P0 | Pitch not written | 3-minute pitch, one beat per judging criterion, plus a 1-page Q&A sheet | Ali's agent drafts, Ali owns | Open (after L1) |
+| L7 | P1 | "vs a summary?" no baseline | Cite SwaT for summaries vs latent transfer; with an API key, add a graph-vs-summary benchmark (tokens and fact recall) | Ali's agent (needs key) | Open |
+| L8 | P1 | All numbers are synthetic | B7 dogfood: run the meter on Ali's and Ruslan's real sessions locally and commit only aggregates (count, size buckets, median saving) | Ali (laptop), Ali's agent writes the script | Open |
+| L9 | P1 | Tokens are chars/4 estimates | B5: exact counts with a provider token-counting API on the benchmark outputs | Ali's agent (needs key) | Open |
+| L10 | P1 | Cost of building the graph is not counted (an agent has to extract it) | Measure the extraction tokens on one real session, or state it plainly as a cost that is paid once and reused on every handoff | Ali's agent | Open |
+| L11 | P1 | SwaT attribution unclear | Confirm whether Abdulrahman (Ar-Kareem) is on the team; cite the arXiv paper on the slide either way; never present the paper's numbers as product numbers; M2b is "next" | Ali | Open |
+| L12 | P1 | "Who clicked?" Decisions are browser-only, but party names are self-asserted | Prepared answer: local and loopback today; identity (signing, card P4) is next. Don't claim authentication | Ali's agent (Q&A sheet) | Open |
+| L13 | P1 | The graph context isn't prompt-cache-friendly (prefix under 1,024 tokens) | Either Ruslan applies the two `src/` fixes, or the pitch makes no caching claim for the graph | Ruslan decides | Open |
+| L14 | P1 | Ali's cycle 6 side: the `ali/latent-pool` runtime review and `q-latent-contract` approval | Ruslan pushes `ali/latent-pool`; Ali's agent reviews; Ali approves | Ruslan, then Ali | Blocked (not pushed) |
+| L15 | P2 | Built-today proof (judging: progress on the day) | B10 slide: commit timeline for cycles 4–6, 75+ tests, 13 bugs fixed after review (10 by our own reviewers, 3 by Tenki), Tenki on every PR | Ali's agent | Ready |
+| L16 | P2 | Judges need a 30-second way in | A top-of-README "What it is / watch the 61 s video / run it in one command / numbers with sources" | Ali's agent | Ready |
+| L17 | P2 | Mystery Match visibility | Register the project at check-in matchmaking (it is the event's own serendipity experiment) | Ali | Open |
+| L18 | P2 | Fixed-hardware numbers | B6: benchmark on a Tenki runner (needs the Runners page linked) | Ali's agent | Optional |
