@@ -136,6 +136,10 @@ export function openStore(path) {
     ON CONFLICT (id) DO NOTHING
   `);
   const getGraph = database.prepare('SELECT payload FROM graphs WHERE id = ?');
+  const readGraph = id => {
+    const row = getGraph.get(id);
+    if (row) return { id, ...JSON.parse(row.payload) };
+  };
 
   return {
     importTranscript(input) {
@@ -180,7 +184,7 @@ export function openStore(path) {
       if (!session) throw new InputError('Graph transcript session not found.');
 
       const sourceLines = JSON.parse(session.messages).map(message => message.line);
-      const derived = validateGraph(packet, sourceLines);
+      const derived = validateGraph(packet, sourceLines, { lookupGraph: id => readGraph(id) });
       const canonical = serializeGraphPacket(packet);
       const id = createHash('sha256').update(canonical).digest('hex');
       const payload = { packet: JSON.parse(canonical), ...derived };
@@ -188,9 +192,6 @@ export function openStore(path) {
       return { id, ...JSON.parse(getGraph.get(id).payload) };
     },
 
-    getGraph(id) {
-      const row = getGraph.get(id);
-      if (row) return { id, ...JSON.parse(row.payload) };
-    },
+    getGraph: readGraph,
   };
 }

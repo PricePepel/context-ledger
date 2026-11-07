@@ -1,14 +1,28 @@
 import Ajv2020 from 'ajv/dist/2020.js';
-import graphSchema from '../schemas/semantic-graph.schema.json' with { type: 'json' };
+import graphSchemaV1 from '../schemas/semantic-graph.schema.json' with { type: 'json' };
+import graphSchemaV2 from '../schemas/semantic-graph-v2.schema.json' with { type: 'json' };
 
-const validateShape = new Ajv2020({ strict: true, ownProperties: true }).compile(graphSchema);
+const ajv = new Ajv2020({ strict: true, ownProperties: true });
+// A Map, not an object literal: `version` is untrusted input, and an inherited key
+// such as "constructor" must not resolve to a function that skips validation.
+const validateShape = new Map([[1, ajv.compile(graphSchemaV1)], [2, ajv.compile(graphSchemaV2)]]);
+
+export const graphSchemas = { 1: graphSchemaV1, 2: graphSchemaV2 };
 
 const edgeKinds = {
-  advances: ['action', 'goal'],
-  blocks: ['blocker', 'action'],
-  depends_on: ['action', 'action'],
-  supersedes: ['decision', 'decision'],
-  constrains: ['constraint', 'action'],
+  advances: [['action'], ['goal']],
+  blocks: [['blocker'], ['action']],
+  depends_on: [['action'], ['action']],
+  supersedes: [['decision'], ['decision']],
+  constrains: [['constraint'], ['action']],
+  answers: [['decision'], ['question']],
+};
+
+// Cross-graph links: which local kinds may point at which remote kinds.
+const linkKinds = {
+  matches: [['goal', 'offer', 'action'], ['goal', 'offer', 'action']],
+  conflicts: [['goal', 'offer', 'action', 'constraint', 'decision'], ['goal', 'offer', 'action', 'constraint', 'decision']],
+  answers: [['decision'], ['question']],
 };
 
 export class GraphInputError extends Error {}
@@ -31,8 +45,8 @@ function indexEdges(edges, nodes) {
   const byType = new Map(Object.keys(edgeKinds).map(type => [type, []]));
   for (const edge of edges) {
     const { from, to, type } = edge;
-    const [fromKind, toKind] = edgeKinds[type];
-    if (from === to || nodes.get(from)?.kind !== fromKind || nodes.get(to)?.kind !== toKind) {
+    const [fromKinds, toKinds] = edgeKinds[type];
+    if (from === to || !fromKinds.includes(nodes.get(from)?.kind) || !toKinds.includes(nodes.get(to)?.kind)) {
       throw new GraphInputError('An edge must connect distinct nodes of the expected kinds.');
     }
     const key = `${type}|${from}|${to}`;
@@ -64,17 +78,54 @@ function assertAcyclic(edges, relationship) {
   for (const id of targets.keys()) visit(id);
 }
 
+function assertLinks(packet, nodes, lookupGraph) {
+  const seen = new Set();
+  const remoteGraphs = new Map();
+  for (const { from, graph, to, type } of packet.links ?? []) {
+    const [fromKinds, toKinds] = linkKinds[type];
+    if (!fromKinds.includes(nodes.get(from)?.kind)) {
+      throw new GraphInputError('A link must start at a local node of the expected kind.');
+    }
+    if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
+    const remote = remoteGraphs.get(graph)?.packet;
+    if (remote?.version !== 2) throw new GraphInputError('A link must point at a stored version 2 graph.');
+    if (remote.party === packet.party) throw new GraphInputError('A link must point at another party\'s graph.');
+
+    const target = remote.nodes.find(node => node.id === to);
+    if (!toKinds.includes(target?.kind)) {
+      throw new GraphInputError('A link must end at a remote node of the expected kind.');
+    }
+    if (type === 'answers' && target.to !== packet.party) {
+      throw new GraphInputError('A link can only answer a question addressed to this party.');
+    }
+    const key = `${type}|${graph}|${from}|${to}`;
+    if (seen.has(key)) throw new GraphInputError('Links must be unique.');
+    seen.add(key);
+  }
+}
+
 /**
- * Validate a v1 packet against the original line numbers retained for its source
- * session and derive its actionable state in packet order.
+ * Validate a v1 or v2 packet against the original line numbers retained for its
+ * source session and derive its actionable state in packet order. Version 2 links
+ * are checked with `lookupGraph(id)`, which returns a stored graph or undefined.
  */
-export function validateGraph(packet, sourceLines) {
-  if (!validateShape(packet)) throw new GraphInputError('Invalid version 1 graph packet.');
+export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
+  const version = packet?.version;
+  const validate = validateShape.get(version);
+  if (!validate?.(packet)) {
+    throw new GraphInputError(validate ? `Invalid version ${version} graph packet.` : 'Unsupported graph packet version.');
+  }
 
   const nodes = indexNodes(packet.nodes, sourceLines);
   const edges = indexEdges(packet.edges, nodes);
   assertAcyclic(edges.get('depends_on'), 'dependency');
   assertAcyclic(edges.get('supersedes'), 'supersession');
+  if (version === 2) {
+    if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
+      throw new GraphInputError('A question must be addressed to another party.');
+    }
+    assertLinks(packet, nodes, lookupGraph);
+  }
 
   const waiting = new Set();
   for (const { from, to } of edges.get('depends_on')) {
@@ -85,12 +136,21 @@ export function validateGraph(packet, sourceLines) {
   }
 
   const superseded = new Set(edges.get('supersedes').map(edge => edge.to));
-  return {
+  const derived = {
     readyActionIds: packet.nodes
       .filter(node => node.kind === 'action' && node.status === 'pending' && !waiting.has(node.id))
       .map(node => node.id),
     currentDecisionIds: packet.nodes
       .filter(node => node.kind === 'decision' && !superseded.has(node.id))
+      .map(node => node.id),
+  };
+  if (version !== 2) return derived;
+
+  const answered = new Set(edges.get('answers').filter(edge => !superseded.has(edge.from)).map(edge => edge.to));
+  return {
+    ...derived,
+    openQuestionIds: packet.nodes
+      .filter(node => node.kind === 'question' && node.status === 'open' && !answered.has(node.id))
       .map(node => node.id),
   };
 }
