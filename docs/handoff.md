@@ -46,4 +46,4 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
 
 - Not touched here: Linux CI for PR #1, the live MCP smoke test, the demo rehearsal, P0/P1, and `src/`.
 - Step 1 (done): cards claimed.
-- Step 2 (running): research for the benchmark design, a benchmark build with evals first, an independent review and a debug pass on the benchmark, then the pitch draft.
+- Step 2 (running): benchmark only — design research, the build with evals first, an independent review and a debug pass, then fixes. The pitch (B2) is deferred until the benchmark numbers are final.

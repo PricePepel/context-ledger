@@ -33,4 +33,4 @@ Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude
 | Card | Scope | Acceptance | State |
 | --- | --- | --- | --- |
 | B1 M0 benchmark | `npm run bench`: synthetic two-party negotiations at several transcript sizes, measured end to end through the real API | Cycle 5 evals in docs/evals.md; deterministic, offline, synthetic only; independent code review and debug pass on the benchmark itself | In progress |
-| B2 Pitch | `docs/pitch.md`: problem, demo script, benchmark numbers, positioning | Every number traces to the benchmark output or a cited source; reuses the product/v1 strategy research instead of redoing it | In progress |
+| B2 Pitch | `docs/pitch.md`: problem, demo script, benchmark numbers, positioning | Every number traces to the benchmark output or a cited source; reuses the product/v1 strategy research instead of redoing it | Backlog (deferred until B1 numbers are final) |
