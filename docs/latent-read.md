@@ -19,9 +19,31 @@ A closed model (Claude, GPT) should not have to read a whole codebase to answer 
 
 ## Runtime service (Ali side)
 
-The service listens on `http://127.0.0.1:4320` by default and calls vLLM's OpenAI-compatible API (default `http://127.0.0.1:8000/v1`). It reads files only under `LATENT_ROOT`. Every `paths` entry is a relative POSIX path under that root, with no `..`, no leading `/`, no drive letter and no backslash. Requests are JSON, responses are JSON, and errors are `{"error": string}` with status 400 (bad input), 413 (too large) or 503 (model not ready).
+The service listens on `http://127.0.0.1:4320` by default and calls vLLM's OpenAI-compatible API (default `http://127.0.0.1:8000/v1`). It reads files only under `LATENT_ROOT`. Every `paths` entry is a relative POSIX path under that root, with no `..`, no leading `/`, no drive letter and no backslash. Requests are JSON (`Content-Type: application/json`, with a `Content-Length`) and carry no `Origin` header. Responses are JSON. Errors are `{"error": string}`.
 
 Limits: at most 32 paths, at most 512 KiB of file text in total, and the rendered prefix must fit within the model's context minus room for answers.
+
+### Statuses
+
+| Status | Meaning |
+| --- | --- |
+| 200 | Success |
+| 400 | Bad input: body, fields, paths, encoding, or files that are all empty |
+| 403 | A `Host` other than `127.0.0.1:<port>` or `localhost:<port>`, or any `Origin` header |
+| 404 / 405 | Unknown path or method |
+| 413 | Too many paths, too much text, a body over 64 KiB, or a prompt that does not fit the model's context |
+| 500 | Internal error, with no details exposed |
+| 501 | `POST /latent/transfer` for a model pair with no trained mapper |
+| 502 | The model's reply was invalid or cut off, even after one compact retry |
+| 503 | The model is not ready, the pool is busy (no free slot within 5 s), or the client went away |
+| 504 | The request ran past its deadline |
+
+### Deadlines (agreed between the sides)
+
+- **Ledger:** gives up on the runtime after 180 s.
+- **Runtime:** ends every read or warm within 150 s, below the ledger's limit. Each model call gets only the time left, and the runtime stops between calls once the client has disconnected.
+- **Waiting and receiving:** a request waits at most 5 s for one of the 4 pipeline slots, otherwise it gets 503 busy. A request must arrive in full (headers and body) within 15 s.
+- **How the ledger treats failures:** 503 (not ready or busy) becomes the Tier 1 text fallback. 400 and 413 are reported as such. Every other failure is reported as 502 with no runtime text passed on.
 
 ### Prefix rendering
 
@@ -33,7 +55,11 @@ Both sides must render the prefix the same way, so that the bytes, and therefore
 2| ...
 ```
 
-The rendered prefix is the system message. Every call for that prefix (reader, planner, workers, synthesizer) starts with exactly that system message and differs only in the user message. That way vLLM's automatic prefix caching serves the shared part from its warm cache.
+The system message is the **preamble**, a blank line, and then the rendered prefix. Every call for that prefix (reader, planner, workers, synthesizer) sends exactly that system message and differs only in its user message. That way vLLM's automatic prefix caching serves the shared part from its warm cache.
+
+- **The preamble** is the fixed text `PREAMBLE` in `runtime/latent_pool/pool.py`. It is versioned as `PREAMBLE_VERSION`, and receipts report it as `preambleVersion`. Version 2 (cycle 6b) asks for exact quotes and concrete values. Changing its text means bumping the version, and the gate must be re-run.
+- **`prefixId`** is the sha256 of the rendered prefix only, without the preamble. The same files give the same `prefixId` across preamble versions.
+- **File text is untrusted data.** The preamble does not instruct the model to resist injection. That defence is the ledger's: citation, quote, grounding and instruction-line checks, plus `answerVerified: false`.
 
 ### `POST /latent/warm`
 
@@ -84,10 +110,11 @@ Response:
 ```
 
 - `calls[].role` is one of `reader`, `planner`, `worker` or `synthesizer`. `cachedTokens` comes from vLLM's `usage.prompt_tokens_details.cached_tokens`, which requires `--enable-prompt-tokens-details`.
+- The receipt also carries `preambleVersion` and `droppedFindings`: findings the runtime discarded before the ledger saw them, because their spans did not exist, they repeated, or they went over the cap. `prefixTokens` is the reader call's `prompt_tokens`, so it includes the preamble and the chat template, not only the files. The ledger keeps only these numeric and identifier fields of the receipt. Model-written text, such as `subQuestions`, never reaches agents.
 - `cachedShare` is the sum of `cachedTokens` over the sum of `promptTokens` across all calls.
 - `sliceTokensEstimate` is ceil(UTF-16 length of the JSON slice / 4).
 - Findings: 1–12. A label is one visible line (500 characters at most). Evidence: 1–4 spans, each with `startLine ≤ endLine` and both within the file.
-- Added in cycle 6b, proposed for Ali's approval: each span may carry `quote`, the exact code copied from its lines (at most 200 characters). The ledger keeps a finding only when every quote occurs in its cited lines, ignoring runs of whitespace. It marks the finding `quoteVerified: true` when every span is quoted, and counts dropped findings as `badQuotes`. The ledger also reports `ungroundedFindings`, `suspiciousFindings`, `suspiciousLines` and `answerVerified: false`. See the README section on latent reads.
+- Added in cycle 6b: each span may carry `quote`, the exact code copied from its lines (at most 200 characters). The ledger keeps a finding only when every quote occurs in its cited lines, ignoring runs of whitespace. It marks the finding `quoteVerified: true` when every span is quoted, and counts dropped findings as `badQuotes`. The ledger also reports `ungroundedFindings`, `suspiciousFindings`, `suspiciousLines` and `answerVerified: false`. See the README section on latent reads.
 
 ### `GET /latent/mappers` (M2b scaffold)
 

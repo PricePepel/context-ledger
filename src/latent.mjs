@@ -126,6 +126,8 @@ function cleanReceipt(receipt) {
     model: typeof receipt.model === 'string' && /^[\w./:-]{1,120}$/u.test(receipt.model) ? receipt.model : null,
     prefixId: typeof receipt.prefixId === 'string' && /^[a-f0-9]{64}$/u.test(receipt.prefixId) ? receipt.prefixId : null,
     prefixTokens: count(receipt.prefixTokens),
+    preambleVersion: typeof receipt.preambleVersion === 'string' && /^[\w.-]{1,16}$/u.test(receipt.preambleVersion) ? receipt.preambleVersion : null,
+    droppedFindings: count(receipt.droppedFindings),
     subQuestionCount: Array.isArray(receipt.subQuestions) ? Math.min(receipt.subQuestions.length, 16) : 0,
     calls: calls.filter(call => roles.has(call?.role)).map(call => ({
       role: call.role,

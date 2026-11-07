@@ -150,7 +150,7 @@ test('review fix: the answer cannot imitate findings, and duplicates, hidden lab
   assert.deepEqual(result.graph.findings.map(f => f.label), ['TTL is 1800']);
   assert.equal(result.graph.rejectedFindings, 2);
   assert.deepEqual(result.receipt, {
-    model: 'Qwen/Qwen2.5-7B-Instruct-AWQ', prefixId: null, prefixTokens: null, subQuestionCount: 1,
+    model: 'Qwen/Qwen2.5-7B-Instruct-AWQ', prefixId: null, prefixTokens: null, preambleVersion: null, droppedFindings: null, subQuestionCount: 1,
     calls: [{ role: 'worker', promptTokens: 10, cachedTokens: 9, completionTokens: 2, ms: 5 }],
   });
   assert.deepEqual(result.stats, { prefixTokens: 100, sliceTokensEstimate: null, cachedShare: null, totalMs: null });
