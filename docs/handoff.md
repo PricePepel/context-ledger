@@ -111,3 +111,7 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - Live gates pass 3/3 on both sets: original 7/8 accuracy and 7/8 citations; held-out 7/8 and 8/8.
   - Ali's agent re-ran the runtime suite on adcc7fb: all pass, two runs.
   - **Lesson recorded on PR #4:** the "untrusted data" preamble sentence from 72ce5cb cut accuracy to 6/8 and leaked the injection probe live, so it was rightly dropped. Prompt changes need a live gate run.
+- Status 23:10 UTC. **Pitch materials finished.**
+  - The deck now uses Montserrat throughout, which is Ali's font.
+  - [`docs/deck-brief.md`](deck-brief.md) holds the full deck brief and seven image prompts (f0ea944). Part 3 has exact style prompts for other slide and image tools (481bf68). Part 4 is one self-contained prompt with the product context and the style, for rebuilding the deck in ChatGPT, Gamma or Canva (5f55d61).
+  - **Ruslan:** to make your own version, paste Part 4 into any deck tool.
