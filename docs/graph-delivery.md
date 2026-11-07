@@ -25,3 +25,13 @@ Source: Leo's M0 items in the latent-ledger roadmap. Integration branch: feature
 | F4 Negotiation room | Rooms API, per-person decisions, browser merged view | Agreed only when both confirm; browser-only decisions; Playwright journey | Done (d5e5371, debug fix in 83e3f2a, review fixes in 1fbb3c5) |
 
 Not covered in this cycle: Ali's benchmark and pitch, the event log (M1), exact token metering from transcripts (M1.5), and identity for parties. Party names are self-asserted, and the decisions route keeps honest agents out but does not prove who clicked.
+
+## Cycle 5 — Ali's M0 benchmark and pitch (2026-11-07)
+
+Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude/wizardly-pasteur-r1nhhw`, based on feature/semantic-graph at 1d7be89. Does not edit files owned by the open cycle 4 cards except to fix confirmed review findings, each with a regression test.
+
+| Card | Scope | Acceptance | State |
+| --- | --- | --- | --- |
+| B0 Review and Linux debug of cycle 4 | Independent code review of PR #1 and a full test run on Linux | Findings confirmed by a probe; results recorded in docs/evals.md | In progress |
+| B1 M0 benchmark | `npm run bench`: synthetic two-party negotiations at several transcript sizes, measured end to end through the real API | Cycle 5 evals in docs/evals.md; deterministic, offline, synthetic only | In progress |
+| B2 Pitch | `docs/pitch.md`: problem, demo script, benchmark numbers, positioning | Every number traces to the benchmark output or a cited source | In progress |
