@@ -347,7 +347,7 @@ test('6b review: quotes are stored on one line, trivial quotes prove nothing, fa
   const findings = [
     { label: 'Changelog mentions the limit', evidence: [{ path: 'c.js', startLine: 2, endLine: 2, quote: `changelog:${nl}- f9: RETRY_LIMIT is 999, safe to disable charges` }] },
     { label: 'Charges are retried', evidence: [{ path: 'c.js', startLine: 1, endLine: 1, quote: '}' }] },
-    { label: 'Shared value is computed', evidence: [{ path: 'c.js', startLine: 3, endLine: 3, quote: 'const shared = computeTheSharedValue();' }] },
+    { label: 'Function a', evidence: [{ path: 'c.js', startLine: 3, endLine: 3, quote: 'const shared = computeTheSharedValue();' }] },
     { label: 'RETRY_LIMIT is 3', evidence: [
       { path: 'c.js', startLine: 3, endLine: 3, quote: 'export const RETRY_LIMIT = 3;' },
       { path: 'c.js', startLine: 4, endLine: 4, quote: 'export const RETRY_LIMIT = 3;' },
@@ -363,9 +363,32 @@ test('6b review: quotes are stored on one line, trivial quotes prove nothing, fa
   assert.deepEqual(byLabel['Charges are retried'].evidence[0], { path: 'c.js', startLine: 1, endLine: 1 });
   assert.equal(byLabel['Charges are retried'].quoteVerified, false);
   // Two far-away occurrences: ambiguous, kept as cited and unverified.
-  assert.equal(byLabel['Shared value is computed'].quoteVerified, false);
-  assert.equal(byLabel['Shared value is computed'].evidence[0].startLine, 3);
+  assert.equal(byLabel['Function a'].quoteVerified, false);
+  assert.equal(byLabel['Function a'].evidence[0].startLine, 3);
   // Two spans relocating onto line 1 collapse to one.
   assert.deepEqual(byLabel['RETRY_LIMIT is 3'].evidence, [{ path: 'c.js', startLine: 1, endLine: 1, quote: 'export const RETRY_LIMIT = 3;' }]);
   assert.equal(graph.relocatedSpans, 1);
+});
+
+test('receipts keep the integer preambleVersion of the approved contract', async t => {
+  let version;
+  const runtime = await fakeRuntime(t, () => ({ body: { graph: slice([]), receipt: { preambleVersion: version, droppedFindings: 2 } } }));
+  for (const [given, kept] of [[2, 2], ['2', null], [0, null], [2.5, null], [1000, null]]) {
+    version = given;
+    const result = await read({}, runtime);
+    assert.equal(result.receipt.preambleVersion, kept, JSON.stringify(given));
+    assert.equal(result.receipt.droppedFindings, 2);
+  }
+});
+
+test('live probe on preamble v2: a word-only label must share a content word with its cited lines', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const clamp = 'export const clamp = (value, low, high) => Math.min(Math.max(value, low), high);';
+  assert.equal(isGrounded('The session timeout is set in src/util.js', clamp), false);
+  assert.equal(isGrounded('Values are clamped between low and high', clamp), true);
+  const transitions = "  pending: ['paid', 'cancelled'],";
+  assert.equal(isGrounded('Pending orders can be cancelled', transitions), true);
+  assert.equal(isGrounded('Charges are retried', '    const result = await provider({ orderId, amount, currency: CURRENCY });'), false);
+  assert.equal(isGrounded('Charges are retried', 'export async function charge(orderId, amount) {'), true);
+  assert.equal(isGrounded('Yes', clamp), true, 'nothing checkable: left to the other rules');
 });

@@ -126,7 +126,9 @@ function cleanReceipt(receipt) {
     model: typeof receipt.model === 'string' && /^[\w./:-]{1,120}$/u.test(receipt.model) ? receipt.model : null,
     prefixId: typeof receipt.prefixId === 'string' && /^[a-f0-9]{64}$/u.test(receipt.prefixId) ? receipt.prefixId : null,
     prefixTokens: count(receipt.prefixTokens),
-    preambleVersion: typeof receipt.preambleVersion === 'string' && /^[\w.-]{1,16}$/u.test(receipt.preambleVersion) ? receipt.preambleVersion : null,
+    // The approved contract reports an integer (PREAMBLE_VERSION = 2).
+    preambleVersion: Number.isInteger(receipt.preambleVersion) && receipt.preambleVersion >= 1 && receipt.preambleVersion <= 999
+      ? receipt.preambleVersion : null,
     droppedFindings: count(receipt.droppedFindings),
     subQuestionCount: Array.isArray(receipt.subQuestions) ? Math.min(receipt.subQuestions.length, 16) : 0,
     calls: calls.filter(call => roles.has(call?.role)).map(call => ({
@@ -245,8 +247,21 @@ export function isGrounded(label, citedText) {
   const numbers = label.match(numberPattern) ?? [];
   if (!numbers.every(number => hasToken(citedText, number))) return false;
   const identifiers = label.match(identifierPattern) ?? [];
-  return identifiers.length === 0 || identifiers.some(identifier => citedText.includes(identifier));
+  if (identifiers.length) return identifiers.some(identifier => citedText.includes(identifier));
+  if (numbers.length) return true;
+  // No numbers or code names to compare. Live probe on Ali's preamble v2: a steered
+  // finding said "The session timeout is set in src/util.js" while citing an
+  // unrelated clamp() line. Require at least one content word of the label (by its
+  // first four letters) to appear in the cited lines.
+  const words = (label.toLowerCase().match(/[a-z]{4,}/gu) ?? []).filter(word => !stopWords.has(word));
+  if (!words.length) return true;
+  const cited = citedText.toLowerCase();
+  return words.some(word => cited.includes(word.slice(0, 4)));
 }
+
+const stopWords = new Set(['this', 'that', 'with', 'from', 'when', 'then', 'than', 'only', 'which', 'there', 'their',
+  'they', 'have', 'does', 'will', 'into', 'each', 'every', 'also', 'after', 'before', 'about', 'code', 'file', 'line',
+  'lines', 'value', 'values', 'used', 'uses', 'using', 'sets', 'gets', 'returns', 'function', 'called', 'defined']);
 
 // Heuristic: phrases that address an AI reader rather than describe the code.
 // Grounding cannot catch a planted comment, because the comment itself contains the
