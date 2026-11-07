@@ -312,6 +312,38 @@ const tools = new Map([
       return { content: [text(briefingText(lines.join('\n'))), text(terminalJson({ receipt: data.receipt }))] };
     },
   }],
+  ['latent_team', {
+    description: 'Ask a local team of subagents that think without text (M2c, LatentMAS-style). On one local open model, a planner, ' +
+      'a critic and a refiner reason in latent space and pass their working memory (KV cache) to each other; only the final ' +
+      'solver writes text. You receive the solver\'s answer, which is unverified model output, plus a receipt. If the team is ' +
+      'not running, you are told so and should answer yourself. Best for self-contained reasoning questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', minLength: 1, maxLength: 8000, description: 'A self-contained question for the team.' },
+        latentSteps: { type: 'integer', minimum: 0, maximum: 80, default: 40, description: 'Latent thinking steps per subagent.' },
+        maxNewTokens: { type: 'integer', minimum: 1, maximum: 1024, default: 512, description: 'Upper bound on the answer length.' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      checkArguments(args, ['question', 'latentSteps', 'maxNewTokens']);
+      const data = await ledger('/api/latent/team', { body: JSON.stringify(args), timeoutMs: 200_000 });
+      if (data?.mode === 'unavailable') {
+        return { content: [text(briefingText(`${data.reason ?? 'The latent team is unavailable.'} Answer the question yourself.`))] };
+      }
+      if (data?.mode !== 'latent-team' || typeof data.answer !== 'string') {
+        throw new ToolError('Context Ledger returned an unexpected team response.');
+      }
+      return {
+        content: [
+          text(briefingText(`Team answer (latent subagents, text only from the solver; unchecked): ${briefingText(data.answer)}`)),
+          text(terminalJson({ receipt: data.receipt })),
+        ],
+      };
+    },
+  }],
 ]);
 
 const toolList = [...tools].map(([name, { description, inputSchema }]) => ({ name, description, inputSchema }));

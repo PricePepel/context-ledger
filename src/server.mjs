@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
-import { LatentError, latentRead, latentTransfer } from './latent.mjs';
+import { LatentError, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -125,6 +125,11 @@ const server = createServer(async (request, response) => {
         latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320',
         latentRoot: process.env.LATENT_ROOT,
       }));
+    }
+
+    if (method === 'POST' && url.pathname === '/api/latent/team') {
+      const input = await readJson(request, origin, 'A latent team run');
+      return json(response, 200, await latentTeam(input, { latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320' }));
     }
 
     if (method === 'POST' && url.pathname === '/api/rooms') {

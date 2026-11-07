@@ -583,3 +583,70 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
     suspiciousLines: suspects,
   };
 }
+
+// M2c, Leo side: the ledger's proxy to the runtime's latent agent team
+// (docs/m2c-latent-team.md on leo/m2c-latent-team). Planner, critic and refiner
+// think in latent space on one open model and hand their KV working memory on; only
+// the solver writes text. The answer is model prose: one line, unverified.
+const teamFields = ['question', 'latentSteps', 'maxNewTokens'];
+const teamRoles = new Set(['planner', 'critic', 'refiner', 'solver']);
+
+function checkTeam(input) {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new InputError('Latent team needs a JSON object.');
+  const extra = Object.keys(input).filter(key => !teamFields.includes(key));
+  if (extra.length) throw new InputError(`Latent team accepts only ${teamFields.join(', ')}.`);
+  const { question, latentSteps, maxNewTokens } = input;
+  if (typeof question !== 'string' || !question.trim() || question.length > 8000) {
+    throw new InputError('Question must be 1 to 8000 characters.');
+  }
+  if (latentSteps !== undefined && (!Number.isInteger(latentSteps) || latentSteps < 0 || latentSteps > 80)) {
+    throw new InputError('latentSteps must be an integer from 0 to 80.');
+  }
+  if (maxNewTokens !== undefined && (!Number.isInteger(maxNewTokens) || maxNewTokens < 1 || maxNewTokens > 1024)) {
+    throw new InputError('maxNewTokens must be an integer from 1 to 1024.');
+  }
+  return Object.fromEntries(teamFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
+}
+
+function cleanTeamReceipt(receipt) {
+  if (typeof receipt !== 'object' || receipt === null) return null;
+  return {
+    model: typeof receipt.model === 'string' && modelId.test(receipt.model) ? receipt.model : null,
+    agents: Array.isArray(receipt.agents) ? receipt.agents.filter(role => teamRoles.has(role)).slice(0, 8) : [],
+    latentStepsPerAgent: count(receipt.latentStepsPerAgent),
+    latentVectors: count(receipt.latentVectors),
+    generatedTokens: count(receipt.generatedTokens),
+    seconds: ms(receipt.seconds),
+  };
+}
+
+export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
+  const request = checkTeam(input);
+  let response;
+  try {
+    response = await fetchImpl(`${latentUrl}/latent/team`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
+    return { mode: 'unavailable', reason: 'The latent runtime is not running.' };
+  }
+  let body;
+  try {
+    body = await readBody(response);
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
+    if (error instanceof LatentError) throw error;
+    body = null;
+  }
+  if (response.status === 503) return { mode: 'unavailable', reason: 'The latent team is busy or not loaded.' };
+  if (!response.ok) throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
+  if (body?.mode !== 'latent-team' || typeof body.answer !== 'string') {
+    throw new LatentError(502, 'The latent runtime returned an unexpected team response.');
+  }
+  return { mode: 'latent-team', answer: oneLine(body.answer).slice(0, 4000), answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
+}

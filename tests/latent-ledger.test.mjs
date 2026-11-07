@@ -142,3 +142,45 @@ test('latent_transfer over MCP: the ledger forwards, flattens the answer, and fa
   assert.equal(secret.isError, true);
   assert.equal(seen.length, 2, 'refused paths never reach the runtime');
 });
+
+test('latent_team over MCP: one flattened unverified answer, and a clear message when the team is down', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'latent-team-'));
+  const seen = [];
+  const runtime = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    seen.push({ url: request.url, body: JSON.parse(Buffer.concat(chunks).toString()) });
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ mode: 'latent-team', answer: '16 - 3 - 4 = 9 eggs\nThe answer is 18.',
+      answerVerified: false, receipt: { model: 'Qwen/Qwen2.5-3B-Instruct', latentVectors: 120, generatedTokens: 40 } }));
+  });
+  await new Promise(resolve => runtime.listen(0, '127.0.0.1', resolve));
+  let ledger;
+  let downLedger;
+  let client;
+  t.after(async () => {
+    try {
+      if (client && client.child.exitCode === null) await client.close();
+    } finally {
+      await ledger?.stop();
+      await downLedger?.stop();
+      await new Promise(resolve => runtime.close(resolve));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  ledger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'a.sqlite'), LATENT_URL: `http://127.0.0.1:${runtime.address().port}` });
+  client = startMcp(ledger.port);
+  const result = await client.call(1, 'latent_team', { question: 'Janet has 16 eggs...', latentSteps: 40 });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.equal(result.content[0].text,
+    'Team answer (latent subagents, text only from the solver; unchecked): 16 - 3 - 4 = 9 eggs The answer is 18.');
+  assert.equal(JSON.parse(result.content[1].text).receipt.latentVectors, 120);
+  assert.deepEqual(seen, [{ url: '/latent/team', body: { question: 'Janet has 16 eggs...', latentSteps: 40 } }]);
+  await client.close();
+
+  downLedger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'b.sqlite'), LATENT_URL: 'http://127.0.0.1:9' });
+  client = startMcp(downLedger.port);
+  const down = await client.call(2, 'latent_team', { question: 'q' });
+  assert.equal(down.isError, undefined);
+  assert.match(down.content[0].text, /not running\. Answer the question yourself\./u);
+});
