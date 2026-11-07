@@ -169,3 +169,15 @@ Review and debug outcome. An independent subagent review with probes confirmed t
 For Ruslan (src/, not changed here): `handoffMarkdown` prints the session ID on line 5, before the turns, so any append invalidates the whole handoff prefix; moving it after the turns (as the graph context already does with its IDs) would make the handoff cacheable. The graph context renders edges before links and actions, so a new action's edge breaks the prefix mid-output; ordering sections by how often they change, or appending new nodes and edges at the end, would keep more of it.
 
 Tests: `node --test tests/bench.test.mjs` 10 of 10; `node --test tests/*.test.mjs` 64 of 64 on Linux. Playwright and the live MCP smoke test were not run (out of scope for B1). The signal tests are skipped on Windows, where signals cannot be caught.
+
+## Cycle 5 — B3 demo-scale seed (defined 2026-11-07, before implementation)
+
+The live demo seeded two-turn toy transcripts, so the savings meter showed a negative saving (about -108%): the graph context was larger than the handoff. B3 seeds the demo with the benchmark's synthetic generator (`bench/synth.mjs`) at a realistic size. Synthetic data only. No change under `src/`.
+
+| Eval | Expected |
+| --- | --- |
+| Demo-scale meter | `driver.mjs check` (no browser) with the default 200 turns per party prints a meter whose `savedShare` is above 0.85 for both parties. |
+| Toy scale still available | `--turns 2` keeps the original hand-written two-turn scenario for a quick look at the UI. |
+| Room flow | `driver.mjs demo` at 200 turns opens the room, both people confirm the first match, one rejects the first conflict, the state survives a reload, and the page logs no errors. |
+| Clean exit | The server is stopped and the temp database removed after `check` and `demo`. |
+| Regression | `node --test tests/*.test.mjs` passes. |
