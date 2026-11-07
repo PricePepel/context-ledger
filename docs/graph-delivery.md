@@ -41,7 +41,7 @@ Owner: Ali (MuhammadaliNazarov), with Claude Code orchestrating. Branch: `claude
 | B6 Benchmark on Tenki runner | `bench.yml` on `tenki-standard-medium-4c-8g`: runs `npm run bench`, uploads the report as an artifact, so pitched numbers come from a fixed, named machine | Separate workflow; does not touch e2e.yml | Ready (needs the Tenki runner app on the repo) |
 | B7 Dogfood numbers | Run the meter on Ali's own Claude Code and Codex sessions locally and commit only aggregates (counts, size buckets, median saving) | AGENTS.md section 5: no transcript text committed | Ready (runs on Ali's machine) |
 | B8 Demo video and judge Q&A | 90-second recording of the room flow made from the driver, plus answers to the hardest judge questions | Video: `docs/demo/networking-demo.mp4` (61 s, captioned, from the real app). Q&A after B2 | Video done; Q&A after B2 |
-| B9 Demo storyline (theme fit) | Hackathon brief, challenge 5 "Your Agent, My Agent": two attendees' agents network on their behalf (skills, offers, constraints, questions) at demo scale (about 200 turns). Every match, conflict and answer makes sense to a judge, and the two people confirm live | Fixture data only; meter above 85%; checked with `driver.mjs check` and a screenshot read | Done as an option (`--story networking`); default stays `sprint` until the team picks challenge 5 or wildcard |
+| B9 Demo storyline (theme fit) | Hackathon brief (first written for challenge 5; the team chose the wildcard track, and the storyline now serves as one vertical of the horizontal layer): two attendees' agents network on their behalf (skills, offers, constraints, questions) at demo scale (about 200 turns). Every match, conflict and answer makes sense to a judge, and the two people confirm live | Fixture data only; meter above 85%; checked with `driver.mjs check` and a screenshot read | Done as an option (`--story networking`); default stays `sprint` until the team picks challenge 5 or wildcard |
 | B10 Built-today slide | Commit timeline for cycles 4–6 plus the review scorecard (tests, findings fixed, Tenki on every PR) | Every number links to a commit, PR or eval entry | Ready |
 
 ## Closing the gaps before judging (2026-11-07, 12:55 PT, event ends 20:00 PT)
@@ -50,7 +50,7 @@ Owner key: **Ali** (person), **Ali's agent** (this session), **Ruslan**, **both*
 
 | ID | P | Gap | Close it by | Owner | State |
 | --- | --- | --- | --- | --- | --- |
-| L1 | P0 | Track and positioning not decided; it blocks the pitch | Pick the showcase: challenge 1+2 serendipity, challenge 5 trust layer, or wildcard. Thesis: a text layer for people plus a latent layer for machines | both | Open |
+| L1 | P0 | Track and positioning not decided; it blocks the pitch | **Decided: wildcard track, horizontal positioning.** The networking room is the one live vertical, and code handoffs are named as the first users. Thesis: a text layer for people plus a latent layer for machines | both | Done |
 | L2 | P0 | Submission rules unknown: deadline, form or Devpost, demo slot length | Ask an organizer or check the event Discord/Luma; book the demo slot | Ali | Parked by Ali |
 | L3 | P0 | **The repo is private**, so judges can't open it | Make it public or add judges, after a secret scan; or submit a public mirror of the demo branch | Ruslan (owner) | Open |
 | L4 | P0 | `main` is stale: the README and code predate cycles 4–6 | Merge PR #1, then #4 and #3 into `main` (or point judges at one branch). Drafts must be marked ready, and CI is already green | Ruslan, Ali approves | Open |

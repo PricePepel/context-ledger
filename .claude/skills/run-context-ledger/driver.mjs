@@ -7,7 +7,7 @@
 //   node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:PORT [--turns N]
 //
 // --story sprint (default: the M0 benchmark generator) or networking (the hackathon storyline in
-// demo/networking.mjs, challenge 5); --turns defaults to 200 per party; --turns 2 is the toy scenario.
+// demo/networking.mjs, wildcard track); --turns defaults to 200 per party; --turns 2 is the toy scenario.
 //
 // Synthetic data only. Paths are relative to the repository root.
 import { spawn, spawnSync } from 'node:child_process';

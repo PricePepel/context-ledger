@@ -31,3 +31,6 @@ Built today: cited graphs, cross-graph links, rooms where only people agree, the
 
 **10. Why should we believe the latent layer works?**
 The same-model part (M2a) was measured today on a laptop GPU. Latency dropped from 1,972 ms to 426 ms, 98–99% of prompt tokens came from cache, the agent received about 5–9% of the tokens, and both gates passed 3/3. The cross-family part isn't built yet; published research by others (SwaT) is our evidence that it can work.
+
+**11. "Horizontal" sounds too broad. Who uses this first?**
+Developer teams that already run Claude Code and Codex side by side and hand work between them. That's where the pain is today, and the numbers above come from exactly that: one agent handing a long session to another. The demo shows a second use of the same layer, two people's agents coordinating, to make the point that the layer doesn't change between use cases. Only the graphs do.

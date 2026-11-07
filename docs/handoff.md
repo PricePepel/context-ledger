@@ -95,3 +95,8 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   1. Drop "Cn" from the path check (Python's Unicode tables are older than Node's).
   2. Secret denylist: add `.git-credentials`, `.docker/` and `.kube/`, allow `.env.example`, and mirror the rule in `src/latent.mjs`.
   3. A test that the deadline is checked before the next call.
+- Status 22:10 UTC. **Track decided (L1): wildcard, positioned as a horizontal layer.** A trust layer between any two agents, cross-vendor, over MCP. The networking room is the one live vertical. Code handoffs between Claude Code and Codex are named as the first users, and hiring, team-forming and cross-company coordination are the other verticals.
+  - Updated: [pitch](pitch.md) (track, demo framing, a new horizontal section, "do not say" items on vagueness), [Q&A](qa.md) #11 ("too broad, who first?") and the demo's decision label (`demo/networking.mjs`).
+  - The 61 s backup video is unchanged and still accurate, because that decision is never shown in the room.
+  - Node suite 81/81.
+  - **Ruslan:** rehearse with the new pitch. Section 5 (horizontal) is now the core of the pitch, not an afterthought.

@@ -1,5 +1,5 @@
-// Demo storyline for the hackathon's challenge 5, "Your Agent, My Agent": two attendees'
-// agents network on their behalf. Synthetic: seeded filler chatter plus hand-written facts,
+// Demo storyline for the hackathon (wildcard track, horizontal layer): two attendees'
+// agents network on their behalf, one vertical of the cross-vendor layer. Synthetic: seeded filler chatter plus hand-written facts,
 // so every proposal in the room reads as a real match, conflict or answer.
 import { deriveSeed, prng } from '../bench/synth.mjs';
 
@@ -17,7 +17,7 @@ const facts = {
     { id: 'run-pitch', kind: 'offer', label: 'I run the three-minute pitch and the judge Q&A', say: 'I can run the three-minute pitch and handle the judge Q&A.' },
     { id: 'founder-intros', kind: 'offer', label: 'Intros to five founders who want agent tooling', say: 'I can introduce five founders who want agent tooling.' },
     { id: 'leave-by-seven', kind: 'constraint', label: 'I have to leave by 19:00 tonight', say: 'Hard stop for me: I have to leave by 19:00 tonight.' },
-    { id: 'your-agent-my-agent', kind: 'decision', label: 'Enter the Your Agent, My Agent challenge', say: 'Decided: we enter the Your Agent, My Agent challenge.' },
+    { id: 'wildcard-track', kind: 'decision', label: 'Enter the wildcard track as a horizontal agent layer', say: 'Decided: we enter the wildcard track as a horizontal agent layer.' },
     { id: 'book-slot', kind: 'action', status: 'pending', label: "Book the judges' demo slot", say: "Next step: book the judges' demo slot." },
     { id: 'record-video-sunday', kind: 'action', status: 'pending', label: 'Record the backup demo video on Sunday', say: 'Plan: record the backup demo video on Sunday.' },
     { id: 'who-owns-mcp', kind: 'question', status: 'open', to: 'ruslan', label: 'Who owns the MCP integration?', say: 'Question for ruslan: who owns the MCP integration?' },
