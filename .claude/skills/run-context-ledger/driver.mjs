@@ -6,7 +6,8 @@
 //   node .claude/skills/run-context-ledger/driver.mjs check [--turns N] [--min-saved 0.85]
 //   node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:PORT [--turns N]
 //
-// --turns defaults to 200 per party (benchmark generator); --turns 2 is the toy scenario.
+// --story sprint (default: the M0 benchmark generator) or networking (the hackathon storyline in
+// demo/networking.mjs, challenge 5); --turns defaults to 200 per party; --turns 2 is the toy scenario.
 //
 // Synthetic data only. Paths are relative to the repository root.
 import { spawn } from 'node:child_process';
@@ -103,7 +104,7 @@ async function seedToy(base) {
   const teo = (await api(base, 'POST', '/api/graphs', teoPacket(teoSession))).graph;
   const maraSession = (await api(base, 'POST', '/api/import', transcripts.mara)).session.id;
   const mara = (await api(base, 'POST', '/api/graphs', maraPacket(maraSession, teo.id))).graph;
-  return { mara: mara.id, teo: teo.id };
+  return { order: ['mara', 'teo'], graphs: { mara: mara.id, teo: teo.id } };
 }
 
 /**
@@ -122,21 +123,49 @@ async function seedScaled(base, turns, seedValue) {
   const teoSession = (await importOne(parts.b)).session.id;
   const teo = (await api(base, 'POST', '/api/graphs',
     packetFor(parts.b, teoSession, { linkTo: mara.id, otherFacts: parts.a.facts }))).graph;
-  return { mara: mara.id, teo: teo.id };
+  return { order: ['mara', 'teo'], graphs: { mara: mara.id, teo: teo.id } };
+}
+
+/**
+ * --story networking: the hackathon storyline (demo/networking.mjs). Two attendees' agents network on
+ * their behalf; ali publishes first and ruslan's agent proposes matches, a conflict and answers.
+ */
+async function seedNetworking(base, turns, seedValue) {
+  const story = await import(new URL('../../../demo/networking.mjs', import.meta.url));
+  const publish = async (name, aliGraphId) => {
+    const { lines, ...input } = story.transcriptFor(name, turns, seedValue);
+    const session = (await api(base, 'POST', '/api/import', input)).session.id;
+    return (await api(base, 'POST', '/api/graphs', story.packetFor(name, session, lines, aliGraphId))).graph.id;
+  };
+  const ali = await publish('ali');
+  const ruslan = await publish('ruslan', ali);
+  return {
+    order: ['ali', 'ruslan'],
+    graphs: { ali, ruslan },
+    // The proposals the live demo acts on: both confirm the co-builder match, ruslan rejects the Sunday clash.
+    picks: { match: 'MCP adapter', conflict: 'Sunday' },
+  };
 }
 
 /** Import both transcripts, publish both graphs with links, open a room. */
-async function seed(base, turns = Number(flag('--turns', 200)), seedValue = Number(flag('--seed', 42))) {
+async function seed(base, turns = Number(flag('--turns', 200)), seedValue = Number(flag('--seed', 42)), story = flag('--story', 'sprint')) {
   if (!Number.isInteger(turns) || turns < 2) throw new Error('--turns must be an integer of at least 2');
-  const graphs = turns === 2 ? await seedToy(base) : await seedScaled(base, turns, seedValue);
-  const room = (await api(base, 'POST', '/api/rooms', { graphIds: [graphs.mara, graphs.teo] })).room;
+  if (!['networking', 'sprint'].includes(story)) throw new Error('--story must be networking or sprint');
+  const seeded = turns === 2 ? await seedToy(base)
+    : story === 'sprint' ? await seedScaled(base, turns, seedValue) : await seedNetworking(base, turns, seedValue);
+  const [first, second] = seeded.order;
+  const room = (await api(base, 'POST', '/api/rooms', { graphIds: [seeded.graphs[first], seeded.graphs[second]] })).room;
+  const meter = {};
+  for (const name of seeded.order) meter[name] = await meterOf(base, seeded.graphs[name]);
   return {
+    story: turns === 2 ? 'toy' : story,
     turns,
-    maraGraph: graphs.mara,
-    teoGraph: graphs.teo,
+    parties: seeded.order,
+    graphs: seeded.graphs,
+    picks: seeded.picks ?? {},
     room: room.id,
     proposals: room.proposals?.length,
-    meter: { mara: await meterOf(base, graphs.mara), teo: await meterOf(base, graphs.teo) },
+    meter,
   };
 }
 
@@ -227,27 +256,29 @@ async function demo() {
 
     // The human flow: paste both graph IDs and open the room.
     await page.goto(server.base + '/');
-    await page.getByLabel('First graph ID').fill(seeded.maraGraph);
-    await page.getByLabel('Second graph ID').fill(seeded.teoGraph);
+    const [first, second] = seeded.parties;
+    await page.getByLabel('First graph ID').fill(seeded.graphs[first]);
+    await page.getByLabel('Second graph ID').fill(seeded.graphs[second]);
     await page.getByRole('button', { name: 'Open room' }).click();
     await page.locator('#room-status').filter({ hasText: /\d+ proposals?/u }).waitFor();
     await page.locator('#room').screenshot({ path: join(out, '1-room-open.png') });
 
     // Proposals re-sort as their state changes, so pin each one by its own sentence.
-    const proposal = async kind => {
-      const first = page.locator('#room-proposals > li', { hasText: kind }).first();
-      const sentence = (await first.innerText()).split('\n')[0].trim();
+    const proposal = async (kind, pick) => {
+      let candidates = page.locator('#room-proposals > li', { hasText: kind });
+      if (pick) candidates = candidates.filter({ hasText: pick });
+      const sentence = (await candidates.first().innerText()).split('\n')[0].trim();
       return page.locator('#room-proposals > li', { hasText: sentence });
     };
 
     // Both people confirm the first match; one rejects the first conflict.
-    const match = await proposal('matches');
-    await match.getByRole('button', { name: 'Confirm as mara' }).click();
-    await match.filter({ hasText: 'mara: confirm' }).waitFor();
-    await match.getByRole('button', { name: 'Confirm as teo' }).click();
+    const match = await proposal('matches', seeded.picks.match);
+    await match.getByRole('button', { name: `Confirm as ${first}` }).click();
+    await match.filter({ hasText: `${first}: confirm` }).waitFor();
+    await match.getByRole('button', { name: `Confirm as ${second}` }).click();
     await match.filter({ hasText: 'State: agreed' }).waitFor();
-    const conflict = await proposal('conflicts with');
-    await conflict.getByRole('button', { name: 'Reject as teo' }).click();
+    const conflict = await proposal('conflicts with', seeded.picks.conflict);
+    await conflict.getByRole('button', { name: `Reject as ${second}` }).click();
     await conflict.filter({ hasText: 'State: rejected' }).waitFor();
 
     // Reload proves the decisions were stored, not just rendered.
@@ -260,10 +291,10 @@ async function demo() {
     const agreed = await page.locator('#room-agreed').innerText();
     console.log(JSON.stringify({
       url: `${server.base}/#room=${seeded.room}`,
+      story: seeded.story,
       turns: seeded.turns,
       proposals: seeded.proposals,
-      maraGraph: seeded.maraGraph,
-      teoGraph: seeded.teoGraph,
+      graphs: seeded.graphs,
       room: seeded.room,
       meter: seeded.meter,
       agreed: agreed.trim(),
@@ -291,9 +322,9 @@ async function check() {
   try {
     const seeded = await seed(server.base);
     const minSaved = Number(flag('--min-saved', 0.85));
-    const saved = { mara: seeded.meter.mara.savedShare, teo: seeded.meter.teo.savedShare };
+    const saved = Object.fromEntries(seeded.parties.map(name => [name, seeded.meter[name].savedShare]));
     const ok = Object.values(saved).every(share => share > minSaved);
-    console.log(JSON.stringify({ ok, minSaved, turns: seeded.turns, proposals: seeded.proposals, savedShare: saved, meter: seeded.meter }, null, 2));
+    console.log(JSON.stringify({ ok, minSaved, story: seeded.story, turns: seeded.turns, parties: seeded.parties, graphs: seeded.graphs, room: seeded.room, proposals: seeded.proposals, savedShare: saved, meter: seeded.meter }, null, 2));
     if (!ok) process.exitCode = 1;
   } finally {
     await stopServer(server);
@@ -310,6 +341,6 @@ if (command === 'demo') {
   const summary = await seed(url.replace(/\/$/u, ''));
   console.log(JSON.stringify({ ...summary, open: `${url.replace(/\/$/u, '')}/#room=${summary.room}` }, null, 2));
 } else {
-  console.error('usage: driver.mjs demo [--turns N] [--out DIR] [--port N] [--keep] | check [--turns N] [--min-saved 0.85] | seed --url http://127.0.0.1:PORT [--turns N]');
+  console.error('usage: driver.mjs demo [--story sprint|networking] [--turns N] [--out DIR] [--port N] [--keep] | check [--turns N] [--min-saved 0.85] | seed --url http://127.0.0.1:PORT [--turns N]');
   process.exitCode = 2;
 }

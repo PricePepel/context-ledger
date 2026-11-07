@@ -48,11 +48,11 @@ node .claude/skills/run-context-ledger/driver.mjs seed --url http://127.0.0.1:43
 
 | command | what it does |
 | --- | --- |
-| `demo [--turns N] [--out DIR] [--port N] [--keep]` | Server, seed and browser room flow with screenshots. Uses a free port unless `--port` is given. |
+| `demo [--story sprint\|networking] [--turns N] [--out DIR] [--port N] [--keep]` | Server, seed and browser room flow with screenshots. Uses a free port unless `--port` is given. |
 | `check [--turns N] [--min-saved 0.85]` | Server and seed, no browser. Prints both meters and fails below the threshold. `tests/demo-seed.test.mjs` runs it. |
 | `seed --url URL [--turns N]` | Imports, publishes and opens a room on a running server, then prints the IDs and both meters. |
 
-`--turns` defaults to 200, and `--seed` (default 42) picks the synthetic content.
+`--turns` defaults to 200, and `--seed` (default 42) picks the synthetic content. `--story networking` loads the hackathon storyline (`demo/networking.mjs`): two attendees, ali and ruslan, whose agents network for them, with 7 hand-reviewed proposals and about 92% saved. The demo confirms the co-builder match and rejects the Sunday clash.
 
 ## Run (human path)
 
@@ -66,7 +66,7 @@ Without `CONTEXT_LEDGER_DB`, data goes to `.context-ledger/ledger.sqlite`, which
 ## Test
 
 ```bash
-node --test tests/*.test.mjs   # 67 pass on Linux, including the benchmark and demo-seed tests
+node --test tests/*.test.mjs   # 75 pass on Linux, including the benchmark and demo-seed tests
 npm run bench                  # M0 benchmark; rewrites nothing unless --markdown is given
 ```
 

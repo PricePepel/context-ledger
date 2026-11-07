@@ -90,3 +90,21 @@ test('a flag without a value is rejected instead of swallowing the next flag', a
   await assert.rejects(run(process.execPath, [driver, 'check', '--turns', '--min-saved', '0.5']),
     error => /--turns needs a value/u.test(error.stderr));
 });
+
+// B9: the hackathon networking storyline, an option until the team picks its track.
+import { links } from '../demo/networking.mjs';
+
+test('the networking storyline proposes only the reviewed pairs and still saves over 85%', async () => {
+  const { code, report } = await check('--story', 'networking');
+  assert.equal(code, 0);
+  assert.equal(report.story, 'networking');
+  assert.deepEqual(report.parties, ['ali', 'ruslan']);
+  assert.equal(report.proposals, links.length);
+  for (const party of ['ali', 'ruslan']) assert.ok(report.savedShare[party] > 0.85, `${party} saved ${report.savedShare[party]}`);
+  const again = (await check('--story', 'networking')).report;
+  assert.deepEqual([again.graphs, again.room], [report.graphs, report.room], 'deterministic for a seed');
+});
+
+test('an unknown story is rejected', async () => {
+  await assert.rejects(run(process.execPath, [driver, 'check', '--story', 'nope']), error => /--story must be/u.test(error.stderr));
+});

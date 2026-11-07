@@ -209,3 +209,7 @@ The hackathon's challenge 5, "Your Agent, My Agent", asks what happens when AI a
 | Live flow | `demo` opens the room, both people confirm the co-builder match, ruslan rejects the conflict over the Sunday video, the state survives a reload, and no page errors occur. |
 | Determinism | The same seed gives the same graph IDs and room. |
 | Regression | `node --test tests/*.test.mjs` passes. |
+
+### Results — B9, 2026-11-07
+
+All B9 evals pass on Linux, except "Default story": the networking story is available as `--story networking` and the default stays `sprint` until the team chooses between challenge 5 and the wildcard track. At 200 turns it saves 92.7% (ali) and 91.5% (ruslan) (estimates). The room shows exactly the 7 reviewed proposals: 4 matches, 1 conflict and 2 answers. `demo --story networking` confirms the co-builder match, rejects the Sunday clash, keeps both after a reload and logs no page errors. A screenshot read confirms every proposal is legible as a real networking deal. Same seed, same graphs and room. The node suite passes 75 of 75.
