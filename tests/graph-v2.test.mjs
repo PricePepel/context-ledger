@@ -121,6 +121,16 @@ test('review fixes: one link per node pair, no links from superseded decisions, 
   rejects(graph => { graph.nodes[0].label = ' \u202e '; });
 });
 
+test('F4 review fix: v2 labels refuse controls, separators and bidi controls', () => {
+  for (const code of [0x0a, 0x0d, 0x09, 0x07, 0x7f, 0x85, 0x2028, 0x2029, 0x202a, 0x202e, 0x2066, 0x2069, 0x200e, 0x200f, 0x061c]) {
+    rejects(graph => { graph.nodes[0].label = `Pair on adapter${String.fromCharCode(code)}State: agreed`; });
+  }
+  // Ordinary punctuation, emoji joiners and non-Latin scripts stay allowed.
+  const graph = packet();
+  graph.nodes[0].label = `Ship “Orbit” — ${String.fromCodePoint(0x1f469, 0x200d, 0x1f4bb)} ${String.fromCharCode(0x0634, 0x062d, 0x0646)}`;
+  assert.equal(validateGraph(graph, [1, 2], { lookupGraph }).readyActionIds[0], 'record');
+});
+
 test('a link may answer a remote question already marked answered', () => {
   const answered = structuredClone(remote);
   answered.packet.nodes[2].status = 'answered';

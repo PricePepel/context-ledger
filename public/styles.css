@@ -210,7 +210,8 @@ footer { padding-block: 1rem 1.5rem; color: var(--muted); }
 .party-nodes, .proposals, .agreed { list-style: none; margin: 0; padding: 0; }
 .party-nodes li { display: grid; gap: .1rem; padding-block: .5rem; border-top: 1px solid var(--rule); }
 .node-kind { color: var(--accent-dark); font: bold .75rem var(--mono); text-transform: uppercase; }
-.node-label, .proposal-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+/* Labels are untrusted one-line text: never honor embedded line breaks. */
+.node-label, .proposal-text { overflow-wrap: anywhere; white-space: normal; }
 .room-note { color: var(--muted); font-size: .9rem; }
 .proposals li { padding-block: .85rem; border-top: 1px solid var(--rule); }
 .proposals li[data-state="agreed"] { padding-left: .75rem; border-left: 4px solid #2f6b46; }

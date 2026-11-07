@@ -172,9 +172,22 @@ const roomProposals = document.querySelector('#room-proposals');
 const roomAgreed = document.querySelector('#room-agreed');
 const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
 let currentRoomId;
+let deciding = false;
 
-function nodeSummary(endpoint) {
-  return `${endpoint.party} · ${endpoint.kind} “${endpoint.label}”`;
+// Labels come from the other party's agent. Each sits in its own <bdi> so bidi text
+// cannot reorder the words around it, and never as markup.
+function labelElement(text) {
+  const label = textElement('bdi', text, 'node-label');
+  label.dir = 'auto';
+  return label;
+}
+
+function proposalSentence(proposal, tag = 'p') {
+  const sentence = document.createElement(tag);
+  sentence.className = 'proposal-text';
+  const side = endpoint => [`${endpoint.party} · ${endpoint.kind} “`, labelElement(endpoint.label), '”'];
+  sentence.append(...side(proposal.from), ` ${linkVerbs[proposal.type]} `, ...side(proposal.to));
+  return sentence;
 }
 
 function partyColumn(party) {
@@ -187,7 +200,7 @@ function partyColumn(party) {
   renderRows(list, party.nodes, node => {
     const item = document.createElement('li');
     const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
-    item.append(textElement('span', detail, 'node-kind'), textElement('span', node.label, 'node-label'));
+    item.append(textElement('span', detail, 'node-kind'), labelElement(node.label));
     return item;
   });
   column.append(list);
@@ -198,11 +211,7 @@ function proposalRow(proposal, parties) {
   const item = document.createElement('li');
   item.dataset.proposal = proposal.id;
   item.dataset.state = proposal.state;
-  const sentence = `${nodeSummary(proposal.from)} ${linkVerbs[proposal.type]} ${nodeSummary(proposal.to)}`;
-  item.append(
-    textElement('p', sentence, 'proposal-text'),
-    textElement('p', `State: ${proposal.state}`, 'proposal-state'),
-  );
+  item.append(proposalSentence(proposal), textElement('p', `State: ${proposal.state}`, 'proposal-state'));
   const actions = document.createElement('div');
   actions.className = 'proposal-actions';
   for (const party of parties) {
@@ -214,6 +223,9 @@ function proposalRow(proposal, parties) {
       const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
       button.type = 'button';
       button.setAttribute('aria-pressed', String(made === choice));
+      button.dataset.party = party;
+      button.dataset.choice = choice;
+      button.disabled = deciding;
       button.addEventListener('click', () => decide(proposal.id, party, choice));
       group.append(button);
     }
@@ -229,12 +241,18 @@ function renderRoom(room) {
   renderRows(roomParties, room.parties, partyColumn);
   renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
   const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
-  renderRows(roomAgreed, agreed, proposal => textElement('li',
-    `${nodeSummary(proposal.from)} ${linkVerbs[proposal.type]} ${nodeSummary(proposal.to)}`));
+  renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));
   if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));
   if (!room.proposals.length) roomProposals.append(textElement('li', 'These graphs have no links to each other yet.', 'room-note'));
   roomView.hidden = false;
   roomStatus.textContent = `Room ${room.id.slice(0, 12)}… · ${room.proposals.length} ${room.proposals.length === 1 ? 'proposal' : 'proposals'}`;
+}
+
+function closeRoom(message) {
+  currentRoomId = undefined;
+  roomView.hidden = true;
+  if (location.hash.startsWith('#room=')) history.replaceState(null, '', location.pathname + location.search);
+  roomStatus.textContent = message;
 }
 
 async function loadRoom(id) {
@@ -243,23 +261,39 @@ async function loadRoom(id) {
     const { room } = await request(`/api/rooms/${encodeURIComponent(id)}`);
     renderRoom(room);
   } catch (error) {
-    roomView.hidden = true;
-    roomStatus.textContent = `Unable to open room. ${error.message}`;
+    closeRoom(`Unable to open room. ${error.message}`);
   }
 }
 
+function setChoiceButtons(disabled) {
+  for (const button of roomProposals.querySelectorAll('.choice-button')) button.disabled = disabled;
+}
+
+// One decision at a time: the buttons stay disabled until the server answers, so the
+// last click a person makes is the one that is stored and shown.
 async function decide(proposalId, party, choice) {
+  if (deciding) return;
+  deciding = true;
+  setChoiceButtons(true);
+  let message;
   try {
     const { room } = await request(`/api/rooms/${currentRoomId}/decisions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ proposalId, party, choice }),
     });
+    deciding = false;
     renderRoom(room);
-    roomStatus.textContent = `Recorded ${party}: ${choice}.`;
+    message = `Recorded ${party}: ${choice}.`;
   } catch (error) {
-    roomStatus.textContent = `Decision failed. ${error.message}`;
+    message = `Decision failed. ${error.message}`;
+  } finally {
+    deciding = false;
+    setChoiceButtons(false);
   }
+  roomStatus.textContent = message;
+  // Re-rendering replaced the clicked button; return keyboard focus to its successor.
+  roomProposals.querySelector(`li[data-proposal="${proposalId}"] button[data-party="${party}"][data-choice="${choice}"]`)?.focus();
 }
 
 roomForm.addEventListener('submit', async (event) => {
@@ -274,8 +308,7 @@ roomForm.addEventListener('submit', async (event) => {
     history.replaceState(null, '', `#room=${room.id}`);
     renderRoom(room);
   } catch (error) {
-    roomView.hidden = true;
-    roomStatus.textContent = `Unable to open room. ${error.message}`;
+    closeRoom(`Unable to open room. ${error.message}`);
   }
 });
 
