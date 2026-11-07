@@ -1,7 +1,7 @@
 // Leo side of M2a: the ledger's proxy to Ali's warm latent pool (docs/latent-read.md).
 // The ledger never trusts a slice as returned. Every finding must cite real lines of a
 // file that was actually requested, or it is dropped before any agent sees it.
-import { readFile, realpath } from 'node:fs/promises';
+import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { InputError } from './errors.mjs';
 
@@ -10,6 +10,7 @@ const maxTextBytes = 512 * 1024;
 const maxFindings = 12;
 const maxSpans = 4;
 const defaultTimeoutMs = 180_000;
+const maxRuntimeBytes = 2 * 1024 * 1024;
 
 export class LatentError extends Error {
   constructor(status, message) {
@@ -27,9 +28,12 @@ function checkInput(input) {
     throw new InputError(`Latent read needs 1 to ${maxPaths} paths.`);
   }
   for (const path of paths) {
-    // Relative POSIX paths only: no absolute, drive, backslash, empty or dot segments.
+    // Relative POSIX paths only: no absolute, backslash, empty or dot segments. A colon is
+    // refused anywhere: on Windows it names drives and alternate data streams (a.js:hidden).
+    // A segment ending in a dot or space would silently alias another file on Windows.
     if (typeof path !== 'string' || !path || path.length > 512 || path.startsWith('/') || path.includes('\\')
-      || /^[a-z]:/iu.test(path) || /[\p{C}]/u.test(path) || path.split('/').some(part => part === '' || part === '.' || part === '..')) {
+      || path.includes(':') || /[\p{C}]/u.test(path)
+      || path.split('/').some(part => part === '' || part === '.' || part === '..' || /[. ]$/u.test(part))) {
       throw new InputError('Each path must be a relative POSIX path inside the latent root.');
     }
   }
@@ -51,6 +55,7 @@ async function readFiles(root, paths) {
     throw new LatentError(503, 'LATENT_ROOT does not exist.');
   });
   const files = [];
+  const seen = new Set();
   let bytes = 0;
   for (const path of paths) {
     let real;
@@ -63,9 +68,24 @@ async function readFiles(root, paths) {
     if (!inside || inside.startsWith('..' + sep) || inside === '..' || isAbsolute(inside)) {
       throw new InputError('Each path must stay inside the latent root.');
     }
-    const buffer = await readFile(real);
-    bytes += buffer.length;
-    if (bytes > maxTextBytes) throw new LatentError(413, 'Latent read is limited to 512 KiB of file text.');
+    // Two spellings of one file (SRC/A.JS and src/a.js on Windows) count as a duplicate.
+    const key = process.platform === 'win32' ? real.toLowerCase() : real;
+    if (seen.has(key)) throw new InputError('Paths must be unique.');
+    seen.add(key);
+
+    // Check type and size before reading, so a huge file or a directory never loads.
+    const handle = await open(real, 'r');
+    let buffer;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new InputError(`Not a regular file: ${path}`);
+      bytes += info.size;
+      if (bytes > maxTextBytes) throw new LatentError(413, 'Latent read is limited to 512 KiB of file text.');
+      buffer = await handle.readFile();
+      if (buffer.length !== info.size) throw new LatentError(409, `File changed while it was read: ${path}`);
+    } finally {
+      await handle.close();
+    }
     let text;
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
@@ -81,9 +101,52 @@ async function readFiles(root, paths) {
 
 const numbered = file => file.lines.map((line, index) => `${index + 1}| ${line}`).join('\n');
 
-// One visible line: drop findings whose label could fake structure for the reader.
+// ZWNJ and ZWJ are the only format characters a label may keep (emoji and some scripts).
+const keptFormat = new Set([0x200c, 0x200d]);
+const hiddenOrBreaking = text => [...text].some(character => /[\p{Cc}\p{Zl}\p{Zp}]/u.test(character)
+  || (/\p{Cf}/u.test(character) && !keptFormat.has(character.codePointAt(0))));
+
+// One visible line: drop findings whose label could fake structure or hide text.
 const goodLabel = label => typeof label === 'string' && label.length <= 500 && /[^\s\p{C}]/u.test(label)
-  && !/[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(label);
+  && !hiddenOrBreaking(label);
+
+// The answer is model prose. Keep it, but on one line, so it can never imitate the
+// validated findings or footer that agents read after it.
+const oneLine = text => [...text.slice(0, 4000)]
+  .map(character => (hiddenOrBreaking(character) ? ' ' : character)).join('').replace(/\s+/gu, ' ').trim();
+
+const count = value => (Number.isInteger(value) && value >= 0 && value <= 1e9 ? value : null);
+const roles = new Set(['reader', 'planner', 'worker', 'synthesizer']);
+
+/** Keep only the contract's numeric receipt fields; model-written text stays local. */
+function cleanReceipt(receipt) {
+  if (typeof receipt !== 'object' || receipt === null) return null;
+  const calls = Array.isArray(receipt.calls) ? receipt.calls.slice(0, 16) : [];
+  return {
+    model: typeof receipt.model === 'string' && /^[\w./:-]{1,120}$/u.test(receipt.model) ? receipt.model : null,
+    prefixId: typeof receipt.prefixId === 'string' && /^[a-f0-9]{64}$/u.test(receipt.prefixId) ? receipt.prefixId : null,
+    prefixTokens: count(receipt.prefixTokens),
+    subQuestionCount: Array.isArray(receipt.subQuestions) ? Math.min(receipt.subQuestions.length, 16) : 0,
+    calls: calls.filter(call => roles.has(call?.role)).map(call => ({
+      role: call.role,
+      promptTokens: count(call.promptTokens),
+      cachedTokens: count(call.cachedTokens),
+      completionTokens: count(call.completionTokens),
+      ms: count(call.ms),
+    })),
+  };
+}
+
+function cleanStats(stats) {
+  if (typeof stats !== 'object' || stats === null) return null;
+  const share = Number.isFinite(stats.cachedShare) && stats.cachedShare >= 0 && stats.cachedShare <= 1 ? stats.cachedShare : null;
+  return {
+    prefixTokens: count(stats.prefixTokens),
+    sliceTokensEstimate: count(stats.sliceTokensEstimate),
+    cachedShare: share,
+    totalMs: count(stats.totalMs),
+  };
+}
 
 /** Keep only findings whose every span cites real lines of a requested file. */
 export function validateSlice(slice, files, question) {
@@ -93,6 +156,7 @@ export function validateSlice(slice, files, question) {
   }
   const lineCounts = new Map(files.map(file => [file.path, file.lines.length]));
   const findings = [];
+  const unique = new Set();
   let rejectedFindings = 0;
   for (const finding of slice.findings.slice(0, maxFindings)) {
     const evidence = Array.isArray(finding?.evidence) ? finding.evidence : [];
@@ -100,22 +164,21 @@ export function validateSlice(slice, files, question) {
       && evidence.every(span => lineCounts.has(span?.path)
         && Number.isInteger(span.startLine) && Number.isInteger(span.endLine)
         && span.startLine >= 1 && span.startLine <= span.endLine && span.endLine <= lineCounts.get(span.path));
-    if (!valid) {
+    const spans = valid ? evidence.map(({ path, startLine, endLine }) => ({ path, startLine, endLine })) : [];
+    const key = JSON.stringify([valid && finding.label, spans]);
+    if (!valid || unique.has(key)) {
       rejectedFindings += 1;
       continue;
     }
-    findings.push({
-      id: `f${findings.length + 1}`,
-      label: finding.label,
-      evidence: evidence.map(({ path, startLine, endLine }) => ({ path, startLine, endLine })),
-    });
+    unique.add(key);
+    findings.push({ id: `f${findings.length + 1}`, label: finding.label, evidence: spans });
   }
   rejectedFindings += Math.max(0, slice.findings.length - maxFindings);
   return {
     version: 1,
     kind: 'latent-slice',
     question,
-    answer: slice.answer.slice(0, 4000),
+    answer: oneLine(slice.answer),
     findings,
     validated: true,
     rejectedFindings,
@@ -142,19 +205,42 @@ export async function latentRead(input, { latentUrl = 'http://127.0.0.1:4320', l
     if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
     return fallback(files, 'The latent runtime is not running.');
   }
-  const body = await response.json().catch(() => null);
+  let body;
+  try {
+    body = await readBody(response);
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new LatentError(504, 'The latent runtime did not answer in time.');
+    if (error instanceof LatentError) throw error;
+    body = null;
+  }
   if (response.status === 503) return fallback(files, 'The latent model is not ready.');
   if (!response.ok) {
-    const message = typeof body?.error === 'string' && body.error.length <= 200 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(body.error)
-      ? body.error : `The latent runtime returned HTTP ${response.status}.`;
-    throw new LatentError(response.status === 400 || response.status === 413 ? response.status : 502, message);
+    // Runtime error text is not passed to agents: the ledger already checked the paths,
+    // so a runtime rejection is described by status alone.
+    if (response.status === 413) throw new LatentError(413, 'The files are too large for the latent model.');
+    throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
   }
   return {
     mode: 'latent',
     graph: validateSlice(body?.graph, files, request.question),
-    receipt: body?.receipt ?? null,
-    stats: body?.stats ?? null,
+    receipt: cleanReceipt(body?.receipt),
+    stats: cleanStats(body?.stats),
   };
+}
+
+/** Read at most 2 MiB of JSON from the runtime. */
+async function readBody(response) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.length;
+    if (size > maxRuntimeBytes) {
+      await response.body.cancel().catch(() => {});
+      throw new LatentError(502, 'The latent runtime returned an oversized response.');
+    }
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 function fallback(files, reason) {
