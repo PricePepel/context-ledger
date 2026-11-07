@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { basename, dirname, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { validateGraph } from './graph.mjs';
+import { graphContext } from './context.mjs';
+import { canonicalPacket, validateGraph } from './graph.mjs';
 
 const summaryColumns = 'id, provider, source, title, message_count AS messageCount';
 const codexContextKinds = new Set([
@@ -184,8 +185,12 @@ export function openStore(path) {
       if (!session) throw new InputError('Graph transcript session not found.');
 
       const sourceLines = JSON.parse(session.messages).map(message => message.line);
-      const derived = validateGraph(packet, sourceLines, { lookupGraph: id => readGraph(id) });
-      const canonical = serializeGraphPacket(packet);
+      const options = { lookupGraph: id => readGraph(id) };
+      validateGraph(packet, sourceLines, options);
+      // Derive from the canonical form so derived ID lists follow its order.
+      const ordered = canonicalPacket(packet);
+      const derived = validateGraph(ordered, sourceLines, options);
+      const canonical = serializeGraphPacket(ordered);
       const id = createHash('sha256').update(canonical).digest('hex');
       const payload = { packet: JSON.parse(canonical), ...derived };
       insertGraph.run(id, sessionId, JSON.stringify(payload));
@@ -193,5 +198,16 @@ export function openStore(path) {
     },
 
     getGraph: readGraph,
+
+    close() {
+      database.close();
+    },
+
+    getGraphContext(id) {
+      const graph = readGraph(id);
+      if (!graph) return;
+      const row = getDetail.get(graph.packet.sessionId);
+      return graphContext(graph, { ...row, messages: JSON.parse(row.messages) });
+    },
   };
 }

@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { GraphInputError, validateGraph } from '../src/graph.mjs';
 import { InputError, openStore } from '../src/store.mjs';
@@ -106,6 +110,23 @@ test('v2 rejects links to unknown graphs, unknown nodes, wrong kinds, own party 
   rejects(graph => { graph.links[0].type = 'blocks'; });
 });
 
+test('review fixes: one link per node pair, no links from superseded decisions, no same-session party', () => {
+  rejects(graph => { graph.links.push({ ...graph.links[0], type: 'conflicts' }); }, /per node pair/);
+  rejects(graph => {
+    graph.nodes.push({ id: 'port-8080', kind: 'decision', label: 'Move to 8080', evidenceLines: [2] });
+    graph.edges.push({ from: 'port-8080', to: 'port-4317', type: 'supersedes' });
+  }, /superseded decision/);
+  rejects(graph => { graph.sessionId = remote.packet.sessionId; }, /another session/);
+  rejects(graph => { graph.nodes[0].label = '​'; });
+  rejects(graph => { graph.nodes[0].label = ' ‮ '; });
+});
+
+test('a link may answer a remote question already marked answered', () => {
+  const answered = structuredClone(remote);
+  answered.packet.nodes[2].status = 'answered';
+  assert.equal(validateGraph(packet(), [1, 2], { lookupGraph: id => (id === remoteId ? answered : undefined) }).readyActionIds[0], 'record');
+});
+
 test('an answers link must target a question addressed to this party', () => {
   const addressedElsewhere = structuredClone(remote);
   addressedElsewhere.packet.nodes[2].to = 'sam';
@@ -114,6 +135,29 @@ test('an answers link must target a question addressed to this party', () => {
     () => validateGraph(graph, [1, 2], { lookupGraph: id => (id === remoteId ? addressedElsewhere : undefined) }),
     /addressed to this party/,
   );
+});
+
+test('a rejected link writes no graph row', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-v2-'));
+  const path = join(directory, 'ledger.sqlite');
+  const store = openStore(path);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const session = store.importTranscript({
+    provider: 'claude', source: 'rows.jsonl',
+    transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: 'Synthetic row count.' } }),
+  });
+  const rows = () => {
+    const database = new DatabaseSync(path);
+    try { return database.prepare('SELECT count(*) AS n FROM graphs').get().n; } finally { database.close(); }
+  };
+  assert.throws(() => store.publishGraph({
+    version: 2, sessionId: session.id, party: 'leo',
+    nodes: [{ id: 'demo', kind: 'goal', label: 'Demo', evidenceLines: [1] }],
+    edges: [],
+    links: [{ from: 'demo', graph: '0'.repeat(64), to: 'x', type: 'matches' }],
+  }), GraphInputError);
+  assert.equal(rows(), 0);
+  store.close();
 });
 
 test('v1 output is unchanged and v1 still rejects v2-only fields', () => {
@@ -162,4 +206,13 @@ test('the store links a stored graph from another party and refuses a dangling l
   sameParty.links[0].to = 'demo';
   assert.throws(() => store.publishGraph(sameParty), /another party/);
   assert.throws(() => store.publishGraph({ ...leoPacket, sessionId: '0'.repeat(64) }), InputError);
+
+  const v1 = store.publishGraph({ version: 1, sessionId: aliSession.id, nodes: [{ id: 'gpu-time', kind: 'goal', label: 'GPU', evidenceLines: [1] }], edges: [] });
+  assert.throws(() => store.publishGraph({ ...leoPacket, links: [{ ...leoPacket.links[0], graph: v1.id }] }), /stored version 2/);
+
+  // An empty link list hashes like an absent one.
+  const unlinked = store.publishGraph({ ...leoPacket, links: [] });
+  const { links: _omit, ...withoutLinks } = leoPacket;
+  assert.equal(store.publishGraph(withoutLinks).id, unlinked.id);
+  assert.equal('links' in unlinked.packet, false);
 });

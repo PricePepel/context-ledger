@@ -64,4 +64,22 @@ Both commands return JSON containing the graph ID, packet, ready action IDs, and
 
 Evidence must cite a line that produced a stored user or assistant turn. Lines that held only tool output or injected context are not stored, so citing them is rejected.
 
-Each packet is a snapshot of one imported session. An exact repeat returns its existing ID. Object key order does not matter, but the order of `nodes`, `edges` and `evidenceLines` does: reordering them produces a separate graph. A pending action is ready when its prerequisites are completed and its blockers are resolved. A decision becomes historical when another decision explicitly supersedes it. See the [packet schema](schemas/semantic-graph.schema.json) and [evals](docs/evals.md).
+Each packet is a snapshot of one imported session. An exact repeat returns its existing ID. In a version 1 packet object key order does not matter, but the order of `nodes`, `edges` and `evidenceLines` does: reordering them produces a separate graph. A pending action is ready when its prerequisites are completed and its blockers are resolved. A decision becomes historical when another decision explicitly supersedes it. See the [packet schema](schemas/semantic-graph.schema.json) and [evals](docs/evals.md).
+
+## Version 2: two parties
+
+A version 2 packet adds a `party` (for example `leo`), `offer` nodes for what that person can give, `question` nodes with `to` (the party being asked) and an `open` or `answered` status, and an `answers` edge from a decision to a question. Optional `links` point at a node in another party's stored v2 graph:
+
+```json
+{ "from": "mcp-pairing", "graph": "OTHER_GRAPH_ID", "to": "gpu-time", "type": "matches" }
+```
+
+`matches` and `conflicts` connect goals, offers and actions (`conflicts` also accepts constraints and decisions). `answers` goes from a local decision to the other party's question addressed to this party. A node pair can carry only one link, and a superseded decision cannot start one. Responses for v2 graphs add `openQuestionIds`. See the [v2 schema](schemas/semantic-graph-v2.schema.json).
+
+Order carries no meaning in v2. The ledger stores the canonical order (nodes by kind, then ID), so reordered packets get the same graph ID.
+
+Party names are self-asserted. The ledger only requires that a linked graph names another party and comes from a different imported transcript. It does not verify who a person is.
+
+## Graph context and the savings meter
+
+`GET /api/graphs/GRAPH_ID/context` returns compact, deterministic text for a receiving agent, together with a `meter`. Stable sections (goals, constraints, decisions, offers, edges, links) come first and volatile ones (actions, blockers, questions, state) last, so a revision that only changes a status keeps the earlier text byte-identical for prompt caching. Labels are escaped onto one line. The meter compares the context with the full Markdown handoff of the session. Its token counts are estimates (characters ÷ 4), because tokenizers differ by vendor. For a very short transcript the graph can cost more than the handoff, and the meter reports that as a negative saving.

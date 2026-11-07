@@ -27,6 +27,41 @@ const linkKinds = {
 
 export class GraphInputError extends Error {}
 
+// Stable kinds first, volatile kinds (statuses that change as work moves) last, so a
+// rendered prefix stays identical across revisions and can be served from a cache.
+export const kindOrder = ['goal', 'constraint', 'decision', 'offer', 'action', 'blocker', 'question'];
+const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const compareBy = (...keys) => (a, b) => {
+  for (const key of keys) {
+    const order = compareText(a[key], b[key]);
+    if (order) return order;
+  }
+  return 0;
+};
+
+/**
+ * Put a validated v2 packet in its canonical order: nodes by kind then ID, evidence
+ * ascending, edges and links by their fields. Order carries no meaning in v2, so two
+ * packets that differ only in order canonicalize to the same graph. Version 1 packets
+ * keep their order because their identity has always included it.
+ */
+export function canonicalPacket(packet) {
+  if (packet.version !== 2) return packet;
+  const rank = node => kindOrder.indexOf(node.kind);
+  const nodes = packet.nodes
+    .map(node => ({ ...node, evidenceLines: [...node.evidenceLines].sort((a, b) => a - b) }))
+    .sort((a, b) => rank(a) - rank(b) || compareText(a.id, b.id));
+  const canonical = {
+    ...packet,
+    nodes,
+    edges: [...packet.edges].sort(compareBy('type', 'from', 'to')),
+  };
+  // An empty list and an absent one mean the same thing, so they hash the same.
+  if (packet.links?.length) canonical.links = [...packet.links].sort(compareBy('type', 'graph', 'from', 'to'));
+  else delete canonical.links;
+  return canonical;
+}
+
 function indexNodes(nodes, sourceLines) {
   const evidence = new Set(sourceLines);
   const byId = new Map();
@@ -78,7 +113,7 @@ function assertAcyclic(edges, relationship) {
   for (const id of targets.keys()) visit(id);
 }
 
-function assertLinks(packet, nodes, lookupGraph) {
+function assertLinks(packet, nodes, superseded, lookupGraph) {
   const seen = new Set();
   const remoteGraphs = new Map();
   for (const { from, graph, to, type } of packet.links ?? []) {
@@ -86,10 +121,15 @@ function assertLinks(packet, nodes, lookupGraph) {
     if (!fromKinds.includes(nodes.get(from)?.kind)) {
       throw new GraphInputError('A link must start at a local node of the expected kind.');
     }
+    if (superseded.has(from)) throw new GraphInputError('A link cannot start at a superseded decision.');
     if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
     const remote = remoteGraphs.get(graph)?.packet;
     if (remote?.version !== 2) throw new GraphInputError('A link must point at a stored version 2 graph.');
-    if (remote.party === packet.party) throw new GraphInputError('A link must point at another party\'s graph.');
+    // Party names are self-asserted. Requiring a different transcript at least stops
+    // one session from posing as both sides of a negotiation.
+    if (remote.party === packet.party || remote.sessionId === packet.sessionId) {
+      throw new GraphInputError('A link must point at another party\'s graph from another session.');
+    }
 
     const target = remote.nodes.find(node => node.id === to);
     if (!toKinds.includes(target?.kind)) {
@@ -98,8 +138,9 @@ function assertLinks(packet, nodes, lookupGraph) {
     if (type === 'answers' && target.to !== packet.party) {
       throw new GraphInputError('A link can only answer a question addressed to this party.');
     }
-    const key = `${type}|${graph}|${from}|${to}`;
-    if (seen.has(key)) throw new GraphInputError('Links must be unique.');
+    // One relationship per node pair: a pair cannot both match and conflict.
+    const key = `${graph}|${from}|${to}`;
+    if (seen.has(key)) throw new GraphInputError('Links must be unique per node pair.');
     seen.add(key);
   }
 }
@@ -120,11 +161,12 @@ export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
   const edges = indexEdges(packet.edges, nodes);
   assertAcyclic(edges.get('depends_on'), 'dependency');
   assertAcyclic(edges.get('supersedes'), 'supersession');
+  const superseded = new Set(edges.get('supersedes').map(edge => edge.to));
   if (version === 2) {
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
     }
-    assertLinks(packet, nodes, lookupGraph);
+    assertLinks(packet, nodes, superseded, lookupGraph);
   }
 
   const waiting = new Set();
@@ -135,7 +177,6 @@ export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
     if (nodes.get(from).status === 'open') waiting.add(to);
   }
 
-  const superseded = new Set(edges.get('supersedes').map(edge => edge.to));
   const derived = {
     readyActionIds: packet.nodes
       .filter(node => node.kind === 'action' && node.status === 'pending' && !waiting.has(node.id))

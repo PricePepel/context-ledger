@@ -104,6 +104,12 @@ const server = createServer(async (request, response) => {
       if (graph) return json(response, 200, { graph });
     }
 
+    const contextId = url.pathname.match(/^\/api\/graphs\/([a-f0-9]{64})\/context$/u)?.[1];
+    if (method === 'GET' && contextId) {
+      const context = store.getGraphContext(contextId);
+      if (context) return json(response, 200, { context });
+    }
+
     throw new HttpError(404, 'Not found.');
   } catch (error) {
     if (response.destroyed) return;
