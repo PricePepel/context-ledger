@@ -541,6 +541,11 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
     : [{ path: 'text', lines: request.text.split(/\r\n|\n|\r/u) }];
   const suspects = suspiciousLines(files);
   const textFallback = reason => (request.paths ? fallback(files, reason) : { mode: 'text', reason, text: request.text });
+  // A mapper serves short documents only. Files over the text cap go straight to the
+  // agent as text, without a runtime round trip (the runtime refuses them with 413 too).
+  const tooLong = 'The document is longer than this mapper handles.';
+  const chars = files.reduce((sum, file) => sum + file.lines.join('\n').length + 2, -2);
+  if (request.paths && chars > maxTransferText) return textFallback(tooLong);
   let response;
   try {
     response = await fetchImpl(`${latentUrl}/latent/transfer`, {
@@ -564,10 +569,9 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
   }
   if (response.status === 503) return textFallback('The transfer model is busy or not ready.');
   if (response.status === 501) return textFallback('No trained mapper exists for this model pair.');
-  if (!response.ok) {
-    if (response.status === 413) throw new LatentError(413, 'The document is too long for this mapper.');
-    throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
-  }
+  // 413: longer in tokens than the mapper was trained on. The tool promises the text then.
+  if (response.status === 413) return textFallback(tooLong);
+  if (!response.ok) throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
   if (body?.mode !== 'transfer' || typeof body.answer !== 'string') {
     throw new LatentError(502, 'The latent runtime returned an unexpected transfer response.');
   }

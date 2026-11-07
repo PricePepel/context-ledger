@@ -101,9 +101,20 @@ test('no runtime, a busy runtime or no trained pair falls back to the text itsel
   assert.match(none.reason, /no trained mapper/iu);
 });
 
+test('a document too long for the mapper comes back as text', async t => {
+  const tokens = await latentTransfer({ sender, receiver, question: 'q', text: 'a long one' },
+    { fetchImpl: fakeRuntime(413, { error: 'too long' }) });
+  assert.deepEqual(tokens, { mode: 'text', reason: 'The document is longer than this mapper handles.', text: 'a long one' });
+  const dir = await root(t);
+  await writeFile(join(dir, 'long.txt'), 'word '.repeat(2000));
+  const calls = [];
+  const chars = await latentTransfer({ sender, receiver, question: 'q', paths: ['long.txt'] },
+    { latentRoot: dir, fetchImpl: fakeRuntime(200, runtimeOk, calls) });
+  assert.equal(chars.mode, 'text');
+  assert.equal(calls.length, 0, 'over the character cap, the runtime is not called');
+});
+
 test('runtime errors are reported by status, and malformed answers are refused', async () => {
-  await assert.rejects(latentTransfer({ sender, receiver, question: 'q', text: 'a' },
-    { fetchImpl: fakeRuntime(413, { error: 'too long' }) }), { status: 413 });
   await assert.rejects(latentTransfer({ sender, receiver, question: 'q', text: 'a' },
     { fetchImpl: fakeRuntime(500, { error: '<script>' }) }), error => error.status === 502 && !error.message.includes('<script>'));
   await assert.rejects(latentTransfer({ sender, receiver, question: 'q', text: 'a' },
