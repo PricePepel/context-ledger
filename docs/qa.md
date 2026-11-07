@@ -9,10 +9,10 @@ A summary is small, but you can't check it, and it drops where each claim came f
 Decisions are accepted only from a same-origin browser request on the local machine. The server binds to loopback, and the CLI and the MCP adapter can't record a decision. Party names are self-asserted today, so this keeps honest agents out but doesn't prove identity. Signing is next on the roadmap (card P4).
 
 **3. Your numbers come from synthetic data. Why should we believe them?**
-Yes, the benchmark uses seeded synthetic sessions, so it's reproducible and contains no private data. We have a dogfood script (`bench/dogfood.mjs`) that runs the same meter on real sessions locally and reports only totals, never transcript text. Real-session numbers come from that, and we'll only share aggregates.
+The benchmark uses seeded synthetic sessions so anyone can reproduce it and no private data is involved. For real data we built `bench/dogfood.mjs`: it runs on your own Claude Code and Codex folders, locally, and reports only totals (how big real handoffs are, by percentile), never any transcript text, file name or path. That gives the real-world size of what we compress.
 
 **4. Building the graph costs tokens too. Did you count that?**
-It's a one-time cost per session, and it's reused on every handoff after that. If section 8 of the benchmark report exists, cite its break-even point. If not, say it's measured next, and that the saving shown is per handoff, not net of extraction.
+Yes. An agent reads the session once and writes the graph once. At 200 or 1000 turns that pays for itself from the second handoff against today's handoff, and every later handoff is about 90% (200 turns) to 96% (1000 turns) cheaper (estimates; benchmark sections 7 and 8). It's a lower bound, because real extraction also spends tokens on instructions. If a handoff format were made cache-friendly, the graph would still win on very long sessions, but not on short ones. That's why caching-friendly graph rendering is on our list.
 
 **5. How is this different from MCP or A2A?**
 We're a layer *over* MCP; our tools are MCP tools. A2A moves messages between agents. We move cited, human-approved state: what each person wants and what both agreed.

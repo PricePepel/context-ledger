@@ -47,12 +47,12 @@ Say each caveat out loud. It costs two seconds and protects you in Q&A.
 | Claim | Number | Caveat | Source |
 | --- | --- | --- | --- |
 | Graph size vs the full handoff | 25.7% at 50 turns, 10.2% at 200, 3.8% at 1000 (characters) | Synthetic sessions | [benchmark §1](benchmark.md) |
-| Cost per 1,000 handoffs of a 1000-turn session, Claude Opus 5.5 | $119.36 for the raw handoff uncached, $7.22 for a cache-warm handoff, $4.58 to $4.72 for the graph | Estimates (characters ÷ 4) at list prices. About 96% cheaper than raw and about 35% cheaper than cache-warm | [benchmark §7](benchmark.md) |
+| Cost per 1,000 handoffs of a 1000-turn session, Claude Opus 5.5 | $119.36 for today's handoff (it can't be cached), $4.58 to $4.72 for the graph | Estimates (characters ÷ 4) at list prices; about 96% cheaper. Building the graph once pays for itself from the 2nd handoff. A *cache-friendly* handoff (which needs a format change) would cost $7.22, so the graph still wins at 1000 turns, but at 50–200 turns a cache-friendly handoff would be about as cheap | [benchmark §7–8](benchmark.md) |
 | Nothing lost | Every planted fact recalled, every claim cited | The benchmark builds the graphs itself, so this tests rendering, not AI extraction | [benchmark §2](benchmark.md) |
 | Latent layer, measured today | Latency 1,972 ms → 426 ms on the warm prefix; 98–99% of prompt tokens served from cache; the agent receives about 5–9% of the tokens; both gates pass 3/3 | Qwen2.5-7B on a laptop GPU, synthetic codebase | Cycle 6/6b eval log, `leo/latent-read` |
 | Quality of process | A second model (Tenki) reviewed every PR: 1 high and 5 medium findings, all fixed; 75+ tests; all built today | — | [eval log](evals.md), PRs #1, #3, #4 |
 
-> Spoken: "The graph is about 4% of the chat at a thousand turns. In our estimates that's about 96% cheaper than pasting the chat, and still about a third cheaper than a cached chat. And every claim cites its source line, which a summary can't do."
+> Spoken: "The graph is about 4% of the chat at a thousand turns. In our estimates that's about 96% cheaper than handing over the chat, and building the graph pays for itself from the second handoff. And every claim cites its source line, which neither a chat dump nor a summary can do."
 
 ## 5. Horizontal (2:20 to 2:35)
 
@@ -69,4 +69,5 @@ Say each caveat out loud. It costs two seconds and protects you in Q&A.
 - **"Fast" as the headline.** Human approval is deliberately not fast, and it's the differentiator.
 - **SwaT's numbers as ours.** SwaT is published research by others; cite it as related work. Cross-family transfer (M2b) isn't built.
 - **Exact token counts.** All token figures are estimates (characters ÷ 4).
+- **"Cheaper than a cached chat" as a general claim.** It only holds for very long sessions (1000 turns: $4.72 vs $7.22); at 50–200 turns a cache-friendly handoff would be about as cheap. Today's handoff can't be cached at all, so compare with what exists today.
 - **Caching claims for the graph context.** Its stable prefix stays under the 1,024-token cache minimum, unless Ruslan lands the two `src/` fixes (see the [handoff](handoff.md)).

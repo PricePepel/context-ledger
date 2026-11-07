@@ -226,3 +226,24 @@ test('the IDs-constant share keeps the original text as its denominator', () => 
   // An ID-free text gives the same result either way.
   assert.deepEqual(prefixStability('same text', 'same text, longer', [oldId]), prefixStability('same text', 'same text, longer'));
 });
+
+// Card L10: the one-time cost of building a graph and when it pays for itself.
+import { breakEven } from '../bench/report.mjs';
+
+test('break-even counts the handoffs after which building the graph has paid for itself', () => {
+  const price = { input: 4, output: 20 };
+  // Build: 10,000 tokens read at $4 plus 500 written at $20 per million = $0.05. Each handoff saves $0.038.
+  const result = breakEven({ handoffTokens: 10_000, graphTokens: 500, price, rawPerHandoff: 0.04, graphPerHandoff: 0.002 });
+  assert.equal(Math.round(result.buildUsd * 1e6) / 1e6, 0.05);
+  assert.equal(result.handoffs, 2, 'one handoff saves $0.038, under $0.05; two save $0.076');
+  // An exact tie pays off at that handoff, not one later.
+  assert.equal(breakEven({ handoffTokens: 0, graphTokens: 1000, price, rawPerHandoff: 0.03, graphPerHandoff: 0.02 }).handoffs, 2);
+  // No saving per handoff: it never pays off.
+  assert.equal(breakEven({ handoffTokens: 100, graphTokens: 100, price, rawPerHandoff: 0.001, graphPerHandoff: 0.002 }).handoffs, null);
+});
+
+test('the report renders the one-time build section from report data', async () => {
+  const { markdown } = await runBenchmark({ seed: 7, sizes: [10, 60], reps: 1, append: 3 });
+  assert.match(markdown, /## 8\. Building the graph \(one-time cost\)/u);
+  assert.match(markdown, /\| 60 \| Claude Opus 5\.5 \| \$[0-9.]+ \| (from the \d+(st|nd|rd|th) handoff|never) \|/u);
+});

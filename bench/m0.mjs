@@ -20,9 +20,9 @@ export const defaults = { seed: 42, sizes: [10, 50, 200, 1000], reps: 20, append
 
 // Prices from the cycle 5 research brief, seen 2026-11-07. Illustration only.
 export const prices = [
-  { model: 'Claude Opus 5.5', input: 4, cacheHit: 0.2, verified: true, source: 'https://platform.claude.com/docs/en/about-claude/pricing' },
-  { model: 'Claude Sonnet 5.5', input: 2, cacheHit: 0.1, verified: true, source: 'https://platform.claude.com/docs/en/about-claude/pricing' },
-  { model: 'GPT-5.5', input: 5, cacheHit: 0.5, verified: false, source: 'https://www.llmreference.com/model/gpt-5.5/openai-api (aggregator)' },
+  { model: 'Claude Opus 5.5', input: 4, cacheHit: 0.2, output: 20, verified: true, source: 'https://platform.claude.com/docs/en/about-claude/pricing' },
+  { model: 'Claude Sonnet 5.5', input: 2, cacheHit: 0.1, output: 10, verified: true, source: 'https://platform.claude.com/docs/en/about-claude/pricing' },
+  { model: 'GPT-5.5', input: 5, cacheHit: 0.5, output: 30, verified: false, source: 'https://www.llmreference.com/model/gpt-5.5/openai-api (aggregator)' },
 ];
 export const pricesSeen = '2026-11-07';
 const cacheMinimumTokens = 1024;

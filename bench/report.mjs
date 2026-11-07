@@ -49,6 +49,38 @@ function cacheConclusion(report) {
   ];
 }
 
+/**
+ * One-time cost of building a graph and the handoff count from which it pays for itself.
+ * Building it means an agent reads the whole session once (the handoff's tokens at the
+ * input price) and writes the graph (its tokens at the output price). Each later handoff
+ * then costs `graphPerHandoff` instead of `rawPerHandoff` (USD per handoff). Returns the
+ * smallest n for which building plus n graph handoffs costs no more than n raw handoffs,
+ * or null when a graph handoff is not cheaper than the raw one.
+ */
+export function breakEven({ handoffTokens, graphTokens, price, rawPerHandoff, graphPerHandoff }) {
+  const buildUsd = (handoffTokens * price.input + graphTokens * price.output) / 1e6;
+  const savedPerHandoff = rawPerHandoff - graphPerHandoff;
+  const handoffs = savedPerHandoff > 0 ? Math.max(1, Math.ceil(buildUsd / savedPerHandoff - 1e-9)) : null;
+  return { buildUsd, savedPerHandoff, handoffs };
+}
+
+const ordinal = n => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] ?? 'th')}`;
+const paysFrom = n => (n === null ? 'never' : `from the ${ordinal(n)} handoff`);
+
+function buildCostRows(report) {
+  return report.results.flatMap(result => {
+    const teo = result.parties.teo;
+    return teo.costPerThousandHandoffsUsd.map(cost => {
+      const price = report.prices.models.find(model => model.model === cost.model);
+      const common = { handoffTokens: teo.size.handoffTokensEstimate, graphTokens: teo.size.graphTokensEstimate, price };
+      const uncached = breakEven({ ...common, rawPerHandoff: cost.handoffUncached / 1000, graphPerHandoff: cost.graphUncached / 1000 });
+      const warm = breakEven({ ...common, rawPerHandoff: cost.handoffSteadyStateIdsConstant / 1000, graphPerHandoff: cost.graphSteadyState / 1000 });
+      return [result.size, cost.verified ? cost.model : `${cost.model} (unverified)`, `$${uncached.buildUsd.toFixed(4)}`,
+        paysFrom(uncached.handoffs), paysFrom(warm.handoffs)];
+    });
+  });
+}
+
 export function renderMarkdown(report) {
   const lines = [
     '# M0 benchmark: graph context vs Markdown handoff',
@@ -153,6 +185,20 @@ export function renderMarkdown(report) {
     'Price sources:',
     '',
     ...report.prices.models.map(price => `- ${price.model}: $${price.input} input, $${price.cacheHit} cache hit per million tokens. ${price.source}${price.verified ? '' : '. Unverified: taken from an aggregator citing an OpenAI pricing capture; the official page could not be opened.'}`),
+    '',
+    '## 8. Building the graph (one-time cost)',
+    '',
+    "An agent has to build the graph once: it reads the whole session (the handoff's estimated tokens, at the input price) and writes the graph "
+      + "(the graph context's estimated tokens, at the output price). This benchmark writes the packets itself, so no model ran. "
+      + "The table shows that one-time cost for `teo` and the handoff from which building the graph has paid for itself, that is, building plus n graph handoffs "
+      + "costs no more than n raw handoffs. \"Uncached\" compares with section 7's uncached handoff. \"Cache-warm\" compares section 7's handoff steady state with IDs held constant "
+      + '(which the current handoff format cannot reach) with the graph steady state. These are estimates on synthetic sessions. A real extraction also spends tokens on instructions and reasoning, '
+      + 'so treat the build cost as a lower bound. "Never" means that at that size a cache-warm handoff already costs no more per handoff than the graph, '
+      + 'because most of it is read at the cache-hit price while the graph context stays under the cache minimum (section 3).',
+    '',
+    ...table(['Turns', 'Model', 'Build once (USD, est.)', 'Pays off vs uncached handoff', 'Pays off vs cache-warm handoff'], buildCostRows(report)),
+    '',
+    `Output prices per million tokens: ${report.prices.models.map(price => `${price.model} $${price.output}${price.verified ? '' : ' (unverified)'}`).join(', ')}.`,
     '',
     '## Method and limits',
     '',
