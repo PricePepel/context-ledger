@@ -644,6 +644,8 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
     body = null;
   }
   if (response.status === 503) return { mode: 'unavailable', reason: 'The latent team is busy or not loaded.' };
+  // An older runtime without /latent/team answers 404: the team is simply not there.
+  if (response.status === 404) return { mode: 'unavailable', reason: 'This latent runtime has no agent team.' };
   if (!response.ok) throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
   if (body?.mode !== 'latent-team' || typeof body.answer !== 'string') {
     throw new LatentError(502, 'The latent runtime returned an unexpected team response.');

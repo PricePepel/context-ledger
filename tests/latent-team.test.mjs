@@ -42,7 +42,7 @@ test('bad requests never reach the runtime', async () => {
 });
 
 test('no runtime, a busy team or no team loaded says so instead of failing', async () => {
-  for (const [status, reason] of [['down', /not running/u], [503, /busy or not loaded/u]]) {
+  for (const [status, reason] of [['down', /not running/u], [503, /busy or not loaded/u], [404, /no agent team/u]]) {
     const result = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(status, { error: 'x' }) });
     assert.equal(result.mode, 'unavailable');
     assert.match(result.reason, reason);
