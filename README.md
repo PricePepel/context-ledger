@@ -113,3 +113,15 @@ env = { PORT = "4317" }
 ```
 
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
+
+## Ask about files with a local model (M2a, warm latent pool)
+
+`latent_read` lets Claude or Codex ask about local files without reading them. A local open model reads the files once, and its KV cache for that prefix stays warm in vLLM. Worker calls answer sub-questions from the shared cache, and the agent receives a short answer with findings that cite file lines. The ledger drops any finding that cites a line that doesn't exist. The contract is in [docs/latent-read.md](docs/latent-read.md). The runtime is Ali's side, in `runtime/` on branch `ali/latent-pool`.
+
+Start the ledger with the folder the model may read:
+
+```sh
+LATENT_ROOT=/path/to/project LATENT_URL=http://127.0.0.1:4320 npm start
+```
+
+Agents call the `latent_read` MCP tool with `paths` relative to that folder and a `question`. If the runtime is not running, the tool returns the numbered file text instead, so the agent can still read the files itself.

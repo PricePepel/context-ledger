@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
+import { LatentError, latentRead } from './latent.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -110,6 +111,14 @@ const server = createServer(async (request, response) => {
       if (context) return json(response, 200, { context });
     }
 
+    if (method === 'POST' && url.pathname === '/api/latent/read') {
+      const input = await readJson(request, origin, 'A latent read');
+      return json(response, 200, await latentRead(input, {
+        latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320',
+        latentRoot: process.env.LATENT_ROOT,
+      }));
+    }
+
     if (method === 'POST' && url.pathname === '/api/rooms') {
       const input = await readJson(request, origin, 'Opening a room');
       return json(response, 200, { room: store.openRoom(input) });
@@ -141,7 +150,7 @@ const server = createServer(async (request, response) => {
       response.setHeader('Connection', 'close');
       request.resume();
     }
-    if (error instanceof HttpError) return json(response, error.status, { error: error.message });
+    if (error instanceof HttpError || error instanceof LatentError) return json(response, error.status, { error: error.message });
     if (error instanceof InputError || error instanceof GraphInputError) {
       return json(response, 400, { error: error.message });
     }
