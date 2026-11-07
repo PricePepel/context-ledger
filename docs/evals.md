@@ -181,3 +181,14 @@ Live on Qwen2.5-7B-Instruct-AWQ with vLLM 0.33.0 (prefix caching on), on an RTX 
   - The slice-size gate counted missing token stats as zero. Missing stats now fail the gate. `tests/grade.test.mjs` pins both.
   - The low finding (a stale pending order in the synthetic `orders.js`) is fixture realism and was left as is.
   - Re-run live with the corrected grader, three runs: accuracy 6/8, citations 8/8, slice 0.065, cached 0.995, the same as before. The earlier passes were not inflated by substring matches.
+
+## Cycle 6b — Better latent reads: verified quotes and concrete values (defined 2026-11-07, before implementation)
+
+Plan: latent-ledger `docs/latent-plan.md` section 7, items 1 and 2. Held-out set: `evals/latent/heldout.json` (eight new questions, written before any prompt change and never used for tuning). Baseline before changes, three runs: M2a set 6/8 accuracy, held-out 8/8, citations 8/8 on both.
+
+| Eval | Expected |
+| --- | --- |
+| Verified quotes (contract addition) | Evidence spans may carry `quote`, the exact code the finding relies on (at most 200 characters). The ledger keeps the finding only if every quote occurs in its cited lines, ignoring runs of whitespace. A quote that is not there drops the finding, counted as `badQuotes`. A kept finding reports `quoteVerified: true` when every span carries a matching quote. |
+| Quote coverage, live | The runtime asks the model for a quote on every span. On both sets, at least 80% of kept findings are quote-verified, and citations stay at least 7/8. |
+| Concrete-values rule | Workers and the synthesizer are told to state exact values (numbers, units, names, strings) from the code. Live, three runs each: M2a set accuracy at least 7/8 in every run, held-out stays at least 7/8, and slice share stays at most 0.10. |
+| Regression | Node suite, runtime suite (Windows and WSL), Playwright. The injection probe still drops the hijacked finding. |

@@ -1,13 +1,17 @@
 // Run the M2a gate: every question through the ledger's /api/latent/read, graded.
-// Usage: LEDGER=http://127.0.0.1:4317 node evals/latent/run.mjs [--repeat N] [--out report.json]
+// Usage: LEDGER=http://127.0.0.1:4317 node evals/latent/run.mjs [--set questions|heldout] [--repeat N] [--out report.json]
 // The ledger must run with LATENT_ROOT pointing at evals/latent/fixture.
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { gradeSlice, summarize } from './grade.mjs';
 
-const { values } = parseArgs({ options: { repeat: { type: 'string', default: '1' }, out: { type: 'string' } } });
+const { values } = parseArgs({
+  options: { repeat: { type: 'string', default: '1' }, out: { type: 'string' }, set: { type: 'string', default: 'questions' } },
+});
+const sets = { questions: './questions.json', heldout: './heldout.json' };
+if (!sets[values.set]) throw new Error('--set must be questions or heldout.');
 const ledger = process.env.LEDGER ?? 'http://127.0.0.1:4317';
-const set = JSON.parse(await readFile(new URL('./questions.json', import.meta.url), 'utf8'));
+const set = JSON.parse(await readFile(new URL(sets[values.set], import.meta.url), 'utf8'));
 const repeat = Math.max(1, Number(values.repeat) || 1);
 
 async function ask(question) {
