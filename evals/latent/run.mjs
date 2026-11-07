@@ -47,13 +47,16 @@ for (let round = 1; round <= repeat; round += 1) {
   }
   const summary = summarize(results);
   const mean = key => results.reduce((sum, result) => sum + (result[key] ?? 0), 0) / results.length;
-  const sliceShare = mean('sliceTokens') / mean('prefixTokens');
-  const cachedShare = results.reduce((s, r) => s + r.cachedTokens, 0) / Math.max(1, results.reduce((s, r) => s + r.promptTokens, 0));
+  // Missing token stats must fail the gate, not count as zero (a vacuous "0% slice").
+  const complete = key => results.every(result => Number.isFinite(result[key]) && result[key] > 0);
+  const sliceShare = complete('sliceTokens') && complete('prefixTokens') ? mean('sliceTokens') / mean('prefixTokens') : NaN;
+  const promptTotal = results.reduce((s, r) => s + r.promptTokens, 0);
+  const cachedShare = promptTotal > 0 ? results.reduce((s, r) => s + r.cachedTokens, 0) / promptTotal : NaN;
   const gate = {
     accuracy: summary.accuracy >= 7 / 8,
     citations: summary.citationRate >= 7 / 8,
-    sliceShare: sliceShare <= 0.1,
-    cachedShare: cachedShare >= 0.6,
+    sliceShare: Number.isFinite(sliceShare) && sliceShare <= 0.1,
+    cachedShare: Number.isFinite(cachedShare) && cachedShare >= 0.6,
   };
   runs.push({ round, summary, sliceShare, cachedShare, meanMs: mean('ms'), gate, passed: Object.values(gate).every(Boolean), results });
   console.log(`round ${round}: accuracy ${summary.accuracy} citations ${summary.citationRate} sliceShare ${sliceShare.toFixed(3)} cachedShare ${cachedShare.toFixed(3)} -> ${runs.at(-1).passed ? 'PASS' : 'FAIL'}`);

@@ -176,3 +176,8 @@ Live on Qwen2.5-7B-Instruct-AWQ with vLLM 0.33.0 (prefix caching on), on an RTX 
   - The two misses are the 7B model omitting concrete values (7200 s, 900 s) after the restart.
   - Across all six live runs today the gate held in 2 of 6. Citations, slice size and caching passed every time, and accuracy is the open item.
   - Next options: test a stronger open model, or add a general "state concrete values" synthesizer rule and validate it on held-out questions, not these eight. The closed-model baseline is still not run.
+- **Tenki review of PR #4 (Leo side): 2 medium, both measurement bugs, both fixed.**
+  - The grader matched numbers as substrings, so "3" passed on "30". Numbers now match whole, though a glued unit such as "250ms" still counts.
+  - The slice-size gate counted missing token stats as zero. Missing stats now fail the gate. `tests/grade.test.mjs` pins both.
+  - The low finding (a stale pending order in the synthetic `orders.js`) is fixture realism and was left as is.
+  - Re-run live with the corrected grader, three runs: accuracy 6/8, citations 8/8, slice 0.065, cached 0.995, the same as before. The earlier passes were not inflated by substring matches.
