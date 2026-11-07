@@ -138,3 +138,8 @@ Ali's agent (Claude Code, cloud session) works on `claude/wizardly-pasteur-r1nhh
   - The CLI commands moved to the speaker notes.
   - Same link, still private until Ali shares it.
   - The call-to-action slide needs Ali's and Ruslan's contact emails, and it links to the repo, which must be public.
+- Status 01:10 UTC. **The product's pitch name is now "CTM (Context Telepathy Manager)"**, Ali's call. The deck is 11 slides at the same link (still private until Ali shares it).
+  - New slides: the four-pillar cover, "Between the agents" (the 6-step sequence), "How it's built" (the stack), and "Next" (the published latent-transfer research, framed as not ours, with the source in the speaker notes).
+  - The 3-step "How it works" slide was removed as a duplicate.
+  - The repo name and the `context-ledger` command stay as they are.
+  - **Ruslan:** if you rename the repo to match, tell Ali's agent so the deck's link is updated.
