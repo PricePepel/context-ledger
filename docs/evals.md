@@ -282,3 +282,62 @@ Lesson: a stricter ledger rule needs a full live gate before it is committed, no
 - **Gate verdict.** The latent pool does not match the closed model. It answers 14/16 to Claude's 16/16. The two misses are `session-cap` (7200 s is omitted) and `mail-queue` (it names `MAIL_QUEUE` instead of `'orbit-mail'`). Claude gets both right in every run.
 - **Cost.** The latent slice is 5–9% of the prefix tokens. Claude's direct read used 3.2k–5.1k input tokens per question through the CLI, which includes CLI overhead, so it is not a clean count of the prefix.
 - **A runner bug was fixed before scoring.** The first runner cut the JSON from the first `{` to the last `}`. When Claude added prose with braces after the object, parsing failed: 6 of 24 answers on the original set in the first run, all scored as wrong. The parser now takes the first balanced object and keeps the raw reply when parsing fails. The original set was re-run after the fix. The held-out numbers come from the first run, which had no parse failures.
+
+## Cycle 7 — two-agent demo: Claude Code and Codex share context (2026-11-07)
+
+Goal: a live demo on one laptop. Claude Code (Leo) and Codex (Ali) each publish a cited graph through one ledger, a room pairs the graphs, people settle the proposals, and Ali's Codex answers questions about Leo's plans from the graph briefing. Run sheet: [docs/demo.md](demo.md).
+
+| Criterion | Check |
+| --- | --- |
+| Agents cite on their own | New MCP tools `session_search` and `session_read` let an agent find its imported session and see the line numbers that evidence must cite. `session_read` returns the CLI handoff text, escaped like the other tools. |
+| Long sessions arrive whole | `session_read` pages by whole turns (about 10,000 tokens per page) and ends with the `fromLine` to read next. A test reads a 90,000-character session page by page and gets every turn exactly once. |
+| Stage flow | `tests/e2e/demo.spec.mjs` imports the committed demo transcripts through the browser, publishes the reference graphs, checks that the briefing carries the final port and recording time, and settles both proposals in the room. |
+| Live rehearsal | `demo/rehearse.mjs` drives the real `claude -p` and `codex exec` against a temporary ledger and grades a six-part handoff question twice: from Leo's raw transcript (`session_read`) and from his graph briefing (`context_for`). |
+
+Synthetic fixture: `demo/leo-orbit.jsonl` (56 lines) and `demo/ali-orbit.jsonl` (8 lines). Two of Leo's facts change mid-session (port 4400 to 4317, recording Sunday to Saturday 17:00). `--chatter N` appends N work exchanges to Leo's session without moving any cited line.
+
+Results. Receiver: Codex (`codex-cli 0.166.0`, default model). Publisher: Claude Sonnet through Claude Code 2.1.114. Token counts are those reported by the CLIs and include each CLI's own system prompt.
+
+| Leo's session | Handoff arm | Runs | Score | Mean time | Mean input tokens |
+| --- | --- | --- | --- | --- | --- |
+| ~11.6k tokens (`--chatter 150`) | raw transcript | 3 | 18/18 | 11.6 s | 63.7k |
+| | graph briefing | 3 | 18/18 | 11.2 s | 53.7k |
+| ~67.6k tokens (`--chatter 1000`), paged | raw transcript | 2 | 12/12 | 33.7 s (24.7, 42.7) | 291k |
+| | graph briefing | 2 | 12/12 | 10.6 s | 53.8k |
+
+- **Short sessions:** the graph saves about 10k input tokens per handoff and no time. The receiving CLI's own overhead (about 40k tokens for Codex, 84k for Claude Code) dominates.
+- **Long sessions:** reading the transcript takes several pages, and the context grows with each one. The graph handoff was about 3× faster and used about 5× fewer input tokens. Accuracy was the same, because this fixture is easy for both models. With only two runs the time gap is indicative, not a measurement.
+- **Publishing** took Claude 52–164 s (12–19 nodes) and Codex 29–34 s (7 nodes, 2 links). The demo should publish before going on stage.
+- **Claude on both sides** (short session, one run): both arms scored 6/6, at 20.6 s for the transcript and 16.4 s for the graph.
+
+Findings:
+
+- **Codex truncates long MCP results without saying so.** Before paging, the transcript arm at 67.6k tokens used the same 63.7k input tokens as at 11.6k, so Codex had seen only part of the session. It still scored 12/12 only because every key fact is in the first 56 lines. Paging made the arm honest, and expensive.
+- **The user's `~/.codex/config.toml` was 8,431 NUL bytes** and Codex refused to start. With the user's approval it was moved to `config.toml.corrupt-20261107`, so Codex runs on defaults.
+- **`codex exec` refuses MCP calls under `approval_policy="never"`** unless the server sets `default_tools_approval_mode = "approve"`.
+
+Independent review (code-reviewer subagent): no critical or high findings. Fixed:
+
+- Timed-out CLIs are killed as a process tree. The script handles Ctrl-C, and the ledger has a start timeout.
+- Claude runs with built-in tools off. A Codex call outside the allowed ledger tools marks the run invalid. Off-tool calls in the reported runs: 0.
+- The grader finds the outermost JSON object among other braces and reads the first port-like number. It no longer fails annotated correct answers. Unit tests are in `tests/demo.test.mjs`.
+- `session_read` paging, role and line validation, `session_search` description and test gaps.
+
+Not done: a recorded stage run with people in the room, and more runs for a time estimate with a spread.
+
+Suites: node 94/95 (one skipped), Playwright 10/10.
+
+### Take 2 (2026-11-07)
+
+The first recorded take with the user's own Claude Code and Codex exposed two problems.
+
+- **Agents could not see the graph rules.** Claude needed six publishes, ended with only `supersedes` edges, and put chatter (slide fonts, button colours) into the graph. Codex needed three publishes. The edge and link kind rules were in the code, not in the schema the agents read, and the errors did not say which edge failed.
+  - Fix: the v2 schema now describes the allowed kinds for each edge and link type.
+  - Errors name the edge or link by position and kinds, for example "Edge 3 (advances): expected kinds action→goal, got offer→goal". They still don't echo IDs or labels.
+- **A stale conflict.** Codex linked a `conflicts` from "No work on Sunday" to Leo's replaced Sunday plan, and the ledger accepted it.
+  - Fix: a link cannot end at a decision that the other graph supersedes.
+- **Prompts.** The stage prompts now ask only for what the other party needs and say to retry using the error message. They live in `demo/prompts.mjs`, and the rehearsal sends the same text.
+
+Re-run with the new prompts (Claude publish, Codex publish): Leo's graph 8 nodes in 54 s (was 18 nodes, 1 min 51 s), Ali's graph 4 nodes and 2 `matches` links, no stale conflict, no off-tool calls. The second recorded take passed: both graphs published, the room settled with 4 choices, and Codex answered 4317, Saturday 17:00 and the GPU-box question, citing lines 27–28, 41–42 and 51–52.
+
+Suites: node 96/97 (one skipped), Playwright 10/10.

@@ -5,3 +5,4 @@ test-results/
 .env*
 *.sqlite*
 .claude/worktrees/
+demo/out/
