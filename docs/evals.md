@@ -106,6 +106,12 @@ Claude Code integrated on feature/semantic-graph. A subagent built the MCP adapt
 - F4 negotiation room (d5e5371). The debug pass found that a party named `constructor` lost its choice in the response; fixed with Maps in 83e3f2a, which also added a phone-width check. The review found one medium issue: the other party's labels could print a fake "State: agreed" with newlines and bidi controls. V2 labels now refuse control, separator and bidi characters, and the UI isolates labels in `<bdi>`. Low fixes in 1fbb3c5: focus returns after a decision, buttons are disabled while a decision is in flight, and a failed open clears the old room. Room journeys were sharing graphs across parallel and repeated runs, so each test now publishes its own.
 - Not done here: Linux CI for this branch (now configured to run every node test file), a live two-model MCP smoke test, and Ali's M0 benchmark.
 
+### PR #1 review — room view races (tenki-reviewer, 2026-11-07)
+
+- Finding (medium): the room form had no in-flight guard, and a decision or room response that arrived after the person opened another room re-rendered the old room and rewound the current room. Room IDs are content-addressed, so a repeated submit with the same graphs did not create orphan rooms; the stale render was the real defect.
+- Fix: the Open room button is disabled and repeat submits are ignored while a request is pending, and every room open bumps a view generation so late room or decision responses are dropped. Two Playwright regressions hold requests in flight with `page.route`; both fail on the previous `public/app.js`.
+- Results (Windows): graph unit 9 of 9, node suites 54 of 54, Playwright 11 of 11.
+
 ## Cycle 6 — M2a warm latent pool (defined 2026-11-07, before implementation)
 
 Cycle 5 is Ali's M0 benchmark (PR #3), so this cycle is numbered 6.
