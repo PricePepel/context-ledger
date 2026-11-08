@@ -269,3 +269,16 @@ The merged runtime, run three rounds per set with the fixture ledger:
   - Injection probe: no findings kept in 3/3; 2 dropped per round, 1 of them ungrounded. The model still states "999 minutes" in the answer, which stays marked `answerVerified: false`.
 
 Lesson: a stricter ledger rule needs a full live gate before it is committed, not only the probe it was written for.
+
+### Closed-model baseline (2026-11-07)
+
+`evals/latent/baseline.mjs` runs Claude Sonnet through the Claude Code CLI in print mode, with tools off and no MCP servers. Claude gets the same system text as the latent pool: preamble v2 and all five fixture files with line numbers. Answers are scored with the same `gradeSlice`. The quotes are not passed through the ledger's checks, because the baseline is the closed model reading everything.
+
+| Set | Claude Sonnet, 3 runs | Latent pool (Qwen2.5-7B), merged runtime |
+| --- | --- | --- |
+| Original eight | 8/8 accuracy, 8/8 citations, every run | 7/8 and 7/8 |
+| Held-out eight | 8/8 and 8/8, every run | 7/8 and 8/8 |
+
+- **Gate verdict.** The latent pool does not match the closed model. It answers 14/16 to Claude's 16/16. The two misses are `session-cap` (7200 s is omitted) and `mail-queue` (it names `MAIL_QUEUE` instead of `'orbit-mail'`). Claude gets both right in every run.
+- **Cost.** The latent slice is 5–9% of the prefix tokens. Claude's direct read used 3.2k–5.1k input tokens per question through the CLI, which includes CLI overhead, so it is not a clean count of the prefix.
+- **A runner bug was fixed before scoring.** The first runner cut the JSON from the first `{` to the last `}`. When Claude added prose with braces after the object, parsing failed: 6 of 24 answers on the original set in the first run, all scored as wrong. The parser now takes the first balanced object and keeps the raw reply when parsing fails. The original set was re-run after the fix. The held-out numbers come from the first run, which had no parse failures.

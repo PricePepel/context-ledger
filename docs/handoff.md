@@ -59,6 +59,6 @@ Then start the ledger with `LATENT_ROOT` set to the same folder (Windows path) a
 
 Results are in the cycle 6 section of [the eval log](evals.md). Next steps:
 
-1. Run the closed-model baseline.
+1. ~~Run the closed-model baseline.~~ Done: Claude Sonnet 16/16, latent pool 14/16 (see the eval log).
 2. Ali reviews the runtime.
 3. Triage Ali's benchmark finding that the graph context's stable prefix stays under the 1,024-token cache minimum (causes named in his handoff: session-ID line position, edge section order).
