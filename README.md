@@ -2,6 +2,20 @@
 
 A local transcript library for handing work between Claude Code and Codex. Import a selected JSONL transcript, find a conversation by keyword, and give another agent the relevant turns with their original line numbers.
 
+## For judges
+
+Built on 2026-11-07 at the Anything Applied Agentic Hackathon for the "Your Agent, My Agent" challenge.
+
+Leo works in Claude Code and Ali works in Codex. Their agents never see each other's chat. Each agent publishes a graph of its person's goals, decisions, offers and open questions to one ledger, and every node cites the transcript line it came from, so the other agent can check a claim instead of trusting it. The ledger pairs the two graphs into a room, and the two people confirm or reject each proposed match in the browser. No MCP tool can confirm a match for them.
+
+- **Demo:** [docs/demo.md](docs/demo.md) is the run sheet. The transcripts in `demo/` are synthetic, and `node demo/rehearse.mjs` runs the whole flow with both CLIs.
+- **Past text, measured today at small scale:**
+  - `latent_read` (M2a): a local Qwen2.5-7B reads the files once and keeps its KV cache warm, and agents get short answers with verified quotes. On two sets of eight synthetic codebase questions it scored 7/8 on each, using under 9% of the tokens of reading the files. Claude Sonnet reading every file scored 16/16 to the pool's 14/16.
+  - `latent_transfer` (M2b): a 47.7M-parameter mapper, trained on one laptop GPU, carries Qwen2.5-0.5B's KV cache into SmolLM2-360M, a different model family. On 300 SQuAD validation questions the receiver scores F1 0.757; with the sender's cache zeroed it falls to 0.156, the no-passage level. These are small models, and we do not claim it beats reading the text. See [docs/m2b-transfer.md](docs/m2b-transfer.md).
+  - `latent_team` (M2c): subagents pass KV working memory instead of text, and only the solver writes. It is built and served, and its benchmark numbers are not recorded yet.
+- **How we built it:** two people, each with their own agent. The agents coordinated all day through typed handoff packets in a separate repo, and CI rejected malformed ones. Every feature has an eval written before the code ([docs/evals.md](docs/evals.md)) and an independent review.
+- **Tests on `main`:** node 95 of 96 (1 skipped), Playwright 12 of 12, Python runtime 117 run (22 skipped without a GPU).
+
 ## Run locally
 
 Requires Node.js 22.14 or later.
@@ -120,7 +134,7 @@ Point clients at `node` directly rather than through npm: npm prints a banner on
 
 ## Ask about files with a local model (M2a, warm latent pool)
 
-`latent_read` lets Claude or Codex ask about local files without reading them. A local open model reads the files once, and its KV cache for that prefix stays warm in vLLM. Worker calls answer sub-questions from the shared cache, and the agent receives a short answer with findings that cite file lines. The ledger drops any finding that cites a line that doesn't exist. The contract is in [docs/latent-read.md](docs/latent-read.md). The runtime is Ali's side, in `runtime/` on branch `ali/latent-pool`.
+`latent_read` lets Claude or Codex ask about local files without reading them. A local open model reads the files once, and its KV cache for that prefix stays warm in vLLM. Worker calls answer sub-questions from the shared cache, and the agent receives a short answer with findings that cite file lines. The ledger drops any finding that cites a line that doesn't exist. The contract is in [docs/latent-read.md](docs/latent-read.md). The runtime is Ali's side, in `runtime/`.
 
 Start the ledger with the folder the model may read:
 
