@@ -99,6 +99,21 @@ No training is needed: all agents are the same frozen model.
    - Result: 6/6 at m = 40 (5/6 at m = 10 with top-8 at temperature 0.5). The planner's thoughts decode to a coherent plan: "To solve this problem, you can follow these steps: 1. **Calculate the total miles run by Amber and Micah:**…"
    - `latent_mas` now uses soft thoughts. The paper's version stays measurable as `latent_aligned`, and random vectors as `latent_random`.
 
+## Measurement status (2026-11-07, stopped by Leo)
+
+These are GSM8K test results, seed 0, with Qwen2.5-3B-Instruct, greedy decoding and batches of 32. The run was stopped on Leo's request before the latent systems ran.
+
+| System | Questions | Accuracy | Text tokens per question | Seconds per question |
+|---|---|---|---|---|
+| `single` | 200 | 0.820, reproduced in two runs | 291 | 1.30 |
+| `text_mas` | 200, earlier run | 0.780 | 894 | 3.56 |
+| `text_mas` | 96 of 200, rerun, incomplete | 0.740 | n/a | n/a |
+| `latent_mas` (soft), `latent_aligned`, `latent_random` | none | not measured | n/a | n/a |
+
+- In the complete earlier run, 70.5% of `text_mas` subagents hit their 256-token cap. Truncated plans handicap the text team, which scores below the solver alone.
+- The gate is not decided. The 6-question live check (soft thoughts 6/6 at m = 40, paper thoughts 0/6) is a debug signal, not a measurement.
+- To resume, run `latent_team.evaluate --systems single,text_mas,latent_mas,latent_aligned,latent_random --steps 40 --count 200 --batch 32`, then the step sweep. On one RTX 4090 Laptop GPU this takes about 40 minutes.
+
 ## Serving
 
 - **Runtime.** `POST /latent/team` with `{question, latentSteps?}` returns the solver's answer and a receipt.
