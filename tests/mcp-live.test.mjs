@@ -59,6 +59,14 @@ test('an agent publishes and reads back a v2 graph through MCP against the real 
   assert.equal(initialized.protocolVersion, '2025-06-18');
   client.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
 
+  // The agent finds the session and its line numbers itself, as it would in the live demo.
+  const found = await client.call(20, 'session_search', { query: 'vega demo', provider: 'claude' });
+  assert.deepEqual(JSON.parse(found.content[0].text).sessions.map(item => item.id), [session.id]);
+  const turns = await client.call(21, 'session_read', { sessionId: session.id });
+  assert.equal(turns.isError, undefined, turns.content[0].text);
+  assert.match(turns.content[0].text, /^## user · line 1$/mu);
+  assert.match(turns.content[0].text, /^## assistant · line 2$/mu);
+
   const packet = {
     version: 2,
     sessionId: session.id,

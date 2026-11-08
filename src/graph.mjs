@@ -27,6 +27,10 @@ const linkKinds = {
 
 export class GraphInputError extends Error {}
 
+// Errors name an edge or link by its position and kinds, never by IDs or labels, so
+// packet content is not echoed back; that is still enough for an agent to fix it.
+const kindsText = kinds => kinds.join('/');
+
 // Stable kinds first, volatile kinds (statuses that change as work moves) last, so a
 // rendered prefix stays identical across revisions and can be served from a cache.
 export const kindOrder = ['goal', 'constraint', 'decision', 'offer', 'action', 'blocker', 'question'];
@@ -78,11 +82,15 @@ function indexNodes(nodes, sourceLines) {
 function indexEdges(edges, nodes) {
   const seen = new Set();
   const byType = new Map(Object.keys(edgeKinds).map(type => [type, []]));
-  for (const edge of edges) {
+  for (const [index, edge] of edges.entries()) {
     const { from, to, type } = edge;
+    const where = `Edge ${index + 1} (${type})`;
     const [fromKinds, toKinds] = edgeKinds[type];
-    if (from === to || !fromKinds.includes(nodes.get(from)?.kind) || !toKinds.includes(nodes.get(to)?.kind)) {
-      throw new GraphInputError('An edge must connect distinct nodes of the expected kinds.');
+    const fromKind = nodes.get(from)?.kind ?? 'unknown node';
+    const toKind = nodes.get(to)?.kind ?? 'unknown node';
+    if (from === to) throw new GraphInputError(`${where}: an edge must connect distinct nodes.`);
+    if (!fromKinds.includes(fromKind) || !toKinds.includes(toKind)) {
+      throw new GraphInputError(`${where}: expected kinds ${kindsText(fromKinds)}→${kindsText(toKinds)}, got ${fromKind}→${toKind}.`);
     }
     const key = `${type}|${from}|${to}`;
     if (seen.has(key)) throw new GraphInputError('Edges must be unique.');
@@ -116,10 +124,12 @@ function assertAcyclic(edges, relationship) {
 function assertLinks(packet, nodes, superseded, lookupGraph) {
   const seen = new Set();
   const remoteGraphs = new Map();
-  for (const { from, graph, to, type } of packet.links ?? []) {
+  for (const [index, { from, graph, to, type }] of (packet.links ?? []).entries()) {
+    const where = `Link ${index + 1} (${type})`;
     const [fromKinds, toKinds] = linkKinds[type];
-    if (!fromKinds.includes(nodes.get(from)?.kind)) {
-      throw new GraphInputError('A link must start at a local node of the expected kind.');
+    const fromKind = nodes.get(from)?.kind;
+    if (!fromKinds.includes(fromKind)) {
+      throw new GraphInputError(`${where}: must start at a local node of kind ${kindsText(fromKinds)}, got ${fromKind ?? 'unknown node'}.`);
     }
     if (superseded.has(from)) throw new GraphInputError('A link cannot start at a superseded decision.');
     if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
@@ -133,7 +143,11 @@ function assertLinks(packet, nodes, superseded, lookupGraph) {
 
     const target = remote.nodes.find(node => node.id === to);
     if (!toKinds.includes(target?.kind)) {
-      throw new GraphInputError('A link must end at a remote node of the expected kind.');
+      throw new GraphInputError(`${where}: must end at a remote node of kind ${kindsText(toKinds)}, got ${target?.kind ?? 'unknown node'}.`);
+    }
+    // A link to a replaced decision would put a stale match or conflict in the room.
+    if (remote.edges.some(edge => edge.type === 'supersedes' && edge.to === to)) {
+      throw new GraphInputError(`${where}: its target decision is superseded in the other graph; link to the current one.`);
     }
     if (type === 'answers' && target.to !== packet.party) {
       throw new GraphInputError('A link can only answer a question addressed to this party.');

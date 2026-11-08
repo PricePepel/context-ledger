@@ -94,7 +94,10 @@
       "properties": {
         "from": { "$ref": "#/$defs/nodeId" },
         "to": { "$ref": "#/$defs/nodeId" },
-        "type": { "enum": ["advances", "blocks", "depends_on", "supersedes", "constrains", "answers"] }
+        "type": {
+          "enum": ["advances", "blocks", "depends_on", "supersedes", "constrains", "answers"],
+          "description": "Node kinds, from → to: advances action→goal, blocks blocker→action, depends_on action→action, supersedes decision→decision (new → replaced), constrains constraint→action, answers decision→question."
+        }
       }
     },
     "link": {
@@ -105,7 +108,10 @@
         "from": { "$ref": "#/$defs/nodeId" },
         "graph": { "$ref": "#/$defs/hash" },
         "to": { "$ref": "#/$defs/nodeId" },
-        "type": { "enum": ["matches", "conflicts", "answers"] }
+        "type": {
+          "enum": ["matches", "conflicts", "answers"],
+          "description": "Node kinds, local → remote: matches goal/offer/action → goal/offer/action; conflicts goal/offer/action/constraint/decision → the same kinds; answers decision → a question addressed to this party. A link cannot start or end at a superseded decision."
+        }
       }
     }
   }
