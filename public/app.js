@@ -171,8 +171,13 @@ const roomParties = document.querySelector('#room-parties');
 const roomProposals = document.querySelector('#room-proposals');
 const roomAgreed = document.querySelector('#room-agreed');
 const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
+const roomSubmit = roomForm.querySelector('button[type="submit"]');
 let currentRoomId;
 let deciding = false;
+let openingRoom = false;
+// Bumped whenever the person asks for a room view. A response that arrives after a
+// newer request is stale and must not replace the room now on screen.
+let roomGeneration = 0;
 
 // Labels come from the other party's agent. Each sits in its own <bdi> so bidi text
 // cannot reorder the words around it, and never as markup.
@@ -256,12 +261,13 @@ function closeRoom(message) {
 }
 
 async function loadRoom(id) {
+  const generation = ++roomGeneration;
   roomStatus.textContent = 'Opening room…';
   try {
     const { room } = await request(`/api/rooms/${encodeURIComponent(id)}`);
-    renderRoom(room);
+    if (generation === roomGeneration) renderRoom(room);
   } catch (error) {
-    closeRoom(`Unable to open room. ${error.message}`);
+    if (generation === roomGeneration) closeRoom(`Unable to open room. ${error.message}`);
   }
 }
 
@@ -275,17 +281,22 @@ async function decide(proposalId, party, choice) {
   if (deciding) return;
   deciding = true;
   setChoiceButtons(true);
+  const roomId = currentRoomId;
+  const generation = roomGeneration;
   let message;
   try {
-    const { room } = await request(`/api/rooms/${currentRoomId}/decisions`, {
+    const { room } = await request(`/api/rooms/${roomId}/decisions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ proposalId, party, choice }),
     });
     deciding = false;
+    // The person may have opened another room while this decision was in flight.
+    if (generation !== roomGeneration) return;
     renderRoom(room);
     message = `Recorded ${party}: ${choice}.`;
   } catch (error) {
+    if (generation !== roomGeneration) return;
     message = `Decision failed. ${error.message}`;
   } finally {
     deciding = false;
@@ -298,6 +309,11 @@ async function decide(proposalId, party, choice) {
 
 roomForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  // One open at a time: a second Enter while the first request is pending does nothing.
+  if (openingRoom) return;
+  openingRoom = true;
+  roomSubmit.disabled = true;
+  const generation = ++roomGeneration;
   roomStatus.textContent = 'Opening room…';
   try {
     const { room } = await request('/api/rooms', {
@@ -305,10 +321,14 @@ roomForm.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ graphIds: [roomGraphA.value.trim(), roomGraphB.value.trim()] }),
     });
+    if (generation !== roomGeneration) return;
     history.replaceState(null, '', `#room=${room.id}`);
     renderRoom(room);
   } catch (error) {
-    closeRoom(`Unable to open room. ${error.message}`);
+    if (generation === roomGeneration) closeRoom(`Unable to open room. ${error.message}`);
+  } finally {
+    openingRoom = false;
+    roomSubmit.disabled = false;
   }
 });
 

@@ -108,3 +108,66 @@ test('room API rejects agent decisions, foreign origins and invalid rooms', asyn
   expect(sameGraph.status()).toBe(400);
   expect((await request.get('/api/rooms/' + '0'.repeat(64))).status()).toBe(404);
 });
+
+async function openRoom(page, first, second) {
+  await page.getByLabel('First graph ID').fill(first);
+  await page.getByLabel('Second graph ID').fill(second);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-status')).toContainText('proposals');
+  return page.url().match(/#room=([a-f0-9]{64})$/u)[1];
+}
+
+test('a second Enter while a room is opening sends no second request', async ({ page, request, baseURL }, testInfo) => {
+  const { ali, leo } = await publishPair(request, baseURL, 'double submit #' + testInfo.repeatEachIndex);
+  let posts = 0;
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/rooms', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts += 1;
+    await held;
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(leo.id);
+  await page.getByLabel('Second graph ID').fill(ali.id);
+  await page.getByLabel('Second graph ID').press('Enter');
+  await expect(page.getByRole('button', { name: 'Open room' })).toBeDisabled();
+  await page.getByLabel('Second graph ID').press('Enter');
+  release();
+
+  await expect(page.locator('#room-status')).toContainText('3 proposals');
+  await expect(page.getByRole('button', { name: 'Open room' })).toBeEnabled();
+  expect(posts).toBe(1);
+});
+
+test('a decision that lands after switching rooms does not replace the new room', async ({ page, request, baseURL }, testInfo) => {
+  const first = await publishPair(request, baseURL, 'stale first #' + testInfo.repeatEachIndex);
+  const second = await publishPair(request, baseURL, 'stale second #' + testInfo.repeatEachIndex);
+  await page.goto('/');
+  const firstRoom = await openRoom(page, first.leo.id, first.ali.id);
+
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let arrived;
+  const decisionSent = new Promise(resolve => { arrived = resolve; });
+  await page.route('**/api/rooms/*/decisions', async route => {
+    arrived();
+    await held;
+    await route.continue();
+  });
+  const decisionDone = page.waitForResponse(response => response.url().endsWith('/decisions'));
+  await page.locator('#room-proposals > li', { hasText: 'matches' }).getByRole('button', { name: 'Confirm as leo' }).click();
+  await decisionSent;
+
+  const secondRoom = await openRoom(page, second.leo.id, second.ali.id);
+  expect(secondRoom).not.toBe(firstRoom);
+  release();
+  await decisionDone;
+
+  await expect(page.locator('#room-status')).toContainText(`Room ${secondRoom.slice(0, 12)}`);
+  await expect(page.getByRole('region', { name: 'Party ali' })).toContainText('stale second');
+  await expect(page.locator('#room-proposals > li', { hasText: 'matches' })).toContainText('leo: undecided');
+  expect(page.url()).toMatch(new RegExp(`#room=${secondRoom}$`, 'u'));
+});

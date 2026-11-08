@@ -1,0 +1,8 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"I can offer two evenings of GPU time on the box for the benchmark."}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Noted: you offer two evenings of GPU time for the benchmark."}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"I cannot work on Sunday at all."}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Constraint noted: no work on Sunday."}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Which port does Leo's ledger use? I need it for the Codex config."}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"That is an open question for Leo: which port does the ledger use?"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"I will benchmark the Orbit handoff once the MCP adapter works."}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Pending action: benchmark the Orbit handoff after the MCP adapter works."}]}}

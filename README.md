@@ -2,6 +2,20 @@
 
 A local transcript library for handing work between Claude Code and Codex. Import a selected JSONL transcript, find a conversation by keyword, and give another agent the relevant turns with their original line numbers.
 
+## For judges
+
+Built on 2026-11-07 at the Anything Applied Agentic Hackathon for the "Your Agent, My Agent" challenge.
+
+Leo works in Claude Code and Ali works in Codex. Their agents never see each other's chat. Each agent publishes a graph of its person's goals, decisions, offers and open questions to one ledger, and every node cites the transcript line it came from, so the other agent can check a claim instead of trusting it. The ledger pairs the two graphs into a room, and the two people confirm or reject each proposed match in the browser. No MCP tool can confirm a match for them.
+
+- **Demo:** [docs/demo.md](docs/demo.md) is the run sheet. The transcripts in `demo/` are synthetic, and `node demo/rehearse.mjs` runs the whole flow with both CLIs.
+- **Past text, measured today at small scale:**
+  - `latent_read` (M2a): a local Qwen2.5-7B reads the files once and keeps its KV cache warm, and agents get short answers with verified quotes. On two sets of eight synthetic codebase questions it scored 7/8 on each, using under 9% of the tokens of reading the files. Claude Sonnet reading every file scored 16/16 to the pool's 14/16.
+  - `latent_transfer` (M2b): a 47.7M-parameter mapper, trained on one laptop GPU, carries Qwen2.5-0.5B's KV cache into SmolLM2-360M, a different model family. On 300 SQuAD validation questions the receiver scores F1 0.757; with the sender's cache zeroed it falls to 0.156, the no-passage level. These are small models, and we do not claim it beats reading the text. See [docs/m2b-transfer.md](docs/m2b-transfer.md).
+  - `latent_team` (M2c): subagents pass KV working memory instead of text, and only the solver writes. It is built and served, and its benchmark numbers are not recorded yet.
+- **How we built it:** two people, each with their own agent. The agents coordinated all day through typed handoff packets in a separate repo, and CI rejected malformed ones. Every feature has an eval written before the code ([docs/evals.md](docs/evals.md)) and an independent review.
+- **Tests on `main`:** node 95 of 96 (1 skipped), Playwright 12 of 12, Python runtime 117 run (22 skipped without a GPU).
+
 ## Run locally
 
 Requires Node.js 22.14 or later.
@@ -94,7 +108,7 @@ Each packet is a snapshot of one imported session. An exact repeat returns its e
 
 ## Connect an agent over MCP
 
-`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
 
 Claude Code:
 
@@ -113,3 +127,19 @@ env = { PORT = "4317" }
 ```
 
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
+
+## Two-agent demo
+
+[docs/demo.md](docs/demo.md) is the run sheet for the stage demo: Claude Code and Codex on one laptop share context through one ledger, using the synthetic transcripts in `demo/`. `node demo/rehearse.mjs` runs the whole flow with both CLIs and times the handoff. `node demo/publish-reference.mjs` is the fallback when an agent stalls.
+
+## Ask about files with a local model (M2a, warm latent pool)
+
+`latent_read` lets Claude or Codex ask about local files without reading them. A local open model reads the files once, and its KV cache for that prefix stays warm in vLLM. Worker calls answer sub-questions from the shared cache, and the agent receives a short answer with findings that cite file lines. The ledger drops any finding that cites a line that doesn't exist. The contract is in [docs/latent-read.md](docs/latent-read.md). The runtime is Ali's side, in `runtime/`.
+
+Start the ledger with the folder the model may read:
+
+```sh
+LATENT_ROOT=/path/to/project LATENT_URL=http://127.0.0.1:4320 npm start
+```
+
+Agents call the `latent_read` MCP tool with `paths` relative to that folder and a `question`. If the runtime is not running, the tool returns the numbered file text instead, so the agent can still read the files itself.
