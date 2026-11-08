@@ -1,0 +1,56 @@
+{"type":"user","message":{"role":"user","content":"We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday."}}
+{"type":"assistant","message":{"role":"assistant","content":"Understood. The goal is the Orbit demo live by 19:00 on Saturday. I will keep a list of decisions as we go."}}
+{"type":"user","message":{"role":"user","content":"Run the ledger on port 4400 for the demo."}}
+{"type":"assistant","message":{"role":"assistant","content":"Decision recorded: the ledger runs on port 4400 for the demo."}}
+{"type":"user","message":{"role":"user","content":"The slide title font looks heavy on the projector. Can we try something lighter?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Switched the deck to a lighter weight and bumped the line height. The title now fits on one line at 1280 pixels wide, and the speaker notes are unchanged."}}
+{"type":"user","message":{"role":"user","content":"The room test flaked again on the second run. Look at it before we change anything else."}}
+{"type":"assistant","message":{"role":"assistant","content":"The flake came from a test that reused the database file between runs. Each run now gets its own temporary folder and the test passed ten times in a row."}}
+{"type":"user","message":{"role":"user","content":"Remind me what the savings meter actually counts."}}
+{"type":"assistant","message":{"role":"assistant","content":"It counts UTF-16 code units divided by four for both the full handoff and the graph context, and it labels the numbers as estimates because tokenizers differ by vendor."}}
+{"type":"user","message":{"role":"user","content":"Plan to record the demo video on Sunday morning."}}
+{"type":"assistant","message":{"role":"assistant","content":"Added an action: record the demo video on Sunday morning."}}
+{"type":"user","message":{"role":"user","content":"Is the browser view readable on a small screen?"}}
+{"type":"assistant","message":{"role":"assistant","content":"At 375 pixels the room view stacks the two parties vertically and every button stays reachable. The proposal list scrolls inside its card."}}
+{"type":"user","message":{"role":"user","content":"Lunch is at 13:00, I will be away for forty minutes."}}
+{"type":"assistant","message":{"role":"assistant","content":"Noted. I will keep going on the README section while you are away and will not push anything."}}
+{"type":"user","message":{"role":"user","content":"Can you tidy the README intro? It reads like a spec."}}
+{"type":"assistant","message":{"role":"assistant","content":"Rewrote the intro as two short paragraphs: what the ledger does and how two agents use it. The command reference moved below."}}
+{"type":"user","message":{"role":"user","content":"Why does the context put actions last?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Stable sections go first so the prefix stays byte-identical across revisions and providers can cache it. Statuses change often, so actions, blockers and questions come last."}}
+{"type":"user","message":{"role":"user","content":"I can pair with Ali on the MCP adapter, that is my offer to him."}}
+{"type":"assistant","message":{"role":"assistant","content":"Noted your offer to Ali: you will pair with him on the MCP adapter."}}
+{"type":"user","message":{"role":"user","content":"The CI run on Linux took eleven minutes. Is that normal?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Most of it is the Playwright browser download. Caching the browser folder would save around six minutes, which is worth doing after the demo."}}
+{"type":"user","message":{"role":"user","content":"Check the escaping of labels with odd Unicode."}}
+{"type":"assistant","message":{"role":"assistant","content":"Labels with line separators, bidi controls or control characters are escaped onto one line. I added a test with a right-to-left override and it renders as an escape."}}
+{"type":"user","message":{"role":"user","content":"Port 4400 clashes with Ali's Grafana. Change of plan: the ledger stays on port 4317."}}
+{"type":"assistant","message":{"role":"assistant","content":"Decision updated: the ledger stays on port 4317. This supersedes the earlier choice of port 4400."}}
+{"type":"user","message":{"role":"user","content":"What happens if both of us publish the same packet twice?"}}
+{"type":"assistant","message":{"role":"assistant","content":"An exact repeat returns the same graph ID, so nothing is duplicated. A changed packet gets a new ID and needs a new room."}}
+{"type":"user","message":{"role":"user","content":"The colour of the reject button is too close to the confirm button."}}
+{"type":"assistant","message":{"role":"assistant","content":"Reject now uses the outline style and confirm the filled style. Both pass the contrast check in light and dark mode."}}
+{"type":"user","message":{"role":"user","content":"Do we need to mention the latent pool in the demo?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Only as a closing slide. The two-agent room is the main story and the latent pool needs the GPU box, which may not be on stage."}}
+{"type":"user","message":{"role":"user","content":"Stage Wi-Fi was flaky at the last event. Everything must run on the local laptop, not over stage Wi-Fi."}}
+{"type":"assistant","message":{"role":"assistant","content":"Constraint recorded: everything runs on the local laptop and nothing depends on stage Wi-Fi."}}
+{"type":"user","message":{"role":"user","content":"The judges get five minutes per team."}}
+{"type":"assistant","message":{"role":"assistant","content":"Then the live part should take three minutes at most, with a recorded fallback ready if the network or a CLI misbehaves."}}
+{"type":"user","message":{"role":"user","content":"Can the room survive a page reload?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Yes. The address bar keeps the room ID after the hash sign, so a reload reopens the same room with the same choices."}}
+{"type":"user","message":{"role":"user","content":"Ali said he cannot work on Sunday. Move the recording to Saturday at 17:00."}}
+{"type":"assistant","message":{"role":"assistant","content":"Moved the action: record the demo video on Saturday at 17:00, two hours before the deadline. The Sunday plan is dropped."}}
+{"type":"user","message":{"role":"user","content":"Write down the risks for the demo."}}
+{"type":"assistant","message":{"role":"assistant","content":"Main risks: a CLI asking for login on stage, the tunnel dropping between laptops, and a model taking longer than expected. Each has a fallback in the run sheet."}}
+{"type":"user","message":{"role":"user","content":"How long does a publish take?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Under twenty milliseconds on this laptop for a graph with a dozen nodes. Validation and hashing dominate, and the database write is small."}}
+{"type":"user","message":{"role":"user","content":"The slide title font looks heavy on the projector. Can we try something lighter?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Switched the deck to a lighter weight and bumped the line height. The title now fits on one line at 1280 pixels wide, and the speaker notes are unchanged."}}
+{"type":"user","message":{"role":"user","content":"Is the browser view readable on a small screen?"}}
+{"type":"assistant","message":{"role":"assistant","content":"At 375 pixels the room view stacks the two parties vertically and every button stays reachable. The proposal list scrolls inside its card."}}
+{"type":"user","message":{"role":"user","content":"One thing I still need from Ali: who owns the GPU box?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Open question for Ali: who owns the GPU box? I will leave it open until he answers."}}
+{"type":"user","message":{"role":"user","content":"Why does the context put actions last?"}}
+{"type":"assistant","message":{"role":"assistant","content":"Stable sections go first so the prefix stays byte-identical across revisions and providers can cache it. Statuses change often, so actions, blockers and questions come last."}}
+{"type":"user","message":{"role":"user","content":"What happens if both of us publish the same packet twice?"}}
+{"type":"assistant","message":{"role":"assistant","content":"An exact repeat returns the same graph ID, so nothing is duplicated. A changed packet gets a new ID and needs a new room."}}

@@ -5,7 +5,7 @@ test-results/
 .env*
 *.sqlite*
 .claude/worktrees/
+demo/out/
 __pycache__/
 *.pyc
-__pycache__/
 *.pt

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "about": "Held-out questions on the same synthetic codebase. Written before any prompt change and never used for tuning: a change must pass these as well as questions.json.",
+  "paths": ["src/config.js", "src/session.js", "src/orders.js", "src/payments.js", "src/notify.js"],
+  "questions": [
+    {
+      "id": "currency",
+      "question": "In which currency are charges and refunds made?",
+      "required": [["eur", "euro"]],
+      "evidence": [{ "path": "src/config.js", "lines": [5, 5] }, { "path": "src/payments.js", "lines": [16, 16] }, { "path": "src/payments.js", "lines": [32, 32] }]
+    },
+    {
+      "id": "mail-queue",
+      "question": "Which queue do shipped-order emails go to?",
+      "required": [["orbit-mail"]],
+      "evidence": [{ "path": "src/config.js", "lines": [27, 27] }, { "path": "src/notify.js", "lines": [12, 12] }]
+    },
+    {
+      "id": "status-after-payment",
+      "question": "What status does an order have right after a successful payment?",
+      "required": [["paid"]],
+      "evidence": [{ "path": "src/orders.js", "lines": [24, 26] }, { "path": "src/orders.js", "lines": [8, 10] }]
+    },
+    {
+      "id": "oversized-cart-error",
+      "question": "What error message does pricing give for an oversized cart?",
+      "required": [["too large"]],
+      "evidence": [{ "path": "src/orders.js", "lines": [16, 16] }]
+    },
+    {
+      "id": "region",
+      "question": "Which region is the shop configured for?",
+      "required": [["eu-west"]],
+      "evidence": [{ "path": "src/config.js", "lines": [4, 4] }]
+    },
+    {
+      "id": "sms-template",
+      "question": "Which template is used for the shipping SMS?",
+      "required": [["shipped-sms"]],
+      "evidence": [{ "path": "src/notify.js", "lines": [14, 14] }]
+    },
+    {
+      "id": "logout-effect",
+      "question": "What does logging out do to the session?",
+      "required": [["delete", "remove"]],
+      "evidence": [{ "path": "src/session.js", "lines": [29, 31] }]
+    },
+    {
+      "id": "charge-gives-up",
+      "question": "What happens when every charge attempt fails?",
+      "required": [["payment failed after retries", "throws", "error"]],
+      "evidence": [{ "path": "src/payments.js", "lines": [23, 23] }, { "path": "src/payments.js", "lines": [13, 24] }]
+    }
+  ]
+}

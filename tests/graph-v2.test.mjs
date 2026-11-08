@@ -226,3 +226,30 @@ test('the store links a stored graph from another party and refuses a dangling l
   assert.equal(store.publishGraph(withoutLinks).id, unlinked.id);
   assert.equal('links' in unlinked.packet, false);
 });
+
+test('demo fix: errors name the edge or link by position and kinds, without echoing IDs', () => {
+  rejects(graph => { graph.edges.push({ from: 'mcp-help', to: 'ship-demo', type: 'advances' }); },
+    /^Edge 3 \(advances\): expected kinds action→goal, got offer→goal\.$/u);
+  rejects(graph => { graph.edges.push({ from: 'record', to: 'gone', type: 'advances' }); },
+    /^Edge 3 \(advances\): expected kinds action→goal, got action→unknown node\.$/u);
+  rejects(graph => { graph.links[1].from = 'gpu-owner'; },
+    /^Link 2 \(conflicts\): must start at a local node of kind goal\/offer\/action\/constraint\/decision, got question\.$/u);
+  rejects(graph => { graph.links[0].to = 'which-port'; },
+    /^Link 1 \(matches\): must end at a remote node of kind goal\/offer\/action, got question\.$/u);
+});
+
+test('demo fix: a link cannot point at a decision the other party has replaced', () => {
+  const revised = structuredClone(remote);
+  revised.packet.nodes.push(
+    { id: 'record-sunday', kind: 'decision', label: 'Record on Sunday', evidenceLines: [1] },
+    { id: 'record-saturday', kind: 'decision', label: 'Record on Saturday', evidenceLines: [1] },
+  );
+  revised.packet.edges.push({ from: 'record-saturday', to: 'record-sunday', type: 'supersedes' });
+  const lookup = id => (id === remoteId ? revised : undefined);
+  const graph = packet();
+  graph.links[1].to = 'record-sunday';
+  assert.throws(() => validateGraph(graph, [1, 2], { lookupGraph: lookup }),
+    { message: 'Link 2 (conflicts): its target decision is superseded in the other graph; link to the current one.' });
+  graph.links[1].to = 'record-saturday';
+  assert.deepEqual(validateGraph(graph, [1, 2], { lookupGraph: lookup }).openQuestionIds, ['gpu-owner']);
+});
