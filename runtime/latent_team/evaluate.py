@@ -13,6 +13,8 @@ import os
 import random
 import re
 
+# latent_mas uses soft thoughts (our deviation); latent_aligned is the paper's W_a.
+LATENT_MODES = {"latent_mas": "soft", "latent_aligned": "aligned", "latent_random": "random"}
 HUB = os.path.expanduser(os.environ.get("HF_HUB_CACHE", "~/.cache/huggingface/hub"))
 NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
@@ -68,8 +70,8 @@ def run_system(team, system, items, batch, steps):
         chunk = items[start:start + batch]
         questions = [item["question"] for item in chunk]
         capped = [0] * len(chunk)
-        if system in ("latent_mas", "latent_random"):
-            answers, receipt = team.latent_mas(questions, steps=steps, random_thoughts=system == "latent_random")
+        if system in LATENT_MODES:
+            answers, receipt = team.latent_mas(questions, steps=steps, mode=LATENT_MODES[system])
         elif system == "text_mas":
             answers, receipt = team.text_mas(questions)
             capped = team.capped
@@ -128,7 +130,7 @@ def main():
     team.latent_mas(warm, steps=2, max_new_tokens=8)
     report = {"model": args.model, "systems": {}}
     for system in args.systems.split(","):
-        latent = system in ("latent_mas", "latent_random")
+        latent = system in LATENT_MODES
         for steps in ([int(s) for s in args.steps.split(",")] if latent else [0]):
             key = f"{system}@{steps}" if latent else system
             results = run_system(team, system, items, args.batch, steps)

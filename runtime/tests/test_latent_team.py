@@ -74,17 +74,20 @@ class WorkingMemoryTest(unittest.TestCase):
         from transformers import DynamicCache
         team = tiny_team()
         memory, mask = team.think(DynamicCache(), None, ["plan the sum"], steps=0)
-        ids_b, mask_b = team.render(["solve it"])
+        ids_b, mask_b = team.render(["solve it"], first=False)
         out, _ = team.forward(memory, mask, ids=ids_b, mask=mask_b)
         ids_a, _ = team.render(["plan the sum"])
-        reference = team.model(input_ids=torch.cat([ids_a, ids_b], 1)).logits[:, -1:]
+        close = torch.tensor([team.tokenizer.encode(team.close_turn())])
+        # A closed agent turn, then the next agent turn: the same tokens read as text.
+        reference = team.model(input_ids=torch.cat([ids_a, close, ids_b], 1)).logits[:, -1:]
         torch.testing.assert_close(out.logits, reference, atol=1e-4, rtol=1e-4)  # forward keeps the last position only
 
     def test_latent_steps_extend_the_memory_by_one_position_each(self):
         from transformers import DynamicCache
         team = tiny_team()
         memory, mask = team.think(DynamicCache(), None, ["abc"], steps=7)
-        self.assertEqual(memory.get_seq_length(), len("[u]abc[a]") + 7)
+        # prompt + 7 latent positions + the closing token(s) of the turn
+        self.assertEqual(memory.get_seq_length(), len("[u]abc[a]") + 7 + len(team.close_turn()))
         self.assertEqual(mask.shape[1], memory.get_seq_length())
 
     def test_a_batch_gives_the_same_answers_as_one_question_at_a_time(self):
@@ -99,11 +102,33 @@ class WorkingMemoryTest(unittest.TestCase):
     def test_the_random_control_changes_the_memory_but_not_its_length(self):
         from transformers import DynamicCache
         team = tiny_team()
-        aligned, _ = team.think(DynamicCache(), None, ["abc"], steps=4)
-        random, _ = team.think(DynamicCache(), None, ["abc"], steps=4, random_thoughts=True)
-        self.assertEqual(aligned.get_seq_length(), random.get_seq_length())
-        self.assertFalse(torch.allclose(aligned.layers[0].keys[:, :, -4:], random.layers[0].keys[:, :, -4:]))
-        torch.testing.assert_close(aligned.layers[0].keys[:, :, :-4], random.layers[0].keys[:, :, :-4])
+        n = len(team.close_turn())
+        soft, _ = team.think(DynamicCache(), None, ["abc"], steps=4)
+        random, _ = team.think(DynamicCache(), None, ["abc"], steps=4, mode="random")
+        self.assertEqual(soft.get_seq_length(), random.get_seq_length())
+        thoughts = slice(-4 - n, -n)
+        self.assertFalse(torch.allclose(soft.layers[0].keys[:, :, thoughts], random.layers[0].keys[:, :, thoughts]))
+        torch.testing.assert_close(soft.layers[0].keys[:, :, :-4 - n], random.layers[0].keys[:, :, :-4 - n])
+
+    def test_soft_thoughts_are_mixtures_of_real_token_embeddings(self):
+        team = tiny_team()
+        hidden = torch.randn(3, 32)
+        vector = team.thought(hidden, "soft")
+        table = team.model.get_input_embeddings().weight
+        logits = team.model.get_output_embeddings()(hidden)
+        top = logits.topk(team.soft_top_k, dim=-1)
+        expected = (torch.softmax(top.values, -1)[..., None] * table[top.indices]).sum(-2)
+        torch.testing.assert_close(vector, expected)
+        # A convex mixture never leaves the box spanned by the embedding table.
+        self.assertTrue(bool((vector.abs().max(dim=-1).values <= table.abs().max() + 1e-6).all()))
+        with self.assertRaises(ValueError):
+            team.thought(hidden, "nonsense")
+
+    def test_chatml_turns_close_and_skip_the_system_block(self):
+        team = tiny_team()
+        team.tokenizer.chat_template = "{% for m in messages %}<|im_start|>...{% endfor %}"
+        self.assertEqual(team.turn("hi"), "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n")
+        self.assertEqual(team.close_turn(), "<|im_end|>\n")
 
     def test_decoding_stops_at_the_budget_and_counts_exactly(self):
         team = tiny_team()

@@ -96,12 +96,34 @@ class LatentTeam:
                 self.eos.add(token_id)
 
     # ------------------------------------------------------------------ helpers
-    def render(self, prompts):
-        """Chat-format each prompt and tokenize the batch, left padded."""
-        texts = [self.tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False,
-                                                     add_generation_prompt=True) for p in prompts]
+    def render(self, prompts, first=True):
+        """Chat-format each prompt and tokenize the batch, left padded.
+
+        Only the first agent's turn carries the chat template's system preamble. A later
+        agent's turn is a plain user turn, so the accumulated memory reads as one
+        well-formed conversation instead of a system prompt inside every reply.
+        """
+        if first:
+            texts = [self.tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False,
+                                                         add_generation_prompt=True) for p in prompts]
+        else:
+            texts = [self.turn(p) for p in prompts]
         encoded = self.tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False)
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
+
+    def chatml(self):
+        return "<|im_start|>" in (getattr(self.tokenizer, "chat_template", None) or "")
+
+    def turn(self, prompt):
+        """A later agent's turn: a user turn and an open assistant turn, without a system block."""
+        if self.chatml():
+            return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+        return self.tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False,
+                                                  add_generation_prompt=True)
+
+    def close_turn(self):
+        """Text that ends an agent's (latent) assistant turn before the next agent speaks."""
+        return "<|im_end|>\n" if self.chatml() else "\n"
 
     @staticmethod
     def positions(full_mask, new_tokens):
@@ -125,33 +147,57 @@ class LatentTeam:
             return self.model.model(**kwargs), full
         return self.model(**kwargs, logits_to_keep=1), full
 
-    def think(self, memory, memory_mask, prompts, steps, random_thoughts=False):
-        """One subagent: read its prompt on top of the memory, then take `steps` latent steps.
+    def thought(self, hidden, mode):
+        """The vector fed back for one latent step.
 
-        random_thoughts=True is the eval's control: the same number of steps, but each
-        fed vector is random noise at the target norm instead of the aligned state.
+        aligned  the paper's e = h W_a, rescaled to the mean input norm. With tied input
+                 and output embeddings (Qwen2.5-3B) W_a is the identity, and live the
+                 thoughts collapse within a few steps (docs/m2c-latent-team.md).
+        soft     our deviation, in the spirit of training-free "soft thinking": the
+                 probability-weighted mean of the top-k token embeddings. Always a
+                 point inside the hull of real input embeddings, so it stays in
+                 distribution; it is still a continuous mixture, not a chosen token.
+        random   the eval's control: noise at the mean input norm.
         """
-        ids, mask = self.render(prompts)
+        if mode == "random":
+            noise = torch.randn_like(hidden.float())
+            return noise * (self.target / noise.norm(dim=-1, keepdim=True))
+        if mode == "aligned":
+            return align(hidden, self.w_a, self.target)
+        if mode != "soft":
+            raise ValueError(f"Unknown thought mode: {mode}")
+        logits = self.model.get_output_embeddings()(hidden.to(self.model.dtype)).float()
+        top = logits.topk(self.soft_top_k, dim=-1)
+        weights = torch.softmax(top.values / self.soft_temperature, dim=-1)
+        table = self.model.get_input_embeddings().weight
+        return (weights[..., None] * table[top.indices].float()).sum(-2)
+
+    soft_top_k = 16
+    soft_temperature = 1.0
+
+    def think(self, memory, memory_mask, prompts, steps, mode="soft", first=True):
+        """One subagent: read its prompt on top of the memory, take `steps` latent steps,
+        then close its turn so the next agent's turn starts a fresh one."""
+        ids, mask = self.render(prompts, first=first)
         out, full = self.forward(memory, memory_mask, ids=ids, mask=mask, hidden_only=True)
         memory = out.past_key_values
         hidden = out.last_hidden_state[:, -1]
         for _ in range(steps):
-            if random_thoughts:
-                noise = torch.randn_like(hidden.float())
-                vector = noise * (self.target / noise.norm(dim=-1, keepdim=True))
-            else:
-                vector = align(hidden, self.w_a, self.target)
+            vector = self.thought(hidden, mode)
             out, full = self.forward(memory, full, embeds=vector.to(self.model.dtype)[:, None, :], hidden_only=True)
             memory = out.past_key_values
             hidden = out.last_hidden_state[:, -1]
-        return memory, full
+        close = self.tokenizer([self.close_turn()] * len(prompts), return_tensors="pt", add_special_tokens=False)
+        out, full = self.forward(memory, full, ids=close["input_ids"].to(self.device),
+                                 mask=close["attention_mask"].to(self.device), hidden_only=True)
+        return out.past_key_values, full
 
-    def decode(self, memory, memory_mask, prompts, max_new_tokens):
+    def decode(self, memory, memory_mask, prompts, max_new_tokens, first=True):
         """Greedy text decoding of a batch on top of the memory. Returns (texts, token counts).
 
         Tokens stay on the GPU until the end; the only per-step sync is the all-done check.
         """
-        ids, mask = self.render(prompts)
+        ids, mask = self.render(prompts, first=first)
         out, full = self.forward(memory, memory_mask, ids=ids, mask=mask)
         memory = out.past_key_values
         batch = ids.shape[0]
@@ -182,17 +228,18 @@ class LatentTeam:
 
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
-    def latent_mas(self, questions, steps=40, max_new_tokens=512, random_thoughts=False):
+    def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False):
+        mode = "random" if random_thoughts else mode
         start = time.perf_counter()
         memory, mask = DynamicCache(), None
-        for role in ROLES:
+        for index, role in enumerate(ROLES):
             memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions], steps,
-                                      random_thoughts=random_thoughts)
+                                      mode=mode, first=index == 0)
         answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
-                                      max_new_tokens)
+                                      max_new_tokens, first=False)
         self._sync()
-        name = "latent_random" if random_thoughts else "latent_mas"
-        receipt = Receipt(name, steps, counts, steps * len(ROLES), time.perf_counter() - start)
+        names = {"soft": "latent_mas", "aligned": "latent_aligned", "random": "latent_random"}
+        receipt = Receipt(names[mode], steps, counts, steps * len(ROLES), time.perf_counter() - start)
         return answers, receipt
 
     @torch.no_grad()
