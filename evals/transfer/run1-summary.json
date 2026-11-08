@@ -1,0 +1,187 @@
+{
+ "pair": [
+  "Qwen/Qwen2.5-0.5B-Instruct",
+  "HuggingFaceTB/SmolLM2-360M-Instruct"
+ ],
+ "mapperParams": 47734784,
+ "train": {
+  "out": "/root/m2b/run1",
+  "stage1_steps": 5000,
+  "stage2_steps": 6000,
+  "batch1": 16,
+  "batch2": 8,
+  "lr1": 0.0003,
+  "lr2": 2e-05,
+  "qa_share": 0.7,
+  "dim": 512,
+  "heads": 8,
+  "ffn": 2048,
+  "blocks": 8,
+  "max_tokens": 384,
+  "resume": null,
+  "seed": 0
+ },
+ "trainingChecks": [
+  {
+   "event": "stage1-eval",
+   "step": 1000,
+   "devF1": 0.2231,
+   "nmse": 0.1905
+  },
+  {
+   "event": "stage1-eval",
+   "step": 2000,
+   "devF1": 0.2946,
+   "nmse": 0.1678
+  },
+  {
+   "event": "stage1-eval",
+   "step": 3000,
+   "devF1": 0.3429,
+   "nmse": 0.1597
+  },
+  {
+   "event": "stage1-eval",
+   "step": 4000,
+   "devF1": 0.3449,
+   "nmse": 0.1559
+  },
+  {
+   "event": "stage1-eval",
+   "step": 5000,
+   "devF1": 0.3534,
+   "nmse": 0.155
+  },
+  {
+   "event": "stage2-eval",
+   "step": 0,
+   "devF1": 0.3219
+  },
+  {
+   "event": "stage2-eval",
+   "step": 500,
+   "devF1": 0.6142,
+   "nmse": 0.1959
+  },
+  {
+   "event": "stage2-eval",
+   "step": 1000,
+   "devF1": 0.6279,
+   "nmse": 0.2103
+  },
+  {
+   "event": "stage2-eval",
+   "step": 1500,
+   "devF1": 0.6697,
+   "nmse": 0.2209
+  },
+  {
+   "event": "stage2-eval",
+   "step": 2000,
+   "devF1": 0.6658,
+   "nmse": 0.2288
+  },
+  {
+   "event": "stage2-eval",
+   "step": 2500,
+   "devF1": 0.653,
+   "nmse": 0.2344
+  },
+  {
+   "event": "stage2-eval",
+   "step": 3000,
+   "devF1": 0.6468,
+   "nmse": 0.2403
+  },
+  {
+   "event": "stage2-eval",
+   "step": 3500,
+   "devF1": 0.7135,
+   "nmse": 0.2506
+  },
+  {
+   "event": "stage2-eval",
+   "step": 4000,
+   "devF1": 0.6624,
+   "nmse": 0.2519
+  },
+  {
+   "event": "stage2-eval",
+   "step": 4500,
+   "devF1": 0.6,
+   "nmse": 0.2563
+  },
+  {
+   "event": "stage2-eval",
+   "step": 5000,
+   "devF1": 0.6466,
+   "nmse": 0.2566
+  },
+  {
+   "event": "stage2-eval",
+   "step": 5500,
+   "devF1": 0.6811,
+   "nmse": 0.2617
+  },
+  {
+   "event": "stage2-eval",
+   "step": 6000,
+   "devF1": 0.716,
+   "nmse": 0.2629
+  }
+ ],
+ "eval": {
+  "items": 300,
+  "f1": {
+   "text": 0.4073,
+   "closed": 0.1047,
+   "swat": 0.7574,
+   "zeroed": 0.1564,
+   "t2t": 0.2932
+  },
+  "contains": {
+   "text": 0.5867,
+   "closed": 0.0433,
+   "swat": 0.7,
+   "zeroed": 0.0967,
+   "t2t": 0.34
+  },
+  "meanAnswerWords": {
+   "text": 9.3,
+   "closed": 5.4,
+   "swat": 2.7,
+   "zeroed": 2.7,
+   "t2t": 8.0
+  },
+  "swatRetention": 1.8595,
+  "swatLift": 2.1571,
+  "t2tRetention": 0.7198,
+  "t2tLift": 0.6228,
+  "swatMinusClosed95": [
+   0.6028,
+   0.6977
+  ],
+  "swatMinusZeroed95": [
+   0.5478,
+   0.6516
+  ],
+  "swatMinusText95": [
+   0.3018,
+   0.4002
+  ],
+  "meanMs": {
+   "align": 4.67,
+   "sender": 48.93,
+   "mapper": 53.73,
+   "swatTotal": 393.82,
+   "textTotal": 804.63
+  },
+  "gate": {
+   "retention": true,
+   "beatsClosed": true,
+   "beatsZeroed": true
+  },
+  "passed": true,
+  "checkpoint": "ebc8870f2922aaca"
+ }
+}
