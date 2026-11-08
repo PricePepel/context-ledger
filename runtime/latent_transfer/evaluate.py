@@ -10,6 +10,8 @@ Conditions (same receiver, same question text):
   zeroed  the mapper with the sender cache set to zero   (control: the mapper also sees the
           receiver's token embeddings, so this is what it can do without the sender)
   t2t     sender's summary of the passage, as text       (text-to-text baseline)
+  sender  the sender answers from the passage itself     (reference: is the transfer worth it
+          over just asking the sender?)
 
 Gate (docs/m2b-transfer.md): retention = F1(swat)/F1(text) >= 0.90, and swat beats both
 closed and zeroed with the bootstrap 95% interval of the difference above zero.
@@ -76,6 +78,9 @@ def run(pair, items, conditions, log_every=50):
             summary = pair.sender_generate(summary_prompt(row["context"]))
             record["summary"] = summary
             record["t2t"] = pair.answer_from_text(doc_text(summary), suffix)
+        if "sender" in conditions:
+            # Same prompt tokens and answer budget as the receiver's text condition.
+            record["sender"] = pair.sender_generate(document + suffix, max_new_tokens=24)
         for condition in conditions:
             record[f"{condition}F1"] = f1(record[condition], row["answers"])
             record[f"{condition}Contains"] = contains(record[condition], row["answers"])
@@ -104,6 +109,9 @@ def summarize(results, conditions):
     if "swat" in mean and "zeroed" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["zeroedF1"] for r in results])
         summary["swatMinusZeroed95"] = [round(low, 4), round(high, 4)]
+    if "swat" in mean and "sender" in mean:
+        low, high = bootstrap([r["swatF1"] for r in results], [r["senderF1"] for r in results])
+        summary["swatMinusSender95"] = [round(low, 4), round(high, 4)]
     if "swat" in mean and "text" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["textF1"] for r in results])
         summary["swatMinusText95"] = [round(low, 4), round(high, 4)]
