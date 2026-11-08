@@ -83,6 +83,22 @@ No training is needed: all agents are the same frozen model.
 - **Working memory equals the text cache.** With zero latent steps, passing agent A's KV cache to agent B gives exactly the logits of B reading A's prompt as text.
 - **Batching.** A batched latent run gives the same answers as running each question alone.
 
+## Live findings before measuring (Qwen2.5-3B, 6 GSM8K questions)
+
+1. **An open assistant turn broke the working memory.**
+   - Each agent's prompt ended in `<|im_start|>assistant\n`, and the next agent's prompt, system block included, followed straight after it.
+   - The accumulated memory read as a conversation in which the assistant answers with a system prompt. The solver copied that and wrote `<tool_call>system\nYou are Qwen…`: 0/6 correct, even with zero latent steps.
+   - Fix: each subagent's turn is closed with `<|im_end|>` after its latent steps, and only the first agent carries the system block. That gives 4/6 at m = 0.
+2. **The paper's alignment collapses on a tied-embedding model.**
+   - Qwen2.5-3B shares its input and output embedding matrix, so `W_a` is the identity: a latent step feeds back the last hidden state, rescaled.
+   - That vector has a high dot product with the next token's embedding but is not close to any embedding. Within a step or two the thoughts go off distribution.
+   - Decoded to nearest tokens, the planner's thoughts read "To tockeruser UserController thiết thiết…", then blank space. The team scores 0/6 at m = 10 and m = 40.
+3. **Soft thoughts stay in distribution.**
+   - Our deviation from the paper: each latent step feeds the probability-weighted mean of the top-16 token embeddings at temperature 1. This is in the spirit of training-free "soft thinking".
+   - The vector is a continuous mixture of real token embeddings, never a chosen token.
+   - Result: 6/6 at m = 40 (5/6 at m = 10 with top-8 at temperature 0.5). The planner's thoughts decode to a coherent plan: "To solve this problem, you can follow these steps: 1. **Calculate the total miles run by Amber and Micah:**…"
+   - `latent_mas` now uses soft thoughts. The paper's version stays measurable as `latent_aligned`, and random vectors as `latent_random`.
+
 ## Serving
 
 - **Runtime.** `POST /latent/team` with `{question, latentSteps?}` returns the solver's answer and a receipt.
