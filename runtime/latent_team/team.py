@@ -79,10 +79,13 @@ def align(hidden, w_a, target):
 
 class LatentTeam:
     def __init__(self, model_name="Qwen/Qwen2.5-3B-Instruct", device="cuda", dtype=torch.bfloat16, model=None,
-                 tokenizer=None):
+                 tokenizer=None, allow_non_chatml=False):
         self.model_name = model_name
         self.device = device
+        self.allow_non_chatml = allow_non_chatml
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
+        if not self.chatml() and not allow_non_chatml:
+            raise NotImplementedError(f"{model_name}: the latent team supports ChatML chat templates only (Qwen, SmolLM).")
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -115,7 +118,14 @@ class LatentTeam:
         return "<|im_start|>" in (getattr(self.tokenizer, "chat_template", None) or "")
 
     def turn(self, prompt):
-        """A later agent's turn: a user turn and an open assistant turn, without a system block."""
+        """A later agent's turn: a user turn and an open assistant turn, without a system block.
+
+        Only ChatML (Qwen, SmolLM) is supported. Other templates (Llama 3, Mistral) need
+        their own close token and system-block handling, or the memory reads as a system
+        prompt inside an assistant reply, the bug fixed in a8808ad.
+        """
+        if not self.chatml() and not self.allow_non_chatml:
+            raise NotImplementedError("The latent team supports ChatML chat templates only (Qwen, SmolLM).")
         if self.chatml():
             return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
         return self.tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False,
@@ -159,18 +169,23 @@ class LatentTeam:
                  distribution; it is still a continuous mixture, not a chosen token.
         random   the eval's control: noise at the mean input norm.
         """
-        if mode == "random":
-            noise = torch.randn_like(hidden.float())
-            return noise * (self.target / noise.norm(dim=-1, keepdim=True))
+        if mode not in self.MODES:
+            raise ValueError(f"Unknown thought mode: {mode}")
         if mode == "aligned":
             return align(hidden, self.w_a, self.target)
-        if mode != "soft":
-            raise ValueError(f"Unknown thought mode: {mode}")
         logits = self.model.get_output_embeddings()(hidden.to(self.model.dtype)).float()
         top = logits.topk(self.soft_top_k, dim=-1)
         weights = torch.softmax(top.values / self.soft_temperature, dim=-1)
         table = self.model.get_input_embeddings().weight
-        return (weights[..., None] * table[top.indices].float()).sum(-2)
+        soft = (weights[..., None] * table[top.indices].float()).sum(-2)
+        if mode == "soft":
+            return soft
+        # random: noise with each row's soft-thought norm, so the control differs from
+        # latent_mas in content only, not in magnitude.
+        noise = torch.randn_like(soft)
+        return noise * (soft.norm(dim=-1, keepdim=True) / noise.norm(dim=-1, keepdim=True))
+
+    MODES = ("soft", "aligned", "random")
 
     soft_top_k = 16
     soft_temperature = 1.0
@@ -230,6 +245,8 @@ class LatentTeam:
     @torch.no_grad()
     def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False):
         mode = "random" if random_thoughts else mode
+        if mode not in self.MODES:
+            raise ValueError(f"Unknown thought mode: {mode}")
         start = time.perf_counter()
         memory, mask = DynamicCache(), None
         for index, role in enumerate(ROLES):

@@ -42,7 +42,8 @@ def tiny_team(tied=True):
                          num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=4096,
                          tie_word_embeddings=tied)
     model = Qwen2ForCausalLM(config).eval()
-    return LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=CharTokenizer())
+    return LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=CharTokenizer(),
+                      allow_non_chatml=True)
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for M2c")
@@ -123,6 +124,21 @@ class WorkingMemoryTest(unittest.TestCase):
         self.assertTrue(bool((vector.abs().max(dim=-1).values <= table.abs().max() + 1e-6).all()))
         with self.assertRaises(ValueError):
             team.thought(hidden, "nonsense")
+
+    def test_random_thoughts_match_the_soft_norm_and_bad_modes_fail_early(self):
+        team = tiny_team()
+        hidden = torch.randn(4, 32)
+        soft, random = team.thought(hidden, "soft"), team.thought(hidden, "random")
+        torch.testing.assert_close(random.norm(dim=-1), soft.norm(dim=-1))
+        self.assertLess(float(torch.nn.functional.cosine_similarity(random, soft, dim=-1).abs().mean()), 0.9)
+        with self.assertRaises(ValueError):
+            team.latent_mas(["q"], steps=0, mode="nonsense")
+
+    def test_non_chatml_models_are_refused_unless_opted_in(self):
+        from latent_team.team import LatentTeam
+        model = tiny_team().model
+        with self.assertRaises(NotImplementedError):
+            LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=CharTokenizer())
 
     def test_chatml_turns_close_and_skip_the_system_block(self):
         team = tiny_team()
