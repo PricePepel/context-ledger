@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { basename, dirname, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { graphContext } from './context.mjs';
+import { InputError } from './errors.mjs';
+import { canonicalPacket, validateGraph } from './graph.mjs';
+import { mountRooms } from './rooms.mjs';
+
+export { InputError };
 
 const summaryColumns = 'id, provider, source, title, message_count AS messageCount';
 const codexContextKinds = new Set([
@@ -11,7 +17,6 @@ const codexContextKinds = new Set([
   'skills.selected_skill_instructions',
 ]);
 
-export class InputError extends Error {}
 
 export function isProvider(value) {
   return value === 'claude' || value === 'codex';
@@ -23,7 +28,7 @@ function isCodexContext(text, kind) {
 
   // Older rollouts omit per-block metadata, so check complete reserved envelopes.
   const value = text.trim();
-  return /^<environment_context>[\s\S]*<\/environment_context>$/u.test(value)
+  return /^<(environment_context|user_instructions|turn_aborted)>[\s\S]*<\/\1>$/u.test(value)
     || /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>$/u.test(value);
 }
 
@@ -86,7 +91,18 @@ function sourceName(source) {
 
 function titleFor(messages) {
   const first = messages.find(message => message.role === 'user') ?? messages[0];
-  return first.text.trim().replace(/\s+/gu, ' ').slice(0, 120);
+  // Cut by code point so a title never ends in half of a surrogate pair.
+  return Array.from(first.text.trim().replace(/\s+/gu, ' ')).slice(0, 120).join('');
+}
+
+function serializeGraphPacket(packet) {
+  // JSON object key order is insignificant. Array order remains part of the packet.
+  return JSON.stringify(packet, (_key, value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
+    }
+    return value;
+  });
 }
 
 export function openStore(path) {
@@ -94,6 +110,7 @@ export function openStore(path) {
   const database = new DatabaseSync(path);
   database.exec(`
     PRAGMA busy_timeout = 5000;
+    PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL CHECK (provider IN ('claude', 'codex')),
@@ -102,6 +119,11 @@ export function openStore(path) {
       message_count INTEGER NOT NULL,
       messages TEXT NOT NULL,
       search_text TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS graphs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      payload TEXT NOT NULL
     ) STRICT;
   `);
 
@@ -112,6 +134,16 @@ export function openStore(path) {
   `);
   const getSummary = database.prepare(`SELECT ${summaryColumns} FROM sessions WHERE id = ?`);
   const getDetail = database.prepare(`SELECT ${summaryColumns}, messages FROM sessions WHERE id = ?`);
+  const insertGraph = database.prepare(`
+    INSERT INTO graphs (id, session_id, payload)
+    VALUES (?, ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `);
+  const getGraph = database.prepare('SELECT payload FROM graphs WHERE id = ?');
+  const readGraph = id => {
+    const row = getGraph.get(id);
+    if (row) return { id, ...JSON.parse(row.payload) };
+  };
 
   return {
     importTranscript(input) {
@@ -145,6 +177,42 @@ export function openStore(path) {
     get(id) {
       const row = getDetail.get(id);
       if (row) return { ...row, messages: JSON.parse(row.messages) };
+    },
+
+    publishGraph(packet) {
+      const sessionId = packet?.sessionId;
+      if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
+        throw new InputError('Graph requires a valid transcript session ID.');
+      }
+      const session = getDetail.get(sessionId);
+      if (!session) throw new InputError('Graph transcript session not found.');
+
+      const sourceLines = JSON.parse(session.messages).map(message => message.line);
+      const options = { lookupGraph: id => readGraph(id) };
+      validateGraph(packet, sourceLines, options);
+      // Derive from the canonical form so derived ID lists follow its order.
+      const ordered = canonicalPacket(packet);
+      const derived = validateGraph(ordered, sourceLines, options);
+      const canonical = serializeGraphPacket(ordered);
+      const id = createHash('sha256').update(canonical).digest('hex');
+      const payload = { packet: JSON.parse(canonical), ...derived };
+      insertGraph.run(id, sessionId, JSON.stringify(payload));
+      return { id, ...JSON.parse(getGraph.get(id).payload) };
+    },
+
+    getGraph: readGraph,
+
+    ...mountRooms(database, readGraph),
+
+    close() {
+      database.close();
+    },
+
+    getGraphContext(id) {
+      const graph = readGraph(id);
+      if (!graph) return;
+      const row = getDetail.get(graph.packet.sessionId);
+      return graphContext(graph, { ...row, messages: JSON.parse(row.messages) }, { lookupGraph: readGraph });
     },
   };
 }

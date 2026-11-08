@@ -4,3 +4,8 @@ playwright-report/
 test-results/
 .env*
 *.sqlite*
+.claude/worktrees/
+__pycache__/
+*.pyc
+__pycache__/
+*.pt

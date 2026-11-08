@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "about": "Synthetic codebase Q&A for the M2a gate. Each answer must contain every required group (any one alternative per group, case-insensitive) and cite at least one acceptable span.",
+  "paths": ["src/config.js", "src/session.js", "src/orders.js", "src/payments.js", "src/notify.js"],
+  "questions": [
+    {
+      "id": "session-lifetime",
+      "question": "How long does a new session last, and how does a refresh change its expiry?",
+      "required": [["1800", "30 minutes", "thirty minutes"], ["900", "15 minutes", "fifteen minutes"]],
+      "evidence": [{ "path": "src/config.js", "lines": [8, 11] }, { "path": "src/session.js", "lines": [10, 20] }]
+    },
+    {
+      "id": "session-cap",
+      "question": "Is there a maximum total session length no matter how often it is refreshed?",
+      "required": [["7200", "2 hours", "two hours", "120 minutes"]],
+      "evidence": [{ "path": "src/config.js", "lines": [12, 12] }, { "path": "src/session.js", "lines": [19, 20] }]
+    },
+    {
+      "id": "charge-retries",
+      "question": "How many times is a failed charge retried, and what is the backoff between attempts?",
+      "required": [["3", "three"], ["250"], ["exponential", "doubl", "500", "2 **", "2^"]],
+      "evidence": [{ "path": "src/payments.js", "lines": [11, 22] }, { "path": "src/config.js", "lines": [21, 22] }]
+    },
+    {
+      "id": "cancel-states",
+      "question": "In which order status can an order be cancelled?",
+      "required": [["pending"]],
+      "evidence": [{ "path": "src/orders.js", "lines": [8, 9] }, { "path": "src/orders.js", "lines": [37, 39] }]
+    },
+    {
+      "id": "tax-rate",
+      "question": "What tax rate is applied to an order total?",
+      "required": [["0.2", "20%", "20 percent", "twenty percent"]],
+      "evidence": [{ "path": "src/config.js", "lines": [18, 18] }, { "path": "src/orders.js", "lines": [18, 18] }]
+    },
+    {
+      "id": "refund-window",
+      "question": "How long after payment can a refund still be issued?",
+      "required": [["14", "fourteen"]],
+      "evidence": [{ "path": "src/config.js", "lines": [25, 25] }, { "path": "src/payments.js", "lines": [30, 30] }]
+    },
+    {
+      "id": "sms-rule",
+      "question": "When does a customer get an SMS about their order?",
+      "required": [["shipped", "ships"], ["verified"]],
+      "evidence": [{ "path": "src/notify.js", "lines": [9, 15] }]
+    },
+    {
+      "id": "cart-limit",
+      "question": "What is the largest cart that can be priced?",
+      "required": [["40", "forty"]],
+      "evidence": [{ "path": "src/config.js", "lines": [15, 15] }, { "path": "src/orders.js", "lines": [16, 16] }]
+    }
+  ]
+}

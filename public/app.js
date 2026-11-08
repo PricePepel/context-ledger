@@ -161,3 +161,156 @@ searchForm.addEventListener('submit', (event) => {
 });
 filterAgent.addEventListener('change', search);
 void search();
+
+const roomForm = document.querySelector('#room-form');
+const roomGraphA = document.querySelector('#room-graph-a');
+const roomGraphB = document.querySelector('#room-graph-b');
+const roomStatus = document.querySelector('#room-status');
+const roomView = document.querySelector('#room-view');
+const roomParties = document.querySelector('#room-parties');
+const roomProposals = document.querySelector('#room-proposals');
+const roomAgreed = document.querySelector('#room-agreed');
+const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
+let currentRoomId;
+let deciding = false;
+
+// Labels come from the other party's agent. Each sits in its own <bdi> so bidi text
+// cannot reorder the words around it, and never as markup.
+function labelElement(text) {
+  const label = textElement('bdi', text, 'node-label');
+  label.dir = 'auto';
+  return label;
+}
+
+function proposalSentence(proposal, tag = 'p') {
+  const sentence = document.createElement(tag);
+  sentence.className = 'proposal-text';
+  const side = endpoint => [`${endpoint.party} · ${endpoint.kind} “`, labelElement(endpoint.label), '”'];
+  sentence.append(...side(proposal.from), ` ${linkVerbs[proposal.type]} `, ...side(proposal.to));
+  return sentence;
+}
+
+function partyColumn(party) {
+  const column = document.createElement('section');
+  column.className = 'party';
+  column.setAttribute('aria-label', `Party ${party.party}`);
+  column.append(textElement('h3', party.party), textElement('p', `Graph ${party.graphId.slice(0, 12)}…`, 'result-meta'));
+  const list = document.createElement('ul');
+  list.className = 'party-nodes';
+  renderRows(list, party.nodes, node => {
+    const item = document.createElement('li');
+    const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    item.append(textElement('span', detail, 'node-kind'), labelElement(node.label));
+    return item;
+  });
+  column.append(list);
+  return column;
+}
+
+function proposalRow(proposal, parties) {
+  const item = document.createElement('li');
+  item.dataset.proposal = proposal.id;
+  item.dataset.state = proposal.state;
+  item.append(proposalSentence(proposal), textElement('p', `State: ${proposal.state}`, 'proposal-state'));
+  const actions = document.createElement('div');
+  actions.className = 'proposal-actions';
+  for (const party of parties) {
+    const group = document.createElement('div');
+    group.className = 'choice-group';
+    const made = proposal.choices[party];
+    group.append(textElement('span', `${party}: ${made ?? 'undecided'}`, 'choice-made'));
+    for (const choice of ['confirm', 'reject']) {
+      const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(made === choice));
+      button.dataset.party = party;
+      button.dataset.choice = choice;
+      button.disabled = deciding;
+      button.addEventListener('click', () => decide(proposal.id, party, choice));
+      group.append(button);
+    }
+    actions.append(group);
+  }
+  item.append(actions);
+  return item;
+}
+
+function renderRoom(room) {
+  currentRoomId = room.id;
+  const parties = room.parties.map(party => party.party);
+  renderRows(roomParties, room.parties, partyColumn);
+  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
+  const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
+  renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));
+  if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));
+  if (!room.proposals.length) roomProposals.append(textElement('li', 'These graphs have no links to each other yet.', 'room-note'));
+  roomView.hidden = false;
+  roomStatus.textContent = `Room ${room.id.slice(0, 12)}… · ${room.proposals.length} ${room.proposals.length === 1 ? 'proposal' : 'proposals'}`;
+}
+
+function closeRoom(message) {
+  currentRoomId = undefined;
+  roomView.hidden = true;
+  if (location.hash.startsWith('#room=')) history.replaceState(null, '', location.pathname + location.search);
+  roomStatus.textContent = message;
+}
+
+async function loadRoom(id) {
+  roomStatus.textContent = 'Opening room…';
+  try {
+    const { room } = await request(`/api/rooms/${encodeURIComponent(id)}`);
+    renderRoom(room);
+  } catch (error) {
+    closeRoom(`Unable to open room. ${error.message}`);
+  }
+}
+
+function setChoiceButtons(disabled) {
+  for (const button of roomProposals.querySelectorAll('.choice-button')) button.disabled = disabled;
+}
+
+// One decision at a time: the buttons stay disabled until the server answers, so the
+// last click a person makes is the one that is stored and shown.
+async function decide(proposalId, party, choice) {
+  if (deciding) return;
+  deciding = true;
+  setChoiceButtons(true);
+  let message;
+  try {
+    const { room } = await request(`/api/rooms/${currentRoomId}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposalId, party, choice }),
+    });
+    deciding = false;
+    renderRoom(room);
+    message = `Recorded ${party}: ${choice}.`;
+  } catch (error) {
+    message = `Decision failed. ${error.message}`;
+  } finally {
+    deciding = false;
+    setChoiceButtons(false);
+  }
+  roomStatus.textContent = message;
+  // Re-rendering replaced the clicked button; return keyboard focus to its successor.
+  roomProposals.querySelector(`li[data-proposal="${proposalId}"] button[data-party="${party}"][data-choice="${choice}"]`)?.focus();
+}
+
+roomForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  roomStatus.textContent = 'Opening room…';
+  try {
+    const { room } = await request('/api/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graphIds: [roomGraphA.value.trim(), roomGraphB.value.trim()] }),
+    });
+    history.replaceState(null, '', `#room=${room.id}`);
+    renderRoom(room);
+  } catch (error) {
+    closeRoom(`Unable to open room. ${error.message}`);
+  }
+});
+
+const hashRoom = location.hash.match(/^#room=([a-f0-9]{64})$/u)?.[1];
+if (hashRoom) void loadRoom(hashRoom);
