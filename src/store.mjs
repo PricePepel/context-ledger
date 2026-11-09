@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
 import { InputError } from './errors.mjs';
 import { canonicalPacket, validateGraph } from './graph.mjs';
+import { mountQuotaStore } from './quota.mjs';
 import { mountRooms } from './rooms.mjs';
 
 export { InputError };
@@ -203,6 +204,9 @@ export function openStore(path) {
     getGraph: readGraph,
 
     ...mountRooms(database, readGraph),
+
+    // Persistence for the handoff limit (src/quota.mjs); unused unless a usage service is set.
+    quota: mountQuotaStore(database),
 
     close() {
       database.close();

@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import packageJson from '../package.json' with { type: 'json' };
 import { GraphInputError } from './graph.mjs';
 import { LatentError, latentRead, latentTeam, latentTransfer } from './latent.mjs';
+import { createQuotaClient } from './quota.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -51,6 +52,9 @@ async function readJson(request, origin, operation) {
 
 const port = Number(process.env.PORT ?? 4317);
 const store = openStore(process.env.CONTEXT_LEDGER_DB ?? '.context-ledger/ledger.sqlite');
+// Count graph handoffs against a usage service only when one is configured.
+const quotaUrl = process.env.CONTEXT_LEDGER_QUOTA_URL;
+const quota = quotaUrl ? createQuotaClient({ serviceUrl: quotaUrl, persist: store.quota }) : undefined;
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
@@ -115,7 +119,17 @@ const server = createServer(async (request, response) => {
     const contextId = url.pathname.match(/^\/api\/graphs\/([a-f0-9]{64})\/context$/u)?.[1];
     if (method === 'GET' && contextId) {
       const context = store.getGraphContext(contextId);
-      if (context) return json(response, 200, { context });
+      if (context && !quota) return json(response, 200, { context });
+      if (context) {
+        // Every briefing an agent reads is one handoff.
+        const outcome = await quota.consume();
+        if (outcome.ok) return json(response, 200, { context, quota: { ...outcome.usage, offline: outcome.offline === true } });
+        const limit = outcome.reason === 'limit';
+        return json(response, limit ? 402 : 503, {
+          error: limit ? 'The handoff limit for this month is used up.' : 'The usage service is unreachable.',
+          quota: { reason: outcome.reason, ...outcome.usage },
+        });
+      }
     }
 
     if (method === 'POST' && url.pathname === '/api/latent/read') {

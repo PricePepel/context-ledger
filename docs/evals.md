@@ -358,6 +358,7 @@ Card S1 on the delivery board. Goal: a user connects Context Ledger to Claude Co
 | S1b Health | `GET /api/health` returns the app name and version and nothing else. The Host check still applies. |
 | S2 Current session | A Claude Code hook that the user installs imports the current session's transcript from `~/.claude/projects` only. Files above the 8 MiB HTTP limit still import. A `current_session` MCP tool returns the newest session the hook imported. |
 | S3 Quote evidence | A graph node may cite a verbatim quote instead of a line number. The ledger resolves it to the stored turn that contains it, or rejects the packet with an error that names the node by position. |
+| S5 Handoff limit (local stand-in) | With `CONTEXT_LEDGER_QUOTA_URL` set, every `context_for` read is one handoff counted against a monthly free limit kept by a separate usage service (`src/quota-server.mjs`, run locally as a stand-in for the hosted one). The ledger takes signed leases of a few handoffs, spends them without a round trip and reports spent handoffs; a lease with a bad signature is not used. When the month's limit is spent, `context_for` fails with a message that states the limit and the reset date and tells the agent to ask the user to choose between stopping the agents and continuing without Context Ledger. Below 20% left, a successful read says how many remain. If the service is unreachable, up to 5 handoffs go through and are reported later. Without `CONTEXT_LEDGER_QUOTA_URL` nothing is counted. The service receives a device ID, event IDs and times, never graph IDs or content. |
 | S4 Live subagent handoff | `node evals/subagent/run.mjs` with Claude Sonnet: the subagent reading the graph scores at least as well as the subagent given a retold summary, with fewer input tokens and no more time, on `--chatter 150` and `--chatter 1000`, two runs each. |
 
 ### Exploratory baseline (2026-11-09, before any S1 code)
@@ -378,3 +379,11 @@ Card S1 on the delivery board. Goal: a user connects Context Ledger to Claude Co
 - The fixture is easy, so accuracy does not separate the arms. The graph is hand-written, so this measures the handoff, not graph building.
 - A `claude -p` child of the Claude desktop app inherits the app's `ANTHROPIC_*` and `CLAUDE_CODE_*` variables and fails with 401. The script runs it with a clean environment.
 - Total cost of the 12 runs and one smoke run: about $0.81.
+
+### Results — S1a, S1b and S5 (2026-11-09)
+
+- S1a and S1b pass: `tests/launcher.test.mjs` (7 tests) covers on-demand start, reuse, a simultaneous start by two clients, a foreign service on the port, the health response and Host check, and auto-start on and off through MCP.
+- S5 passes: `tests/quota.test.mjs` (7 tests) covers the month boundary, spending leases up to the limit and the refusal with the reset date, the fields that leave the machine, a forged lease, a wrong key, another device and an expired lease, offline handoffs reported once the service is back, and the warning and stop-or-continue message through MCP.
+- Found while testing: one test cleanup ran after its temporary folder was removed and left a ledger running. The test now reads the pid right after start. A run of the full suite leaves no `src/server.mjs` process behind.
+- Suites: node 111/111, `test:graph` 9/9, the Playwright API test passes. The browser tests were not run on this machine (no Chromium).
+- Not yet reviewed independently.

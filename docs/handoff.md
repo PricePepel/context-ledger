@@ -86,6 +86,11 @@ Done in stage 1:
 - `src/launcher.mjs` and `GET /api/health`: the MCP adapter starts a ledger on demand, detached, with data in `~/.context-ledger/`, a log and a pid file. `CONTEXT_LEDGER_AUTOSTART=0` turns it off. Test clients default to off.
 - `evals/subagent/run.mjs`: the parent-to-subagent handoff eval, with an exploratory baseline recorded before any S1 code.
 
+Also done (S5, the handoff limit against a local stand-in service):
+
+- `src/quota-server.mjs` (`npm run quota`): monthly free limit per device, signed Ed25519 leases, usage reports. `src/quota.mjs`: the ledger's lease client, used only when `CONTEXT_LEDGER_QUOTA_URL` is set. `context_for` warns below 20% left and, when the limit is spent, asks the agent to let the user choose between stopping and continuing without the ledger.
+- Known limits: the stand-in trusts the service's public key on first use (a shipped client would carry it); a discarded lease stays reserved until it expires; there are no accounts yet, a device is the unit.
+
 Next:
 
 1. Stage 2: import the current Claude Code session through a user-installed hook (`~/.claude/projects` only, above the 8 MiB HTTP limit) and a `current_session` tool.

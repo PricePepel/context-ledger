@@ -47,6 +47,38 @@ function validLedgerMessage(message) {
   return typeof message === 'string' && message.length > 0 && message.length <= 200 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(message);
 }
 
+// The handoff limit. These texts are Context Ledger's own, built here from numbers,
+// never from transcript data, so the agent can relay them to the user as they are.
+const resetDate = value => {
+  const time = Date.parse(value);
+  return Number.isFinite(time)
+    ? new Date(time).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' })
+    : 'the start of next month';
+};
+const choiceText = 'Tell the user this and ask them to choose: (1) stop the agents for now, or ' +
+  '(2) continue without Context Ledger, passing context to subagents as plain text. Follow their choice, and do not ' +
+  'call context_for again in this session unless they ask. A subagent should stop and report this message to its parent agent.';
+
+function quotaStopMessage(quota) {
+  if (quota.reason === 'limit') {
+    const limit = Number.isInteger(quota.limit) ? `${quota.limit} ` : '';
+    return `Context Ledger: the free plan's ${limit}graph handoffs for this month are used up. ` +
+      `The limit resets on ${resetDate(quota.resetsAt)}. ${choiceText}`;
+  }
+  return 'Context Ledger cannot reach its usage service, so this briefing is not available right now. ' + choiceText;
+}
+
+function quotaNote(quota) {
+  if (!isObject(quota)) return;
+  if (quota.offline === true) return 'Context Ledger could not reach its usage service; this handoff will be counted later.';
+  const { used, limit } = quota;
+  if (!Number.isInteger(used) || !Number.isInteger(limit) || limit < 1) return;
+  const left = Math.max(0, limit - used);
+  if (left / limit >= 0.2) return;
+  return `Context Ledger: ${left} of ${limit} free graph handoffs left this month; the limit resets on ${resetDate(quota.resetsAt)}. ` +
+    'Mention this to the user once.';
+}
+
 // Parallel tool calls share one start attempt; a failed attempt can be retried later.
 let starting;
 async function startLedger() {
@@ -90,6 +122,11 @@ async function ledger(path, { body, notFound, timeoutMs = 5000 } = {}) {
   if (response.status === 404 && notFound) {
     await response.body?.cancel().catch(() => {});
     throw new ToolError(notFound);
+  }
+  if (response.status === 402 || response.status === 503) {
+    const problem = await response.json().catch(() => null);
+    if (isObject(problem?.quota)) throw new ToolError(quotaStopMessage(problem.quota));
+    throw new ToolError(`Context Ledger returned HTTP ${response.status}.`);
   }
   if (!response.ok) {
     if (response.status >= 400 && response.status < 500) {
@@ -268,7 +305,10 @@ const tools = new Map([
       if (!isObject(context) || typeof context.text !== 'string') {
         throw new ToolError('Context Ledger returned an unexpected context response.');
       }
-      return { content: [text(briefingText(context.text)), text(terminalJson(context.meter ?? null))] };
+      const note = quotaNote(data.quota);
+      return {
+        content: [text(briefingText(context.text)), text(terminalJson(context.meter ?? null)), ...(note ? [text(note)] : [])],
+      };
     },
   }],
   ['room_open', {

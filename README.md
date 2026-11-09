@@ -128,6 +128,24 @@ env = { PORT = "4317" }
 
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
 
+## Handoff limit (local stand-in for the hosted service)
+
+Each graph briefing an agent reads through `context_for` is one handoff. When `CONTEXT_LEDGER_QUOTA_URL` points at a usage service, the ledger counts handoffs against that service's monthly free limit. Without it, nothing is counted.
+
+`src/quota-server.mjs` is a local stand-in for the hosted service:
+
+```sh
+QUOTA_FREE_LIMIT=50 npm run quota   # http://127.0.0.1:4390, data in ~/.context-ledger/quota-service
+```
+
+The ledger takes signed leases of up to `QUOTA_LEASE_SIZE` (default 10) handoffs, spends them without a round trip and reports what it spent. A lease with a bad signature is never used. The service receives a random device ID, event IDs, lease IDs and times, never graph IDs or content. When fewer than 20% of the month's handoffs are left, `context_for` adds a note. When none are left, it fails with the reset date and tells the agent to ask the user whether to stop the agents or continue without Context Ledger. If the service cannot be reached, up to 5 handoffs go through and are reported later. A lease the ledger discards stays reserved on the service until it expires (at most 7 days, never past the month).
+
+Connect Claude Code with the limit on (restart a ledger that is already running, so it picks up the variable):
+
+```sh
+claude mcp add --scope user -e CONTEXT_LEDGER_QUOTA_URL=http://127.0.0.1:4390 context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs
+```
+
 ## Two-agent demo
 
 [docs/demo.md](docs/demo.md) is the run sheet for the stage demo: Claude Code and Codex on one laptop share context through one ledger, using the synthetic transcripts in `demo/`. `node demo/rehearse.mjs` runs the whole flow with both CLIs and times the handoff. `node demo/publish-reference.mjs` is the fallback when an agent stalls.

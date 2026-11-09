@@ -10,7 +10,8 @@
     "start": "node src/server.mjs",
     "test": "playwright test",
     "test:graph": "node --test tests/graph.test.mjs",
-    "ledger": "node src/cli.mjs"
+    "ledger": "node src/cli.mjs",
+    "quota": "node src/quota-server.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.0"
