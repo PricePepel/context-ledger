@@ -91,7 +91,15 @@ Also done (S5, the handoff limit against a local stand-in service):
 - `src/quota-server.mjs` (`npm run quota`): monthly free limit per device, signed Ed25519 leases, usage reports. `src/quota.mjs`: the ledger's lease client, used only when `CONTEXT_LEDGER_QUOTA_URL` is set. `context_for` warns below 20% left and, when the limit is spent, asks the agent to let the user choose between stopping and continuing without the ledger.
 - Known limits: the stand-in trusts the service's public key on first use (a shipped client would carry it); a discarded lease stays reserved until it expires; there are no accounts yet, a device is the unit.
 
-Next:
+Also done (S2, S3, S6: every delegation through a graph):
+
+- `src/importer.mjs` and `POST /api/import-file`: import a Claude Code transcript by path, only under `~/.claude/projects` (or `CONTEXT_LEDGER_TRANSCRIPT_ROOT`), up to 64 MiB. Claude Code notices such as `<task-notification>` are no longer imported as user turns.
+- `evidenceQuotes` in version 2 nodes, resolved to the latest matching turn before validation (`resolveEvidenceQuotes` in `src/graph.mjs`).
+- The `handoff_publish` MCP tool, which finds the session from `CLAUDE_CODE_SESSION_ID`, and server instructions that make graph handoffs the default with a `[no-ledger]` opt-out.
+- `claude/hooks/require-ledger-handoff.mjs` and `claude/install.mjs`: the optional enforcing hook.
+- Known limits: every `handoff_publish` stores a full new copy of the growing session; results that subagents return to the parent do not go through a graph; a session started before `claude mcp add` does not see the tools.
+
+Next (old plan below, stages 2 and 3 now done):
 
 1. Stage 2: import the current Claude Code session through a user-installed hook (`~/.claude/projects` only, above the 8 MiB HTTP limit) and a `current_session` tool.
 2. Stage 3: quote evidence, then a handoff skill and a `ledger-reader` subagent for the parent agent.

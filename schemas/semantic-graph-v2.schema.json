@@ -41,7 +41,7 @@
     "node": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "label", "evidenceLines"],
+      "required": ["id", "kind", "label"],
       "properties": {
         "id": { "$ref": "#/$defs/nodeId" },
         "kind": { "enum": ["goal", "decision", "constraint", "offer", "action", "blocker", "question"] },
@@ -59,12 +59,26 @@
           "minItems": 1,
           "maxItems": 100,
           "uniqueItems": true,
-          "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+          "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "description": "Transcript line numbers of the stored turns this node comes from. Give evidenceLines, evidenceQuotes or both."
+        },
+        "evidenceQuotes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 8, "maxLength": 400 },
+          "description": "Verbatim text from the session that supports this node, 8 to 400 characters each. The ledger finds the latest stored turn that contains each quote (case, spacing and quote or dash style do not matter) and stores its line number instead."
         },
         "status": { "type": "string" },
         "to": { "$ref": "#/$defs/party" }
       },
       "allOf": [
+        {
+          "anyOf": [
+            { "required": ["evidenceLines"], "properties": { "evidenceLines": {} } },
+            { "required": ["evidenceQuotes"], "properties": { "evidenceQuotes": {} } }
+          ]
+        },
         {
           "if": { "properties": { "kind": { "const": "action" } } },
           "then": { "required": ["status"], "properties": { "status": { "enum": ["pending", "completed"] } } }

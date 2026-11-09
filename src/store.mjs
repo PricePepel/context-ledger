@@ -4,7 +4,7 @@ import { basename, dirname, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
 import { InputError } from './errors.mjs';
-import { canonicalPacket, validateGraph } from './graph.mjs';
+import { canonicalPacket, resolveEvidenceQuotes, validateGraph } from './graph.mjs';
 import { mountQuotaStore } from './quota.mjs';
 import { mountRooms } from './rooms.mjs';
 
@@ -33,12 +33,17 @@ function isCodexContext(text, kind) {
     || /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>$/u.test(value);
 }
 
+const claudeNotice = /^<(task-notification|local-command-caveat|local-command-stdout|local-command-stderr|system-reminder)>[\s\S]*<\/\1>$/u;
+const isClaudeNotice = text => claudeNotice.test(text.trim());
+
 function messageAt(record, provider, line) {
   const message = provider === 'claude' ? record?.message : record?.payload;
   const role = message?.role;
   if (role !== 'user' && role !== 'assistant') return;
 
   if (provider === 'claude' && (record.type !== role || record.isMeta === true)) return;
+  // Claude Code writes some notices into the conversation as user text; they are not the user's words.
+  if (provider === 'claude' && role === 'user' && typeof message.content === 'string' && isClaudeNotice(message.content)) return;
   if (provider === 'codex' && (record.type !== 'response_item' || message.type !== 'message')) return;
 
   const content = message.content;
@@ -180,15 +185,17 @@ export function openStore(path) {
       if (row) return { ...row, messages: JSON.parse(row.messages) };
     },
 
-    publishGraph(packet) {
-      const sessionId = packet?.sessionId;
+    publishGraph(input) {
+      const sessionId = input?.sessionId;
       if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
         throw new InputError('Graph requires a valid transcript session ID.');
       }
       const session = getDetail.get(sessionId);
       if (!session) throw new InputError('Graph transcript session not found.');
 
-      const sourceLines = JSON.parse(session.messages).map(message => message.line);
+      const messages = JSON.parse(session.messages);
+      const sourceLines = messages.map(message => message.line);
+      const packet = resolveEvidenceQuotes(input, messages);
       const options = { lookupGraph: id => readGraph(id) };
       validateGraph(packet, sourceLines, options);
       // Derive from the canonical form so derived ID lists follow its order.

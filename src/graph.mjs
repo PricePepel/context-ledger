@@ -66,6 +66,51 @@ export function canonicalPacket(packet) {
   return canonical;
 }
 
+const isPlainObject = value => typeof value === 'object' && value !== null && !Array.isArray(value);
+// Case, spacing and typographic quote or dash variants must not decide whether a quote matches.
+const normalizeQuote = text => text.normalize('NFKC').toLowerCase()
+  .replace(/[\u2018\u2019\u201A\u201B\u2032\u00B4`]/gu, "'")
+  .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/gu, '"')
+  .replace(/[\u2010-\u2015\u2212]/gu, '-')
+  .replace(/\s+/gu, ' ')
+  .trim();
+
+/**
+ * Turn the evidenceQuotes of a version 2 packet into evidenceLines: each quote cites the
+ * latest stored turn that contains it. The result carries line numbers only, so graph
+ * identity and briefings do not depend on how a node was cited. Errors name the node and
+ * quote by position and never echo the quote.
+ */
+export function resolveEvidenceQuotes(packet, messages) {
+  if (packet?.version !== 2 || !Array.isArray(packet.nodes)) return packet;
+  if (!packet.nodes.some(node => isPlainObject(node) && Object.hasOwn(node, 'evidenceQuotes'))) return packet;
+  const turns = messages.map(message => ({ line: message.line, text: normalizeQuote(message.text) }));
+  const nodes = packet.nodes.map((node, index) => {
+    if (!isPlainObject(node) || !Object.hasOwn(node, 'evidenceQuotes')) return node;
+    const where = `Node ${index + 1}`;
+    const quotes = node.evidenceQuotes;
+    if (!Array.isArray(quotes) || quotes.length < 1 || quotes.length > 8) {
+      throw new GraphInputError(`${where}: evidenceQuotes must list 1 to 8 quotes.`);
+    }
+    const lines = new Set(Array.isArray(node.evidenceLines) ? node.evidenceLines : []);
+    quotes.forEach((quote, quoteIndex) => {
+      if (typeof quote !== 'string' || quote.length < 8 || quote.length > 400) {
+        throw new GraphInputError(`${where}, quote ${quoteIndex + 1}: a quote is 8 to 400 characters.`);
+      }
+      const needle = normalizeQuote(quote);
+      const match = needle && turns.findLast(turn => turn.text.includes(needle));
+      if (!match) {
+        throw new GraphInputError(`${where}, quote ${quoteIndex + 1}: not found in the session's stored turns. ` +
+          'Quote the words exactly as they appear, or cite evidenceLines.');
+      }
+      lines.add(match.line);
+    });
+    const { evidenceQuotes: _quotes, ...rest } = node;
+    return { ...rest, evidenceLines: [...lines].sort((a, b) => a - b) };
+  });
+  return { ...packet, nodes };
+}
+
 function indexNodes(nodes, sourceLines) {
   const evidence = new Set(sourceLines);
   const byId = new Map();

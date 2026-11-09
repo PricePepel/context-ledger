@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import packageJson from '../package.json' with { type: 'json' };
 import { GraphInputError } from './graph.mjs';
+import { readTranscriptFile } from './importer.mjs';
 import { LatentError, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { createQuotaClient } from './quota.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
@@ -89,6 +90,14 @@ const server = createServer(async (request, response) => {
     if (method === 'POST' && url.pathname === '/api/import') {
       const input = await readJson(request, origin, 'Import');
       return json(response, 200, { session: store.importTranscript(input) });
+    }
+
+    if (method === 'POST' && url.pathname === '/api/import-file') {
+      // An agent imports its own Claude Code session by path; only that folder is readable.
+      const input = await readJson(request, origin, 'Import');
+      if (input?.provider !== 'claude') throw new InputError('File import supports Claude Code transcripts.');
+      const { name, text } = await readTranscriptFile(input.path);
+      return json(response, 200, { session: store.importTranscript({ provider: 'claude', source: name, transcript: text }) });
     }
 
     if (method === 'POST' && url.pathname === '/api/graphs') {

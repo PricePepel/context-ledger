@@ -128,6 +128,19 @@ env = { PORT = "4317" }
 
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
 
+## Hand context to Claude Code subagents
+
+With the MCP server connected, a Claude Code parent agent hands context to its subagents through a graph by default. Before it delegates, it calls `handoff_publish` with nodes that cite short verbatim quotes from the session. The tool imports the current session (Claude Code tells MCP servers its `CLAUDE_CODE_SESSION_ID`; only transcripts under `~/.claude/projects` are read), resolves each quote to the latest turn that contains it, and publishes a version 2 graph for party `lead`. The parent puts the graph ID in each subagent prompt, and each subagent starts with `context_for`. If you tell the agent not to use Context Ledger, it writes `[no-ledger]` in the subagent prompt and passes context as usual.
+
+The server instructions ask for this; a hook enforces it. To install the hook, which refuses a subagent call whose prompt has neither a graph ID nor `[no-ledger]`:
+
+```sh
+node claude/install.mjs           # adds a PreToolUse hook on Agent|Task to ~/.claude/settings.json, with a backup
+node claude/install.mjs --remove  # removes it
+```
+
+New sessions pick up the hook and the MCP server; sessions that were open before do not. Subagents return their results to the parent as usual.
+
 ## Handoff limit (local stand-in for the hosted service)
 
 Each graph briefing an agent reads through `context_for` is one handoff. When `CONTEXT_LEDGER_QUOTA_URL` points at a usage service, the ledger counts handoffs against that service's monthly free limit. Without it, nothing is counted.
