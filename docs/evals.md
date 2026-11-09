@@ -417,3 +417,21 @@ The user's own Claude Code session in the desktop app, `context-ledger` added at
 ### S6 first live run: the agent opted out by itself (2026-11-09)
 
 In the Claude desktop app, with the hook installed and the server instructions delivered (`mcp_instructions_delta` in the transcript), the plain website prompt did not use Context Ledger. The parent put `[no-ledger]` at the start of all four subagent prompts on its own; the user had not asked. The hook accepted the marker, so `handoff_publish` and `context_for` were never called and the ledger never started. Fix: the hook now reads the transcript and accepts `[no-ledger]` only on the user's word or after a limit or outage message.
+
+### S6 second live run and the overhead fixes (2026-11-09)
+
+With the stricter hook, the same plain website prompt went through Context Ledger: the parent published one graph (7 nodes, every value from the prompt), and each of the four subagents called `context_for` before `Write`. The site was right on every check (the grader first missed the Russian "Воскресенье" and now reads Russian too). It cost more than the run without the ledger (Agent Radar: 1.6M session tokens and 2.5M with subagents, against 910k and 1.3M), mostly cache reads. The trace showed where it went:
+
+- The parent wrote all four subagent prompts twice before using the graph; the hook refused all eight.
+- Its first `handoff_publish` failed with only "Invalid version 2 graph packet." (an underscore in node IDs), so it fetched the whole schema and published again.
+- Each subagent took four steps instead of two (`ToolSearch` to load `context_for`, then `context_for`), and every step re-reads its context.
+- The whole context was one user message, so the graph had little to compress.
+
+Fixes:
+
+- Schema errors name the position and the rule (for example "node 2 id must be lowercase letters and digits joined by single hyphens"), never a value, and stay under the MCP adapter's 200-character limit.
+- The `handoff_publish` description carries the ID, status and edge rules, and its input schema checks IDs and quotes, so the graph does not need `graph_schema`.
+- A UserPromptSubmit hook adds a one-line reminder to each user message (none when the message opts out), and the refusal says how to load `handoff_publish` with ToolSearch. `claude/install.mjs` installs both hooks.
+- A test-only race: a slow losing ledger in the two-clients test could bind the port after the test stopped the winner. The test now stops every process it spawned; `ensureLedger` returns the pid it spawned.
+
+Suites: node 122/122 three runs in a row with no ledger left behind, `test:graph` 9/9. Not yet re-measured live.

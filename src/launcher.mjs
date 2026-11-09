@@ -30,7 +30,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Make sure a ledger answers on `port`, starting one if nothing listens there.
- * Resolves { started: false } when one was already running, or { started: true, database, log }.
+ * Resolves { started: false } when one was already running, or { started: true, database, log, pid }.
  */
 export async function ensureLedger({ port, database, env = process.env, startTimeoutMs = 10_000 } = {}) {
   const state = await probeLedger(port);
@@ -45,6 +45,7 @@ export async function ensureLedger({ port, database, env = process.env, startTim
   const log = join(dataDir, 'ledger.log');
   const logFd = openSync(log, 'a', 0o600);
   let exited = false;
+  let pid;
   try {
     const child = spawn(process.execPath, [serverPath], {
       cwd: appRoot,
@@ -52,6 +53,7 @@ export async function ensureLedger({ port, database, env = process.env, startTim
       stdio: ['ignore', logFd, logFd],
       env: { ...env, PORT: String(port), CONTEXT_LEDGER_DB: db, CONTEXT_LEDGER_PID_FILE: join(dataDir, 'ledger.pid') },
     });
+    pid = child.pid;
     child.on('exit', () => { exited = true; });
     child.on('error', () => { exited = true; });
     child.unref();
@@ -65,7 +67,8 @@ export async function ensureLedger({ port, database, env = process.env, startTim
   while (Date.now() < deadline) {
     await pause(100);
     const now = await probeLedger(port);
-    if (now === 'ledger') return { started: true, database: db, log };
+    // `pid` is the process this call spawned; when two clients race, it may be the one that lost.
+    if (now === 'ledger') return { started: true, database: db, log, pid };
     if (now === 'other') throw new Error(`Port ${port} is used by another service, not Context Ledger. Set PORT to a free port.`);
     if (exited) break;
   }

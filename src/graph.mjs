@@ -204,6 +204,38 @@ function assertLinks(packet, nodes, superseded, lookupGraph) {
   }
 }
 
+// Name where a packet breaks the schema, by position and rule only, so an agent can fix
+// it in one retry without reading the whole schema. Values from the packet are never
+// echoed, and the text stays short enough for the MCP adapter to pass on.
+const where = path => {
+  const [, collection, index, ...rest] = path.split('/');
+  const singular = { nodes: 'node', edges: 'edge', links: 'link' }[collection];
+  if (singular && /^\d+$/u.test(index)) return [`${singular} ${Number(index) + 1}`, ...rest].join(' ');
+  return path ? path.slice(1).replaceAll('/', ' ') : 'packet';
+};
+function schemaProblem(errors) {
+  const specific = (errors ?? []).filter(error => !['if', 'anyOf', 'allOf', 'oneOf'].includes(error.keyword));
+  const error = specific[0] ?? errors?.[0];
+  if (!error) return '';
+  const at = where(error.instancePath);
+  let rule = error.message ?? 'is invalid';
+  if (error.keyword === 'pattern' && /\/id$|\/(?:from|to)$/u.test(error.instancePath)) {
+    rule = 'must be lowercase letters and digits joined by single hyphens, like accent-colour';
+  } else if (error.keyword === 'pattern') {
+    rule = 'must be one line of visible text';
+  } else if (error.keyword === 'enum') {
+    rule = `must be one of ${error.params.allowedValues.join(', ')}`;
+  } else if (error.keyword === 'not') {
+    rule = 'has a field its kind does not take: status is only for action, blocker and question; to only for question';
+  } else if (error.keyword === 'additionalProperties' && /^[A-Za-z][\w-]{0,39}$/u.test(error.params.additionalProperty)) {
+    rule = `has an unknown field ${error.params.additionalProperty}`;
+  } else if (error.keyword === 'additionalProperties') {
+    rule = 'has an unknown field';
+  }
+  const text = `: ${at} ${rule}`;
+  return text.length <= 150 ? text : text.slice(0, 149) + '…';
+}
+
 /**
  * Validate a v1 or v2 packet against the original line numbers retained for its
  * source session and derive its actionable state in packet order. Version 2 links
@@ -213,7 +245,7 @@ export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
   const version = packet?.version;
   const validate = validateShape.get(version);
   if (!validate?.(packet)) {
-    throw new GraphInputError(validate ? `Invalid version ${version} graph packet.` : 'Unsupported graph packet version.');
+    throw new GraphInputError(validate ? `Invalid version ${version} graph packet${schemaProblem(validate.errors)}.` : 'Unsupported graph packet version.');
   }
 
   const nodes = indexNodes(packet.nodes, sourceLines);

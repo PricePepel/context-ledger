@@ -13,7 +13,7 @@ const maxInputBytes = 4 * 1024 * 1024;
 const maxTranscriptBytes = 64 * 1024 * 1024;
 
 // "без Context Ledger", "не используй леджер", "without the ledger", "don't use Context Ledger", "[no-ledger]".
-const optOut = new RegExp(
+export const optOut = new RegExp(
   '\\[no-ledger\\]|(?:без|не\\s+(?:используй|использовать|нужен|надо)|отключи|выключи|without|don\'?t\\s+use|do\\s+not\\s+use|stop\\s+using|skip)' +
   '\\s+(?:the\\s+)?(?:context[\\s-]?ledger|ledger|леджер[а-яё]*|контекст[\\s-]?леджер[а-яё]*)', 'iu');
 // Only Context Ledger writes these, when it cannot take a handoff.
@@ -47,9 +47,9 @@ export function sessionFacts(transcript) {
   return { userOptedOut, ledgerUnavailable };
 }
 
-const publishFirst = 'Call handoff_publish (context-ledger) with what the subagent needs, citing evidenceQuotes from this ' +
-  'session, then put the line it returns, with the graph ID, in the subagent prompt. Reuse one graph ID for all ' +
-  'subagents of the same task.';
+const publishFirst = 'Call handoff_publish (context-ledger) once with what the subagents need, citing evidenceQuotes ' +
+  'from this session; if it is not loaded, load it with ToolSearch query "select:mcp__context-ledger__handoff_publish". ' +
+  'Then start each subagent prompt with the line it returns, and send all subagents again with that graph ID.';
 
 /** `facts` is sessionFacts() of the transcript, or undefined when it could not be read. */
 export function verdict(input, facts) {

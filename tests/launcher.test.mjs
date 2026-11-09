@@ -60,6 +60,10 @@ test('two clients starting at once end with one ledger', async t => {
   const port = await freePort();
   const database = join(dir, 'ledger.sqlite');
   const results = await Promise.all([ensureLedger({ port, database }), ensureLedger({ port, database })]);
+  // A slow loser can bind the port after the winner stops, so stop every process this test spawned.
+  t.after(() => {
+    for (const { pid } of results) if (pid) try { process.kill(pid, 'SIGTERM'); } catch {}
+  });
   assert.equal(results.length, 2);
   assert.equal(await probeLedger(port), 'ledger');
 });

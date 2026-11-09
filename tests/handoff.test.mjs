@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
+import { reminder, reminderFor } from '../claude/hooks/ledger-reminder.mjs';
 import { sessionFacts, verdict } from '../claude/hooks/require-ledger-handoff.mjs';
 import { readTranscriptFile } from '../src/importer.mjs';
 import { ensureLedger } from '../src/launcher.mjs';
@@ -133,6 +134,41 @@ test('the user opts out in their own words, in Russian or English, never through
   assert.equal(facts(down).ledgerUnavailable, true);
 });
 
+test('each user message gets a one-line handoff reminder unless it opts out', async () => {
+  assert.equal(reminderFor({ prompt: 'Сделай сайт и раздели работу между субагентами.' }), reminder);
+  assert.match(reminder, /select:mcp__context-ledger__handoff_publish/);
+  assert.equal(reminderFor({ prompt: 'Сделай сайт. Не используй Context Ledger.' }), '');
+  assert.equal(reminderFor({}), '');
+  const out = await new Promise(resolve => {
+    const child = execFile(process.execPath, ['claude/hooks/ledger-reminder.mjs'], (error, stdout) => resolve({ code: error?.code ?? 0, stdout }));
+    child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'Build the site with subagents.' }));
+  });
+  assert.equal(out.code, 0);
+  assert.equal(out.stdout.trim(), reminder);
+});
+
+test('a broken packet names the node and the rule, never the value', () => {
+  const store = openStore(':memory:');
+  const { id } = store.importTranscript({ provider: 'claude', source: 's.jsonl', transcript });
+  const publish = node => {
+    try {
+      store.publishGraph({ version: 2, sessionId: id, party: 'lead', edges: [], nodes: [{ id: 'ok', kind: 'goal', label: 'Goal', evidenceLines: [2] }, node] });
+    } catch (error) {
+      return error.message;
+    }
+  };
+  assert.equal(publish({ id: 'accent_colour', kind: 'goal', label: 'x', evidenceLines: [2] }),
+    'Invalid version 2 graph packet: node 2 id must be lowercase letters and digits joined by single hyphens, like accent-colour.');
+  assert.match(publish({ id: 'a', kind: 'action', label: 'x', evidenceLines: [2] }), /node 2 must have required property 'status'/);
+  assert.match(publish({ id: 'a', kind: 'goal', label: 'x', status: 'open', evidenceLines: [2] }), /node 2 has a field its kind does not take/);
+  assert.match(publish({ id: 'a', kind: 'wish', label: 'x', evidenceLines: [2] }), /node 2 kind must be one of goal, decision/);
+  const secret = 'SECRET\u0007label';
+  const message = publish({ id: 'a', kind: 'goal', label: secret, evidenceLines: [2] });
+  assert.match(message, /node 2 label must be one line of visible text/);
+  assert.equal(message.includes('SECRET'), false);
+  assert.ok(message.length <= 200, 'short enough for the MCP adapter to pass on');
+});
+
 test('the hook script exits 2 with a reason only for a retold delegation, and 0 for unreadable input', async () => {
   const script = 'claude/hooks/require-ledger-handoff.mjs';
   const call = input => new Promise(resolve => {
@@ -162,9 +198,11 @@ test('the installer adds the hook once, keeps other settings and removes only it
   assert.equal(settings.hooks.PreToolUse.length, 2, 'installing twice adds one hook');
   assert.equal(settings.hooks.PreToolUse[1].matcher, 'Agent|Task');
   assert.match(settings.hooks.PreToolUse[1].hooks[0].command, /require-ledger-handoff\.mjs/);
+  assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+  assert.match(settings.hooks.UserPromptSubmit[0].hooks[0].command, /ledger-reminder\.mjs/);
   await run(process.execPath, ['claude/install.mjs', '--remove'], { env });
   settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-  assert.deepEqual(settings.hooks.PreToolUse, [other]);
+  assert.deepEqual(settings.hooks, { PreToolUse: [other] });
 });
 
 test('handoff_publish imports the current Claude Code session and publishes a graph subagents can read', async t => {

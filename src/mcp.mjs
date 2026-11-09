@@ -312,12 +312,25 @@ const tools = new Map([
       'replaced an earlier one, include both and a supersedes edge from the new node to the old one), constraints and ' +
       'pending actions, with exact values in labels (names, numbers, colours, prices, paths). Each node cites ' +
       'evidenceQuotes: short verbatim snippets of this session, usually the user\'s own words; no line numbers needed. ' +
+      'Format, so you do not need graph_schema: node ids are lowercase letters and digits joined by single hyphens ' +
+      '(accent-colour); an action needs status pending or completed, a blocker open or resolved, and other kinds take ' +
+      'no status; a label is one line. Edge types: advances (action to goal), blocks (blocker to action), depends_on ' +
+      '(action to action), constrains (constraint to action), supersedes (newer choice to the older one). ' +
       'Returns the graph ID and the line to put in each subagent prompt.',
     inputSchema: {
       type: 'object',
       properties: {
         nodes: {
-          type: 'array', minItems: 1, maxItems: 200, items: { type: 'object' },
+          type: 'array', minItems: 1, maxItems: 200,
+          items: {
+            type: 'object',
+            required: ['id', 'kind', 'label', 'evidenceQuotes'],
+            properties: {
+              id: { type: 'string', pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' },
+              label: { type: 'string', maxLength: 500 },
+              evidenceQuotes: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 8, maxLength: 400 } },
+            },
+          },
           description: 'Nodes as in graph_schema version 2: id, kind, label, evidenceQuotes, and status for actions.',
         },
         edges: { type: 'array', maxItems: 500, items: { type: 'object' }, default: [], description: 'Edges as in graph_schema version 2.' },

@@ -106,7 +106,7 @@ export function gradeSite(dir) {
   const text = visible(html);
   const near = (pattern, value, span = 80) => new RegExp(`${pattern}.{0,${span}}?${value}`, 'iu').test(text);
   // The first price after each mention of the croissant, in thousands of UZS.
-  const croissantPrices = [...text.matchAll(/croissant/giu)]
+  const croissantPrices = [...text.matchAll(/croissant|круассан/giu)]
     .map(match => text.slice(match.index, match.index + 300).match(/\b(\d{1,3})[\s,.]?000\b/u)?.[1])
     .filter(Boolean).map(Number);
 
@@ -119,7 +119,9 @@ export function gradeSite(dir) {
     noWebFonts: !/fonts\.googleapis|fonts\.gstatic|@font-face|@import\s+url\(\s*['"]?https?:/iu.test(all),
     noJavaScript: !/<script/iu.test(html),
     phone: digits(text).includes('998712345678') && !digits(text).includes('998712000000'),
-    sundayHours: near('sunday', '09[:.]00\\s*(?:–|-|—|to)\\s*15[:.]00', 40) && !near('sunday', 'closed', 20),
+    // The site may be in English or Russian, as the user's prompt was.
+    sundayHours: near('(?:sunday|воскресенье|\\bвс\\b)', '09[:.]00\\s*(?:–|-|—|to|до)\\s*15[:.]00', 40) &&
+      !near('(?:sunday|воскресенье|\\bвс\\b)', '(?:closed|выходной|закрыто)', 20),
     croissantPrice: croissantPrices.includes(22) && !croissantPrices.includes(18),
     emailNotForm: /mailto:hello@hearthcrumb\.uz/iu.test(html) && !/<form/iu.test(html),
     brand: /hearth\s*(?:&|&amp;|and)\s*crumb/iu.test(page('index.html')),
