@@ -396,3 +396,19 @@ The user's own Claude Code session in the desktop app, `context-ledger` added at
 - Read 3 carried the note "0 of 3 free graph handoffs left this month; the limit resets on 1 December 2026". The subagent passed it on; the parent relayed it and said it had not verified it.
 - Read 4: `context_for` failed with the limit message. The subagent quoted it, and the parent asked the user to choose between stopping and continuing with plain-text context, said it would not call `context_for` until the user answered, and chose nothing itself.
 - Observed: new MCP servers reach only sessions started after `claude mcp add`; an open session does not list them. In `claude mcp add`, the server name must come before `-e`.
+
+### Real task: agents build a website with and without Context Ledger (2026-11-09, exploratory)
+
+`node evals/website/run.mjs`: yesterday's planning session for a small bakery site (synthetic, 1,226 turns, about 25k tokens as Markdown) has thirteen decisions, six of which change in the second half (accent colour, web fonts, contact form, phone, Sunday hours, a price). Today a Claude Code parent (Sonnet, `claude -p`) splits the build across four `builder` subagents in parallel. Without the ledger, the session is a Markdown file in the work folder. With it, Claude first publishes a graph of the session, and the subagents read `context_for`. The grader checks the built files against the final decisions (10 checks).
+
+| Arm | Score | Build time | Build input tokens | Build cost | Graph publish |
+| --- | --- | --- | --- | --- | --- |
+| without | 10/10 | 75 s | 144k | $0.445 | — |
+| with | 10/10 | 52 s | 159k | $0.346 | 104 s, 18 nodes, $0.389 |
+
+- One run each, so this is a first look, not a measurement.
+- Both arms got every late decision right. The parent without the ledger read the whole file in one `Read` and retold it to the subagents; at 25k tokens the session fits in one read.
+- The build itself was faster and cheaper with the graph, but used slightly more input tokens: each subagent carries Claude Code's own prompt either way. Counting the graph publish, a single build cost more with the ledger ($0.735 against $0.445). The graph pays off when it is built once at the end of a session and read by many later handoffs, or when a session is too long to read at once.
+- The grader had two false negatives in the first scoring, now fixed: a system font stack that names Roboto as a local font, and a croissant description longer than the price window. Both sites score 10/10 after the fix; the reference good and bad sites still score 10/10 and 2/10.
+- The subagents' own tool calls were not captured in the with arm's summary. The run now keeps each raw event stream next to the site.
+- Cost of the run: about $1.18.
