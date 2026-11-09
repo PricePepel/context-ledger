@@ -15,5 +15,6 @@ Claim a card before working on it (AGENTS.md section 2). States: Backlog, Ready,
 | I2 Tolerant JSONL parsing | Unassigned | — | Real data: one corrupt line rejects a whole session; skip and count bad lines instead | Ready (after P1) |
 | I3 Codex agent-to-agent messages | Unassigned | — | Real data: `response_item/agent_message` records (author/recipient) are dropped | Ready (after P1) |
 | G6 Product review for cycle 4 | Codex | — | Read-only product and eval review | Ready |
+| S1 Claude Code subagents share context through graphs | Vuek0 (Claude Code) | `vuek0/subagent-graphs` | Ledger starts itself from MCP, current-session import, quote evidence, a parent-to-subagent handoff skill; cycle 8 in `docs/evals.md` | In progress |
 
 Cards marked "after P1" depend on the new storage layer; build them on `product/v1` once P1 is Done.

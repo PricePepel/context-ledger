@@ -347,3 +347,34 @@ The first recorded take with the user's own Claude Code and Codex exposed two pr
 Re-run with the new prompts (Claude publish, Codex publish): Leo's graph 8 nodes in 54 s (was 18 nodes, 1 min 51 s), Ali's graph 4 nodes and 2 `matches` links, no stale conflict, no off-tool calls. The second recorded take passed: both graphs published, the room settled with 4 choices, and Codex answered 4317, Saturday 17:00 and the GPU-box question, citing lines 27–28, 41–42 and 51–52.
 
 Suites: node 96/97 (one skipped), Playwright 10/10.
+
+## Cycle 8 — Claude Code subagents share context through graphs (defined 2026-11-09, before implementation)
+
+Card S1 on the delivery board. Goal: a user connects Context Ledger to Claude Code once, and when the parent agent delegates, it hands each subagent a graph ID instead of a retold summary. Everything runs locally. The work lands in stages, and each stage's evals are written here before its code.
+
+| Eval | Expected |
+| --- | --- |
+| S1a Ledger starts itself | With nothing listening on `PORT`, the first MCP tool call starts the ledger on loopback and the call succeeds. Its database is `CONTEXT_LEDGER_DB`, or `~/.context-ledger/ledger.sqlite` when unset, never a folder that depends on the client's working directory. A second MCP process reuses the running ledger. A service on the port that is not a ledger is reported, not replaced. `CONTEXT_LEDGER_AUTOSTART=0` keeps the previous "Start it with npm start" error. |
+| S1b Health | `GET /api/health` returns the app name and version and nothing else. The Host check still applies. |
+| S2 Current session | A Claude Code hook that the user installs imports the current session's transcript from `~/.claude/projects` only. Files above the 8 MiB HTTP limit still import. A `current_session` MCP tool returns the newest session the hook imported. |
+| S3 Quote evidence | A graph node may cite a verbatim quote instead of a line number. The ledger resolves it to the stored turn that contains it, or rejects the packet with an error that names the node by position. |
+| S4 Live subagent handoff | `node evals/subagent/run.mjs` with Claude Sonnet: the subagent reading the graph scores at least as well as the subagent given a retold summary, with fewer input tokens and no more time, on `--chatter 150` and `--chatter 1000`, two runs each. |
+
+### Exploratory baseline (2026-11-09, before any S1 code)
+
+`evals/subagent/run.mjs` against the hand-written reference graph, Claude Sonnet in `claude -p`, a custom `reader` subagent, two runs per arm. In `inline` the parent reads the transcript and retells it in the subagent's prompt, which is how Claude Code passes context today. In `sub-transcript` the subagent reads the raw transcript itself. In `sub-graph` it reads the graph briefing.
+
+| Session | Arm | Score | Mean time | Mean input tokens | Mean cost |
+| --- | --- | --- | --- | --- | --- |
+| ~67.6k tokens (`--chatter 1000`) | inline | 12/12 | 27.6 s | 56.7k | $0.093 |
+| | sub-transcript | 12/12 | 14.2 s | 36.3k | $0.067 |
+| | sub-graph | 12/12 | 10.6 s | 26.0k | $0.024 |
+| ~11.6k tokens (`--chatter 150`) | inline | 12/12 | 29.0 s | 82.8k | $0.110 |
+| | sub-transcript | 12/12 | 16.5 s | 43.5k | $0.054 |
+| | sub-graph | 12/12 | 12.7 s | 26.1k | $0.026 |
+
+- About 26k input tokens in every arm are Claude Code's own prompts for the parent and the subagent. The graph briefing adds about 255.
+- **The long-session transcript arms read one page of seven.** Both the parent (`inline`) and the subagent (`sub-transcript`) stopped after the first `session_read` page despite the prompt. They still scored 12/12 because every key fact is in the first 56 lines. So these rows understate what an honest full read costs; the paged read in cycle 7 used 291k tokens.
+- The fixture is easy, so accuracy does not separate the arms. The graph is hand-written, so this measures the handoff, not graph building.
+- A `claude -p` child of the Claude desktop app inherits the app's `ANTHROPIC_*` and `CLAUDE_CODE_*` variables and fails with 401. The script runs it with a clean environment.
+- Total cost of the 12 runs and one smoke run: about $0.81.
