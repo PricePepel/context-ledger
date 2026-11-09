@@ -140,10 +140,10 @@ QUOTA_FREE_LIMIT=50 npm run quota   # http://127.0.0.1:4390, data in ~/.context-
 
 The ledger takes signed leases of up to `QUOTA_LEASE_SIZE` (default 10) handoffs, spends them without a round trip and reports what it spent. A lease with a bad signature is never used. The service receives a random device ID, event IDs, lease IDs and times, never graph IDs or content. When fewer than 20% of the month's handoffs are left, `context_for` adds a note. When none are left, it fails with the reset date and tells the agent to ask the user whether to stop the agents or continue without Context Ledger. If the service cannot be reached, up to 5 handoffs go through and are reported later. A lease the ledger discards stays reserved on the service until it expires (at most 7 days, never past the month).
 
-Connect Claude Code with the limit on (restart a ledger that is already running, so it picks up the variable):
+Connect Claude Code with the limit on. Put the server name before `-e`, which takes every value after it. Restart a ledger that is already running, so it picks up the variable:
 
 ```sh
-claude mcp add --scope user -e CONTEXT_LEDGER_QUOTA_URL=http://127.0.0.1:4390 context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs
+claude mcp add --scope user context-ledger -e CONTEXT_LEDGER_QUOTA_URL=http://127.0.0.1:4390 -- node /absolute/path/to/context-ledger/src/mcp.mjs
 ```
 
 ## Two-agent demo
