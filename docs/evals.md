@@ -387,3 +387,12 @@ Card S1 on the delivery board. Goal: a user connects Context Ledger to Claude Co
 - Found while testing: one test cleanup ran after its temporary folder was removed and left a ledger running. The test now reads the pid right after start. A run of the full suite leaves no `src/server.mjs` process behind.
 - Suites: node 111/111, `test:graph` 9/9, the Playwright API test passes. The browser tests were not run on this machine (no Chromium).
 - Not yet reviewed independently.
+
+### S5 live check in the Claude desktop app (2026-11-09)
+
+The user's own Claude Code session in the desktop app, `context-ledger` added at user scope with `CONTEXT_LEDGER_QUOTA_URL`, the stand-in service at `QUOTA_FREE_LIMIT=3 QUOTA_LEASE_SIZE=1`, the demo reference graph. The parent agent was asked four times to have a subagent read the graph with `context_for` and name the ledger's port.
+
+- Reads 1–3: each subagent answered 4317 and noted that 4400 was superseded. The service counted each read (1/3 after the first).
+- Read 3 carried the note "0 of 3 free graph handoffs left this month; the limit resets on 1 December 2026". The subagent passed it on; the parent relayed it and said it had not verified it.
+- Read 4: `context_for` failed with the limit message. The subagent quoted it, and the parent asked the user to choose between stopping and continuing with plain-text context, said it would not call `context_for` until the user answered, and chose nothing itself.
+- Observed: new MCP servers reach only sessions started after `claude mcp add`; an open session does not list them. In `claude mcp add`, the server name must come before `-e`.
