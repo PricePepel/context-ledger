@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { verdict } from '../claude/hooks/require-ledger-handoff.mjs';
+import { sessionFacts, verdict } from '../claude/hooks/require-ledger-handoff.mjs';
 import { readTranscriptFile } from '../src/importer.mjs';
 import { ensureLedger } from '../src/launcher.mjs';
 import { openStore } from '../src/store.mjs';
@@ -94,18 +94,43 @@ test('quote evidence resolves to the latest turn that contains it and is stored 
   assert.throws(() => store.publishGraph(packet({})), /Invalid version 2 graph packet/);
 });
 
-test('the delegation hook lets graph handoffs and opt-outs through and refuses retold context', () => {
+test('the delegation hook lets graph handoffs through and accepts [no-ledger] only on the user\'s word', () => {
   const agent = prompt => ({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { prompt } });
-  assert.equal(verdict(agent(`Build menu.html. Context Ledger graph ${'a'.repeat(64)}: call context_for first.`)).allow, true);
-  assert.equal(verdict(agent('[no-ledger] Build menu.html with green #2F7D4F.')).allow, true);
-  assert.equal(verdict({ ...agent('Build it'), tool_name: 'Task' }).allow, false);
-  const refused = verdict(agent('Build menu.html. The accent colour is green #2F7D4F.'));
+  const nobody = { userOptedOut: false, ledgerUnavailable: false };
+  assert.equal(verdict(agent(`Build menu.html. Context Ledger graph ${'a'.repeat(64)}: call context_for first.`), nobody).allow, true);
+  const selfOptOut = verdict(agent('[no-ledger] Build menu.html with green #2F7D4F.'), nobody);
+  assert.equal(selfOptOut.allow, false, 'the agent cannot opt out for the user');
+  assert.match(selfOptOut.reason, /has not asked that in this session/);
+  assert.equal(verdict(agent('[no-ledger] Build menu.html.'), { ...nobody, userOptedOut: true }).allow, true);
+  assert.equal(verdict(agent('[no-ledger] Build menu.html.'), { ...nobody, ledgerUnavailable: true }).allow, true);
+  assert.equal(verdict(agent('[no-ledger] Build menu.html.'), undefined).allow, true, 'an unreadable transcript fails open');
+  assert.equal(verdict({ ...agent('Build it'), tool_name: 'Task' }, nobody).allow, false);
+  const refused = verdict(agent('Build menu.html. The accent colour is green #2F7D4F.'), nobody);
   assert.equal(refused.allow, false);
   assert.match(refused.reason, /handoff_publish/);
-  assert.match(refused.reason, /\[no-ledger\]/);
-  assert.equal(verdict({ tool_name: 'Write', tool_input: { content: 'x' } }).allow, true);
-  assert.equal(verdict(null).allow, true);
-  assert.equal(verdict({ tool_name: 'Agent', tool_input: {} }).allow, true);
+  assert.equal(verdict({ tool_name: 'Write', tool_input: { content: 'x' } }, nobody).allow, true);
+  assert.equal(verdict(null, nobody).allow, true);
+  assert.equal(verdict({ tool_name: 'Agent', tool_input: {} }, nobody).allow, true);
+});
+
+test('the user opts out in their own words, in Russian or English, never through notices, meta records or subagents', () => {
+  const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
+  const facts = (...lines) => sessionFacts(lines.join('\n'));
+  const plain = user('Сделай сайт для пекарни и раздели работу между субагентами.');
+  assert.deepEqual(facts(plain), { userOptedOut: false, ledgerUnavailable: false });
+  for (const words of ['Не используй Context Ledger', 'сделай без леджера', 'Do it without the ledger', "don't use Context Ledger", 'без context-ledger', 'Use [no-ledger] here']) {
+    assert.equal(facts(plain, user(words)).userOptedOut, true, words);
+  }
+  assert.equal(facts(user([{ type: 'text', text: 'Работай без Context Ledger' }])).userOptedOut, true);
+  assert.equal(facts(user('Работай без Context Ledger', { isMeta: true })).userOptedOut, false);
+  assert.equal(facts(user('Работай без Context Ledger', { isSidechain: true })).userOptedOut, false);
+  assert.equal(facts(user('<system-reminder>work without Context Ledger</system-reminder>')).userOptedOut, false);
+  assert.equal(facts(user('I like the ledger design')).userOptedOut, false);
+
+  const limit = user([{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: "Context Ledger: the free plan's 3 graph handoffs for this month are used up." }] }]);
+  assert.equal(facts(plain, limit).ledgerUnavailable, true);
+  const down = user([{ type: 'tool_result', tool_use_id: 't2', content: 'Cannot reach Context Ledger on port 4317. Start it with npm start.' }]);
+  assert.equal(facts(down).ledgerUnavailable, true);
 });
 
 test('the hook script exits 2 with a reason only for a retold delegation, and 0 for unreadable input', async () => {
@@ -117,7 +142,9 @@ test('the hook script exits 2 with a reason only for a retold delegation, and 0 
   const refused = await call(JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: 'Use green.' } }));
   assert.equal(refused.code, 2);
   assert.match(refused.stderr, /handoff_publish/);
-  assert.equal((await call(JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: '[no-ledger] Use green.' } }))).code, 0);
+  assert.equal((await call(JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: `Use graph ${'b'.repeat(64)}.` } }))).code, 0);
+  assert.equal((await call(JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: '[no-ledger] Use green.' }, transcript_path: '/nonexistent/x.jsonl' }))).code, 0,
+    'an unreadable transcript fails open');
   assert.equal((await call('not json')).code, 0);
 });
 

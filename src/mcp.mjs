@@ -24,9 +24,10 @@ const instructions = 'Context Ledger stores imported agent transcripts and cited
   'Default for subagents: before you delegate work to a subagent (the Agent or Task tool), call handoff_publish with ' +
   'the context the subagent needs, and put the graph ID with "call context_for first" in the subagent prompt instead ' +
   'of retelling that context. Publish once and give the same graph ID to every subagent of the task; publish again ' +
-  'when what was agreed changes. Skip this only when the user asked not to use Context Ledger, and then write ' +
-  '[no-ledger] in the subagent prompt. A subagent whose prompt names a Context Ledger graph ID calls context_for ' +
-  'with it before anything else.';
+  'when what was agreed changes. Do this even when the task looks small. Skip it only when the user asked not to ' +
+  'use Context Ledger, or a Context Ledger tool reported its limit or an outage; then write [no-ledger] in the ' +
+  'subagent prompt. Never decide to skip it on the user\'s behalf. A subagent whose prompt names a Context Ledger ' +
+  'graph ID calls context_for with it before anything else.';
 
 class ToolError extends Error {}
 
