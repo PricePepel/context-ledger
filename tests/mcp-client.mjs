@@ -2,9 +2,10 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 
 // A minimal stdio MCP client for tests: one JSON-RPC message per line in each direction.
-export function startMcp(port) {
+// Auto-start is off unless a test asks for it, so a test never starts a stray ledger.
+export function startMcp(port, env = {}) {
   const child = spawn(process.execPath, ['src/mcp.mjs'], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_AUTOSTART: '0', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const messages = [];

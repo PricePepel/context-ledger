@@ -76,3 +76,18 @@ Result: on a long session the graph handoff was about 3× faster and used about 
 
 The user's Claude Code (user scope) and Codex (`~/.codex/config.toml`, rebuilt after it was found corrupted) both connect to the ledger. A recorded take passed end to end after the fixes in the eval log's "Take 2" notes. Next steps: record the final video, then run more rehearsal rounds for a time estimate with a spread.
 
+
+## Current checkpoint — cycle 8 (S1, Claude Code subagents through graphs, 2026-11-09)
+
+Branch `vuek0/subagent-graphs`, card S1 on [the delivery board](delivery-board.md), evals in the cycle 8 section of [the eval log](evals.md).
+
+Done in stage 1:
+
+- `src/launcher.mjs` and `GET /api/health`: the MCP adapter starts a ledger on demand, detached, with data in `~/.context-ledger/`, a log and a pid file. `CONTEXT_LEDGER_AUTOSTART=0` turns it off. Test clients default to off.
+- `evals/subagent/run.mjs`: the parent-to-subagent handoff eval, with an exploratory baseline recorded before any S1 code.
+
+Next:
+
+1. Stage 2: import the current Claude Code session through a user-installed hook (`~/.claude/projects` only, above the 8 MiB HTTP limit) and a `current_session` tool.
+2. Stage 3: quote evidence, then a handoff skill and a `ledger-reader` subagent for the parent agent.
+3. An independent review before the PR. Codex is not installed on this machine, so use a separate Claude reviewer and a human.

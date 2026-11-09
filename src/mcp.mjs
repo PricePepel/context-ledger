@@ -2,6 +2,7 @@
 // stdout carries protocol messages only; diagnostics go to stderr.
 import packageJson from '../package.json' with { type: 'json' };
 import { graphSchemas } from './graph.mjs';
+import { autostartEnabled, ensureLedger } from './launcher.mjs';
 import { handoffMarkdown } from './handoff.mjs';
 import { terminalJson, visibleText } from './text.mjs';
 
@@ -46,6 +47,17 @@ function validLedgerMessage(message) {
   return typeof message === 'string' && message.length > 0 && message.length <= 200 && !/[\p{C}\p{Zl}\p{Zp}]/u.test(message);
 }
 
+// Parallel tool calls share one start attempt; a failed attempt can be retried later.
+let starting;
+async function startLedger() {
+  starting ??= ensureLedger({ port }).finally(() => { starting = undefined; });
+  try {
+    await starting;
+  } catch (error) {
+    throw new ToolError(validLedgerMessage(error.message) ? error.message : `Context Ledger could not start on port ${port}.`);
+  }
+}
+
 async function ledger(path, { body, notFound, timeoutMs = 5000 } = {}) {
   const init = { redirect: 'error', signal: AbortSignal.timeout(timeoutMs) };
   if (body !== undefined) {
@@ -55,8 +67,17 @@ async function ledger(path, { body, notFound, timeoutMs = 5000 } = {}) {
   }
   let response;
   try {
-    response = await fetch(origin + path, init);
+    try {
+      response = await fetch(origin + path, init);
+    } catch (error) {
+      if (error?.cause?.code !== 'ECONNREFUSED' || !autostartEnabled()) throw error;
+      // Nothing listens yet: start the ledger once, then send the request again.
+      await startLedger();
+      init.signal = AbortSignal.timeout(timeoutMs);
+      response = await fetch(origin + path, init);
+    }
   } catch (error) {
+    if (error instanceof ToolError) throw error;
     // A timed-out publish may still have been stored; an exact retry returns the same ID.
     if (error?.name === 'TimeoutError') {
       throw new ToolError(`Context Ledger did not answer within ${timeoutMs / 1000} seconds. Retrying a publish is safe: an identical publish returns the same ID.`);

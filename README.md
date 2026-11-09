@@ -108,7 +108,7 @@ Each packet is a snapshot of one imported session. An exact repeat returns its e
 
 ## Connect an agent over MCP
 
-`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+`src/mcp.mjs` is a stdio MCP server that forwards to the ledger on `PORT` (default 4317). If nothing listens there, the first tool call starts a ledger in the background with its data in `~/.context-ledger/` (or `CONTEXT_LEDGER_DB`), logging to `ledger.log` and writing its process ID to `ledger.pid` next to the database. It keeps running after the agent exits; stop it with `kill $(cat ~/.context-ledger/ledger.pid)`. Set `CONTEXT_LEDGER_AUTOSTART=0` to require `npm start` instead. A ledger you start with `npm start` keeps its default `.context-ledger/` folder in the repository, so the two do not share data unless you set `CONTEXT_LEDGER_DB`. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
 
 Claude Code:
 

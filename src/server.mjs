@@ -1,5 +1,7 @@
+import { rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import packageJson from '../package.json' with { type: 'json' };
 import { GraphInputError } from './graph.mjs';
 import { LatentError, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
@@ -67,6 +69,11 @@ const server = createServer(async (request, response) => {
     const origin = `http://${host}`;
     const url = new URL(request.url, origin);
     const method = request.method;
+
+    if (method === 'GET' && url.pathname === '/api/health') {
+      // Lets a client tell this ledger apart from another service on the same port.
+      return json(response, 200, { name: 'context-ledger', version: packageJson.version });
+    }
 
     if (method === 'GET' && staticFiles.has(url.pathname)) {
       const [file, contentType] = staticFiles.get(url.pathname);
@@ -171,6 +178,16 @@ const server = createServer(async (request, response) => {
   }
 });
 
+// A ledger started by src/launcher.mjs records its process ID, so the user can stop it.
+const pidFile = process.env.CONTEXT_LEDGER_PID_FILE;
+const stop = () => {
+  if (pidFile) rmSync(pidFile, { force: true });
+  process.exit(0);
+};
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
+
 server.listen(port, '127.0.0.1', () => {
+  if (pidFile) writeFileSync(pidFile, `${process.pid}\n`, { mode: 0o600 });
   console.log(`Context Ledger listening at http://127.0.0.1:${server.address().port}`);
 });
