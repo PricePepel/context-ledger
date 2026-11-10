@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { readFileSync, symlinkSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import { sessionFacts, verdict } from '../claude/hooks/require-ledger-handoff.mj
 import { readTranscriptFile } from '../src/importer.mjs';
 import { ensureLedger } from '../src/launcher.mjs';
 import { openStore } from '../src/store.mjs';
+import { removeDir, stopProcess } from './cleanup.mjs';
 import { startMcp } from './mcp-client.mjs';
 
 const run = promisify(execFile);
@@ -30,7 +31,7 @@ const transcript = [
 
 async function projects(t) {
   const root = await mkdtemp(join(tmpdir(), 'ledger-projects-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => removeDir(root));
   await mkdir(join(root, '-Users-me-site'));
   const path = join(root, '-Users-me-site', `${sessionId}.jsonl`);
   await writeFile(path, transcript);
@@ -52,11 +53,21 @@ test('a transcript is read only from inside the projects folder, as a regular .j
   assert.equal(read.text, transcript);
 
   const outside = await mkdtemp(join(tmpdir(), 'ledger-outside-'));
-  t.after(() => rm(outside, { recursive: true, force: true }));
+  t.after(() => removeDir(outside));
   await writeFile(join(outside, 'secret.jsonl'), transcript);
   await assert.rejects(readTranscriptFile(join(outside, 'secret.jsonl'), { root }), /Claude Code projects folder/);
-  symlinkSync(join(outside, 'secret.jsonl'), join(root, '-Users-me-site', 'link.jsonl'));
-  await assert.rejects(readTranscriptFile(join(root, '-Users-me-site', 'link.jsonl'), { root }), /Claude Code projects folder/);
+  let linked = true;
+  try {
+    symlinkSync(join(outside, 'secret.jsonl'), join(root, '-Users-me-site', 'link.jsonl'));
+  } catch (error) {
+    // Windows creates symlinks only in Developer Mode or as an administrator.
+    if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+    linked = false;
+    t.diagnostic('skipped the symlink check: this Windows account cannot create symlinks');
+  }
+  if (linked) {
+    await assert.rejects(readTranscriptFile(join(root, '-Users-me-site', 'link.jsonl'), { root }), /Claude Code projects folder/);
+  }
   await assert.rejects(readTranscriptFile(join(root, '-Users-me-site', '..', '-Users-me-site', 'x.txt'), { root }), /\.jsonl/);
   await assert.rejects(readTranscriptFile('relative.jsonl', { root }), /absolute path/);
   await assert.rejects(readTranscriptFile(path, { root, maxBytes: 100 }), /exceeds/);
@@ -186,7 +197,7 @@ test('the hook script exits 2 with a reason only for a retold delegation, and 0 
 
 test('the installer adds the hook once, keeps other settings and removes only its own hook', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'ledger-settings-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => removeDir(dir));
   const settingsPath = join(dir, 'settings.json');
   const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo other' }] };
   await writeFile(settingsPath, JSON.stringify({ model: 'opus', hooks: { PreToolUse: [other] } }));
@@ -213,8 +224,8 @@ test('handoff_publish imports the current Claude Code session and publishes a gr
   await ensureLedger({ port, database: join(data, 'ledger.sqlite'), env });
   const pid = Number(readFileSync(join(data, 'ledger.pid'), 'utf8'));
   t.after(async () => {
-    try { process.kill(pid, 'SIGTERM'); } catch {}
-    await rm(data, { recursive: true, force: true });
+    await stopProcess(pid);
+    await removeDir(data);
   });
 
   const client = startMcp(port, { CLAUDE_CODE_SESSION_ID: sessionId, CONTEXT_LEDGER_TRANSCRIPT_ROOT: root });
@@ -254,8 +265,8 @@ test('file import is same-origin only and refuses paths outside the projects fol
   await ensureLedger({ port, database: join(data, 'ledger.sqlite'), env: { ...process.env, CONTEXT_LEDGER_TRANSCRIPT_ROOT: root } });
   const pid = Number(readFileSync(join(data, 'ledger.pid'), 'utf8'));
   t.after(async () => {
-    try { process.kill(pid, 'SIGTERM'); } catch {}
-    await rm(data, { recursive: true, force: true });
+    await stopProcess(pid);
+    await removeDir(data);
   });
   const origin = `http://127.0.0.1:${port}`;
   const post = (body, headers = { Origin: origin }) => fetch(`${origin}/api/import-file`, {

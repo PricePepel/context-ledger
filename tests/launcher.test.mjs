@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { autostartEnabled, defaultDatabase, ensureLedger, probeLedger } from '../src/launcher.mjs';
+import { removeDir, stopProcess } from './cleanup.mjs';
 import { startMcp } from './mcp-client.mjs';
 
 async function freePort() {
@@ -16,17 +17,15 @@ async function freePort() {
   return port;
 }
 
-// A temporary data folder whose ledger, if one was started, is stopped after the test.
-async function dataDir(t) {
+// A temporary data folder whose ledger, if one was started, is stopped after the test,
+// together with any other process ID the test adds to `pids`, before the folder is removed.
+async function dataDir(t, pids = []) {
   const dir = await mkdtemp(join(tmpdir(), 'ledger-launch-'));
   t.after(async () => {
     const pidFile = join(dir, 'ledger.pid');
-    if (existsSync(pidFile)) {
-      const pid = Number(readFileSync(pidFile, 'utf8'));
-      try { process.kill(pid, 'SIGTERM'); } catch {}
-      for (let i = 0; i < 50 && existsSync(pidFile); i += 1) await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    await rm(dir, { recursive: true, force: true });
+    if (existsSync(pidFile)) pids.push(Number(readFileSync(pidFile, 'utf8')));
+    for (const pid of new Set(pids)) await stopProcess(pid);
+    await removeDir(dir);
   });
   return dir;
 }
@@ -56,14 +55,13 @@ test('ensureLedger starts a ledger once, records its pid and reuses it', async t
 });
 
 test('two clients starting at once end with one ledger', async t => {
-  const dir = await dataDir(t);
+  // A slow loser can bind the port after the winner stops, so stop every process this test spawned.
+  const pids = [];
+  const dir = await dataDir(t, pids);
   const port = await freePort();
   const database = join(dir, 'ledger.sqlite');
   const results = await Promise.all([ensureLedger({ port, database }), ensureLedger({ port, database })]);
-  // A slow loser can bind the port after the winner stops, so stop every process this test spawned.
-  t.after(() => {
-    for (const { pid } of results) if (pid) try { process.kill(pid, 'SIGTERM'); } catch {}
-  });
+  for (const { pid } of results) if (pid) pids.push(pid);
   assert.equal(results.length, 2);
   assert.equal(await probeLedger(port), 'ledger');
 });

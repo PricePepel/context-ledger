@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,18 +11,25 @@ import { leoReference } from '../demo/reference-graphs.mjs';
 import { ensureLedger } from '../src/launcher.mjs';
 import { createQuotaClient, mountQuotaStore, readLease } from '../src/quota.mjs';
 import { periodOf, startQuotaServer } from '../src/quota-server.mjs';
+import { removeDir, stopProcess } from './cleanup.mjs';
 import { startMcp } from './mcp-client.mjs';
 
-async function tempDir(t) {
+// A temporary folder, removed after the test once whatever the test pushed onto `closers`
+// (a server or process using a database in it) has stopped: Windows keeps open files.
+async function tempDir(t, closers = []) {
   const dir = await mkdtemp(join(tmpdir(), 'ledger-quota-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(async () => {
+    for (const close of closers) await close();
+    await removeDir(dir);
+  });
   return dir;
 }
 
 async function service(t, options) {
-  const dir = await tempDir(t);
+  const closers = [];
+  const dir = await tempDir(t, closers);
   const server = await startQuotaServer({ dataDir: dir, ...options });
-  t.after(() => server.close());
+  closers.push(() => server.close());
   return { ...server, url: `http://127.0.0.1:${server.port}` };
 }
 
@@ -132,7 +139,8 @@ test('readLease rejects another device, an expired lease and a wrong key', async
 
 test('an unreachable service allows a few handoffs and counts them once it is back', async t => {
   const port = await freePort();
-  const dir = await tempDir(t);
+  const closers = [];
+  const dir = await tempDir(t, closers);
   const database = new DatabaseSync(':memory:');
   const persist = mountQuotaStore(database);
   const quota = createQuotaClient({ serviceUrl: `http://127.0.0.1:${port}`, persist, offlineAllowance: 2 });
@@ -142,7 +150,7 @@ test('an unreachable service allows a few handoffs and counts them once it is ba
   assert.deepEqual(await quota.consume(), { ok: false, reason: 'unreachable' });
 
   const usage = await startQuotaServer({ port, dataDir: dir, freeLimit: 10, leaseSize: 2 });
-  t.after(() => usage.close());
+  closers.push(() => usage.close());
   const back = await quota.consume();
   assert.equal(back.ok, true);
   assert.equal(back.offline, undefined);
@@ -150,13 +158,14 @@ test('an unreachable service allows a few handoffs and counts them once it is ba
 });
 
 test('in Claude the last handoffs warn and the next one asks the user to stop or continue without the ledger', async t => {
+  // The ledger's folder comes first, so after the test the ledger stops before the usage service closes.
+  const stops = [];
+  const dir = await tempDir(t, stops);
   const usage = await service(t, { freeLimit: 2, leaseSize: 1 });
-  const dir = await tempDir(t);
   const port = await freePort();
   await ensureLedger({ port, database: join(dir, 'ledger.sqlite'), env: { ...process.env, CONTEXT_LEDGER_QUOTA_URL: usage.url } });
-  // Read the pid now: after hooks run in order, and the temp folder may be gone by then.
   const pid = Number(readFileSync(join(dir, 'ledger.pid'), 'utf8'));
-  t.after(() => { try { process.kill(pid, 'SIGTERM'); } catch {} });
+  stops.push(() => stopProcess(pid));
   const origin = `http://127.0.0.1:${port}`;
   const post = async (path, body) => {
     const response = await fetch(origin + path, {
