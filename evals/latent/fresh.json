@@ -1,0 +1,55 @@
+{
+  "description": "Cycle 9 fresh set: eight questions on a second synthetic codebase (Harbor Library), written before any M2a tuning so a tuned pipeline is checked on code it was not tuned on.",
+  "fixture": "fixture-library",
+  "paths": ["src/settings.js", "src/loans.js", "src/fees.js", "src/holds.js", "src/reminders.js"],
+  "questions": [
+    {
+      "id": "loan-length",
+      "question": "How long is a standard loan?",
+      "required": [["21", "three weeks"]],
+      "evidence": [{ "path": "src/settings.js", "lines": [7, 7] }, { "path": "src/loans.js", "lines": [15, 15] }]
+    },
+    {
+      "id": "renewals",
+      "question": "How many times can a loan be renewed, and how much time does each renewal add?",
+      "required": [["2", "two", "twice"], ["14", "fourteen", "two weeks"]],
+      "evidence": [{ "path": "src/settings.js", "lines": [10, 11] }, { "path": "src/loans.js", "lines": [22, 24] }]
+    },
+    {
+      "id": "fee-cap",
+      "question": "Is there a limit on how much late fee a single loan can build up?",
+      "required": [["1000", "10.00"]],
+      "evidence": [{ "path": "src/settings.js", "lines": [13, 13] }, { "path": "src/fees.js", "lines": [9, 9] }]
+    },
+    {
+      "id": "block-threshold",
+      "question": "At what unpaid balance is a member blocked from borrowing?",
+      "required": [["500", "5.00"]],
+      "evidence": [{ "path": "src/settings.js", "lines": [14, 14] }, { "path": "src/fees.js", "lines": [16, 18] }, { "path": "src/loans.js", "lines": [13, 13] }]
+    },
+    {
+      "id": "late-fee-rate",
+      "question": "How much late fee is charged for each day a loan is overdue?",
+      "required": [["25"]],
+      "evidence": [{ "path": "src/fees.js", "lines": [6, 10] }]
+    },
+    {
+      "id": "reminder-queue",
+      "question": "Which queue are due-date reminders sent to?",
+      "required": [["harbor-reminders"]],
+      "evidence": [{ "path": "src/settings.js", "lines": [19, 19] }, { "path": "src/reminders.js", "lines": [8, 8] }]
+    },
+    {
+      "id": "renew-on-hold",
+      "question": "What happens when a member tries to renew a loan while another member has a hold on the item?",
+      "required": [["on hold for another member", "refuse", "reject", "throws", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
+      "evidence": [{ "path": "src/loans.js", "lines": [23, 23] }, { "path": "src/holds.js", "lines": [12, 14] }]
+    },
+    {
+      "id": "hold-expiry",
+      "question": "What happens to a hold when the member does not pick the item up from the hold shelf in time?",
+      "required": [["expire"]],
+      "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]
+    }
+  ]
+}

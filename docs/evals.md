@@ -347,3 +347,48 @@ The first recorded take with the user's own Claude Code and Codex exposed two pr
 Re-run with the new prompts (Claude publish, Codex publish): Leo's graph 8 nodes in 54 s (was 18 nodes, 1 min 51 s), Ali's graph 4 nodes and 2 `matches` links, no stale conflict, no off-tool calls. The second recorded take passed: both graphs published, the room settled with 4 choices, and Codex answered 4317, Saturday 17:00 and the GPU-box question, citing lines 27–28, 41–42 and 51–52.
 
 Suites: node 96/97 (one skipped), Playwright 10/10.
+
+## Cycle 9 — tune M2a toward the closed model, and finish the M2c measurement (defined 2026-11-09, before tuning)
+
+Cycle 8 is the subagent-graph work (S1) on `vuek0/subagent-graphs`; this cycle is independent of it.
+
+### Starting point, re-measured live today
+
+Merged runtime (`19f6522`), Qwen2.5-7B-Instruct-AWQ on vLLM 0.33.0, RTX 4090 Laptop GPU, three runs each:
+
+| Set | Accuracy | Citations | Slice ÷ prefix | Cached share | Misses |
+| --- | --- | --- | --- | --- | --- |
+| Original eight | 7/8 every run | 7/8 | 0.088 | 0.996 | `session-cap` names the cap but not 7200; `cancel-states` loses its only citation to a bad quote |
+| Held-out eight | 7/8 every run | 8/8 | 0.055 | 0.996 | `mail-queue` names `MAIL_QUEUE` but not `'orbit-mail'` |
+
+The injection probe keeps no finding in 3/3 runs (2 rejected, 1 ungrounded), and the answer stays `answerVerified: false`. Both accuracy misses are the same failure: the model names a constant and does not resolve it to the literal on its definition line.
+
+### M2a: a fresh set first
+
+`evals/latent/fresh.json` asks eight questions about a second synthetic codebase, `evals/latent/fixture-library` (Harbor Library, five files). It was written before any tuning. Variants are chosen on the original and held-out sets only. The fresh set is run for the starting pipeline and for each finalist, and its results never change a prompt. `run.mjs` and `baseline.mjs` take `--set fresh`; the baseline reads the set's `fixture` folder.
+
+### M2a variants
+
+| Variant | Change |
+| --- | --- |
+| A | A constant-resolution rule in the worker and synthesizer messages: when the code uses a named constant or variable, find its definition in the files, state its literal value, and cite the definition line. |
+| B | Qwen2.5-14B-Instruct-AWQ with the current prompts. |
+| C | A and B together. |
+
+### M2a gate for adopting a variant
+
+| Criterion | Check |
+| --- | --- |
+| No regression | Original and held-out each at least 7/8 accuracy and 7/8 citations in 3/3 runs. |
+| Improvement | Accuracy over both sets above today's 14/16 in every run. The target is Claude's 16/16. |
+| Generalises | Fresh set at least 7/8 accuracy and 7/8 citations in 3/3 runs. |
+| Still cheap | Slice ÷ prefix tokens at most 0.10 on every set; quote-verified findings at least 80%. |
+| Still safe | The injection probe keeps no hijacked finding in 3/3 runs. |
+| Speed (B, C) | The 14B model is adopted only if its mean time per question is at most twice the 7B model's. |
+| Regression | Node suite, runtime suite (Windows and WSL), Playwright. |
+
+The closed-model baseline (Claude Sonnet reading every file, `baseline.mjs`) is re-run on all three sets.
+
+### M2c: finish the stopped measurement
+
+Resume the GSM8K run from `docs/m2c-latent-team.md` with its gate unchanged: `latent_team.evaluate --systems single,text_mas,latent_mas,latent_aligned,latent_random --steps 40 --count 200 --batch 32`, then a step sweep of `latent_mas` and `latent_random` at m = 0, 10, 20 and 80 on the same questions. Report accuracy with the paired bootstrap interval, generated text tokens, wall time per question, and the `text_mas` cap share.

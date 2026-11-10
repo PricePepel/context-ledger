@@ -1,7 +1,7 @@
 // Closed-model baseline for the M2a gate: Claude reads every fixture file and answers
 // each question directly. Same system text as the latent pool (preamble v2 + rendered
 // prefix), same grader. Runs through the Claude Code CLI in print mode with tools off.
-// Usage: node evals/latent/baseline.mjs [--set questions|heldout] [--repeat N] [--model sonnet] [--out report.json]
+// Usage: node evals/latent/baseline.mjs [--set questions|heldout|fresh] [--repeat N] [--model sonnet] [--out report.json]
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,8 +17,8 @@ const { values } = parseArgs({
     model: { type: 'string', default: 'sonnet' },
   },
 });
-const sets = { questions: './questions.json', heldout: './heldout.json' };
-if (!sets[values.set]) throw new Error('--set must be questions or heldout.');
+const sets = { questions: './questions.json', heldout: './heldout.json', fresh: './fresh.json' };
+if (!sets[values.set]) throw new Error('--set must be questions, heldout or fresh.');
 const set = JSON.parse(await readFile(new URL(sets[values.set], import.meta.url), 'utf8'));
 const repeat = Math.max(1, Number(values.repeat) || 1);
 
@@ -37,7 +37,7 @@ const PREAMBLE = "You are a careful code reader. The files below are your only s
 async function renderPrefix(paths) {
   const parts = [];
   for (const path of paths) {
-    let text = await readFile(new URL(`./fixture/${path}`, import.meta.url), 'utf8');
+    let text = await readFile(new URL(`./${set.fixture ?? 'fixture'}/${path}`, import.meta.url), 'utf8');
     text = text.replace(/^﻿/u, '').replace(/\r\n/gu, '\n');
     const lines = text === '' ? [] : text.replace(/\n$/u, '').split('\n');
     parts.push(`=== FILE: ${path} ===\n`);
