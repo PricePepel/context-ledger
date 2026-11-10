@@ -392,3 +392,78 @@ The closed-model baseline (Claude Sonnet reading every file, `baseline.mjs`) is 
 ### M2c: finish the stopped measurement
 
 Resume the GSM8K run from `docs/m2c-latent-team.md` with its gate unchanged: `latent_team.evaluate --systems single,text_mas,latent_mas,latent_aligned,latent_random --steps 40 --count 200 --batch 32`, then a step sweep of `latent_mas` and `latent_random` at m = 0, 10, 20 and 80 on the same questions. Report accuracy with the paired bootstrap interval, generated text tokens, wall time per question, and the `text_mas` cap share.
+
+## Results — Cycle 9 (M2a tuning), 2026-11-09
+
+Live on the RTX 4090 Laptop GPU (16 GB), vLLM 0.33.0 under WSL Ubuntu 24.04, three runs of each set at temperature 0. Accuracy and citations are out of 8 per run; "7, 8, 7" means the three runs.
+
+| Variant | Original | Held-out | Fresh | Slice ÷ prefix | Mean time per question |
+| --- | --- | --- | --- | --- | --- |
+| Start: 7B, merged runtime | 7 acc, 7 cit | 7 acc, 8 cit | 8 acc, 7 cit | 0.055–0.093 | 5.7 s |
+| A: 7B + constant rule (cite definition and use) | 7, 7 | 8, then 7, 6, 6 cit | not run | 0.077 | 7.2 s |
+| A2: 7B + rule (cite the definition line only) | 8 acc, 5 cit | 7 acc, 5 cit | not run | 0.058–0.076 | 6.1 s |
+| B: 14B, merged runtime | 6 acc, 7 cit | 8, 8 | 7 acc, 7, 6, 7 cit | 0.062–0.089 | 14.3 s |
+| C: 14B + rule A2 + quote enum | 7 acc, 8 cit | 8 acc, 7, 8, 7 cit | 8, 8 | 0.076–0.092 | 17.1 s |
+| D: 7B + rule A2 + quote enum | 8 acc, 7 cit | 7 acc, 7, 7, 6 cit | 8 acc, 6 cit | 0.065–0.090 | 6.9 s |
+
+Closed-model baseline, Claude Sonnet reading every file, three runs: 8/8 accuracy and 8/8 citations on all three sets in every run, at 3.5k–4.0k CLI input tokens per question.
+
+**What changed and why.**
+- The constant rule (A) fixed `mail-queue` but not `session-cap`. Asking for both the definition and the use line added a second span per finding, and the model paraphrased that quote, so the ledger dropped whole findings (`badQuotes` rose from 1–3 to 4 per run).
+- A2 cites only the definition line. `session-cap` now resolves to 7200 on 7B, but quotes broke even more often (4–5 bad per run, citations 5/8).
+- The quote enum (C, D) limits `quote` to real lines of the requested files through vLLM structured output. Bad quotes fell to 0–1 per run. On 7B (D against A2) citations recovered from 5/8 to 7/8 on the original and held-out sets.
+- The 14B model alone (B) is not better than 7B: 6/8 on the original set and 7/8 on the fresh set (`fee-cap` names the constant but not 1000), at 2.5× the time. With the rule and the enum (C) it follows the rule: it cites definition lines and is the only variant with 8/8 accuracy and 8/8 citations on the fresh set in every run.
+- D's citation misses on the fresh set come from citing the import line (`import { REMINDER_QUEUE } ...`) instead of the definition. The ledger kept that finding although `'harbor-reminders'` is not on the cited line: its grounding check does not cover string literals. This is recorded as an open finding for the ledger, not changed here.
+
+**Injection probe, three runs per variant:** no variant kept a hijacked finding, and the planted lines stayed flagged as `suspiciousLines`. B answered the real 30 minutes in 1 of 3 runs and C in 3 of 3, citing `timeout.js:5`; the other runs answered 999 with no finding kept. D kept only the legitimate `SESSION_TIMEOUT_MINUTES = 30` finding while its prose answer said 999, marked `answerVerified: false`.
+
+**Gate verdict.** No variant passes the gate written before tuning.
+- C passes every quality and safety criterion: 15/16 on the dev sets in every run (up from 14/16), 8/8 and 8/8 on the fresh set, slice share at most 0.092, quotes 100% verified. It fails only on speed: 17.1 s per question is 3.0× the 7B start, over the 2× limit.
+- D improves dev accuracy to 15/16 but fails on citations: 6/8 on the fresh set and once on the held-out set.
+- The gap to Claude is now one question on the dev sets (C) instead of two.
+
+**Independent review** (a separate Claude agent, read-only; Codex is not set up here): approved, no critical or high findings. Fixed before the re-run below:
+- Medium: the enum left out short and long lines, which could force the model to quote, and the ledger to relocate onto, an unrelated line. Every non-blank line is now a choice: a short one stays unverified as before, and a long one is offered as its first 200 UTF-16 units.
+- Medium: a 2000-line enum may be costly to compile on every call. The caps are now 1000 choices and 60,000 characters. Compile time at the caps is not measured.
+- Low: quote length is counted in UTF-16 units as the ledger counts it, and lines that differ only in spacing are one choice. New tests cover CRLF and BOM files, warm, the rule's placement, the unchanged system message and `prefixId`, and the real caps.
+
+**C re-run with the reviewed enum**, three runs each: original 7/8 accuracy and 8/8 citations; held-out 8/8 accuracy and 7, 8, 8 citations; fresh 8/8 and 8/8; bad quotes 0–1 per run; injection probe 30 minutes and no hijacked finding in 3/3. Mean time 16.0 s per question, 2.8× the 7B start, so the verdict above stands.
+
+**Decision (2026-11-10), following the gate.** Neither tuned variant is the default, because none passed the whole gate.
+- The constant rule and the quote enum ship together as an opt-in, `LATENT_STRICT_CITATIONS=1`, and are off by default. On by default, they would turn the 7B setup into variant D, which fails on citations.
+- The open grounding gap is fixed in the ledger: every quoted string literal in a label (`'orbit-mail'`, `"EUR"`) must be on the cited lines, as numbers already had to be. Apostrophes inside words do not count.
+
+**Final re-measure with that code**, three runs each:
+
+| Setup | Original | Held-out | Fresh | Injection | Mean time |
+| --- | --- | --- | --- | --- | --- |
+| Default: 7B, strict off | 7 acc, 7 cit | 7 acc, 8 cit | 8 acc, 7 cit | no finding kept, 3/3 | 5.7 s |
+| Opt-in: 14B, strict on | 7 acc, 8 cit | 8 acc, 7 cit | 8 acc, 8 cit | the real 30 minutes, 3/3 | 15.8 s |
+
+- The default reproduces the starting point exactly, so the stricter grounding cost no citation here.
+- The opt-in gives the same results as the reviewed re-run above, at 2.8× the 7B time.
+
+Suites on `ruslan/m2a-m2c-tuning`: runtime 129/129 in WSL (none skipped) and on Windows (24 skipped for torch and symlinks), node 97/98 (one skipped), graph 9/9, Playwright 12/12.
+
+## Results — Cycle 9 (M2c measurement), 2026-11-09
+
+The full tables are in [docs/m2c-latent-team.md](m2c-latent-team.md), under "Result: the full measurement". Qwen2.5-3B-Instruct, 200 GSM8K test questions, seed 0:
+
+| System | Accuracy | Text tokens | Seconds per question |
+| --- | --- | --- | --- |
+| `single` | 0.820 | 291 | 1.26 |
+| `text_mas` | 0.780 | 894 | 3.56 |
+| `latent_mas` m = 40 | 0.835 | 251 | 1.92 |
+| `latent_random` m = 40 | 0.505 | 235 | 2.02 |
+| `latent_aligned` m = 40 | 0.000 | 441 | 2.06 |
+
+- **Gate passed** against `text_mas`: +0.055 (95% interval +0.005 to +0.105), 72% fewer tokens, 1.85× faster.
+- Not better than `single` (−0.03 to +0.06) and slower than it.
+- Real hidden states matter: +0.26 to +0.41 over random vectors, and +0.01 to +0.115 over the same team with no thinking steps.
+- The step curve peaked at m = 40 on seed 0 (0.775, 0.770, 0.785, 0.835, 0.795 at m = 0, 10, 20, 40, 80).
+- **Second seed** (other 200 questions): `single` 0.840, `text_mas` 0.805, `latent_mas` 0.860 / 0.825 / 0.850 at m = 30 / 40 / 50, `latent_random` 0.535.
+  - The gate passes again at m = 40, but the gain over `text_mas` is not significant on this seed (−0.035 to +0.075).
+  - m = 30–50 are within noise of each other, so the seed-0 peak was noise on a plateau.
+  - Still not better than `single`.
+
+**M2c verdict.** On Qwen2.5-3B, latent thinking matches the text team at about a quarter of its tokens and half its time, and it needs real hidden states. It does not beat one model solving alone. The untied-model check (Qwen3 or Llama 3.1 8B) is next.

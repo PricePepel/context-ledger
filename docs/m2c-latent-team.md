@@ -114,6 +114,60 @@ These are GSM8K test results, seed 0, with Qwen2.5-3B-Instruct, greedy decoding 
 - The gate is not decided. The 6-question live check (soft thoughts 6/6 at m = 40, paper thoughts 0/6) is a debug signal, not a measurement.
 - To resume, run `latent_team.evaluate --systems single,text_mas,latent_mas,latent_aligned,latent_random --steps 40 --count 200 --batch 32`, then the step sweep. On one RTX 4090 Laptop GPU this takes about 40 minutes.
 
+## Result: the full measurement (2026-11-09, cycle 9)
+
+The resumed run, as the section above says, then a sweep of `latent_mas` and `latent_random` at m = 0, 10, 20 and 80. Same model, seed, 200 GSM8K test questions, greedy decoding and batches of 32. The first pass took 36 minutes and the sweep 49 minutes.
+
+| System | Accuracy | Text tokens per question | Forward steps | Seconds per question |
+|---|---|---|---|---|
+| `single` | 0.820 | 291 | 291 | 1.26 |
+| `text_mas` | 0.780, 70.5% of agents capped | 894 | 894 | 3.56 |
+| `latent_mas` m = 40 | **0.835** | **251** | 371 | **1.92** |
+| `latent_aligned` m = 40 | 0.000 | 441 | 561 | 2.06 |
+| `latent_random` m = 40 | 0.505 | 235 | 355 | 2.02 |
+
+**Gate: passed.** `latent_mas` minus `text_mas` is +0.055, with a paired 95% interval of +0.005 to +0.105. It uses 72% fewer generated tokens and is 1.85× faster. `single` and `text_mas` reproduce the numbers above exactly.
+
+Paired 95% intervals for `latent_mas` at m = 40:
+- Against `single`: −0.03 to +0.06. **The latent team is not better than the solver alone**, and it is slower (1.92 s against 1.26 s). It beats the text team, which is held back by its truncated plans.
+- Against `latent_random`: +0.26 to +0.41. The gain needs the real hidden states, not just the extra prompts and memory.
+- Against `latent_aligned`: +0.78 to +0.885. The paper's alignment collapses on this tied-embedding model, as the live check found (0/6 there, 0/200 here).
+
+**Step sweep:**
+
+| m | `latent_mas` | `latent_random` |
+|---|---|---|
+| 0 | 0.775 | 0.775 (the same run: no vectors) |
+| 10 | 0.770 | 0.635 |
+| 20 | 0.785 | 0.610 |
+| 40 | 0.835 | 0.505 |
+| 80 | 0.795 | 0.235 |
+
+- m = 0 is the working memory without thinking. At m = 40, latent thinking adds +0.06 over it, with an interval of +0.01 to +0.115.
+- m = 40 also beats m = 20 (+0.005 to +0.10) and m = 80 (0 to +0.08).
+- The curve peaks rather than rising, so treat the m = 40 result as one good setting, not a trend. m = 40 was the preset before measuring, not picked after. Only m = 40 clears `text_mas` with an interval above zero.
+- Random vectors hurt more the more steps they get, while real thoughts never fall below memory-only.
+- Next checks: a second seed at m = 30, 40 and 50, and an untied model (Qwen3 or Llama 3.1 8B), where the paper's alignment is expected to matter.
+
+### Second seed (2026-11-10)
+
+The same settings with `--seed 1`, which is another 200 GSM8K test questions.
+
+| System | Accuracy | Text tokens | Seconds per question |
+|---|---|---|---|
+| `single` | 0.840 | 282 | 1.38 |
+| `text_mas` | 0.805, 66.2% of agents capped | 883 | 3.40 |
+| `latent_mas` m = 30 | 0.860 | 251 | 1.92 |
+| `latent_mas` m = 40 | 0.825 | 247 | 2.01 |
+| `latent_mas` m = 50 | 0.850 | 242 | 2.01 |
+| `latent_random` m = 40 | 0.535 | 238 | 2.09 |
+
+- **The gate passes again** at m = 40: within 2 points of `text_mas` (+0.02, interval −0.035 to +0.075), 72% fewer tokens, 1.7× faster. On this seed the gain over `text_mas` is not significant.
+- **Not better than `single` on either seed:** −0.07 to +0.04 here.
+- **The control holds:** +0.215 to +0.36 over random vectors.
+- **The m = 40 peak of seed 0 does not reproduce.** m = 30, 40 and 50 are within noise of each other: m = 40 minus m = 30 is −0.075 to +0.005, and minus m = 50 is −0.065 to +0.015. Read the step curve as a plateau from about 30 to 50 steps, with no sharp optimum.
+- **Conclusion for M2c on Qwen2.5-3B.** Latent thinking keeps text-team accuracy at a quarter of the tokens and about half the time. It needs real hidden states, but it does not beat one model solving alone. The untied-model check is still open.
+
 ## Serving
 
 - **Runtime.** `POST /latent/team` with `{question, latentSteps?}` returns the solver's answer and a receipt.

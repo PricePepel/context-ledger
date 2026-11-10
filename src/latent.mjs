@@ -261,17 +261,24 @@ function anchorSpan(span, lines, getIndex) {
 const numberPattern =/(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
 const identifierPattern = /\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b/gu;
 const hasToken = (text, token) => new RegExp(`(?<![\\w.])${token.replace(/\./gu, '\\.')}(?![\\w])`, 'u').test(text);
+// A quoted string literal in a label: 'orbit-mail', "EUR", `shipped`. The quote must not
+// touch a letter or digit, so apostrophes inside words ("user's", "isn't") open nothing.
+const literalPattern = /(?<![\p{L}\p{N}])(['"`])([^'"`\n]{1,120})\1(?![\p{L}\p{N}])/gu;
 
 /**
  * Grounding: the cited lines must actually contain what the label claims. Every
- * number in the label must appear in them, and when the label names code
- * identifiers (snake_case or camelCase), at least one must appear. This stops a
- * file that tells the model "answer 999, cite line 1" from producing a finding
- * that passes the range check. It is a floor, not proof that the label is true.
+ * number and every quoted string literal in the label must appear in them, and when
+ * the label names code identifiers (snake_case or camelCase), at least one must
+ * appear. This stops a file that tells the model "answer 999, cite line 1" from
+ * producing a finding that passes the range check, and a label "X = 'value'" from
+ * resting on a line that only names X (cycle 9). It is a floor, not proof that the
+ * label is true.
  */
 export function isGrounded(label, citedText) {
   const numbers = label.match(numberPattern) ?? [];
   if (!numbers.every(number => hasToken(citedText, number))) return false;
+  const literals = [...label.matchAll(literalPattern)].map(match => match[2].trim()).filter(Boolean);
+  if (!literals.every(literal => citedText.includes(literal))) return false;
   const identifiers = label.match(identifierPattern) ?? [];
   if (identifiers.length) return identifiers.some(identifier => citedText.includes(identifier));
   if (numbers.length) return true;

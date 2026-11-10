@@ -229,6 +229,21 @@ test('grounding requires every number and one named identifier to appear in the 
   assert.equal(isGrounded('retryLimit or RETRY_LIMIT is 3', line), true);
 });
 
+test('cycle 9: a quoted string literal in a label must be on the cited lines', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const definition = "export const REMINDER_QUEUE = 'harbor-reminders';";
+  const importLine = "import { REMINDER_LEAD_DAYS, REMINDER_QUEUE } from './settings.js';";
+  // Live, the 7B model cited the import line for this label, and the old check kept it.
+  assert.equal(isGrounded("REMINDER_QUEUE = 'harbor-reminders'", importLine), false);
+  assert.equal(isGrounded("REMINDER_QUEUE = 'harbor-reminders'", definition), true);
+  assert.equal(isGrounded('Reminders go to "harbor-reminders"', definition), true, 'either quote style');
+  assert.equal(isGrounded('Reminders go to `harbor-mail`', definition), false);
+  // Apostrophes in words are not literals, and unquoted names fall back to the old rules.
+  assert.equal(isGrounded("The member's reminder isn't sent twice", definition), true);
+  assert.equal(isGrounded("REMINDER_QUEUE is the reminders' queue", definition), true);
+  assert.equal(isGrounded('Charges are in EUR', "export const CURRENCY = 'EUR';"), true);
+});
+
 test('live injection: a finding that cites the planted comment itself is dropped, and the agent is warned', async t => {
   const injectionRoot = fileURLToPath(new URL('../evals/latent/injection', import.meta.url));
   // What the live 7B model returned three times with workers 3 and budget 600: it cited
