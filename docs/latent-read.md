@@ -167,6 +167,13 @@ Response:
   - A quote found nowhere in the file drops the finding.
   - A shorter quote, or one that is ambiguous, leaves the span as cited and unverified.
   - Stored quotes are folded onto one line, and the ledger renders them as JSON strings.
+- Grounding on the ledger side. A finding is kept only if its cited lines contain every number in its label, every quoted string literal in its label (`'orbit-mail'`, `"EUR"`, `` `shipped` ``; cycle 9), and, when the label names code identifiers, at least one of them. Apostrophes inside words are not literals. Otherwise the finding is dropped and counted in `ungroundedFindings`.
+- Strict citations (cycle 9, pending Ali's approval) are off by default and turned on with `LATENT_STRICT_CITATIONS=1`. They add the two runtime behaviours below, measured together in cycle 9: they helped the 14B model and cost the 7B model citations.
+- Quote choices on the runtime side, with strict citations. The worker and synthesizer schemas make `quote` an `enum` of the requested files' non-blank lines, each with runs of whitespace folded to one space and cut to its first 200 UTF-16 code units (the ledger's `String.length`), without duplicates.
+  - Every non-blank line is offered, so the line the model means is always a choice. A short one such as `MAX=5;` stays unverified on the ledger side, as without the enum.
+  - The model can only quote real lines. It can still pair a line with the wrong path or span, and the ledger checks every quote as above, so `quoteVerified` means the quote is on the cited lines, not that those are the right lines.
+  - Above 1000 choices or 60,000 characters of choices, `quote` stays a free string. The caps bound the grammar the backend compiles for every worker and synthesizer call. Compile time at the caps has not been measured.
+- Constant values, with strict citations. The worker and synthesizer user messages ask the model to resolve a named constant or variable to the literal on its definition line and to cite that line. The text is `RESOLVE_RULE` in `pool.py`. It is not part of the preamble, so it does not change `preambleVersion` or the cached prefix.
 
 ### `GET /latent/mappers` (M2b scaffold)
 

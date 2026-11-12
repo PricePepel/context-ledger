@@ -109,6 +109,18 @@ def paired_interval(a, b, rounds=2000, seed=0):
     return [round(diffs[int(0.025 * rounds)], 4), round(diffs[int(0.975 * rounds)], 4)]
 
 
+def sample_block(items, count, seed, block=0):
+    """Questions block*count to (block+1)*count - 1 of one shuffle by seed.
+
+    Blocks of one seed never share a question, and block 0 is the sample that --seed alone
+    took before (PR #7 review: seeds 0 and 1 shared 30 of their 200 questions)."""
+    if count < 1 or block < 0 or (block + 1) * count > len(items):
+        raise ValueError(f"block {block} of {count} questions is outside the {len(items)} available")
+    shuffled = list(items)
+    random.Random(seed).shuffle(shuffled)
+    return shuffled[block * count:(block + 1) * count]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
@@ -117,18 +129,18 @@ def main():
     parser.add_argument("--count", type=int, default=200)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--block", type=int, default=0,
+                        help="which block of --count questions of the --seed shuffle; blocks are disjoint")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    items = gsm8k("test")
-    random.Random(args.seed).shuffle(items)
-    items = items[:args.count]
+    items = sample_block(gsm8k("test"), args.count, args.seed, args.block)
     from .team import LatentTeam  # torch is only needed to run the models, not to score answers
     team = LatentTeam(args.model)
     # Warm-up at the real batch size, so the first system does not pay kernel set-up costs.
     warm = [item["question"] for item in items[:args.batch]]
     team.single(warm, max_new_tokens=8)
     team.latent_mas(warm, steps=2, max_new_tokens=8)
-    report = {"model": args.model, "systems": {}}
+    report = {"model": args.model, "sample": {"seed": args.seed, "block": args.block, "count": args.count}, "systems": {}}
     for system in args.systems.split(","):
         latent = system in LATENT_MODES
         for steps in ([int(s) for s in args.steps.split(",")] if latent else [0]):

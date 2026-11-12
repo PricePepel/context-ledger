@@ -34,6 +34,16 @@ PREAMBLE = (
 # the ledger's, and live it lowered accuracy and let a steered finding through.
 PREAMBLE_VERSION = "2"
 
+# Cycle 9: both live misses named a constant (SESSION_HARD_CAP_SECONDS, MAIL_QUEUE)
+# without its value. The rule sits in the worker and synthesizer user messages, not
+# the preamble, so the cached prefix and PREAMBLE_VERSION stay as they are. It is sent,
+# with the quote enum below, only when the pool runs with strict_citations.
+RESOLVE_RULE = (
+    "When the code uses a named constant or variable, find the line where the files define "
+    "it and state its literal value in the answer and the label (for example NAME = 'value'). "
+    "Cite that definition line with its text copied exactly."
+)
+
 MIN_BUDGET, MAX_BUDGET, DEFAULT_BUDGET = 64, 2048, 600
 MIN_WORKERS, MAX_WORKERS, DEFAULT_WORKERS = 1, 4, 3
 MAX_QUESTION_CHARS = 2000
@@ -94,7 +104,62 @@ def planner_schema(count):
     }
 
 
-def _finding_schema(paths):
+# Cycle 9: live, most dropped findings had a quote the model paraphrased. When the files
+# are small enough, structured output limits each quote to a real line of the files, so
+# a quote can no longer be invented; the ledger still checks it against the cited span.
+# Every non-blank line is offered, so the right line is always among the choices (review:
+# leaving one out would force the model to quote, and the ledger to relocate onto, an
+# unrelated line). A short line such as "MAX=5;" stays unverified on the ledger side, as
+# before the enum, and a line longer than a quote is offered as its first 200 UTF-16
+# units, which the ledger still finds inside the cited line.
+# Both caps bound the grammar the backend compiles for every worker and synthesizer call.
+QUOTE_ENUM_MAX_LINES = 1000
+QUOTE_ENUM_MAX_CHARS = 60_000
+
+
+# The characters JavaScript's \s matches with the u flag, which the ledger folds in quotes
+# (normalizeSpace in src/latent.mjs). str.split() differs: it also splits on U+001C-U+001F
+# and U+0085, and not on U+FEFF. Built from code points so the source holds no raw ones.
+JS_SPACE_CODE_POINTS = (0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0xA0, 0x1680, *range(0x2000, 0x200B),
+                        0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF)
+_JS_SPACE_RUN = re.compile("[" + "".join(re.escape(chr(code)) for code in JS_SPACE_CODE_POINTS) + "]+")
+
+
+def fold_space(text):
+    """Runs of JavaScript whitespace as one space, trimmed: the ledger's normalizeSpace."""
+    return _JS_SPACE_RUN.sub(" ", text).strip(" ")
+
+
+def _utf16_prefix(text, limit):
+    """The longest prefix of text within limit UTF-16 code units (the ledger's String.length)."""
+    units = 0
+    for index, character in enumerate(text):
+        units += 2 if ord(character) > 0xFFFF else 1
+        if units > limit:
+            return text[:index]
+    return text
+
+
+def quotable_lines(files):
+    """Distinct quotable forms of the files' non-blank lines, or None when there are too many."""
+    choices = {}
+    for _, lines in files:
+        for line in lines:
+            # The ledger compares quotes with runs of whitespace folded, so lines that
+            # differ only in spacing are one choice. The cut can end on a space.
+            text = _utf16_prefix(fold_space(line), MAX_QUOTE_CHARS).strip(" ")
+            if text:
+                choices[text] = None
+    total = sum(len(text) for text in choices)
+    if not choices or len(choices) > QUOTE_ENUM_MAX_LINES or total > QUOTE_ENUM_MAX_CHARS:
+        return None
+    return list(choices)
+
+
+def _finding_schema(paths, quotes=None):
+    quote = {"type": "string", "minLength": 1, "maxLength": MAX_QUOTE_CHARS}
+    if quotes:
+        quote = {"type": "string", "enum": list(quotes)}
     return {
         "type": "object",
         "properties": {
@@ -107,7 +172,7 @@ def _finding_schema(paths):
                         "path": {"type": "string", "enum": list(paths)},
                         "startLine": {"type": "integer", "minimum": 1},
                         "endLine": {"type": "integer", "minimum": 1},
-                        "quote": {"type": "string", "minLength": 1, "maxLength": MAX_QUOTE_CHARS},
+                        "quote": quote,
                     },
                     "required": ["path", "startLine", "endLine", "quote"],
                     "additionalProperties": False,
@@ -121,14 +186,14 @@ def _finding_schema(paths):
     }
 
 
-def findings_schema(paths, min_findings, max_findings):
+def findings_schema(paths, min_findings, max_findings, quotes=None):
     return {
         "type": "object",
         "properties": {
             "answer": {"type": "string", "minLength": 1, "maxLength": 2000},
             "findings": {
                 "type": "array",
-                "items": _finding_schema(paths),
+                "items": _finding_schema(paths, quotes),
                 "minItems": min_findings,
                 "maxItems": max_findings,
             },
@@ -358,11 +423,15 @@ def _user(role, *lines):
 
 
 class LatentPool:
-    def __init__(self, root, client, deadline_seconds=REQUEST_DEADLINE_SECONDS, slot_wait_seconds=SLOT_WAIT_SECONDS):
+    def __init__(self, root, client, deadline_seconds=REQUEST_DEADLINE_SECONDS, slot_wait_seconds=SLOT_WAIT_SECONDS,
+                 strict_citations=False):
         self.root = root
         self.client = client
         self.deadline_seconds = deadline_seconds
         self.slot_wait_seconds = slot_wait_seconds
+        self.strict_citations = bool(strict_citations)
+        # The extra user-message lines for workers and the synthesizer.
+        self._rule_lines = (RESOLVE_RULE,) if self.strict_citations else ()
         self._slots = threading.BoundedSemaphore(CONCURRENT_PIPELINES)
 
     @contextlib.contextmanager
@@ -386,7 +455,7 @@ class LatentPool:
         files = load_files(self.root, paths)
         prefix = render_prefix(files)
         line_counts = {path: len(lines) for path, lines in files}
-        return prefix, line_counts
+        return prefix, line_counts, quotable_lines(files) if self.strict_citations else None
 
     def _warm(self, run):
         reader = run.call("reader", _user("reader", "Read the files. Reply with OK."), 1)
@@ -396,7 +465,7 @@ class LatentPool:
         started = time.monotonic()
         _only_fields(body, WARM_FIELDS)
         paths = _paths_field(body)
-        prefix, _ = self._prepare(paths)
+        prefix, _, _ = self._prepare(paths)
         pid = prefix_id(prefix)
         with self._slot():
             run = self._run(prefix, started, is_cancelled)
@@ -412,7 +481,7 @@ class LatentPool:
         started = time.perf_counter()
         deadline_start = time.monotonic()
         paths, question, budget, workers = parse_read_body(body)
-        prefix, line_counts = self._prepare(paths)
+        prefix, line_counts, quotes = self._prepare(paths)
         if not any(line_counts.values()):
             raise ApiError(400, "The files are empty, so nothing can be cited.")
         pid = prefix_id(prefix)
@@ -420,8 +489,8 @@ class LatentPool:
             run = self._run(prefix, deadline_start, is_cancelled)
             prefix_tokens = self._warm(run)
             sub_questions = self._plan(run, question, workers)
-            results = self._work(run, question, sub_questions, line_counts)
-            answer, findings, dropped = self._synthesize(run, question, results, line_counts, budget)
+            results = self._work(run, question, sub_questions, line_counts, quotes)
+            answer, findings, dropped = self._synthesize(run, question, results, line_counts, budget, quotes)
 
         graph = {
             "version": 1,
@@ -463,14 +532,15 @@ class LatentPool:
         return run.call_json("planner", user, PLANNER_MAX_TOKENS, planner_schema(count),
                              lambda value: validate_plan(value, count), compact_user=compact)
 
-    def _work(self, run, question, sub_questions, line_counts):
-        schema = findings_schema(_citable(line_counts), 0, MAX_WORKER_FINDINGS)
+    def _work(self, run, question, sub_questions, line_counts, quotes=None):
+        schema = findings_schema(_citable(line_counts), 0, MAX_WORKER_FINDINGS, quotes)
 
         def answer(sub_question):
             user = _user(
                 "worker",
                 f"Main question: {question}",
                 f"Sub-question: {sub_question}",
+                *self._rule_lines,
                 "Answer the sub-question from the files. List up to "
                 f"{MAX_WORKER_FINDINGS} findings, each a one-line label with evidence spans "
                 "(path, startLine, endLine, quote). Reply as JSON: "
@@ -489,7 +559,7 @@ class LatentPool:
             futures = [executor.submit(answer, sub_question) for sub_question in sub_questions]
             return [future.result() for future in futures]
 
-    def _synthesize(self, run, question, results, line_counts, budget):
+    def _synthesize(self, run, question, results, line_counts, budget, quotes=None):
         notes = json.dumps(results, ensure_ascii=False, separators=(",", ":"))
         # A finding with one quoted span costs roughly 90-110 tokens of JSON, so size the
         # list to the budget instead of letting the reply run past max_tokens.
@@ -500,6 +570,7 @@ class LatentPool:
                 "synthesizer",
                 f"Question: {question}",
                 f"Worker notes: {notes}",
+                *self._rule_lines,
                 "Check the notes against the files and write the final answer: a short answer "
                 f"and 1 to {count} findings, each a one-line label with 1 to {MAX_SPANS} "
                 "evidence spans (path, startLine, endLine, quote). Reply as JSON: {\"answer\": string, "
@@ -508,7 +579,7 @@ class LatentPool:
             )
 
         compact = max(1, fit // 2)
-        schema = findings_schema(_citable(line_counts), 1, fit)
+        schema = findings_schema(_citable(line_counts), 1, fit, quotes)
         return run.call_json(
             "synthesizer", request(fit, ""), budget, schema,
             lambda value: validate_answer(value, line_counts, fit, True),

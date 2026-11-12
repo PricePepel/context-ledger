@@ -77,9 +77,34 @@ Result: on a long session the graph handoff was about 3× faster and used about 
 The user's Claude Code (user scope) and Codex (`~/.codex/config.toml`, rebuilt after it was found corrupted) both connect to the ledger. A recorded take passed end to end after the fixes in the eval log's "Take 2" notes. Next steps: record the final video, then run more rehearsal rounds for a time estimate with a spread.
 
 
+## Current checkpoint — cycle 9 (M2a tuning and the M2c measurement, 2026-11-10)
+
+Branch `ruslan/m2a-m2c-tuning`, from `origin/main`, merged into `main` as PR #7 on 2026-11-12 (eb83866). The PR records no review, so Ali's review of the runtime part is still open (step 1). Read the cycle 9 sections of [the eval log](evals.md) and "Result: the full measurement" in [the M2c doc](m2c-latent-team.md).
+
+- **Closed-model baseline re-run:** Claude Sonnet scores 8/8 with 8/8 citations on all three M2a sets in every run.
+- **New fresh set:** `evals/latent/fresh.json` on `evals/latent/fixture-library`, written before tuning. `run.mjs` and `baseline.mjs` take `--set fresh`.
+- **Strict citations, opt-in** with `LATENT_STRICT_CITATIONS=1`. The runtime limits quotes to real file lines (a structured-output enum) and asks for constants' literal values.
+  - With Qwen2.5-14B-AWQ it scores 15/16 on the dev sets and 7/8 with 8/8 citations on the fresh set (strict grading since 2026-11-12), at about 2.9× the 7B time per question.
+  - With the 7B model it costs citations, so it stays off by default, and the default 7B results are unchanged.
+  - Ali should approve the runtime part (`docs/latent-read.md`, "pending Ali's approval").
+- **Ledger grounding:** a quoted string literal in a finding's label must now appear on the cited lines.
+- **M2c:** the gate passes on two seeds. Latent thinking needs real hidden states, but it does not beat one model solving alone, and between 30 and 50 steps the best value moves from sample to sample.
+- **Follow-up of the PR #7 review (2026-11-12):** all three open lows are closed, and the live gate is re-run. See the cycle 9 follow-up sections of the eval log.
+  - **Fresh grader:** stricter, measured at 81/90 against 90 independently labelled answers, with no right answer refused. The re-grade lowers some recorded fresh scores from 8/8 to 7/8. The gate verdicts stand.
+  - **M2c:** `--block` gives disjoint samples. The disjoint re-run confirms the verdict.
+  - **Runtime:** it folds whitespace exactly as the ledger does.
+  - **Live re-run after f8ada62:** no loss on either setup. Accuracy is the same, and 14B held-out citations rose from 7, 7, 7 to 7, 8, 8.
+
+Next steps:
+1. Ali reviews the runtime changes, now on `main`: strict citations, and the whitespace fold in 8f00940.
+2. Decide whether a 14B strict mode is worth 2.9× the latency for agents.
+3. Measure grammar compile time at the enum caps (1000 choices or 60,000 characters).
+4. Run M2c on an untied model.
+5. Grade extra claims: the keyword grader still accepts 9 of 45 wrong answers that add a false detail. Use a judge model checked against a second judge (card G10 on [the delivery board](delivery-board.md)).
+
 ## Current checkpoint — cycle 10 (bounded MCP results and discovery, 2026-11-11)
 
-Branch `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Cycle 8 lives on `vuek0/subagent-graphs` and cycle 9 on PR #7. Read the cycle 10 definition and results in [the eval log](evals.md).
+Branch `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Cycle 8 lives on `vuek0/subagent-graphs` and cycle 9 was PR #7, merged into `main` on 2026-11-12 and merged into this branch. Read the cycle 10 definition and results in [the eval log](evals.md).
 
 - Every MCP tool result is at most 40,000 escaped characters (`maxResultCharacters` in `src/paging.mjs`), measured by `resultSize`: an ASCII letter or whitespace counts 1, other ASCII (digits, punctuation) 2, any other UTF-16 unit 4, so code, JSON and Han-script pages stay near the token count of 40,000 characters of English. A longer result comes in pages: JSON with `more` as its first key, or text whose first line is `[Partial result: ...]` and whose last line repeats that note, which names the arguments to send next. A result that fits is byte-identical to before. `callTool` withholds any oversized result as a bug.
 - New tools `graph_list` and `room_list`, over the new `GET /api/graphs` and `GET /api/rooms`. `GET /api/sessions` pages only when it is given `limit` or `after`. `POST /api/latent/files` serves later pages of a latent text fallback without the model.

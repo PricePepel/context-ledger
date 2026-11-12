@@ -36,8 +36,12 @@ DEFAULT_PORT = 4320
 
 class Config:
     def __init__(self, root, vllm_url=DEFAULT_VLLM_URL, model=DEFAULT_MODEL, port=DEFAULT_PORT, timeout=300.0,
-                 deadline=REQUEST_DEADLINE_SECONDS, slot_wait=SLOT_WAIT_SECONDS, allowed_hosts=()):
+                 deadline=REQUEST_DEADLINE_SECONDS, slot_wait=SLOT_WAIT_SECONDS, allowed_hosts=(),
+                 strict_citations=False):
         self.root = root
+        # Cycle 9: the constant rule and the quote enum together. Off by default: live it
+        # helped the 14B model and cost the 7B model citations (docs/evals.md, cycle 9).
+        self.strict_citations = bool(strict_citations)
         # Extra Host header values to accept, e.g. "host.docker.internal:4320" for Open WebUI
         # in Docker. The server still listens on 127.0.0.1 only.
         self.allowed_hosts = tuple(allowed_hosts)
@@ -63,12 +67,16 @@ def load_config(env=None):
         raise SystemExit(f"LATENT_PORT must be a number: {port_text}") from None
     if not 0 <= port <= 65535:
         raise SystemExit(f"LATENT_PORT is out of range: {port}")
+    strict_text = env.get("LATENT_STRICT_CITATIONS", "0").strip()
+    if strict_text not in ("0", "1", ""):
+        raise SystemExit(f"LATENT_STRICT_CITATIONS must be 0 or 1: {strict_text}")
     return Config(
         root=os.path.realpath(root),
         vllm_url=env.get("VLLM_URL") or DEFAULT_VLLM_URL,
         model=env.get("LATENT_MODEL") or DEFAULT_MODEL,
         port=port,
         allowed_hosts=_allowed_hosts(env.get("LATENT_ALLOWED_HOSTS", "")),
+        strict_citations=strict_text == "1",
     )
 
 
@@ -289,7 +297,7 @@ class LatentServer(ThreadingHTTPServer):
         self._connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
         client = client or VllmClient(config.vllm_url, config.model, config.timeout)
         self.pool = LatentPool(config.root, client, deadline_seconds=config.deadline,
-                               slot_wait_seconds=config.slot_wait)
+                               slot_wait_seconds=config.slot_wait, strict_citations=config.strict_citations)
         self.registry = registry or MapperRegistry()
         self.routes = {
             "/latent/warm": {"POST": self.pool.warm},
