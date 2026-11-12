@@ -398,6 +398,45 @@ Bound: a tool result carries at most 40,000 characters (UTF-16 code units) of te
 | Live Codex sentinel | Codex calls a tool whose result is 39,900 characters, with a sentinel on its last line, and repeats the sentinel in 3 of 3 runs. If it cannot, lower `maxResultCharacters` and record it here. |
 | Live demo | `demo/rehearse.mjs` on the short fixture scores the same as in cycle 7, and session_read pages reach Codex with their notes. |
 
+## Results — Cycle 10, 2026-11-11
+
+Built on `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Not pushed. Commits:
+
+- `651bba4` defines the cycle.
+- `51aae9a` bounds and pages every MCP result (`src/paging.mjs`), adds `graph_list` and `room_list` over `GET /api/graphs` and `GET /api/rooms`, adds `POST /api/latent/files` for later fallback pages, and gives the store schema version 1 (`src/migrate.mjs`).
+- `2a02e98` applies the first review.
+- `404d7d7` applies the second review.
+
+Suites (Windows, at 404d7d7, three runs each): node 119/120 (one skipped) in every run, Playwright 13/13 in every run. Linux CI has not run.
+
+Three independent review rounds, each with five lenses (correctness, security, compatibility, agent UX, tests). The subsections below give the first two rounds in detail.
+
+- **Round 1, of 51aae9a: 11 findings upheld** (the room_read numbering bug was found twice). All fixed in 2a02e98.
+  - Medium: room_read numbering moved when a choice changed between pages. `agreedProposalIds` is now the last section.
+  - Medium: data could forge the "follow the trailing note" rule, and a client that cut the end hid that more remained. A partial text page now starts with `[Partial result: ...]` and ends with the same note.
+  - Low: a resumed file line lost its number prefix. It now starts with `line+character| `.
+  - Low: context_for paging would cost one handoff per page under vuek0's quota. A read-through now fetches `/context` once.
+  - Low: the paging helpers sat where vuek0 adds `currentTranscript`. They moved, and merge-tree no longer shows the 325-line hunk.
+  - Low: session_search hard-failed against an older ledger. A complete list that fits now passes through unchanged.
+  - Low, tests: the `fromPath` continuation in paths mode, the past-the-end notes, and a migration race test that did not race.
+- **Round 2, of 2a02e98: 7 findings upheld.** All fixed in 404d7d7.
+  - Medium: session_search without `limit` stopped at 100 rows. It now reads ledger pages until the bound or the end.
+  - Medium: a page could exceed a client's token cap. Every size check now uses `resultSize`.
+  - Low: the tools/list budget test would fail after merging vuek0. It now counts this cycle's 13 tools by name.
+  - Low, tests: room_list's graph_b party filter, the parties order, latent_transfer's paths fallback, and graph_list and room_list trimming.
+- **Round 3, of 404d7d7: 5 findings upheld, not fixed yet.**
+  - Medium: a paged graph_publish result leaves out the derived ready actions and decisions that its description promises. The only way to get them is to read the whole graph back.
+  - Low: filePage adds headings of empty files without a size check until a line has been shown, so a fallback page can go over the bound.
+  - Low, tests: latent_transfer text paging across line boundaries (a dropped line would pass), a test that required arguments are unchanged and the paging arguments optional, and the fixed errors for a bad `fromOffset` in the file and text continuations.
+
+Left open:
+
+- The round 3 findings above.
+- The live evals: the Codex sentinel (also with a code page and a Han page, since `resultSize` is an estimate), fresh-session discovery, and the demo rehearsal.
+- Documented limits: no caller-chosen page size; an ID inside `agreedProposalIds` can move if that list spans two pages and changes in between; an old ledger whose list fits 40,000 characters but not the weighted bound gets the restart error.
+- No real merge with `vuek0/subagent-graphs` has been done. Expect conflicts in `src/mcp.mjs`, and `tests/mcp.test.mjs` needs `handoff_publish` added.
+- The cycle stays open until round 3 is fixed and the live evals have run.
+
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
 Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.
