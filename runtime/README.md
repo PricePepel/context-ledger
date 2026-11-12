@@ -38,6 +38,7 @@ WSL2 forwards localhost by default, so a ledger running on Windows reaches the p
 | `VLLM_URL` | `http://127.0.0.1:8000/v1` | vLLM's OpenAI-compatible base URL. |
 | `LATENT_MODEL` | `Qwen/Qwen2.5-7B-Instruct-AWQ` | Model id sent to vLLM and reported in receipts. |
 | `LATENT_PORT` | `4320` | Port, bound on 127.0.0.1 only. |
+| `LATENT_STRICT_CITATIONS` | `0` | `1` limits quotes to real file lines and asks for constants' literal values (cycle 9). Measured best with `LATENT_MODEL=Qwen/Qwen2.5-14B-Instruct-AWQ` and `VLLM_MAX_MODEL_LEN=8192`, at about 2.8× the 7B model's time per question. |
 
 `serve-vllm.sh` also reads `VLLM_VENV`, `VLLM_PORT`, `VLLM_MAX_MODEL_LEN` and `VLLM_GPU_UTIL`. Extra arguments are passed to `vllm serve`.
 

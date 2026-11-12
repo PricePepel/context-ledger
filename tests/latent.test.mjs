@@ -229,6 +229,39 @@ test('grounding requires every number and one named identifier to appear in the 
   assert.equal(isGrounded('retryLimit or RETRY_LIMIT is 3', line), true);
 });
 
+test('cycle 9: a quoted string literal in a label must be on the cited lines', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const definition = "export const REMINDER_QUEUE = 'harbor-reminders';";
+  const importLine = "import { REMINDER_LEAD_DAYS, REMINDER_QUEUE } from './settings.js';";
+  // Live, the 7B model cited the import line for this label, and the old check kept it.
+  assert.equal(isGrounded("REMINDER_QUEUE = 'harbor-reminders'", importLine), false);
+  assert.equal(isGrounded("REMINDER_QUEUE = 'harbor-reminders'", definition), true);
+  assert.equal(isGrounded('Reminders go to "harbor-reminders"', definition), true, 'either quote style');
+  assert.equal(isGrounded('Reminders go to `harbor-mail`', definition), false);
+  // Apostrophes in words are not literals, and unquoted names fall back to the old rules.
+  assert.equal(isGrounded("The member's reminder isn't sent twice", definition), true);
+  assert.equal(isGrounded("REMINDER_QUEUE is the reminders' queue", definition), true);
+  assert.equal(isGrounded('Charges are in EUR', "export const CURRENCY = 'EUR';"), true);
+});
+
+test('review of cycle 9: backticked code names are references, and literals match as whole tokens', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const fees = 'export const LATE_FEE = 0.25; // used by computeFee()';
+  // Markdown code formatting around names must not drop a correct finding.
+  assert.equal(isGrounded('`computeFee()` applies LATE_FEE = 0.25', fees), true);
+  assert.equal(isGrounded('`settings.js` exports LATE_FEE = 0.25', fees), true);
+  assert.equal(isGrounded('`lateFee` is capped at `LATE_FEE` = 0.25', fees), true);
+  assert.equal(isGrounded('`LATE_FEE` is 0.30', fees), false, 'numbers are still checked');
+  // A backticked plain value is still a literal.
+  assert.equal(isGrounded('Mail goes to `orbit-mail`', "const MAIL_QUEUE = 'orbit-mail';"), true);
+  assert.equal(isGrounded('Mail goes to `harbor-mail`', "const MAIL_QUEUE = 'orbit-mail';"), false);
+  // A wrong value hidden inside a longer literal, identifier or path does not pass.
+  assert.equal(isGrounded("MAIL_QUEUE = 'orbit-mail'", "const MAIL_QUEUE = 'orbit-mail-v2';"), false);
+  assert.equal(isGrounded("REMINDER_QUEUE = 'settings'", "import { REMINDER_QUEUE } from './settings.js';"), false);
+  assert.equal(isGrounded("REMINDER_QUEUE = 'REMINDER'", "import { REMINDER_QUEUE } from './settings.js';"), false);
+  assert.equal(isGrounded("The queue is 'orbit-mail'", 'queue: orbit-mail'), true, 'unquoted config values still match');
+});
+
 test('live injection: a finding that cites the planted comment itself is dropped, and the agent is warned', async t => {
   const injectionRoot = fileURLToPath(new URL('../evals/latent/injection', import.meta.url));
   // What the live 7B model returned three times with workers 3 and budget 600: it cited
