@@ -499,6 +499,16 @@ Implemented in 76fdade. `optionalParty` folds A–Z and then applies the old che
 - **Unchanged elsewhere: pass.** `GET /api/graphs?party=Leo` is still 400 with the same message. Node 123/124 (one skipped), Playwright 13/13, and the tools/list budget test passes.
 - **Live: pass, Codex 3 of 3.** Same runner, prompt and data as the live discovery eval. Every first `graph_list` call sent `{"party": "leo", "limit": 1}`, so the example in the description is followed, and no `graph_list` call failed. Every run found the latest Leo graph with `context_for` and answered 4317, quoting lines 27 and 28 through `session_read`. In two runs Codex then followed `more.after` once to look at the older Leo graph. That is a normal continuation, not a retry. Claude Code (1 run) made the same single `graph_list` call and `context_for`. Codex took 19–22 s, against 20–41 s before the change.
 
+### Review — round 4, of the round 3 gap tests and the party fold, 2026-11-12
+
+Two independent reviews of `f53418a..76fdade` (src and tests), neither anchored on the implementation: Codex (`codex exec --sandbox read-only`) and a Claude code-reviewer subagent. No critical, high or medium findings.
+
+- **Low, fixed in d1600d2:** no test read the advertised `party` schema pattern, so reverting it to the lowercase-only pattern would pass every test while a client that validates arguments refused `Leo` before calling. A test now checks that both tools' pattern accepts `Leo`, `LEO`, `Ali-Bot` and 32 letters, refuses `Leo--Ali`, a leading or trailing hyphen, a space, the empty string, KELVIN SIGN and U+0130, and keeps `maxLength` 32. It fails with the pattern reverted.
+- Codex reviewed d1600d2 as well: no findings. It checked the schema against `optionalParty` on 4,681 generated strings.
+- Suites after the fix: graph 9/9, node 124/125 (one skipped), Playwright 13/13. No raw control or format characters in `src/` or `tests/`.
+
+The round is settled. Cycle 10 has no open review finding.
+
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
 Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.

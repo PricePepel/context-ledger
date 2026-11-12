@@ -15,7 +15,7 @@ Claim a card before working on it (AGENTS.md section 2). States: Backlog, Ready,
 | I2 Tolerant JSONL parsing | Unassigned | — | Real data: one corrupt line rejects a whole session; skip and count bad lines instead | Ready (after P1) |
 | I3 Codex agent-to-agent messages | Unassigned | — | Real data: `response_item/agent_message` records (author/recipient) are dropped | Ready (after P1) |
 | G6 Product review for cycle 4 | Codex | — | Read-only product and eval review | Ready |
-| C10 Bounded MCP results and discovery | Claude Code (for Ruslan) | PR #8, `ruslan/mcp-paging-discovery` | Paging under one bound, `graph_list` and `room_list`, schema version 1; round 3 test gaps; lowercase party guidance | In progress |
+| C10 Bounded MCP results and discovery | Claude Code (for Ruslan) | PR #8, `ruslan/mcp-paging-discovery` | Paging under one bound, `graph_list` and `room_list`, schema version 1; round 3 test gaps; lowercase party guidance | In review (needs a human review: schema migration) |
 | G7 Quoted or inferred nodes | Unassigned | — | Mark each graph node quoted (its evidence lines contain the label's facts) or inferred at publish time, reusing the latent quote check; show the mark in `context_for` and the browser | Backlog |
 | G8 One-command agent setup | Unassigned | — | `ledger install` registers the MCP server for Claude Code and Codex and adds a short "check the ledger first" block to their instruction files; `ledger uninstall` removes both | Backlog |
 | G9 Scoped context with a budget | Unassigned | — | `context_for` with a question and a token budget returns only the matching nodes and their neighbours, instead of the whole briefing | Backlog |
