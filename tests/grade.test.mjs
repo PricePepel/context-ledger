@@ -149,3 +149,19 @@ test('second review of the follow-up: negated success, spaced negations, and the
     assert.equal(gradeSlice({ ...expiry, required: [expired, others] }, slice(example)).correct, false, `only pattern ${index} matches "${example}"`);
   }
 });
+
+test('third review of the follow-up: negation windows and the promoted next entry', () => {
+  assert.deepEqual(grades('renew-on-hold', [
+    'The renewal fails; it cannot succeed while another member has a hold.',
+    'The renewal is rejected; it will not be allowed to renew.',
+    'The loan is not renewed and fails with an error.',
+    'The loan cannot be renewed and throws.',
+    'The item is on hold for another member, but the renewal is not actually rejected and proceeds normally.',
+  ]), [true, true, true, true, false]);
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and itemReturned puts the first waiting hold on the shelf.',
+    'If the member does not pick up the item in time, the hold expires and the next waiting member gets it.',
+    'The hold expires and promotes the original member back onto the shelf.',
+    'The hold will not actually expire; the next waiting member remains waiting.',
+  ]), [true, true, false, false]);
+});

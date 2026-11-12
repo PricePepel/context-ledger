@@ -49,10 +49,12 @@
       "question": "What happens when a member tries to renew a loan while another member has a hold on the item?",
       "required": [["on hold for another member", "refuse", "reject", "throws", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
       "forbidden": [
-        { "pattern": "(?:\\bnot|\\bnever|n't)\\s+(?:be\\s+|been\\s+)?(?:refus|reject|throw|fail|block|stop)" },
-        { "pattern": "(?<!(?:\\bnot|\\bnever|n't)\\s+)\\bsucceed" }, { "pattern": "(?<!(?:\\bnot|\\bnever|n't)\\s+)\\bgoes through\\b" },
+        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|block|stop)" },
+        { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bsucceed" },
+        { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bgoes through\\b" },
         { "pattern": "\\bno (?:error|exception)\\b" },
-        { "pattern": "(?<!(?:\\bnot|\\bnever|n't)\\s+)\\ballowed to renew" }, "is still renewed", "can still be renewed", "renewal is allowed"
+        { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\ballowed to renew" },
+        "is still renewed", "can still be renewed", "renewal is allowed"
       ],
       "evidence": [{ "path": "src/loans.js", "lines": [23, 23] }, { "path": "src/holds.js", "lines": [12, 14] }]
     },
@@ -62,9 +64,9 @@
       "required": [
         ["expire"],
         [{ "pattern": "\\b(?:next|second|following)(?:\\s+(?!(?:day|week|time|morning|reminder)\\b)['\"]?[a-z-]+['\"]?){0,2}\\s+(?:member|hold|person|patron|borrower|in (?:the )?(?:queue|line))\\b" },
-          { "pattern": "\\bpromot\\w*\\s+(?:the|a|an|another)?\\s*(?:['\"]?[a-z-]+['\"]?\\s+){0,2}(?:hold|member)\\b" }]
+          { "pattern": "\\b(?:promot\\w*|puts?|moves?)\\s+(?:the\\s+|a\\s+|an\\s+|another\\s+)?(?:next|following|second|first\\s+(?:waiting|queued)|waiting|queued)\\b(?:\\s+['\"]?[a-z-]+['\"]?){0,2}?\\s+(?:hold|member)\\b" }]
       ],
-      "forbidden": [{ "pattern": "(?:\\bnot|\\bnever|n't)\\s+(?:be\\s+)?expire" }],
+      "forbidden": [{ "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+expire" }],
       "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]
     }
   ]

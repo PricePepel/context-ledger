@@ -523,3 +523,21 @@ Implemented in 8580f3a. Every saved cycle 9 fresh-set run, 24 rounds over 8 setu
   - C is no longer "the only variant with 8/8 accuracy and 8/8 citations on the fresh set": its accuracy there is 7/8.
   - The final re-measure's fresh accuracy is 7/8 for both setups, not 8/8.
   - The "fresh 8/8" in the reviewed C re-run is 7/8.
+
+### Review of the follow-up, and where the grader stops (2026-11-12)
+
+Reviewers: a Claude code-reviewer subagent (one round) and Codex (three rounds), on the F1–F3 commits and each fix. Nothing was critical or high, and F2 and F3 drew no finding after the first round's added edge test.
+
+Every round of the grader review found phrasings that the keyword rules graded wrong. Each was fixed with a test, in 8d40db1, 89b8d0a and the commit after this note:
+
+- renew-on-hold: negated refusals ("won't throw", "not actually rejected") must fail, and negated success or permission ("does not succeed", "will not be allowed to renew", "cannot succeed") must pass. A negation reaches up to two words ahead and never across and, or, but, so or then.
+- hold-expiry: the next, second, following or first waiting member or hold must get the item. Two descriptive words may sit between them, but not day, week, time, morning or reminder. A promotion, put or move must name the next, waiting or queued entry, so "promotes the original member" fails.
+- Forbidden options read the answer only, never finding labels.
+- Each renewals and hold-expiry pattern and each forbidden option is tested on its own.
+
+**Where it stops.** A keyword grader cannot follow every English sentence. Someone can always write an adversarial one that it misgrades, for example with a double negation or a negation three words away. The bar is therefore:
+
+1. Every answer recorded in a live run grades as a person would. That covers all 24 saved cycle 9 rounds and the re-run below.
+2. Every phrasing listed in `tests/grade.test.mjs` grades right.
+
+Sentences that no recorded run produced, and that are built to slip past a rule, are this limit, not defects. If the live runs start producing them, add a rule then. The saved cycle 9 runs re-grade exactly as in the F1 table above after every fix.
