@@ -556,7 +556,7 @@ Review rounds kept finding new everyday paraphrases, so the stopping rule became
 - **The wording fixes** removed every false refusal (10 of 45 right answers were refused before). The new forms are: hands, passes or moves the item on to the next member; `MAX_RENEWALS = 2`; capped at two renewals; and a correct side remark that an expired hold "does not block" renewal, which the negation rule no longer reads as a refusal.
 - **What remains:** 9 of 45 wrong answers are accepted. Each one states the core facts and adds a wrong detail: a renewal fee, an automatic renewal by the reminder queue, 7 days for the second renewal, the wrong error message, a late fee, a counted but unextended renewal, or a 7-day pickup window. A keyword grader checks that the required facts are present. It cannot see an extra false claim.
 - **Guard:** a test now requires that every right answer passes and that at most 9 wrong ones do. The saved cycle 9 runs and today's re-runs re-grade exactly as in the tables above.
-- **Next:** to grade extra claims, use a judge model checked against a second judge on a sample, as in card G10 on `ruslan/mcp-paging-discovery`. Until then, fresh accuracy may overstate a model that adds wrong details by up to 20% of its wrong answers (9 of 45 here).
+- **Next:** to grade extra claims, use a judge model checked against a second judge on a sample, as in card G10 on `ruslan/mcp-paging-discovery`. Until then, fresh accuracy can overstate a model that adds wrong details. On this sample the grader accepted 20% of the wrong answers (9 of 45). That is a measurement on one sample, not a bound.
 
 ### Results — the live re-run after f8ada62 (2026-11-12)
 
@@ -568,7 +568,7 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
 | Opt-in: 14B, strict on | 7 acc, 8 cit | 8 acc; 7, 8, 8 cit | 7 acc, 8 cit | the real 30 minutes, 3/3 | 16.4 s |
 
 - **No loss.** Accuracy matches the cycle 9 final re-measure in every round, once that is re-graded strictly. Citations match too, except that 14B held-out citations rose from 7, 7, 7 to 7, 8, 8. f8ada62's stricter grounding and the whitespace fold cost no accuracy and no citation, and quotes stayed 100% verified.
-- **Gate:** each set passes its per-set check (at least 7/8 and 7/8) in every round. Bad quotes per round were 1–3 on 7B and 0–1 on 14B, and the slice share was at most 0.094.
+- **Gate:** each set passes its per-set check (at least 7/8 and 7/8) in every round. Bad quotes per round were 1–3 on 7B and 0–1 on 14B, and the slice share was below 0.095.
 - **The misses are the known ones.**
   - The fresh miss is hold-expiry in every round. 7B says a reminder is scheduled, and 14B says the item goes back into the waiting queue.
   - 7B also misses `session-cap` and `mail-queue`.

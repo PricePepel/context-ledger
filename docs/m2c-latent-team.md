@@ -146,7 +146,7 @@ Paired 95% intervals for `latent_mas` at m = 40:
 - m = 0 is the working memory without thinking. At m = 40, latent thinking adds +0.06 over it, with an interval of +0.01 to +0.115.
 - m = 40 also beats m = 20 (+0.005 to +0.10) and m = 80 (0 to +0.08).
 - The curve peaks rather than rising, so treat the m = 40 result as one good setting, not a trend. m = 40 was the preset before measuring, not picked after. Only m = 40 clears `text_mas` with an interval above zero.
-- Random vectors hurt more the more steps they get, while real thoughts never fall below memory-only.
+- Random vectors hurt more the more steps they get. Real thoughts stay within one question of memory-only or above it: at m = 10 they score 0.770 against memory-only's 0.775.
 - Next checks: a second seed at m = 30, 40 and 50, and an untied model (Qwen3 or Llama 3.1 8B), where the paper's alignment is expected to matter.
 
 ### Second seed (2026-11-10)
