@@ -78,3 +78,46 @@ test('cycle 9 follow-up: hold-expiry needs the expiry and the next waiting membe
     'The item goes to the next member in the queue.',
   ]), [false, false, false, false]);
 });
+
+test('review of the follow-up: each strict rule is needed, and paraphrases grade right', () => {
+  // renewals: the third pattern alone, and its weeks lookahead.
+  assert.deepEqual(grades('renewals', ['Renewals: at most 2, each adding 14 days.']), [true]);
+  assert.deepEqual(grades('renewals', ['Each renewal adds at most 2 weeks, fourteen renewals in total.']), [false]);
+  const renewals = freshQuestion('renewals');
+  const [count, length] = renewals.required;
+  for (const index of count.keys()) {
+    const only = { ...renewals, required: [[count[index]], length] };
+    const example = ['It can be renewed 2 times, 14 days each.', 'It can be renewed twice, 14 days each.', 'At most 2, 14 days each.'][index];
+    assert.equal(gradeSlice(only, slice(example)).correct, true, `renewals option ${index} matches its own example`);
+  }
+
+  // renew-on-hold: every forbidden option is needed on its own.
+  const hold = freshQuestion('renew-on-hold');
+  const base = "The renewal throws 'Item is on hold for another member.'";
+  const wrong = ['It is not rejected.', 'It succeeds.', 'The loan goes through.', 'There is no error.', 'The member is allowed to renew anyway.',
+    'The loan is still renewed.', 'The loan can still be renewed.', 'The renewal is allowed.'];
+  assert.equal(wrong.length, hold.forbidden.length);
+  for (const [index, phrase] of wrong.entries()) {
+    assert.equal(gradeSlice(hold, slice(`${base} ${phrase}`)).correct, false, phrase);
+    const without = { ...hold, forbidden: hold.forbidden.filter((_, other) => other !== index) };
+    assert.equal(gradeSlice(without, slice(`${base} ${phrase}`)).correct, true, `forbidden option ${index} is the one that catches "${phrase}"`);
+  }
+  assert.deepEqual(grades('renew-on-hold', [
+    'The renewal is rejected; the member is not allowed to renew while another member holds the item.',
+    'The loan cannot be renewed: renew() throws.',
+    "The renewal won't throw.", 'The library does not refuse it.', 'It will not reject the renewal.',
+  ]), [true, true, false, false, false]);
+
+  // hold-expiry: the next member in other words, and not "the next day".
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and the following waiting member gets the item.',
+    'The hold expires, and itemReturned promotes the next hold in the queue.',
+    "The hold expires; the second member in the queue is promoted.",
+    'The hold expires; a reminder is sent the next day.',
+    'The hold does not expire; the next waiting member waits.',
+  ]), [true, true, true, false, false]);
+  // Forbidden options read the answer, not finding labels.
+  const expiry = freshQuestion('hold-expiry');
+  assert.equal(gradeSlice(expiry, slice('The hold expires and the next waiting member gets the item.',
+    [{ label: 'A hold does not expire before pickUpBy', evidence: [] }])).correct, true);
+});

@@ -1,8 +1,10 @@
 // Deterministic grader for latent slices on the synthetic codebase Q&A set.
 // A slice is correct when its answer and finding labels contain every required
-// group and no forbidden option, and cited when at least one evidence span
-// overlaps an acceptable span. An option is a string (see contains) or
-// { "pattern": "..." }, a case-insensitive regular expression over the same text.
+// group and its answer contains no forbidden option, and cited when at least one
+// evidence span overlaps an acceptable span. An option is a string (see contains)
+// or { "pattern": "..." }, a case-insensitive regular expression over the same text.
+// Forbidden options read the answer only: a finding label states one cited fact
+// ("hold does not expire before pickUpBy") and may be right where the answer is not.
 
 const text = slice => [slice.answer, ...(slice.findings ?? []).map(finding => finding.label)].join('\n').toLowerCase();
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -20,8 +22,9 @@ function contains(haystack, option) {
 
 export function gradeSlice(question, slice) {
   const haystack = text(slice);
+  const answer = String(slice.answer ?? '').toLowerCase();
   const correct = question.required.every(group => group.some(option => contains(haystack, option)))
-    && !(question.forbidden ?? []).some(option => contains(haystack, option));
+    && !(question.forbidden ?? []).some(option => contains(answer, option));
   const spans = (slice.findings ?? []).flatMap(finding => finding.evidence ?? []);
   const cited = spans.some(span => question.evidence.some(({ path, lines: [start, end] }) =>
     span.path === path && span.startLine <= end && span.endLine >= start));

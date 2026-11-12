@@ -48,15 +48,23 @@
       "id": "renew-on-hold",
       "question": "What happens when a member tries to renew a loan while another member has a hold on the item?",
       "required": [["on hold for another member", "refuse", "reject", "throws", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
-      "forbidden": ["still succeeds", "succeeds anyway", "is still renewed", "can still be renewed", "renewal is allowed", "allowed to renew",
-        "does not fail", "doesn't fail", "never fails", "not rejected", "not refused", "no error is thrown", "does not throw", "doesn't throw"],
+      "forbidden": [
+        { "pattern": "(?:\\bnot|\\bnever|n't)\\s+(?:be\\s+|been\\s+)?(?:refus|reject|throw|fail|block|stop)" },
+        { "pattern": "\\bsucceed" }, { "pattern": "\\bgoes through\\b" }, { "pattern": "\\bno (?:error|exception)\\b" },
+        { "pattern": "(?<!\\bnot\\s|n't\\s)\\ballowed to renew" }, "is still renewed", "can still be renewed", "renewal is allowed"
+      ],
       "evidence": [{ "path": "src/loans.js", "lines": [23, 23] }, { "path": "src/holds.js", "lines": [12, 14] }]
     },
     {
       "id": "hold-expiry",
       "question": "What happens to a hold when the member does not pick the item up from the hold shelf in time?",
-      "required": [["expire"], ["next"]],
-      "forbidden": ["not expire", "never expire", "doesn't expire", "does not expire", "won't expire"],
+      "required": [
+        ["expire"],
+        [{ "pattern": "\\bnext\\s+['\"]?(?:waiting['\"]?\\s+)?(?:member|hold|person|patron|borrower|in (?:the )?(?:queue|line))" },
+          { "pattern": "\\b(?:second|following)\\s+(?:waiting\\s+)?(?:member|hold|person|patron|borrower)" },
+          { "pattern": "\\bpromot\\w*\\s+(?:the\\s+)?(?:next|following|second|another)" }]
+      ],
+      "forbidden": [{ "pattern": "(?:\\bnot|\\bnever|n't)\\s+(?:be\\s+)?expire" }],
       "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]
     }
   ]

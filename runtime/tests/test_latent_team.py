@@ -194,6 +194,14 @@ class SampleTest(unittest.TestCase):
         for bad in [(200, 0, 6), (200, 0, -1), (0, 0, 0)]:
             with self.assertRaises(ValueError):
                 sample_block(items, *bad)
+        # The last block that fits exactly is allowed and reaches the end; one more is not.
+        exact = [{"question": f"e{index}"} for index in range(1000)]
+        last = sample_block(exact, 200, 3, 4)
+        self.assertEqual(len(last), 200)
+        everything = [q["question"] for block in range(5) for q in sample_block(exact, 200, 3, block)]
+        self.assertEqual(sorted(everything), sorted(q["question"] for q in exact), "five blocks cover every question once")
+        with self.assertRaises(ValueError):
+            sample_block(exact, 200, 3, 5)
 
 if __name__ == "__main__":
     unittest.main()
