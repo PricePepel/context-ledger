@@ -195,19 +195,32 @@ test('migration is atomic, runs once under concurrency and refuses newer files u
   t.after(() => rm(directory, { recursive: true, force: true }));
   const { path } = await versionZero(directory);
 
-  // Two processes open one version 0 file at once.
+  // Two processes open one version 0 file at once. This test holds the write lock until
+  // both have started and read version 0, so both reach the migration together, every
+  // run: without BEGIN IMMEDIATE and the recheck under the lock, the second one to get
+  // the lock would add the columns again and fail with "duplicate column name".
   const concurrent = join(directory, 'concurrent.sqlite');
   await copyFile(path, concurrent);
   const store = pathToFileURL(join(process.cwd(), 'src/store.mjs')).href;
+  const holder = new DatabaseSync(concurrent);
+  holder.exec('BEGIN IMMEDIATE');
   const open = () => {
     const child = spawn(process.execPath, ['--input-type=module', '-e',
-      `import { openStore } from ${JSON.stringify(store)}; openStore(process.env.LEDGER_FILE).close();`],
-    { env: { ...process.env, LEDGER_FILE: concurrent }, stdio: ['ignore', 'ignore', 'pipe'] });
+      `import { openStore } from ${JSON.stringify(store)}; process.stdout.write('ready\\n'); openStore(process.env.LEDGER_FILE).close();`],
+    { env: { ...process.env, LEDGER_FILE: concurrent }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', chunk => { stderr += chunk; });
-    return once(child, 'exit').then(([code]) => ({ code, stderr }));
+    const ready = once(child.stdout, 'data');
+    return { ready, exit: once(child, 'exit').then(([code]) => ({ code, stderr })) };
   };
-  const results = await Promise.all([open(), open()]);
+  const children = [open(), open()];
+  await Promise.all(children.map(child => child.ready));
+  // Each child now reads user_version 0 and waits for the lock (busy_timeout is 5 s).
+  await new Promise(resolve => setTimeout(resolve, 750));
+  assert.equal(userVersion(holder), 0, 'neither child could migrate while the lock was held');
+  holder.exec('ROLLBACK');
+  holder.close();
+  const results = await Promise.all(children.map(child => child.exit));
   for (const result of results) assert.equal(result.code, 0, result.stderr);
   const migrated = new DatabaseSync(concurrent);
   assert.equal(userVersion(migrated), 1);

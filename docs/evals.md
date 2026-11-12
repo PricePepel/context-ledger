@@ -366,7 +366,7 @@ Bound: a tool result carries at most 40,000 characters (UTF-16 code units) of te
 | Backstop | A synthetic oversized result becomes `isError` with the fixed bug message. stderr gets only the tool name and the length, and no data is sent. |
 | Escaping and errors | Paged output passes the existing hostile-character check: no raw C0/C1 (other than newline and tab), Cf, U+2028 or U+2029 on stdout. Every new argument error is fixed text with no ID, path, label, party or cursor in it. A malformed `after`, `fromItem` or `fromOffset` makes zero ledger requests. |
 | No model reruns | latent_read or latent_transfer with `fromPath` sends only `POST /api/latent/files`, with the same-origin header. A fake runtime counts zero requests. A text-mode transfer continuation sends no request. |
-| Version skew | Against a ledger without `next` in `/api/sessions` responses, session_search returns the restart error and does not loop. Against a ledger without `GET /api/graphs`, graph_list returns the restart message. |
+| Version skew | Against a ledger without `next` in `/api/sessions` responses, session_search passes a complete list that fits through unchanged, and otherwise (or for an `after`) returns the restart error and does not loop. Against a ledger without `GET /api/graphs`, graph_list returns the restart message. |
 | No room settlement | tools/list offers 13 tools and grows by at most 3,500 characters from 7,066. No name, description or schema matches confirm, approv, reject, decide, decision or accept. No route that MCP can reach writes `room_choices`. |
 
 ### F2 — Discovery: graph_list and room_list
@@ -412,3 +412,17 @@ Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the
   - A latent continuation with a `fromLine` past the end of `fromPath` gets a note and goes on with the next file.
   - The latent pager has two more fixed errors: "fromOffset is past the end of that line." and "fromOffset needs fromLine to be a line of that file.", and a text continuation of `latent_transfer` has "text must be 1 to 8000 characters."
   - Too-large errors name the tool, for example "session_read returned an item too large to show."
+
+### Results — Cycle 10 review fixes, 2026-11-11
+
+An independent review of 51aae9a upheld eleven findings (two of them the same room_read bug). Each fix has a test that fails on 51aae9a, except the two coverage gaps and the merge layout, which had no bug to fail on.
+
+- **room_read numbering moved when a choice changed between pages** (medium, found twice). `agreedProposalIds` came second, so a confirm or reject between calls shifted every node, and `more.fromItem` skipped or repeated one. It is now the last section; every other section's length is fixed by the two graph snapshots. A test changes the agreed count before every page, both ways, and merges each party's nodes back exactly. Within that last section a change can still move an ID; the section is at most a few hundred IDs and usually sits on one page.
+- **Data could forge the "follow the trailing note" rule** (medium) and **a client that cut the end hid that more remained** (medium). A partial text page now starts with `[Partial result: <note>]` and ends with the same note. Every text result starts with the tool's own words, so data cannot produce that first line. The instructions say a text result is partial only when its first line starts that way, and not to follow calls named anywhere else. The session_read description says 40,000 characters instead of 10,000 tokens. Not done: a token-based bound or a caller-chosen page size. Token-dense text (Han script, escapes) can still exceed a client's token limit; the live Codex sentinel should also be run with such a page.
+- **A resumed line lost its number prefix** (low). The fragment now starts with `line+character| `, so file text never starts a line of the page. The paging walk checks every file line's prefix.
+- **context_for paging and vuek0/subagent-graphs' handoff quota** (medium on merge). Later pages reuse the briefing that page 1 fetched in this process, so a read-through makes one `/context` request. Items after the briefing are one `after` list that counts against the bound, so the quota note fits once added there. Page 1 always fetches again.
+- **Paging helpers at vuek0's insertion point** (low). The block moved between `requireHex` and `text`.
+- **session_search against an older ledger** (low). A complete list that fits passes through unchanged, as on 19f6522; a list that does not fit, or a call with `after`, still gets the restart error.
+- **Coverage gaps** (low): latent_transfer continuing with `paths` and `fromPath` (only `POST /api/latent/files`, no model call), and the past-the-end notes of latent_read, latent_transfer text and room_read, now have tests.
+- **The concurrency test did not race** (low). The test now holds the write lock until both processes have started and read version 0. It fails every time with a plain BEGIN or no transaction ("database is locked", "duplicate column name").
+- **Suites (Windows):** node 116/117 (one skipped), Playwright 13/13. tools/list is 10,118 characters.

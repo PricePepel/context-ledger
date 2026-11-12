@@ -210,7 +210,11 @@ test('cycle 10: large graphs and rooms page over MCP and merge back to the store
     assert.equal(result.isError, undefined, result.content[0].text);
     assert.ok(resultSize(result) <= 40_000);
     const note = result.content[0].text.match(/\n\n\[\d+ more lines remain\. Call context_for again with fromLine (\d+)\.\]$/u);
-    shown.push(note ? result.content[0].text.slice(0, note.index) : result.content[0].text);
+    // A partial page starts with the same note as its first line.
+    const page = note ? result.content[0].text.slice(0, note.index) : result.content[0].text;
+    const top = note && `[Partial result: ${result.content[0].text.slice(note.index + 3, -1)}]\n\n`;
+    if (note) assert.ok(page.startsWith(top), 'a partial page says so on its first line');
+    shown.push(note ? page.slice(top.length) : page);
     fromLine = note ? Number(note[1]) : 0;
     assert.ok(id < 540);
   }
