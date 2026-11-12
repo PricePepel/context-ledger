@@ -1,5 +1,6 @@
 {
   "description": "Cycle 9 fresh set: eight questions on a second synthetic codebase (Harbor Library), written before any M2a tuning so a tuned pipeline is checked on code it was not tuned on.",
+  "grading": "Since 2026-11-12 renewals, renew-on-hold and hold-expiry are graded strictly, with pattern and forbidden options (docs/evals.md, cycle 9 follow-up). Cycle 9 runs graded before that are re-graded in the eval log.",
   "fixture": "fixture-library",
   "paths": ["src/settings.js", "src/loans.js", "src/fees.js", "src/holds.js", "src/reminders.js"],
   "questions": [
@@ -12,7 +13,11 @@
     {
       "id": "renewals",
       "question": "How many times can a loan be renewed, and how much time does each renewal add?",
-      "required": [["2", "two", "twice"], ["14", "fourteen", "two weeks"]],
+      "required": [
+        [{ "pattern": "\\b(?:2|two)\\s+(?:times|renewals)\\b" }, { "pattern": "\\btwice\\b" },
+          { "pattern": "\\b(?:up to|at most|maximum of|max(?:imum)?:?)\\s+(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" }],
+        ["14", "fourteen", "two weeks"]
+      ],
       "evidence": [{ "path": "src/settings.js", "lines": [10, 11] }, { "path": "src/loans.js", "lines": [22, 24] }]
     },
     {
@@ -43,12 +48,15 @@
       "id": "renew-on-hold",
       "question": "What happens when a member tries to renew a loan while another member has a hold on the item?",
       "required": [["on hold for another member", "refuse", "reject", "throws", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
+      "forbidden": ["still succeeds", "succeeds anyway", "is still renewed", "can still be renewed", "renewal is allowed", "allowed to renew",
+        "does not fail", "doesn't fail", "never fails", "not rejected", "not refused", "no error is thrown", "does not throw", "doesn't throw"],
       "evidence": [{ "path": "src/loans.js", "lines": [23, 23] }, { "path": "src/holds.js", "lines": [12, 14] }]
     },
     {
       "id": "hold-expiry",
       "question": "What happens to a hold when the member does not pick the item up from the hold shelf in time?",
-      "required": [["expire"]],
+      "required": [["expire"], ["next"]],
+      "forbidden": ["not expire", "never expire", "doesn't expire", "does not expire", "won't expire"],
       "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]
     }
   ]
