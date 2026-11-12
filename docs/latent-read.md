@@ -191,6 +191,8 @@ Findings that fail these checks are removed and counted in `rejectedFindings`, a
 
 If the runtime is not running, the ledger falls back to Tier 1. It returns `{ "mode": "text", "files": [{ "path", "text" }] }` with numbered lines, so the closed model reads the files itself. This fallback also applies when no GPU is present.
 
+A fallback can hold up to 512 KiB of numbered text, which is more than one MCP result carries (40,000 characters, cycle 10). The MCP tools page it, and later pages come from `POST /api/latent/files` with `{ "paths": [...] }`. That route is ledger-only: it applies the same path, secret and 512 KiB rules and the same-origin check as `/api/latent/read`, returns `{ "mode": "text", "files": [...] }` exactly as the fallback does, and never contacts `LATENT_URL`, so a continuation never reruns the model. It reads the files again on each call, and each page says that line numbers may have shifted if a file changed. It is a new way to read numbered file text while the runtime is up; it gives nothing the fallback does not already give.
+
 ## Gate (from the roadmap)
 
 On the synthetic codebase Q&A set in `evals/latent/`, `latent_read` matches the closed model's accuracy when that model reads everything, using a small fraction of its tokens. See `docs/evals.md`, cycle 6.

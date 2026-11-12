@@ -604,3 +604,205 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
   - Two later regressions that Codex found are fixed in 92b092b, and Codex's final pass on that commit found nothing.
   - Two data checks of every recorded number against the raw result files corrected six statements, in b11d162 and the commit after it.
 - **Settled:** no review finding is open. The runtime changes still need Ali's approval.
+
+## Cycle 10 — Bounded MCP results and discovery (defined 2026-11-11, before implementation)
+
+Source: an audit of `src/mcp.mjs`. Cycle 8 is on `vuek0/subagent-graphs` and cycle 9 is on PR #7, so this cycle is numbered 10. Branch `ruslan/mcp-paging-discovery`. Synthetic data only. Each feature closes with its evals passing, the full regression suite passing, Playwright, a debug pass and an independent review. Targets: capability pass@3 ≥ 0.90; regression and security pass^3 = 1.00.
+
+Bound: a tool result carries at most 40,000 characters (UTF-16 code units) of text across all its content items. Size is measured after escaping. Cycle 7 showed that pages of this size reach Codex whole. Since the second review, size is `resultSize`: an ASCII letter or whitespace counts 1, other ASCII 2 and any other code unit 4, so token-dense pages stay near the same token count.
+
+### F1 — Every result bounded and paged
+
+| Eval | Expected |
+| --- | --- |
+| Hard bound at the schema limits | A fake ledger serves the worst cases, with escape-heavy text such as format and tag characters. Every page of every tool totals at most 40,000 characters. The cases: (1) a v2 graph of 100 nodes with 500-character labels, 300 edges and 100 links; (2) a room of two such graphs with 200 proposals; (3) 300 sessions with 255-unit sources and 120-code-point titles; (4) a 200,000-character turn, and a turn whose `~` runs inflate the fence; (5) a 512 KiB fallback with one 300,000-character line; (6) an 8,000-unit transfer text of format characters; (7) a latent answer of 60,000 characters and 12 findings with 512-character paths. Every page except a past-the-end page holds at least one item or one code point. |
+| Escaped size counts | A session_read page of U+202E turns stays within the bound. On 19f6522 it is about 6 times over. |
+| Lossless paging | From the first call, following each continuation returns everything exactly once and in order. Merged graph_read pages deepEqual `GET /api/graphs/:id`, and merged room_read pages deepEqual `GET /api/rooms/:id`. Split turns, split lines and context_for pages rejoin into the whole escaped text. session_search, graph_list and room_list return every row once, newest first. |
+| Explicit continuation | A partial JSON result has `more` as its first key, with the argument value to send next and a note naming the tool. A partial text result ends with a bracketed note naming the tool and the argument values. The last page has no `more`. Past-the-end `fromItem` and `fromLine` get an explicit "no items/lines at or after" note. A bad `fromOffset` gets a fixed error. Nothing is left out without a note: cut findings and a cut answer are named. |
+| Backward compatible | With data that fits and no new arguments, every tool's output is byte-identical to 19f6522. The existing `tests/mcp.test.mjs` and `tests/mcp-live.test.mjs` assertions pass unchanged, except the tool count, the `{limit: 3}` case (now `{page: 3}`) and the session_search URL, which now carries `limit=100`. Required arguments are unchanged, new ones are optional, and every schema stays closed. |
+| Backstop | A synthetic oversized result becomes `isError` with the fixed bug message. stderr gets only the tool name and the length, and no data is sent. |
+| Escaping and errors | Paged output passes the existing hostile-character check: no raw C0/C1 (other than newline and tab), Cf, U+2028 or U+2029 on stdout. Every new argument error is fixed text with no ID, path, label, party or cursor in it. A malformed `after`, `fromItem` or `fromOffset` makes zero ledger requests. |
+| No model reruns | latent_read or latent_transfer with `fromPath` sends only `POST /api/latent/files`, with the same-origin header. A fake runtime counts zero requests. A text-mode transfer continuation sends no request. |
+| Version skew | Against a ledger without `next` in `/api/sessions` responses, session_search passes a complete list that fits through unchanged, and otherwise (or for an `after`) returns the restart error and does not loop. Against a ledger without `GET /api/graphs`, graph_list returns the restart message. |
+| No room settlement | tools/list offers 13 tools and grows by at most 3,500 characters from 7,066. No name, description or schema matches confirm, approv, reject, decide, decision or accept. No route that MCP can reach writes `room_choices`. |
+
+### F2 — Discovery: graph_list and room_list
+
+| Eval | Expected |
+| --- | --- |
+| graph_list | Publishes v1 and v2 graphs from two sessions and two parties. Filtering by `sessionId`, by `party`, by both or by neither returns exactly the matching graphs, newest first. Rows are `{id, sessionId, sessionTitle, party, version, createdAt, nodes, edges, links}`. v1 graphs have `party: null`. An unknown `sessionId` gives an empty, complete list. Walking with `limit: 1` and `after` visits every graph once. An unknown `after` gives the fixed tool error. |
+| room_list | `graphId` matches either side of a room, and `party` matches either party. Rows are `{id, createdAt, parties: [{party, graphId, sessionId}×2]}`, sorted by party, with no proposal or choice data. A room opened twice lists once. Paging works as in graph_list. |
+| Stable under inserts | Page 1 is read with `limit: 2`. Then new graphs, rooms and sessions are added over HTTP. The remaining pages hold exactly the rows that existed before, with no duplicates and none missing. |
+| HTTP | `GET /api/graphs` and `GET /api/rooms` return 403 for a foreign Host and work without an Origin. A bad or duplicated `limit`, a bad hex value, a bad `party` or a bad `after` gets 400 with a fixed message. `POST /api/graphs`, `POST /api/rooms`, `POST /api/latent/files` and the decisions route keep their same-origin checks. `POST /api/graphs?limit=1` is still a publish. |
+| Browser and CLI unchanged | With 150 synthetic sessions sharing one keyword, `GET /api/sessions` without `limit` or `after` returns the same JSON as `store.list`. `ledger search` prints all 150. In Playwright, the library search reports "150 transcripts". |
+| Fresh-session discovery (live) | A fresh Codex session is asked for Leo's latest graph and the final port, with no IDs in the prompt. It calls graph_list with party `leo`, then context_for, and answers 4317 with the cited lines, in 3 of 3 runs. One run with Claude Code. |
+
+### F3 — Schema version and migration
+
+| Eval | Expected |
+| --- | --- |
+| Upgrade in place | A v0 file built with the 19f6522 DDL (sessions, v1 and v2 graphs, one corrupt payload, a room with choices) opens with the new store. `user_version` becomes 1, and the new columns, indexes and triggers exist. Every old row's original columns are unchanged, and getGraph and getRoom output equals the output before. Old graphs list with `createdAt: null` and `party` from their packet. The corrupt graph lists with `party` and `version` null. Old and new rows interleave newest first by rowid. |
+| New rows stamped once | A graph or room created after the migration gets an ISO 8601 UTC `createdAt`. An identical republish or reopen keeps the first time. |
+| Idempotent, atomic, guarded | Reopening a v1 file changes nothing. Two processes opening one v0 file at once both succeed, and the migration runs once. A failure injected mid-migration leaves `user_version` 0 and the old schema intact. A file with `user_version` 2 refuses to open with a clear error and is not modified. |
+| Downgrade safe | The 19f6522 store opens a migrated file, publishes and reads. The triggers still stamp its new rows. |
+| Restart | The existing restart test passes on a migrated file, and graph_list returns the same page after a restart. |
+
+### Regression
+
+| Eval | Expected |
+| --- | --- |
+| Full suites | Node suites and Playwright pass three times on Windows (pass^3 = 1.00). Linux CI runs the same suites. |
+| Live Codex sentinel | Codex calls a tool whose result is 39,900 characters, with a sentinel on its last line, and repeats the sentinel in 3 of 3 runs. If it cannot, lower `maxResultCharacters` and record it here. |
+| Live demo | `demo/rehearse.mjs` on the short fixture scores the same as in cycle 7, and session_read pages reach Codex with their notes. |
+
+## Results — Cycle 10, 2026-11-11
+
+Built on `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Not pushed. Commits:
+
+- `651bba4` defines the cycle.
+- `51aae9a` bounds and pages every MCP result (`src/paging.mjs`), adds `graph_list` and `room_list` over `GET /api/graphs` and `GET /api/rooms`, adds `POST /api/latent/files` for later fallback pages, and gives the store schema version 1 (`src/migrate.mjs`).
+- `2a02e98` applies the first review.
+- `404d7d7` applies the second review.
+
+Suites (Windows, at 404d7d7, three runs each): node 119/120 (one skipped) in every run, Playwright 13/13 in every run. Linux CI has not run.
+
+Three independent review rounds, each with five lenses (correctness, security, compatibility, agent UX, tests). The subsections below give the first two rounds in detail.
+
+- **Round 1, of 51aae9a: 11 findings upheld** (the room_read numbering bug was found twice). All fixed in 2a02e98.
+  - Medium: room_read numbering moved when a choice changed between pages. `agreedProposalIds` is now the last section.
+  - Medium: data could forge the "follow the trailing note" rule, and a client that cut the end hid that more remained. A partial text page now starts with `[Partial result: ...]` and ends with the same note.
+  - Low: a resumed file line lost its number prefix. It now starts with `line+character| `.
+  - Low: context_for paging would cost one handoff per page under vuek0's quota. A read-through now fetches `/context` once.
+  - Low: the paging helpers sat where vuek0 adds `currentTranscript`. They moved, and merge-tree no longer shows the 325-line hunk.
+  - Low: session_search hard-failed against an older ledger. A complete list that fits now passes through unchanged.
+  - Low, tests: the `fromPath` continuation in paths mode, the past-the-end notes, and a migration race test that did not race.
+- **Round 2, of 2a02e98: 7 findings upheld.** All fixed in 404d7d7.
+  - Medium: session_search without `limit` stopped at 100 rows. It now reads ledger pages until the bound or the end.
+  - Medium: a page could exceed a client's token cap. Every size check now uses `resultSize`.
+  - Low: the tools/list budget test would fail after merging vuek0. It now counts this cycle's 13 tools by name.
+  - Low, tests: room_list's graph_b party filter, the parties order, latent_transfer's paths fallback, and graph_list and room_list trimming.
+- **Round 3, of 404d7d7: 5 findings upheld. Three fixed, two test gaps open.**
+  - Medium, fixed: a paged graph_publish result left out the derived ready actions and decisions that its description promises. The derived ID lists are now the first graph sections, so page 1 carries them. Item numbers for `graph_read` changed with this order. `tests/paging.test.mjs` pins both.
+  - Low, fixed: filePage added headings of empty files without a size check until a line had been shown. Every heading is now checked, and a heading that cannot fit on an empty page fails as too large.
+  - Low, fixed: a test now pins that required arguments match 19f6522 and that every paging argument is optional.
+  - Low, open: no test for latent_transfer text paging across line boundaries (a dropped line would pass), and no test for the bad-`fromOffset` errors in the file continuation. The text-continuation error is tested.
+  - Suites after the fixes, Windows, three runs: node 120/121 (one skipped), Playwright 13/13.
+
+Left open:
+
+- The two round 3 test gaps above.
+- The live evals: the Codex sentinel (also with a code page and a Han page, since `resultSize` is an estimate), fresh-session discovery, and the demo rehearsal.
+- Documented limits: no caller-chosen page size; an ID inside `agreedProposalIds` can move if that list spans two pages and changes in between; an old ledger whose list fits 40,000 characters but not the weighted bound gets the restart error.
+- No real merge with `vuek0/subagent-graphs` has been done. Expect conflicts in `src/mcp.mjs`, and `tests/mcp.test.mjs` needs `handoff_publish` added.
+- The cycle stays open until the live evals have run.
+
+### Results — Cycle 10 live evals, 2026-11-12
+
+Run at f53418a against a temporary ledger started from the branch, with synthetic data only. Codex is `codex-cli 0.166.0` on its default model, run through `codex exec --sandbox read-only` with only the named ledger tools enabled. Claude Code ran with Sonnet and its built-in tools off. The runner is a local script and is not committed. It sizes each page by calling the adapter over stdio, then has the agent call it.
+
+**Live Codex sentinel: pass, 9 of 9.** Each page is one whole `session_read` result just under the bound. Three random lowercase checkpoint words sit in it: A at a third, B at two thirds, and C on the last line of text. The last line of the result is the closing fence of that turn, so C is on the line before it. Each run used new words. Codex called `session_read` once, ran no other tool, and repeated all three words exactly.
+
+| Page | `resultSize` | Characters | Runs | A, B and C repeated | Characters Codex received | Input tokens (CLI total) |
+| --- | --- | --- | --- | --- | --- | --- |
+| English prose | 39,897–39,906 | 38,646 | 3 | 3 of 3 | 38,646 | 63.6k–63.8k |
+| Numbered code | 39,894–39,904 | 31,732 | 3 | 3 of 3 | 31,732 | 66.7k–67.1k |
+| Han script | 39,892–39,895 | 10,509 | 3 | 3 of 3 | 10,509 | 62.8k |
+
+The middle checkpoints matter because a client can cut the middle and keep both ends. None was lost. `maxResultCharacters` stays at 40,000. `resultSize` varies by a few units between runs because the session ID in the header is hex, and its digits weigh 2 while its letters weigh 1.
+
+**Fresh-session discovery: pass, Codex 3 of 3 and Claude Code 1 of 1.** The ledger held Leo's session and Ali's, plus three graphs in this order: an early Leo snapshot (port 4400, nothing superseding it), the reference Leo graph (4317 supersedes 4400), and Ali's graph, the newest overall. The prompt named no IDs. Every run found the latest Leo graph and answered 4317, and no run used a shell.
+
+- Codex (3 runs, 20–41 s): `graph_list` with `{"party": "Leo", "limit": 5}`, then `graph_list` again, then `context_for` on the latest Leo graph, then `session_read` to quote lines 27 and 28 word for word.
+- Claude Code (1 run, 16.5 s): `graph_list` with `{"party": "leo"}`, then `context_for` on the latest Leo graph. It cited L27–L28, and L3–L4 for the superseded 4400.
+- A Claude Code run from a dry run of the script, outside the count, made the same two calls and gave the same answer.
+
+Finding (low, agent UX, not fixed): Codex capitalised the party in its first call in all 3 runs. The adapter rejects `Leo` before any ledger request with the fixed error "party must be a party name of at most 32 lowercase letters, digits and single hyphens.", and Codex then retried and got the list. The `pattern` in the schema did not stop it. That costs one call per discovery. A fix would say "lowercase, for example `leo`" in the `party` descriptions of `graph_list` and `room_list`, or fold case before the check. Either one needs its own eval.
+
+**Live demo rehearsal: pass.** Command: `node demo/rehearse.mjs --chatter 150 --runs 3`, the short fixture of cycle 7. Claude published Leo's graph (8 nodes, 2 edges, 51 s). Codex published Ali's (4 nodes, 2 `matches` links, 34 s), and the room opened with 2 proposals. Leo's handoff is 46,564 characters, so `session_read` now returns it in two pages, where cycle 7 returned it in one.
+
+| Handoff arm | Runs | Score | Mean time | Mean input tokens | Cycle 7 |
+| --- | --- | --- | --- | --- | --- |
+| raw transcript | 3 | 18/18 | 16.9 s | 106.7k | 18/18, 11.6 s, 63.7k |
+| graph briefing | 3 | 18/18 | 13.8 s | 56.1k | 18/18, 11.2 s, 53.7k |
+
+Every run was valid, with no calls outside the allowed tool. The score matches cycle 7. The transcript arm now costs about 43k more input tokens and about 5 s more. That fits Codex reading the second page after the continuation note, instead of a single result it cut short. The rehearsal report does not record tool calls, so "pages reach Codex with their notes" rests on that token rise, not on a logged second call. The six graded facts all sit in the first 56 lines, so the score alone cannot show that page 2 was read. The graph handoff now saves about 50k input tokens per handoff on the short fixture, up from 10k.
+
+With these three, every cycle 10 eval has run. What remains open is the two round 3 test gaps, Linux CI, and the merge with `vuek0/subagent-graphs`.
+
+### Results — Cycle 10 round 3 test gaps, 2026-11-12
+
+Closed in 9262239, in `tests/paging.test.mjs`.
+
+- **latent_transfer text across page breaks.** The document has 51 escape-heavy lines in 7,994 characters, and one of them is too long for any page. It is read page by page and rebuilt by the line number in each heading. Every page must start where the previous note pointed, no line may be skipped or repeated, and the cut line must rejoin whole. A pager that resumes one line late fails with "no line is skipped or repeated at a page break".
+- **Bad `fromOffset` in file continuations.** latent_read and latent_transfer with `paths` get "fromOffset is past the end of that line." for an offset at or past the end of a line, and "fromOffset needs fromLine to be a line of that file." for a line past the end. Each case reads the files once, asks no model and does not send the question. An offset one code unit before the end of a line still works.
+
+### Cycle 10 addition — party names in any ASCII case (defined 2026-11-12, before implementation)
+
+Source: the live discovery eval. In all 3 Codex runs, the first `graph_list` call sent `party: "Leo"` and got the lowercase error. Party names in graph packets are lowercase ASCII by schema (`^[a-z0-9]+(?:-[a-z0-9]+)*$`), so an uppercase ASCII letter in a filter can only mean its lowercase form. The MCP adapter folds ASCII A–Z in the `party` filter of `graph_list` and `room_list` and says so in their descriptions. The HTTP API stays strict.
+
+| Eval | Expected |
+| --- | --- |
+| Case folded | `party` given as `Leo`, `LEO` or `lEo` returns the same result as `leo`, byte for byte, and the ledger request carries `party=leo`. Works for both tools and with a hyphen (`Ali-Bot` is `ali-bot`). |
+| ASCII only | Input that is not a party name after folding A–Z still gets the fixed error and makes no request. That includes KELVIN SIGN (U+212A, which JavaScript lowercases to `k`), dotted capital I (U+0130), `a--b` and 33 characters. The error message is unchanged. |
+| Unchanged elsewhere | A lowercase `party` and every other argument behave exactly as before. `GET /api/graphs?party=Leo` is still 400. The schema `pattern` accepts upper case, and tools/list stays within the cycle's +3,500-character budget. |
+| Live | A fresh Codex session, with the prompt and data of the live discovery eval, makes no failed `graph_list` call and answers 4317 citing lines 27–28, in 3 of 3 runs. |
+
+### Results — party names in any ASCII case, 2026-11-12
+
+Implemented in 76fdade. `optionalParty` folds A–Z and then applies the old check. The `party` schema pattern of both tools accepts upper case, and each description now reads "for example leo. Party names are lowercase; A-Z is folded."
+
+- **Case folded: pass.** With a fake ledger, `Leo`, `LEO`, `lEo`, `Ali-Bot` and 32 capital letters reach the ledger as `party=leo`, `party=ali-bot` and so on. Against the real server, `graph_list` and `room_list` return the same text, byte for byte, for `Leo`, `LEO` and `lEo` as for `leo`, and for `Ali-Bot` and `ALI-BOT` as for `ali-bot`.
+- **ASCII only: pass.** KELVIN SIGN plus `eo`, U+0130 plus `van`, 33 capital letters, `Leo--Ali`, `7`, the empty string and `Leo-SECRET-9!` each get the unchanged fixed error and make no ledger request. The old bad-argument case `Leo-SECRET-9` is valid after folding, so the test now uses `Leo-SECRET-9!`.
+- **Unchanged elsewhere: pass.** `GET /api/graphs?party=Leo` is still 400 with the same message. Node 123/124 (one skipped), Playwright 13/13, and the tools/list budget test passes.
+- **Live: pass, Codex 3 of 3.** Same runner, prompt and data as the live discovery eval. Every first `graph_list` call sent `{"party": "leo", "limit": 1}`, so the example in the description is followed, and no `graph_list` call failed. Every run found the latest Leo graph with `context_for` and answered 4317, quoting lines 27 and 28 through `session_read`. In two runs Codex then followed `more.after` once to look at the older Leo graph. That is a normal continuation, not a retry. Claude Code (1 run) made the same single `graph_list` call and `context_for`. Codex took 19–22 s, against 20–41 s before the change.
+
+### Review — round 4, of the round 3 gap tests and the party fold, 2026-11-12
+
+Two independent reviews of `f53418a..76fdade` (src and tests), neither anchored on the implementation: Codex (`codex exec --sandbox read-only`) and a Claude code-reviewer subagent. No critical, high or medium findings.
+
+- **Low, fixed in d1600d2:** no test read the advertised `party` schema pattern, so reverting it to the lowercase-only pattern would pass every test while a client that validates arguments refused `Leo` before calling. A test now checks that both tools' pattern accepts `Leo`, `LEO`, `Ali-Bot` and 32 letters, refuses `Leo--Ali`, a leading or trailing hyphen, a space, the empty string, KELVIN SIGN and U+0130, and keeps `maxLength` 32. It fails with the pattern reverted.
+- Codex reviewed d1600d2 as well: no findings. It checked the schema against `optionalParty` on 4,681 generated strings.
+- Suites after the fix: graph 9/9, node 124/125 (one skipped), Playwright 13/13. No raw control or format characters in `src/` or `tests/`.
+
+The round is settled. Cycle 10 has no open review finding.
+
+### Results — Cycle 10 implementation, 2026-11-11 (review pending)
+
+Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.
+
+- **F1:** every row passes. Every page at the schema limits stays at or under 40,000 characters. Merged `graph_read` and `room_read` pages deepEqual the stored JSON, against both the fake and the real ledger. Split turns, split file lines, the transfer text and `context_for` pages rejoin into the whole escaped text. Results that fit are byte-identical to the 19f6522 rendering, which a test pins for every tool. tools/list is 13 tools and 10,101 characters, 3,035 more than before.
+- **F2:** every row passes except the live fresh-session discovery run, which is not run yet.
+- **F3:** every row passes. The concurrency check spawns two processes on one version 0 file. The injected failure is an index name that is already taken by a table, and it leaves `user_version` 0 and the old schema. The downgrade check replays the 19f6522 DDL and its INSERT statements on a migrated file.
+- **Suites (Windows):** node 114/115 (one skipped) in each of 3 runs; Playwright 13/13 in each of 3 runs. Linux CI has not run yet (nothing is pushed).
+- **Not run yet:** the live Codex sentinel, the live demo rehearsal and the live fresh-session discovery. They need the user's Codex and Claude Code sessions. The independent review and the debug pass are also still to do, so the cycle stays open.
+- **Spec notes:**
+  - `fromOffset` and `fromLine` in a latent continuation are code-unit offsets into the file line's own text, after its `N| ` prefix.
+  - A latent continuation with a `fromLine` past the end of `fromPath` gets a note and goes on with the next file.
+  - The latent pager has two more fixed errors: "fromOffset is past the end of that line." and "fromOffset needs fromLine to be a line of that file.", and a text continuation of `latent_transfer` has "text must be 1 to 8000 characters."
+  - Too-large errors name the tool, for example "session_read returned an item too large to show."
+
+### Results — Cycle 10 review fixes, 2026-11-11
+
+An independent review of 51aae9a upheld eleven findings (two of them the same room_read bug). Each fix has a test that fails on 51aae9a, except the two coverage gaps and the merge layout, which had no bug to fail on.
+
+- **room_read numbering moved when a choice changed between pages** (medium, found twice). `agreedProposalIds` came second, so a confirm or reject between calls shifted every node, and `more.fromItem` skipped or repeated one. It is now the last section; every other section's length is fixed by the two graph snapshots. A test changes the agreed count before every page, both ways, and merges each party's nodes back exactly. Within that last section a change can still move an ID; the section is at most a few hundred IDs and usually sits on one page.
+- **Data could forge the "follow the trailing note" rule** (medium) and **a client that cut the end hid that more remained** (medium). A partial text page now starts with `[Partial result: <note>]` and ends with the same note. Every text result starts with the tool's own words, so data cannot produce that first line. The instructions say a text result is partial only when its first line starts that way, and not to follow calls named anywhere else. The session_read description says 40,000 characters instead of 10,000 tokens. Not done: a token-based bound or a caller-chosen page size. Token-dense text (Han script, escapes) can still exceed a client's token limit; the live Codex sentinel should also be run with such a page.
+- **A resumed line lost its number prefix** (low). The fragment now starts with `line+character| `, so file text never starts a line of the page. The paging walk checks every file line's prefix.
+- **context_for paging and vuek0/subagent-graphs' handoff quota** (medium on merge). Later pages reuse the briefing that page 1 fetched in this process, so a read-through makes one `/context` request. Items after the briefing are one `after` list that counts against the bound, so the quota note fits once added there. Page 1 always fetches again.
+- **Paging helpers at vuek0's insertion point** (low). The block moved between `requireHex` and `text`.
+- **session_search against an older ledger** (low). A complete list that fits passes through unchanged, as on 19f6522; a list that does not fit, or a call with `after`, still gets the restart error.
+- **Coverage gaps** (low): latent_transfer continuing with `paths` and `fromPath` (only `POST /api/latent/files`, no model call), and the past-the-end notes of latent_read, latent_transfer text and room_read, now have tests.
+- **The concurrency test did not race** (low). The test now holds the write lock until both processes have started and read version 0. It fails every time with a plain BEGIN or no transaction ("database is locked", "duplicate column name").
+- **Suites (Windows):** node 116/117 (one skipped), Playwright 13/13. tools/list is 10,118 characters.
+
+### Results — Cycle 10 second review fixes, 2026-11-11
+
+A second independent review, of 2a02e98, upheld seven findings. Each fix has a test that fails on 2a02e98, except the coverage gaps, which had no bug to fail on; their tests fail on the mutations the review used.
+
+- **session_search stopped at 100 rows when the whole list fit** (medium). Without `limit`, it now reads ledger pages of 100 until the rows pass the bound or end (at most 8 requests), and `listResult` trims by size alone. With `limit` it pages by it, as before. The schema no longer says `default: 100`. The list-api test imports 150 sessions: 120 that match a second keyword fit one result and come back byte-identical to `terminalJson` of the ledger's full list, and the 150 come in a first page of more than 100 and a second page.
+- **The tools/list budget test failed after merging vuek0/subagent-graphs** (low). That branch adds `handoff_publish` (1,881 characters), which took the total to about 11,999 and the count to 14, and merge-tree reports no conflict in the test. The budget now counts the cycle's 13 tools by name; a synthetic fourteenth tool does not change it. vuek0 changes no existing tool schema, so after the merge this cycle's tools are still 10,104 characters. `tests/mcp.test.mjs` pins the tool names and still needs `handoff_publish` added in that merge.
+- **A page could exceed a client's token cap** (medium). 40,000 characters of numbered code is about 13,000 tokens and 40,000 Han characters about 30,000 to 40,000, so a client cut the page and the continuation pointed past what it showed. Every size check, including the backstop, now uses `resultSize` (letters and whitespace 1, other ASCII 2, other code units 4). It is never less than the length, so the stated 40,000-character bound still holds, and English pages barely change. No schema or argument changed. A test reads a 60,000-character Han session (at most 10,000 Han characters a page, all rejoined once) and a numbered code file (a first page of 20,000 to 32,000 characters). The latent answer test now has one citation per finding, so one escape-heavy finding still fits beside the warning. The weights are estimates, not a tokenizer; the live Codex sentinel should still be run with a code page and a Han page.
+- **room_list party filter on the graph_b side had no test** (medium) and **parties sorted by party had no test** (low). A new list-api test publishes until an ali graph ID sorts after leo's, so leo is `graph_a`. `party: 'ali'` and `graphId` of the ali graph find the room only through the graph_b terms, and the parties list ali first. It fails without ` OR b.party = $party` and without the sort.
+- **latent_transfer's paths fallback was not covered** (low). The byte-identical test now includes a `paths` transfer that falls back to files, and the paging test reads the first page of a long one: its note names latent_transfer and its arguments, and following it continues the same file. Both fail on the review's mutation (`textFallback('latent_read', ..., intro + ' X', ...)`).
+- **graph_list and room_list trimming was not exercised** (low). A fake ledger serves 250 rooms with 32-character party names and 250 graphs with 120-tag titles. With `limit: 100`, each first page holds fewer than 100 rows and stays in the bound, `more.after` is the last row shown, and the walk returns every row once, in order. It fails if room_list skips `listResult`.
+- **Suites (Windows):** node 119/120 (one skipped), Playwright 13/13. tools/list is 10,104 characters.

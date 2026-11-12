@@ -113,11 +113,12 @@ test('a slow request does not hold back a later one', async t => {
   assert.deepEqual(JSON.parse((await slow).content[0].text), { graph: { id: graphId } });
 });
 
-test('tools/list offers exactly the eleven ledger tools with closed input schemas', async t => {
+test('tools/list offers exactly the thirteen ledger tools with closed input schemas', async t => {
   const client = mcp(t, await freePort());
   const { result } = await client.request(1, 'tools/list');
   assert.deepEqual(result.tools.map(tool => tool.name),
-    ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open', 'room_read', 'latent_read', 'latent_transfer', 'latent_team']);
+    ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open', 'room_read', 'latent_read', 'latent_transfer', 'latent_team',
+      'graph_list', 'room_list']);
   for (const tool of result.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');
@@ -192,7 +193,7 @@ test('session tools search with the CLI query and render numbered turns as escap
   const ledger = await fakeLedger(t, request => {
     if (request.url === '/api/sessions/' + 'f'.repeat(64)) return { status: 404, body: { error: 'Not found.' } };
     if (request.url.startsWith('/api/sessions/')) return { body: { session } };
-    return { body: { sessions: [{ id: sessionId, provider: 'codex' }] } };
+    return { body: { sessions: [{ id: sessionId, provider: 'codex' }], next: null } };
   });
   const client = mcp(t, ledger.port);
 
@@ -213,8 +214,8 @@ test('session tools search with the CLI query and render numbered turns as escap
   assert.deepEqual(missing, { content: [{ type: 'text', text: 'Session not found.' }], isError: true });
 
   assert.deepEqual(ledger.requests.map(request => request.url), [
-    '/api/sessions?q=orbit+ship&provider=codex',
-    '/api/sessions?q=',
+    '/api/sessions?q=orbit+ship&provider=codex&limit=100',
+    '/api/sessions?q=&limit=100',
     '/api/sessions/' + sessionId,
     '/api/sessions/' + 'f'.repeat(64),
   ]);
@@ -285,7 +286,7 @@ test('bad tool arguments are tool errors and never reach the ledger', async t =>
     ['session_search', { query: 7 }, /query must be a string/],
     ['session_search', { query: 'x'.repeat(513) }, /query must be a string/],
     ['session_search', { provider: 'gemini' }, /provider must be claude or codex/],
-    ['session_search', { limit: 3 }, /Unknown argument "limit"/],
+    ['session_search', { page: 3 }, /Unknown argument "page"/],
     ['session_read', {}, /sessionId must be a 64-character lowercase hex session ID/],
     ['session_read', { sessionId: '../sessions' }, /sessionId must be/],
     ['session_read', { sessionId: graphId, fromLine: 0 }, /fromLine must be a positive integer/],

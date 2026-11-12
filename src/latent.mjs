@@ -670,3 +670,16 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   }
   return { mode: 'latent-team', answer: oneLine(body.answer).slice(0, 4000), answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
 }
+
+/**
+ * The numbered file text of the text fallback, without asking the runtime. The MCP
+ * adapter pages a long fallback with it, so a continuation never reruns the model.
+ * Same path, secret and size rules as latent read.
+ */
+export async function latentFiles(input, { latentRoot } = {}) {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new InputError('Latent files needs a JSON object.');
+  if (Object.keys(input).some(key => key !== 'paths')) throw new InputError('Latent files accepts only paths.');
+  checkPaths(input.paths, 'Latent files');
+  const files = await readFiles(latentRoot, input.paths);
+  return { mode: 'text', files: files.map(file => ({ path: file.path, text: numbered(file) })) };
+}

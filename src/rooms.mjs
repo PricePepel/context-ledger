@@ -35,6 +35,8 @@ export function mountRooms(database, readGraph) {
     INSERT INTO room_choices (room_id, proposal_id, party, choice) VALUES (?, ?, ?, ?)
     ON CONFLICT (room_id, proposal_id, party) DO UPDATE SET choice = excluded.choice
   `);
+  let selectCursor;
+  let selectRooms;
 
   function endpoint(graph, nodeId) {
     const node = graph.packet.nodes.find(candidate => candidate.id === nodeId);
@@ -122,6 +124,41 @@ export function mountRooms(database, readGraph) {
       if (!choices.has(choice)) throw new InputError('Choice must be confirm or reject.');
       upsertChoice.run(id, proposalId, party, choice);
       return view(id);
+    },
+
+    /**
+     * Rooms, newest first, for one graph (either side) and/or one party (either party).
+     * Rows name the two parties only: no proposals or choices. Prepared on first use,
+     * because created_at comes from the schema migration that runs after mountRooms.
+     */
+    listRooms({ graphId = null, party = null, limit, after }) {
+      selectCursor ??= database.prepare('SELECT rowid FROM rooms WHERE id = ?');
+      selectRooms ??= database.prepare(`
+        SELECT r.id, r.created_at AS createdAt,
+          a.id AS graphA, a.party AS partyA, a.session_id AS sessionA,
+          b.id AS graphB, b.party AS partyB, b.session_id AS sessionB
+        FROM rooms r JOIN graphs a ON a.id = r.graph_a JOIN graphs b ON b.id = r.graph_b
+        WHERE ($graphId IS NULL OR r.graph_a = $graphId OR r.graph_b = $graphId)
+          AND ($party IS NULL OR a.party = $party OR b.party = $party)
+          AND ($before IS NULL OR r.rowid < $before)
+        ORDER BY r.rowid DESC LIMIT $n
+      `);
+      let before = null;
+      if (after !== undefined && after !== null) {
+        const row = selectCursor.get(after);
+        if (!row) throw new InputError('Unknown cursor.');
+        before = row.rowid;
+      }
+      const rows = selectRooms.all({ $graphId: graphId, $party: party, $before: before, $n: limit + 1 });
+      const rooms = rows.slice(0, limit).map(row => ({
+        id: row.id,
+        createdAt: row.createdAt,
+        parties: [
+          { party: row.partyA, graphId: row.graphA, sessionId: row.sessionA },
+          { party: row.partyB, graphId: row.graphB, sessionId: row.sessionB },
+        ].sort((x, y) => ((x.party ?? '') < (y.party ?? '') ? -1 : (x.party ?? '') > (y.party ?? '') ? 1 : 0)),
+      }));
+      return { rooms, next: rows.length > limit ? rows[limit - 1].id : null };
     },
   };
 }
