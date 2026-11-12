@@ -38,6 +38,17 @@ class QuotableLinesTest(unittest.TestCase):
                  ("b.js", ["const a = 1;"])]
         self.assertEqual(quotable_lines(files), ["const a = 1;", "}", "MAX=5;"])
 
+    def test_whitespace_folds_exactly_as_the_ledgers_javascript_does(self):
+        # PR #7 review (low): str.split() also split on U+001C-U+001F and U+0085, and not on
+        # U+FEFF, so the enum and the ledger disagreed on which lines are one choice.
+        js_space = set(pool.JS_SPACE_CODE_POINTS)
+        for code in range(0x10000):
+            folded = pool.fold_space("a" + chr(code) + "b")
+            self.assertEqual(folded == "a b", code in js_space, hex(code))
+        files = [("a.js", ["const a = 1;", "const" + chr(0x1C) + "a = 1;", "const" + chr(0x85) + "a = 1;",
+                           "const" + chr(0xFEFF) + "a" + chr(0x3000) + "= 1;", chr(0x2028) + "const a = 1;" + chr(0x2029)])]
+        self.assertEqual(quotable_lines(files), ["const a = 1;", "const" + chr(0x1C) + "a = 1;", "const" + chr(0x85) + "a = 1;"])
+
     def test_a_long_line_is_offered_as_its_first_quote_length_in_utf16_units(self):
         long_line = "x = '" + "a" * 300 + "';"
         self.assertEqual(quotable_lines([("a.js", [long_line])]), [long_line[:MAX_QUOTE_CHARS]])

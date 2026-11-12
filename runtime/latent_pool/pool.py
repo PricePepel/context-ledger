@@ -117,6 +117,19 @@ QUOTE_ENUM_MAX_LINES = 1000
 QUOTE_ENUM_MAX_CHARS = 60_000
 
 
+# The characters JavaScript's \s matches with the u flag, which the ledger folds in quotes
+# (normalizeSpace in src/latent.mjs). str.split() differs: it also splits on U+001C-U+001F
+# and U+0085, and not on U+FEFF. Built from code points so the source holds no raw ones.
+JS_SPACE_CODE_POINTS = (0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0xA0, 0x1680, *range(0x2000, 0x200B),
+                        0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF)
+_JS_SPACE_RUN = re.compile("[" + "".join(re.escape(chr(code)) for code in JS_SPACE_CODE_POINTS) + "]+")
+
+
+def fold_space(text):
+    """Runs of JavaScript whitespace as one space, trimmed: the ledger's normalizeSpace."""
+    return _JS_SPACE_RUN.sub(" ", text).strip(" ")
+
+
 def _utf16_prefix(text, limit):
     """The longest prefix of text within limit UTF-16 code units (the ledger's String.length)."""
     units = 0
@@ -133,8 +146,8 @@ def quotable_lines(files):
     for _, lines in files:
         for line in lines:
             # The ledger compares quotes with runs of whitespace folded, so lines that
-            # differ only in spacing are one choice.
-            text = _utf16_prefix(" ".join(line.split()), MAX_QUOTE_CHARS).strip()
+            # differ only in spacing are one choice. The cut can end on a space.
+            text = _utf16_prefix(fold_space(line), MAX_QUOTE_CHARS).strip(" ")
             if text:
                 choices[text] = None
     total = sum(len(text) for text in choices)
