@@ -87,7 +87,7 @@ Branch `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Cycle 8 lives 
 - Merging `vuek0/subagent-graphs`: it also edits `src/mcp.mjs`, `src/store.mjs` and `src/server.mjs`. The new tools come last in the tools Map, and the new routes are separate blocks. If that branch needs a schema change, add it to `migrate.mjs` as version 2, with steps that check the schema the way version 1 does. The paging helpers sit between `requireHex` and `text`, away from where that branch adds `currentTranscript`. In `context_for`, put its quota note into the `after` items, which count against the bound. Later pages come from the briefing that page 1 fetched in this process (`pagedBriefings`), so a read-through fetches `/context` once and counts as one handoff. That branch adds `handoff_publish` (1,881 characters of tools/list); the tools/list budget test in `tests/paging.test.mjs` counts only the 13 tools of this cycle by name, so it passes after the merge, but `tests/mcp.test.mjs` pins the tool names and needs the new one added.
 - session_search without `limit` returns every match that fits, as on 19f6522; it reads ledger pages of 100 until the rows pass the bound. With `limit` it pages by that.
 
-Done: the implementation (51aae9a) and two review rounds (fixes in 2a02e98 and 404d7d7). A third review round, of 404d7d7, upheld five findings. The medium one and two lows are fixed in the commit after 80ef50e. Two low test gaps are left open. Suites on Windows after those fixes, three runs each: node 120/121 (one skipped), Playwright 13/13. Nothing is pushed.
+Done: the implementation (51aae9a) and three review rounds (fixes in 2a02e98, 404d7d7 and f53418a). The branch is pushed as draft PR #8 with Auto-fix on, and Linux CI passes. On 2026-11-12: the live evals passed (2d6a314), the two round 3 test gaps are closed (9262239), and an ASCII party filter is folded to lowercase in `graph_list` and `room_list` (76fdade), which removes the failed first call Codex made in every live discovery run. Suites on Windows: node 123/124 (one skipped), Playwright 13/13.
 
 Known limits:
 
@@ -97,7 +97,8 @@ Known limits:
 
 Next steps:
 
-1. Close the two round 3 test gaps listed under "Results — Cycle 10" in [the eval log](evals.md).
-2. ~~Run the live evals.~~ Done 2026-11-12, all passing. Codex sentinel 9/9 (English, code and Han pages). Fresh-session discovery: Codex 3/3, Claude Code 1/1. Demo rehearsal 18/18 on both arms. One low finding: Codex first sends party `Leo`, gets the lowercase error, then retries. See "Results — Cycle 10 live evals".
-3. Merge with `vuek0/subagent-graphs`. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
-4. Push only when the user asks, then run Linux CI.
+1. ~~Close the two round 3 test gaps.~~ Done in 9262239.
+2. ~~Run the live evals.~~ Done 2026-11-12, all passing. Codex sentinel 9/9 (English, code and Han pages). Fresh-session discovery: Codex 3/3, Claude Code 1/1. Demo rehearsal 18/18 on both arms. The one low finding (Codex sent party `Leo` first) is fixed in 76fdade; the live re-run had no failed call in 3 of 3. See the eval log.
+3. Merge with `vuek0/subagent-graphs` once that branch has its own PR and review. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
+4. Mark PR #8 ready for review when the cycle's review round is settled, and get a human review: the PR changes the stored schema (migration to version 1).
+5. Backlog cards G7 to G12 on [the delivery board](delivery-board.md) come from a comparison with the public Graphify repository. G7 (quoted or inferred nodes) and G10 (a published handoff benchmark) are the cheapest and strengthen the pitch most.
