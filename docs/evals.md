@@ -472,6 +472,24 @@ Every run was valid, with no calls outside the allowed tool. The score matches c
 
 With these three, every cycle 10 eval has run. What remains open is the two round 3 test gaps, Linux CI, and the merge with `vuek0/subagent-graphs`.
 
+### Results — Cycle 10 round 3 test gaps, 2026-11-12
+
+Closed in 9262239, in `tests/paging.test.mjs`.
+
+- **latent_transfer text across page breaks.** The document has 51 escape-heavy lines in 7,994 characters, and one of them is too long for any page. It is read page by page and rebuilt by the line number in each heading. Every page must start where the previous note pointed, no line may be skipped or repeated, and the cut line must rejoin whole. A pager that resumes one line late fails with "no line is skipped or repeated at a page break".
+- **Bad `fromOffset` in file continuations.** latent_read and latent_transfer with `paths` get "fromOffset is past the end of that line." for an offset at or past the end of a line, and "fromOffset needs fromLine to be a line of that file." for a line past the end. Each case reads the files once, asks no model and does not send the question. An offset one code unit before the end of a line still works.
+
+### Cycle 10 addition — party names in any ASCII case (defined 2026-11-12, before implementation)
+
+Source: the live discovery eval. In all 3 Codex runs, the first `graph_list` call sent `party: "Leo"` and got the lowercase error. Party names in graph packets are lowercase ASCII by schema (`^[a-z0-9]+(?:-[a-z0-9]+)*$`), so an uppercase ASCII letter in a filter can only mean its lowercase form. The MCP adapter folds ASCII A–Z in the `party` filter of `graph_list` and `room_list` and says so in their descriptions. The HTTP API stays strict.
+
+| Eval | Expected |
+| --- | --- |
+| Case folded | `party` given as `Leo`, `LEO` or `lEo` returns the same result as `leo`, byte for byte, and the ledger request carries `party=leo`. Works for both tools and with a hyphen (`Ali-Bot` is `ali-bot`). |
+| ASCII only | Input that is not a party name after folding A–Z still gets the fixed error and makes no request. That includes KELVIN SIGN (U+212A, which JavaScript lowercases to `k`), dotted capital I (U+0130), `a--b` and 33 characters. The error message is unchanged. |
+| Unchanged elsewhere | A lowercase `party` and every other argument behave exactly as before. `GET /api/graphs?party=Leo` is still 400. The schema `pattern` accepts upper case, and tools/list stays within the cycle's +3,500-character budget. |
+| Live | A fresh Codex session, with the prompt and data of the live discovery eval, makes no failed `graph_list` call and answers 4317 citing lines 27–28, in 3 of 3 runs. |
+
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
 Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.
