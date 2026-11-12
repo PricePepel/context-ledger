@@ -203,3 +203,12 @@ test('confirming review of the follow-up: blocked renewals, a cap at two, and th
     'The hold expires and the next queued hold is moved to the shelf.',
   ]), [false, true, true]);
 });
+
+test('second confirming review: raises an error, two successive renewals, offered to the next member', () => {
+  assert.deepEqual(grades('renew-on-hold', ['The system raises an error and leaves the due date unchanged.']), [true]);
+  assert.deepEqual(grades('renewals', ['The loan permits two successive renewals, each adding 14 days.', 'Two weeks renewals, unlimited.']), [true, false]);
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and the item is offered to the next waiting member.',
+    'The hold expires and the next waiting member can collect the item.',
+  ]), [true, true]);
+});
