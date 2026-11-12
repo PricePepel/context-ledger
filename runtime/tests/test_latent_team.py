@@ -173,5 +173,27 @@ class AnswerTest(unittest.TestCase):
         self.assertFalse(correct("no number", 3.0))
 
 
+
+class SampleTest(unittest.TestCase):
+    def test_blocks_of_one_seed_are_disjoint_and_block_0_is_the_old_sample(self):
+        import random
+        from latent_team.evaluate import sample_block
+        items = [{"question": f"q{index}"} for index in range(1319)]  # the size of GSM8K test
+        old = list(items)
+        random.Random(0).shuffle(old)
+        self.assertEqual(sample_block(items, 200, 0), old[:200])
+        self.assertEqual(sample_block(items, 200, 0, block=0), old[:200])
+        first, second = sample_block(items, 200, 0, 0), sample_block(items, 200, 0, 1)
+        self.assertEqual(len(second), 200)
+        self.assertFalse({q["question"] for q in first} & {q["question"] for q in second})
+        self.assertEqual(items, [{"question": f"q{index}"} for index in range(1319)], "the input is not shuffled in place")
+        # The overlap the review found: two seeds draw independently.
+        overlap = {q["question"] for q in sample_block(items, 200, 0)} & {q["question"] for q in sample_block(items, 200, 1)}
+        self.assertGreater(len(overlap), 0)
+        self.assertEqual(len(sample_block(items, 200, 0, 5)), 200)
+        for bad in [(200, 0, 6), (200, 0, -1), (0, 0, 0)]:
+            with self.assertRaises(ValueError):
+                sample_block(items, *bad)
+
 if __name__ == "__main__":
     unittest.main()
