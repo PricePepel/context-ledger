@@ -182,11 +182,11 @@ The seed-1 sample shared 30 of its 200 questions with seed 0, so it was not an i
 | `latent_random` m = 40 | 0.475 | 239 | 1.84 |
 
 - **The gate passes** at m = 40.
-  - It is within 2 points of `text_mas` (+0.025, interval −0.03 to +0.08), with 72% fewer tokens, and 1.8× faster.
+  - It is no more than 2 points below `text_mas`, the gate's criterion; in fact it is 2.5 points above (interval −0.03 to +0.08). It uses 72% fewer tokens and is 1.8× faster.
   - As on seed 1, the gain over `text_mas` is not significant.
 - **Not better than `single`:** −0.045 to +0.055.
 - **The control holds:** +0.31 to +0.45 over random vectors.
-- **A plateau again.** m = 40 minus m = 30 is −0.015 to +0.075, and m = 40 minus m = 50 is −0.06 to +0.02. The best value moved again, this time to m = 50 (0.875; −0.005 to +0.10 over `text_mas`), and the steps are within noise of each other.
+- **No stable optimum.** m = 40 minus m = 30 is −0.015 to +0.075, and m = 40 minus m = 50 is −0.06 to +0.02, so m = 40 is within noise of both. m = 50 does beat m = 30 here (+0.05, interval +0.01 to +0.09), and it is the best value on this sample (0.875; −0.005 to +0.10 over `text_mas`). On seed 1 the order was the reverse, with m = 30 best. Read 30 to 50 steps as a range where the best value moves between samples, not as a flat plateau.
 - **The conclusion above holds on an independent sample:**
   - Latent thinking matches the text team at about a quarter of its tokens and half its time.
   - It needs real hidden states.

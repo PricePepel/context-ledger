@@ -88,12 +88,12 @@ Branch `ruslan/m2a-m2c-tuning`, from `origin/main`, open as PR #7. It is not mer
   - With the 7B model it costs citations, so it stays off by default, and the default 7B results are unchanged.
   - Ali should approve the runtime part (`docs/latent-read.md`, "pending Ali's approval").
 - **Ledger grounding:** a quoted string literal in a finding's label must now appear on the cited lines.
-- **M2c:** the gate passes on two seeds. Latent thinking needs real hidden states, but it does not beat one model solving alone, and the step curve is flat from 30 to 50 steps.
+- **M2c:** the gate passes on two seeds. Latent thinking needs real hidden states, but it does not beat one model solving alone, and between 30 and 50 steps the best value moves from sample to sample.
 - **Follow-up of the PR #7 review (2026-11-12):** all three open lows are closed, and the live gate is re-run. See the cycle 9 follow-up sections of the eval log.
   - **Fresh grader:** stricter, measured at 81/90 against 90 independently labelled answers, with no right answer refused. The re-grade lowers some recorded fresh scores from 8/8 to 7/8. The gate verdicts stand.
   - **M2c:** `--block` gives disjoint samples. The disjoint re-run confirms the verdict.
   - **Runtime:** it folds whitespace exactly as the ledger does.
-  - **Live re-run after f8ada62:** unchanged on both setups.
+  - **Live re-run after f8ada62:** no loss on either setup. Accuracy is the same, and 14B held-out citations rose from 7, 7, 7 to 7, 8, 8.
 
 Next steps:
 1. Ali reviews the runtime changes: strict citations, and the whitespace fold in 8f00940.

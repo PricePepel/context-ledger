@@ -567,7 +567,7 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
 | Default: 7B, strict off | 7 acc, 7 cit | 7 acc, 8 cit | 7 acc, 7 cit | no finding kept, 3/3 | 5.7 s |
 | Opt-in: 14B, strict on | 7 acc, 8 cit | 8 acc; 7, 8, 8 cit | 7 acc, 8 cit | the real 30 minutes, 3/3 | 16.4 s |
 
-- **Unchanged.** Every round matches the cycle 9 final re-measure, once that is re-graded strictly. f8ada62's stricter grounding and the whitespace fold cost no accuracy and no citation, and quotes stayed 100% verified.
+- **No loss.** Accuracy matches the cycle 9 final re-measure in every round, once that is re-graded strictly. Citations match too, except that 14B held-out citations rose from 7, 7, 7 to 7, 8, 8. f8ada62's stricter grounding and the whitespace fold cost no accuracy and no citation, and quotes stayed 100% verified.
 - **Gate:** each set passes its per-set check (at least 7/8 and 7/8) in every round. Bad quotes per round were 1–3 on 7B and 0–1 on 14B, and the slice share was at most 0.094.
 - **The misses are the known ones.**
   - The fresh miss is hold-expiry in every round. 7B says a reminder is scheduled, and 14B says the item goes back into the waiting queue.
@@ -585,7 +585,7 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
   - `latent_team.evaluate --block` is implemented in 0f93bb5, and a test shows blocks are disjoint and block 0 is the old sample.
   - The second sample was re-run as `--seed 0 --block 1`. It shares 0 of its 200 questions with seed 0, where seed 1 shared 30.
   - The gate passes at m = 40: +0.025 over `text_mas` (−0.03 to +0.08), 72% fewer tokens, 1.8× faster.
-  - `latent_mas` is not better than `single` (−0.045 to +0.055). It beats random vectors by +0.31 to +0.45. Steps 30 to 50 are a plateau.
+  - `latent_mas` is not better than `single` (−0.045 to +0.055). It beats random vectors by +0.31 to +0.45. m = 40 is within noise of m = 30 and m = 50, but m = 50 beats m = 30 (+0.05, interval +0.01 to +0.09). On seed 1, m = 30 was the best, so the step curve has no stable optimum between 30 and 50.
   - Full table: "A disjoint second sample" in [the M2c doc](m2c-latent-team.md).
 - **F3: pass.**
   - fold_space matches the ledger for every code point up to U+FFFF (Python test), and its list matches `/\s/u` (node test).
