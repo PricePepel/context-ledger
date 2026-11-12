@@ -85,9 +85,12 @@ test('review of the follow-up: each strict rule is needed, and paraphrases grade
   assert.deepEqual(grades('renewals', ['Each renewal adds at most 2 weeks, fourteen renewals in total.']), [false]);
   const renewals = freshQuestion('renewals');
   const [count, length] = renewals.required;
+  const renewalExamples = ['It can be renewed 2 times, 14 days each.', 'It can be renewed twice, 14 days each.', 'At most 2, 14 days each.',
+    'The renewal limit is 2; 14 days each.'];
+  assert.equal(count.length, renewalExamples.length);
   for (const index of count.keys()) {
     const only = { ...renewals, required: [[count[index]], length] };
-    const example = ['It can be renewed 2 times, 14 days each.', 'It can be renewed twice, 14 days each.', 'At most 2, 14 days each.'][index];
+    const example = renewalExamples[index];
     assert.equal(gradeSlice(only, slice(example)).correct, true, `renewals option ${index} matches its own example`);
   }
 
@@ -141,7 +144,8 @@ test('second review of the follow-up: negated success, spaced negations, and the
   // Each hold-expiry pattern is needed on its own.
   const expiry = freshQuestion('hold-expiry');
   const [expired, member] = expiry.required;
-  const examples = ['The hold expires and the following waiting member gets the item.', 'The hold expires, promoting another waiting hold to the shelf.'];
+  const examples = ['The hold expires and the following waiting member gets the item.', 'The hold expires, promoting another waiting hold to the shelf.',
+    'The hold expires and the first person in the queue gets the item.'];
   assert.equal(member.length, examples.length);
   for (const [index, example] of examples.entries()) {
     assert.equal(gradeSlice({ ...expiry, required: [expired, [member[index]]] }, slice(example)).correct, true, `pattern ${index} matches its example`);
@@ -164,4 +168,24 @@ test('third review of the follow-up: negation windows and the promoted next entr
     'The hold expires and promotes the original member back onto the shelf.',
     'The hold will not actually expire; the next waiting member remains waiting.',
   ]), [true, true, false, false]);
+});
+
+test('final review of the follow-up: ordinary paraphrases that were refused', () => {
+  assert.deepEqual(grades('renew-on-hold', [
+    'An error is thrown and the due date remains unchanged.',
+    'The renewal is rejected; no exception is made for the current borrower.',
+    'The renewal is denied because another member holds the item.',
+    'No error is thrown and the loan is extended.',
+    'The renewal is not denied.',
+  ]), [true, true, true, false, false]);
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and itemReturned promotes the earliest waiting hold to on-shelf.',
+    'The hold expires and the earliest waiting member gets the item.',
+    "The first member's hold expires and nothing else happens.",
+  ]), [true, true, false]);
+  assert.deepEqual(grades('renewals', [
+    'The renewal limit is 2; each renewal adds 14 days.',
+    'There is a cap of two renewals, each adding 14 days.',
+    'The renewal cap is 2 weeks; up to 14 renewals.',
+  ]), [true, true, false]);
 });

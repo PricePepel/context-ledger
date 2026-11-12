@@ -15,7 +15,8 @@
       "question": "How many times can a loan be renewed, and how much time does each renewal add?",
       "required": [
         [{ "pattern": "\\b(?:2|two)\\s+(?:times|renewals)\\b" }, { "pattern": "\\btwice\\b" },
-          { "pattern": "\\b(?:up to|at most|maximum of|max(?:imum)?:?)\\s+(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" }],
+          { "pattern": "\\b(?:up to|at most|maximum of|max(?:imum)?:?)\\s+(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" },
+          { "pattern": "\\b(?:limit|cap)\\w*\\s+(?:of\\s+|is\\s+|:\\s*)(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" }],
         ["14", "fourteen", "two weeks"]
       ],
       "evidence": [{ "path": "src/settings.js", "lines": [10, 11] }, { "path": "src/loans.js", "lines": [22, 24] }]
@@ -47,12 +48,12 @@
     {
       "id": "renew-on-hold",
       "question": "What happens when a member tries to renew a loan while another member has a hold on the item?",
-      "required": [["on hold for another member", "refuse", "reject", "throws", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
+      "required": [["on hold for another member", "refuse", "reject", "throws", "thrown", "denied", "cannot be renewed", "can't be renewed", "not renewed", "fails"]],
       "forbidden": [
-        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|block|stop)" },
+        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|block|stop|den(?:y|ied))" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bsucceed" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bgoes through\\b" },
-        { "pattern": "\\bno (?:error|exception)\\b" },
+        { "pattern": "\\bno (?:error|exception)s?\\b(?!\\s+(?:is|was|will be) made)" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\ballowed to renew" },
         "is still renewed", "can still be renewed", "renewal is allowed"
       ],
@@ -63,8 +64,9 @@
       "question": "What happens to a hold when the member does not pick the item up from the hold shelf in time?",
       "required": [
         ["expire"],
-        [{ "pattern": "\\b(?:next|second|following)(?:\\s+(?!(?:day|week|time|morning|reminder)\\b)['\"]?[a-z-]+['\"]?){0,2}\\s+(?:member|hold|person|patron|borrower|in (?:the )?(?:queue|line))\\b" },
-          { "pattern": "\\b(?:promot\\w*|puts?|moves?)\\s+(?:the\\s+|a\\s+|an\\s+|another\\s+)?(?:next|following|second|first\\s+(?:waiting|queued)|waiting|queued)\\b(?:\\s+['\"]?[a-z-]+['\"]?){0,2}?\\s+(?:hold|member)\\b" }]
+        [{ "pattern": "\\b(?:next|second|following|earliest)(?:\\s+(?!(?:day|week|time|morning|reminder)\\b)['\"]?[a-z-]+['\"]?){0,2}\\s+(?:member|hold|person|patron|borrower|in (?:the )?(?:queue|line))\\b" },
+          { "pattern": "\\b(?:promot\\w*|puts?|moves?)\\s+(?:the\\s+|a\\s+|an\\s+|another\\s+)?(?:next|following|second|earliest|first\\s+(?:waiting|queued)|waiting|queued)\\b(?:\\s+['\"]?[a-z-]+['\"]?){0,2}?\\s+(?:hold|member)\\b" },
+          { "pattern": "\\bfirst\\s+(?:(?:waiting|queued)\\s+(?:member|hold|person|patron|borrower)\\b|(?:member|hold|person|patron|borrower)\\s+in (?:the )?(?:queue|line)\\b)" }]
       ],
       "forbidden": [{ "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+expire" }],
       "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]
