@@ -347,3 +347,53 @@ The first recorded take with the user's own Claude Code and Codex exposed two pr
 Re-run with the new prompts (Claude publish, Codex publish): Leo's graph 8 nodes in 54 s (was 18 nodes, 1 min 51 s), Ali's graph 4 nodes and 2 `matches` links, no stale conflict, no off-tool calls. The second recorded take passed: both graphs published, the room settled with 4 choices, and Codex answered 4317, Saturday 17:00 and the GPU-box question, citing lines 27–28, 41–42 and 51–52.
 
 Suites: node 96/97 (one skipped), Playwright 10/10.
+
+## Cycle 10 — Bounded MCP results and discovery (defined 2026-11-11, before implementation)
+
+Source: an audit of `src/mcp.mjs`. Cycle 8 is on `vuek0/subagent-graphs` and cycle 9 is on PR #7, so this cycle is numbered 10. Branch `ruslan/mcp-paging-discovery`. Synthetic data only. Each feature closes with its evals passing, the full regression suite passing, Playwright, a debug pass and an independent review. Targets: capability pass@3 ≥ 0.90; regression and security pass^3 = 1.00.
+
+Bound: a tool result carries at most 40,000 characters (UTF-16 code units) of text across all its content items. Size is measured after escaping. Cycle 7 showed that pages of this size reach Codex whole.
+
+### F1 — Every result bounded and paged
+
+| Eval | Expected |
+| --- | --- |
+| Hard bound at the schema limits | A fake ledger serves the worst cases, with escape-heavy text such as format and tag characters. Every page of every tool totals at most 40,000 characters. The cases: (1) a v2 graph of 100 nodes with 500-character labels, 300 edges and 100 links; (2) a room of two such graphs with 200 proposals; (3) 300 sessions with 255-unit sources and 120-code-point titles; (4) a 200,000-character turn, and a turn whose `~` runs inflate the fence; (5) a 512 KiB fallback with one 300,000-character line; (6) an 8,000-unit transfer text of format characters; (7) a latent answer of 60,000 characters and 12 findings with 512-character paths. Every page except a past-the-end page holds at least one item or one code point. |
+| Escaped size counts | A session_read page of U+202E turns stays within the bound. On 19f6522 it is about 6 times over. |
+| Lossless paging | From the first call, following each continuation returns everything exactly once and in order. Merged graph_read pages deepEqual `GET /api/graphs/:id`, and merged room_read pages deepEqual `GET /api/rooms/:id`. Split turns, split lines and context_for pages rejoin into the whole escaped text. session_search, graph_list and room_list return every row once, newest first. |
+| Explicit continuation | A partial JSON result has `more` as its first key, with the argument value to send next and a note naming the tool. A partial text result ends with a bracketed note naming the tool and the argument values. The last page has no `more`. Past-the-end `fromItem` and `fromLine` get an explicit "no items/lines at or after" note. A bad `fromOffset` gets a fixed error. Nothing is left out without a note: cut findings and a cut answer are named. |
+| Backward compatible | With data that fits and no new arguments, every tool's output is byte-identical to 19f6522. The existing `tests/mcp.test.mjs` and `tests/mcp-live.test.mjs` assertions pass unchanged, except the tool count, the `{limit: 3}` case (now `{page: 3}`) and the session_search URL, which now carries `limit=100`. Required arguments are unchanged, new ones are optional, and every schema stays closed. |
+| Backstop | A synthetic oversized result becomes `isError` with the fixed bug message. stderr gets only the tool name and the length, and no data is sent. |
+| Escaping and errors | Paged output passes the existing hostile-character check: no raw C0/C1 (other than newline and tab), Cf, U+2028 or U+2029 on stdout. Every new argument error is fixed text with no ID, path, label, party or cursor in it. A malformed `after`, `fromItem` or `fromOffset` makes zero ledger requests. |
+| No model reruns | latent_read or latent_transfer with `fromPath` sends only `POST /api/latent/files`, with the same-origin header. A fake runtime counts zero requests. A text-mode transfer continuation sends no request. |
+| Version skew | Against a ledger without `next` in `/api/sessions` responses, session_search returns the restart error and does not loop. Against a ledger without `GET /api/graphs`, graph_list returns the restart message. |
+| No room settlement | tools/list offers 13 tools and grows by at most 3,500 characters from 7,066. No name, description or schema matches confirm, approv, reject, decide, decision or accept. No route that MCP can reach writes `room_choices`. |
+
+### F2 — Discovery: graph_list and room_list
+
+| Eval | Expected |
+| --- | --- |
+| graph_list | Publishes v1 and v2 graphs from two sessions and two parties. Filtering by `sessionId`, by `party`, by both or by neither returns exactly the matching graphs, newest first. Rows are `{id, sessionId, sessionTitle, party, version, createdAt, nodes, edges, links}`. v1 graphs have `party: null`. An unknown `sessionId` gives an empty, complete list. Walking with `limit: 1` and `after` visits every graph once. An unknown `after` gives the fixed tool error. |
+| room_list | `graphId` matches either side of a room, and `party` matches either party. Rows are `{id, createdAt, parties: [{party, graphId, sessionId}×2]}`, sorted by party, with no proposal or choice data. A room opened twice lists once. Paging works as in graph_list. |
+| Stable under inserts | Page 1 is read with `limit: 2`. Then new graphs, rooms and sessions are added over HTTP. The remaining pages hold exactly the rows that existed before, with no duplicates and none missing. |
+| HTTP | `GET /api/graphs` and `GET /api/rooms` return 403 for a foreign Host and work without an Origin. A bad or duplicated `limit`, a bad hex value, a bad `party` or a bad `after` gets 400 with a fixed message. `POST /api/graphs`, `POST /api/rooms`, `POST /api/latent/files` and the decisions route keep their same-origin checks. `POST /api/graphs?limit=1` is still a publish. |
+| Browser and CLI unchanged | With 150 synthetic sessions sharing one keyword, `GET /api/sessions` without `limit` or `after` returns the same JSON as `store.list`. `ledger search` prints all 150. In Playwright, the library search reports "150 transcripts". |
+| Fresh-session discovery (live) | A fresh Codex session is asked for Leo's latest graph and the final port, with no IDs in the prompt. It calls graph_list with party `leo`, then context_for, and answers 4317 with the cited lines, in 3 of 3 runs. One run with Claude Code. |
+
+### F3 — Schema version and migration
+
+| Eval | Expected |
+| --- | --- |
+| Upgrade in place | A v0 file built with the 19f6522 DDL (sessions, v1 and v2 graphs, one corrupt payload, a room with choices) opens with the new store. `user_version` becomes 1, and the new columns, indexes and triggers exist. Every old row's original columns are unchanged, and getGraph and getRoom output equals the output before. Old graphs list with `createdAt: null` and `party` from their packet. The corrupt graph lists with `party` and `version` null. Old and new rows interleave newest first by rowid. |
+| New rows stamped once | A graph or room created after the migration gets an ISO 8601 UTC `createdAt`. An identical republish or reopen keeps the first time. |
+| Idempotent, atomic, guarded | Reopening a v1 file changes nothing. Two processes opening one v0 file at once both succeed, and the migration runs once. A failure injected mid-migration leaves `user_version` 0 and the old schema intact. A file with `user_version` 2 refuses to open with a clear error and is not modified. |
+| Downgrade safe | The 19f6522 store opens a migrated file, publishes and reads. The triggers still stamp its new rows. |
+| Restart | The existing restart test passes on a migrated file, and graph_list returns the same page after a restart. |
+
+### Regression
+
+| Eval | Expected |
+| --- | --- |
+| Full suites | Node suites and Playwright pass three times on Windows (pass^3 = 1.00). Linux CI runs the same suites. |
+| Live Codex sentinel | Codex calls a tool whose result is 39,900 characters, with a sentinel on its last line, and repeats the sentinel in 3 of 3 runs. If it cannot, lower `maxResultCharacters` and record it here. |
+| Live demo | `demo/rehearse.mjs` on the short fixture scores the same as in cycle 7, and session_read pages reach Codex with their notes. |
