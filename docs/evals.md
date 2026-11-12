@@ -490,6 +490,15 @@ Source: the live discovery eval. In all 3 Codex runs, the first `graph_list` cal
 | Unchanged elsewhere | A lowercase `party` and every other argument behave exactly as before. `GET /api/graphs?party=Leo` is still 400. The schema `pattern` accepts upper case, and tools/list stays within the cycle's +3,500-character budget. |
 | Live | A fresh Codex session, with the prompt and data of the live discovery eval, makes no failed `graph_list` call and answers 4317 citing lines 27–28, in 3 of 3 runs. |
 
+### Results — party names in any ASCII case, 2026-11-12
+
+Implemented in 76fdade. `optionalParty` folds A–Z and then applies the old check. The `party` schema pattern of both tools accepts upper case, and each description now reads "for example leo. Party names are lowercase; A-Z is folded."
+
+- **Case folded: pass.** With a fake ledger, `Leo`, `LEO`, `lEo`, `Ali-Bot` and 32 capital letters reach the ledger as `party=leo`, `party=ali-bot` and so on. Against the real server, `graph_list` and `room_list` return the same text, byte for byte, for `Leo`, `LEO` and `lEo` as for `leo`, and for `Ali-Bot` and `ALI-BOT` as for `ali-bot`.
+- **ASCII only: pass.** KELVIN SIGN plus `eo`, U+0130 plus `van`, 33 capital letters, `Leo--Ali`, `7`, the empty string and `Leo-SECRET-9!` each get the unchanged fixed error and make no ledger request. The old bad-argument case `Leo-SECRET-9` is valid after folding, so the test now uses `Leo-SECRET-9!`.
+- **Unchanged elsewhere: pass.** `GET /api/graphs?party=Leo` is still 400 with the same message. Node 123/124 (one skipped), Playwright 13/13, and the tools/list budget test passes.
+- **Live: pass, Codex 3 of 3.** Same runner, prompt and data as the live discovery eval. Every first `graph_list` call sent `{"party": "leo", "limit": 1}`, so the example in the description is followed, and no `graph_list` call failed. Every run found the latest Leo graph with `context_for` and answered 4317, quoting lines 27 and 28 through `session_read`. In two runs Codex then followed `more.after` once to look at the older Leo graph. That is a normal continuation, not a retry. Claude Code (1 run) made the same single `graph_list` call and `context_for`. Codex took 19–22 s, against 20–41 s before the change.
+
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
 Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.
