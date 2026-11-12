@@ -100,5 +100,5 @@ Next steps:
 1. ~~Close the two round 3 test gaps.~~ Done in 9262239.
 2. ~~Run the live evals.~~ Done 2026-11-12, all passing. Codex sentinel 9/9 (English, code and Han pages). Fresh-session discovery: Codex 3/3, Claude Code 1/1. Demo rehearsal 18/18 on both arms. The one low finding (Codex sent party `Leo` first) is fixed in 76fdade; the live re-run had no failed call in 3 of 3. See the eval log.
 3. Merge with `vuek0/subagent-graphs` once that branch has its own PR and review. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
-4. Review round 4 is settled (one low, fixed in d1600d2) and PR #8 is marked ready for review. It still needs a human review before merging, because it changes the stored schema (migration to version 1).
+4. Review round 4 is settled (one low, fixed in d1600d2). PR #8 is still a draft: mark it ready for review on GitHub, then get a human review before merging, because it changes the stored schema (migration to version 1).
 5. Backlog cards G7 to G12 on [the delivery board](delivery-board.md) come from a comparison with the public Graphify repository. G7 (quoted or inferred nodes) and G10 (a published handoff benchmark) are the cheapest and strengthen the pitch most.
