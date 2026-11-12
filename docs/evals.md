@@ -590,3 +590,17 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
 - **F3: pass.**
   - fold_space matches the ledger for every code point up to U+FFFF (Python test), and its list matches `/\s/u` (node test).
   - The live re-run with F3 kept 100% verified quotes on both setups.
+
+**Suites and review for the follow-up (2026-11-12):**
+
+- **Suites at the head of the follow-up:**
+  - node 111/112 (one skipped)
+  - graph 9/9
+  - runtime 131 OK on Windows (24 skipped for torch and symlinks) and 131 OK in WSL (none skipped)
+  - Playwright 12/12
+  - CI green on every commit
+- **Reviews:** Codex and a Claude code-reviewer subagent.
+  - The grader took several rounds, each fixed with tests, until the labelled-set measurement replaced open-ended rounds.
+  - Two later regressions that Codex found are fixed in 92b092b, and Codex's final pass on that commit found nothing.
+  - Two data checks of every recorded number against the raw result files corrected six statements, in b11d162 and the commit after it.
+- **Settled:** no review finding is open. The runtime changes still need Ali's approval.
