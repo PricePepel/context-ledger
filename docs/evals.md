@@ -439,6 +439,39 @@ Left open:
 - No real merge with `vuek0/subagent-graphs` has been done. Expect conflicts in `src/mcp.mjs`, and `tests/mcp.test.mjs` needs `handoff_publish` added.
 - The cycle stays open until the live evals have run.
 
+### Results — Cycle 10 live evals, 2026-11-12
+
+Run at f53418a against a temporary ledger started from the branch, with synthetic data only. Codex is `codex-cli 0.166.0` on its default model, run through `codex exec --sandbox read-only` with only the named ledger tools enabled. Claude Code ran with Sonnet and its built-in tools off. The runner is a local script and is not committed. It sizes each page by calling the adapter over stdio, then has the agent call it.
+
+**Live Codex sentinel: pass, 9 of 9.** Each page is one whole `session_read` result just under the bound. Three random lowercase checkpoint words sit in it: A at a third, B at two thirds, and C on the last line of text. The last line of the result is the closing fence of that turn, so C is on the line before it. Each run used new words. Codex called `session_read` once, ran no other tool, and repeated all three words exactly.
+
+| Page | `resultSize` | Characters | Runs | A, B and C repeated | Characters Codex received | Input tokens (CLI total) |
+| --- | --- | --- | --- | --- | --- | --- |
+| English prose | 39,897–39,906 | 38,646 | 3 | 3 of 3 | 38,646 | 63.6k–63.8k |
+| Numbered code | 39,894–39,904 | 31,732 | 3 | 3 of 3 | 31,732 | 66.7k–67.1k |
+| Han script | 39,892–39,895 | 10,509 | 3 | 3 of 3 | 10,509 | 62.8k |
+
+The middle checkpoints matter because a client can cut the middle and keep both ends. None was lost. `maxResultCharacters` stays at 40,000. `resultSize` varies by a few units between runs because the session ID in the header is hex, and its digits weigh 2 while its letters weigh 1.
+
+**Fresh-session discovery: pass, Codex 3 of 3 and Claude Code 1 of 1.** The ledger held Leo's session and Ali's, plus three graphs in this order: an early Leo snapshot (port 4400, nothing superseding it), the reference Leo graph (4317 supersedes 4400), and Ali's graph, the newest overall. The prompt named no IDs. Every run found the latest Leo graph and answered 4317, and no run used a shell.
+
+- Codex (3 runs, 20–41 s): `graph_list` with `{"party": "Leo", "limit": 5}`, then `graph_list` again, then `context_for` on the latest Leo graph, then `session_read` to quote lines 27 and 28 word for word.
+- Claude Code (1 run, 16.5 s): `graph_list` with `{"party": "leo"}`, then `context_for` on the latest Leo graph. It cited L27–L28, and L3–L4 for the superseded 4400.
+- A Claude Code run from a dry run of the script, outside the count, made the same two calls and gave the same answer.
+
+Finding (low, agent UX, not fixed): Codex capitalised the party in its first call in all 3 runs. The adapter rejects `Leo` before any ledger request with the fixed error "party must be a party name of at most 32 lowercase letters, digits and single hyphens.", and Codex then retried and got the list. The `pattern` in the schema did not stop it. That costs one call per discovery. A fix would say "lowercase, for example `leo`" in the `party` descriptions of `graph_list` and `room_list`, or fold case before the check. Either one needs its own eval.
+
+**Live demo rehearsal: pass.** Command: `node demo/rehearse.mjs --chatter 150 --runs 3`, the short fixture of cycle 7. Claude published Leo's graph (8 nodes, 2 edges, 51 s). Codex published Ali's (4 nodes, 2 `matches` links, 34 s), and the room opened with 2 proposals. Leo's handoff is 46,564 characters, so `session_read` now returns it in two pages, where cycle 7 returned it in one.
+
+| Handoff arm | Runs | Score | Mean time | Mean input tokens | Cycle 7 |
+| --- | --- | --- | --- | --- | --- |
+| raw transcript | 3 | 18/18 | 16.9 s | 106.7k | 18/18, 11.6 s, 63.7k |
+| graph briefing | 3 | 18/18 | 13.8 s | 56.1k | 18/18, 11.2 s, 53.7k |
+
+Every run was valid, with no calls outside the allowed tool. The score matches cycle 7. The transcript arm now costs about 43k more input tokens and about 5 s more. That fits Codex reading the second page after the continuation note, instead of a single result it cut short. The rehearsal report does not record tool calls, so "pages reach Codex with their notes" rests on that token rise, not on a logged second call. The six graded facts all sit in the first 56 lines, so the score alone cannot show that page 2 was read. The graph handoff now saves about 50k input tokens per handoff on the short fixture, up from 10k.
+
+With these three, every cycle 10 eval has run. What remains open is the two round 3 test gaps, Linux CI, and the merge with `vuek0/subagent-graphs`.
+
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
 Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.

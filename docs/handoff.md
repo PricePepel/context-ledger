@@ -98,6 +98,6 @@ Known limits:
 Next steps:
 
 1. Close the two round 3 test gaps listed under "Results — Cycle 10" in [the eval log](evals.md).
-2. Run the live evals: the Codex sentinel (English, code and Han pages), fresh-session discovery, and the demo rehearsal.
+2. ~~Run the live evals.~~ Done 2026-11-12, all passing. Codex sentinel 9/9 (English, code and Han pages). Fresh-session discovery: Codex 3/3, Claude Code 1/1. Demo rehearsal 18/18 on both arms. One low finding: Codex first sends party `Leo`, gets the lowercase error, then retries. See "Results — Cycle 10 live evals".
 3. Merge with `vuek0/subagent-graphs`. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
 4. Push only when the user asks, then run Linux CI.
