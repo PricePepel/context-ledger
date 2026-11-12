@@ -804,3 +804,18 @@ test('a party filter in any ASCII case is sent to the ledger in lowercase', asyn
   }
   assert.equal(ledger.requests.length, cases.length);
 });
+
+test('review of 76fdade: the advertised party pattern lets a client send Leo and still refuses what the adapter refuses', async t => {
+  const client = mcp(t, 9);
+  const { result } = await client.request(1, 'tools/list');
+  for (const name of ['graph_list', 'room_list']) {
+    const party = result.tools.find(tool => tool.name === name).inputSchema.properties.party;
+    const pattern = new RegExp(party.pattern, 'u');
+    for (const value of ['leo', 'Leo', 'LEO', 'Ali-Bot', 'a'.repeat(32)]) assert.ok(pattern.test(value), `${name} accepts ${value}`);
+    for (const value of ['Leo--Ali', '-leo', 'leo-', 'le o', '', String.fromCodePoint(0x212a) + 'eo', String.fromCodePoint(0x130) + 'van']) {
+      assert.ok(!pattern.test(value), `${name} refuses ${JSON.stringify(value)}`);
+    }
+    assert.equal(party.maxLength, 32);
+    assert.match(party.description, /for example leo/u);
+  }
+});
