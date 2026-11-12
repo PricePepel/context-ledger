@@ -466,4 +466,19 @@ The full tables are in [docs/m2c-latent-team.md](m2c-latent-team.md), under "Res
   - m = 30–50 are within noise of each other, so the seed-0 peak was noise on a plateau.
   - Still not better than `single`.
 
+**Note from the PR #7 review:** the seed-1 sample shares 30 of its 200 questions with seed 0, so the two seeds are not independent replications.
+
 **M2c verdict.** On Qwen2.5-3B, latent thinking matches the text team at about a quarter of its tokens and half its time, and it needs real hidden states. It does not beat one model solving alone. The untied-model check (Qwen3 or Llama 3.1 8B) is next.
+
+### Review of PR #7 (2026-11-11)
+
+An independent review used five lenses: the ledger, the runtime, eval method, tests, and the contract. Three skeptics checked every finding. Nothing was critical or high. Suites on the PR head: node 97/98 (one skipped), Playwright 12/12, runtime 129 OK on Windows and WSL.
+
+- **Medium, fixed:** the literal-grounding rule treated Markdown backticks as string quotes. A correct finding such as "`computeFee()` applies LATE_FEE = 0.25" was dropped as ungrounded, in the default `latent_read` too.
+  - Backticked code names (calls, paths, snake_case, camelCase, constants) are now references, left to the identifier rule. A backticked plain value such as `harbor-mail` is still a literal.
+- **Low, fixed:** a literal matched as a substring. 'orbit-mail' passed on 'orbit-mail-v2', and 'settings' passed on './settings.js'. A literal must now stand alone as a token.
+  - `tests/latent.test.mjs` covers both fixes. Node suite 98/99, one skipped. The live gate was not re-run after this change.
+- **Low, open:** the fresh set's grader accepts wrong answers on renewals, renew-on-hold and hold-expiry, so "fresh 8/8" is weak evidence.
+- **Low, open:** the M2c seeds overlap, as noted above.
+- **Low, open:** with strict citations on, the runtime's enum folds whitespace with Python `str.split()`, which differs from the ledger's JS `s` for U+001C–U+001F and U+0085.
+- **Process:** the runtime and `docs/latent-read.md` changes are Ali's to approve before merge, as the contract header says.

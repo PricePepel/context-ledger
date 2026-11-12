@@ -264,6 +264,15 @@ const hasToken = (text, token) => new RegExp(`(?<![\\w.])${token.replace(/\./gu,
 // A quoted string literal in a label: 'orbit-mail', "EUR", `shipped`. The quote must not
 // touch a letter or digit, so apostrophes inside words ("user's", "isn't") open nothing.
 const literalPattern = /(?<![\p{L}\p{N}])(['"`])([^'"`\n]{1,120})\1(?![\p{L}\p{N}])/gu;
+// Models often write code names in Markdown backticks (`computeFee()`, `settings.js`,
+// `lateFee`). Those are references, left to the identifier rule below. A backticked
+// plain value such as `harbor-mail` is still a literal the cited lines must hold.
+const codeReference = /[()./_\\]|[a-z][A-Z]|^[A-Z][A-Z0-9]*$/u;
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+// A literal must stand alone in the cited text: 'orbit-mail' is not in 'orbit-mail-v2',
+// and 'settings' is not in './settings.js'.
+const hasLiteral = (text, literal) =>
+  new RegExp(`(?<![\\p{L}\\p{N}_\\-./])${escapeRegExp(literal)}(?![\\p{L}\\p{N}_\\-]|\\.[\\p{L}\\p{N}])`, 'u').test(text);
 
 /**
  * Grounding: the cited lines must actually contain what the label claims. Every
@@ -277,8 +286,10 @@ const literalPattern = /(?<![\p{L}\p{N}])(['"`])([^'"`\n]{1,120})\1(?![\p{L}\p{N
 export function isGrounded(label, citedText) {
   const numbers = label.match(numberPattern) ?? [];
   if (!numbers.every(number => hasToken(citedText, number))) return false;
-  const literals = [...label.matchAll(literalPattern)].map(match => match[2].trim()).filter(Boolean);
-  if (!literals.every(literal => citedText.includes(literal))) return false;
+  const literals = [...label.matchAll(literalPattern)]
+    .filter(match => match[1] !== '`' || !codeReference.test(match[2].trim()))
+    .map(match => match[2].trim()).filter(Boolean);
+  if (!literals.every(literal => hasLiteral(citedText, literal))) return false;
   const identifiers = label.match(identifierPattern) ?? [];
   if (identifiers.length) return identifiers.some(identifier => citedText.includes(identifier));
   if (numbers.length) return true;

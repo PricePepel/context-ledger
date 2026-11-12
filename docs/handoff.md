@@ -79,7 +79,7 @@ The user's Claude Code (user scope) and Codex (`~/.codex/config.toml`, rebuilt a
 
 ## Current checkpoint — cycle 9 (M2a tuning and the M2c measurement, 2026-11-10)
 
-Branch `ruslan/m2a-m2c-tuning`, from `origin/main`. Committed locally, not pushed. Read the cycle 9 sections of [the eval log](evals.md) and "Result: the full measurement" in [the M2c doc](m2c-latent-team.md).
+Branch `ruslan/m2a-m2c-tuning`, from `origin/main`, open as PR #7. It is not merged: the runtime part waits for Ali's approval. Read the cycle 9 sections of [the eval log](evals.md) and "Result: the full measurement" in [the M2c doc](m2c-latent-team.md).
 
 - **Closed-model baseline re-run:** Claude Sonnet scores 8/8 with 8/8 citations on all three M2a sets in every run.
 - **New fresh set:** `evals/latent/fresh.json` on `evals/latent/fixture-library`, written before tuning. `run.mjs` and `baseline.mjs` take `--set fresh`.
@@ -95,3 +95,4 @@ Next steps:
 2. Decide whether a 14B strict mode is worth 2.8× the latency for agents.
 3. Measure grammar compile time at the enum caps (1000 choices or 60,000 characters).
 4. Run M2c on an untied model.
+5. Open items from the PR #7 review (see the eval log): three fresh-set questions grade wrong answers as correct, and the two M2c seeds share 30 of their 200 questions.
