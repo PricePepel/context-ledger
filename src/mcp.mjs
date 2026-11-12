@@ -3,7 +3,7 @@
 import packageJson from '../package.json' with { type: 'json' };
 import { graphSchemas } from './graph.mjs';
 import { handoffMarkdown } from './handoff.mjs';
-import { cutText, fitCount, largest, maxResultCharacters, pageSections, snapEnd } from './paging.mjs';
+import { cutText, fitCount, largest, maxResultCharacters, pageSections, resultSize, snapEnd } from './paging.mjs';
 import { terminalJson, visibleText } from './text.mjs';
 
 const supportedVersions = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -118,7 +118,7 @@ const partialMark = '[Partial result: ';
 const notesText = note => ({ top: `${partialMark}${note}]\n\n`, end: `\n\n[${note}]` });
 const notesSize = note => {
   const { top, end } = notesText(note);
-  return briefingText(top).length + briefingText(end).length;
+  return resultSize(briefingText(top)) + resultSize(briefingText(end));
 };
 /** body is already escaped. */
 const partialPage = (body, note) => {
@@ -215,7 +215,7 @@ const pastEnd = suffix => (from, total) => `No items at or after ${from}; there 
 function pagedJson(name, data, { kind, fromItem, note, suffix = '' }) {
   if (fromItem === 1) {
     const whole = terminalJson(data);
-    if (whole.length <= maxResultCharacters) return { content: [text(whole)] };
+    if (resultSize(whole) <= maxResultCharacters) return { content: [text(whole)] };
   }
   const graph = kind === 'graph';
   if (!(graph ? validGraph(data) : validRoom(data))) throw new ToolError(`Context Ledger returned an unexpected ${kind} response.`);
@@ -256,11 +256,11 @@ function sessionPage(session, remaining, fromLine, fromOffset) {
   // The largest run of whole turns that fits with its footer. Sizes are added only
   // until they pass the bound, so a page costs about one page of work.
   const parts = [];
-  let size = briefingText(header).length;
+  let size = resultSize(briefingText(header));
   let count = 0;
   for (const [index, message] of remaining.entries()) {
     const part = briefingText(turnMarkdown(message, index === 0 ? firstPart : undefined));
-    size += part.length;
+    size += resultSize(part);
     if (size > limit) break;
     parts.push(part);
     if (size + footer(index + 1) <= limit) count = index + 1;
@@ -278,7 +278,7 @@ function sessionPage(session, remaining, fromLine, fromOffset) {
   const render = end => partialPage(briefingText(header + turnMarkdown(first, { start, end })), continues(end));
   const end = cutText(raw, start, limit, render, Math.min(raw.length - 1, start + 2 * limit + 2));
   const page = render(end);
-  if (end >= raw.length || page.length > limit) throw tooLarge('session_read');
+  if (end >= raw.length || resultSize(page) > limit) throw tooLarge('session_read');
   return page;
 }
 
@@ -323,7 +323,7 @@ function numberedFiles(data) {
  */
 function filePage({ intro, files, start, limit, next, heading }) {
   const pieces = [briefingText(intro)];
-  let size = pieces[0].length;
+  let size = resultSize(pieces[0]);
   let shown = false;
   const footer = position => (position.file < files.length ? notesSize(next(position, files.length - position.file - 1)) : 0);
   const stop = position => partialPage(pieces.join(''), next(position, files.length - position.file - 1));
@@ -333,7 +333,7 @@ function filePage({ intro, files, start, limit, next, heading }) {
     const firstOffset = index === start.file ? start.offset : 0;
     const block = `\n\n${heading(file, firstLine, firstOffset)}\n`;
     if (!file.lines.length) {
-      const cost = briefingText(block).length;
+      const cost = resultSize(briefingText(block));
       if (shown && size + cost + footer({ file: index + 1, line: 1, offset: 0 }) > limit) {
         return stop({ file: index, line: 1, offset: 0 });
       }
@@ -348,16 +348,17 @@ function filePage({ intro, files, start, limit, next, heading }) {
       const prefix = file.prefix(line, offset);
       const after = line < file.lines.length ? { file: index, line: line + 1, offset: 0 } : { file: index + 1, line: 1, offset: 0 };
       const piece = briefingText(lead + prefix + raw.slice(offset));
-      if (size + piece.length + footer(after) <= limit) {
+      const pieceSize = resultSize(piece);
+      if (size + pieceSize + footer(after) <= limit) {
         pieces.push(piece);
-        size += piece.length;
+        size += pieceSize;
         shown = true;
         continue;
       }
       if (shown) return stop({ file: index, line, offset });
       // Alone on the page and still too long: cut the line.
       const leadText = briefingText(lead + prefix);
-      const measure = end => size + leadText.length + briefingText(raw.slice(offset, end)).length
+      const measure = end => size + resultSize(leadText) + resultSize(briefingText(raw.slice(offset, end)))
         + footer({ file: index, line, offset: end });
       const end = cutText(raw, offset, limit, measure, Math.min(raw.length - 1, offset + 2 * limit + 2));
       if (end >= raw.length || measure(end) > limit) return undefined;
@@ -405,7 +406,7 @@ const unexpectedLatent = () => new ToolError('Context Ledger returned an unexpec
 /** The ledger's text fallback: whole when it fits, else its first page. */
 function textFallback(name, data, intro, same) {
   const whole = briefingText(`${intro}\n\n${data.files.map(file => `=== FILE: ${file.path} ===\n${file.text}`).join('\n\n')}`);
-  if (whole.length <= maxResultCharacters) return { content: [text(whole)] };
+  if (resultSize(whole) <= maxResultCharacters) return { content: [text(whole)] };
   const files = numberedFiles(data);
   if (!files?.length) throw unexpectedLatent();
   return fallbackPage(name, { intro, files, position: undefined, same });
@@ -462,7 +463,7 @@ const tools = new Map([
       properties: {
         query: { type: 'string', maxLength: 512, default: '', description: 'Search terms.' },
         provider: { type: 'string', enum: ['claude', 'codex'], description: 'Only sessions from this agent.' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, default: 100 },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
         after: hexSchema('more.after of the previous page.'),
       },
       additionalProperties: false,
@@ -475,20 +476,36 @@ const tools = new Map([
         throw new ToolError('provider must be claude or codex.');
       }
       const { limit, after } = listArguments(args, 100);
-      const search = new URLSearchParams({ q: query });
-      if (args.provider) search.set('provider', args.provider);
-      search.set('limit', limit);
-      if (after) search.set('after', after);
-      const data = await listPage('/api/sessions?' + search);
+      const url = cursor => {
+        const search = new URLSearchParams({ q: query });
+        if (args.provider) search.set('provider', args.provider);
+        search.set('limit', limit);
+        if (cursor) search.set('after', cursor);
+        return '/api/sessions?' + search;
+      };
+      const data = await listPage(url(after));
       // A ledger started before paging ignores limit and after and sends every match
       // without next. That list is complete, so it passes through as before when it fits;
       // trimming it, or answering an after, would send a client following more in a loop.
       if (isObject(data) && Array.isArray(data.sessions) && !Object.hasOwn(data, 'next')) {
         const whole = jsonResult(data);
-        if (after === undefined && whole.content[0].text.length <= maxResultCharacters) return whole;
+        if (after === undefined && resultSize(whole.content[0].text) <= maxResultCharacters) return whole;
         throw new ToolError(olderLedger);
       }
       if (!listShape(data, 'sessions')) throw new ToolError('Context Ledger returned an unexpected session list response.');
+      // Without a limit a page holds every session that fits, as on 19f6522, so a list
+      // that fits is never cut at 100: read on until the rows pass the bound or end.
+      // A ledger page holds up to 100 rows of at least 64 characters, so this stops after
+      // a few requests; the cap only guards against a ledger that never ends.
+      if (args.limit === undefined) {
+        for (let requests = 1; data.next !== null && requests < 8
+          && resultSize(terminalJson({ sessions: data.sessions })) <= maxResultCharacters; requests += 1) {
+          const page = await listPage(url(data.next));
+          if (!listShape(page, 'sessions')) throw new ToolError('Context Ledger returned an unexpected session list response.');
+          data.sessions.push(...page.sessions);
+          data.next = page.next;
+        }
+      }
       return listResult('sessions', data.sessions, data.next,
         'More sessions match. Call session_search again with the same query and provider and after set to more.after.', 'session list');
     },
@@ -622,8 +639,8 @@ const tools = new Map([
       const meter = text(terminalJson(context.meter ?? null));
       // Every item after the briefing counts against the bound, including any added here later.
       const after = [meter];
-      const afterSize = after.reduce((sum, item) => sum + item.text.length, 0);
-      if (fromLine === 1 && briefing.length + afterSize <= maxResultCharacters) return { content: [text(briefing), ...after] };
+      const afterSize = after.reduce((sum, item) => sum + resultSize(item.text), 0);
+      if (fromLine === 1 && resultSize(briefing) + afterSize <= maxResultCharacters) return { content: [text(briefing), ...after] };
       rememberBriefing(graphId, context);
       // Whole briefing lines per page. Page 1 depends only on the graph, so it stays cache-stable.
       const lines = briefing.split('\n');
@@ -637,7 +654,7 @@ const tools = new Map([
       };
       const budget = maxResultCharacters - afterSize;
       const page = render(fitCount(render, rest, budget));
-      if (page.length > budget) throw tooLarge('context_for');
+      if (resultSize(page) > budget) throw tooLarge('context_for');
       return { content: [text(page), ...after] };
     },
   }],
@@ -751,14 +768,14 @@ const tools = new Map([
           (answerEnd < answer.length ? ` [answer cut: ${answer.length - answerEnd} more characters not shown]` : ''),
       ].join('\n'));
       const receipt = text(terminalJson({ receipt: data.receipt, stats: data.stats }));
-      const budget = maxResultCharacters - receipt.text.length;
+      const budget = maxResultCharacters - resultSize(receipt.text);
       let page = render(findings.length, answer.length);
-      if (page.length > budget) {
+      if (resultSize(page) > budget) {
         // Checked findings first, whole; then as much of the unchecked answer as fits.
         // A rerun would give different output, so what is cut is named, not paged.
-        const shown = largest(0, findings.length, count => render(count, 0).length <= budget);
+        const shown = largest(0, findings.length, count => resultSize(render(count, 0)) <= budget);
         if (shown < 0) throw tooLarge('latent_read');
-        const end = snapEnd(answer, largest(0, answer.length, cut => render(shown, snapEnd(answer, cut)).length <= budget));
+        const end = snapEnd(answer, largest(0, answer.length, cut => resultSize(render(shown, snapEnd(answer, cut))) <= budget));
         page = render(shown, Math.max(0, end));
       }
       return { content: [text(page), receipt] };
@@ -807,7 +824,7 @@ const tools = new Map([
         if (Array.isArray(data.files)) return textFallback('latent_transfer', data, intro, same);
         const document = typeof data.text === 'string' ? data.text : '';
         const whole = briefingText(`${intro}\n\n=== TEXT ===\n${document}`);
-        if (whole.length <= maxResultCharacters) return { content: [text(whole)] };
+        if (resultSize(whole) <= maxResultCharacters) return { content: [text(whole)] };
         return transferTextPage(document, intro, undefined, same);
       }
       if (data?.mode !== 'transfer' || typeof data.answer !== 'string') {
@@ -929,7 +946,7 @@ async function callTool(params) {
     const result = await tool.run(args);
     // Backstop: paging keeps every result under the bound, so this never fires unless
     // there is a bug. An oversized result is withheld rather than cut by the client.
-    const size = result.content.reduce((sum, item) => sum + item.text.length, 0);
+    const size = result.content.reduce((sum, item) => sum + resultSize(item.text), 0);
     if (size > maxResultCharacters) {
       console.error(`context-ledger mcp: ${params.name} result of ${size} characters withheld.`);
       return { content: [text('The result was larger than this server\'s 40,000-character bound and was withheld. ' +

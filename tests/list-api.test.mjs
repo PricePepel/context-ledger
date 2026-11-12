@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { openStore } from '../src/store.mjs';
+import { terminalJson } from '../src/text.mjs';
 import { startMcp } from './mcp-client.mjs';
 
 // Cycle 10 F2: graph_list, room_list and the list routes behind them. Synthetic data.
@@ -133,6 +134,30 @@ test('graph_list and room_list filter, page newest first and name the parties wi
   assert.doesNotMatch(JSON.stringify(rooms), /proposal|choice/i);
 });
 
+test('room_list matches a party or graph on the graph_b side and lists the parties in party order', async t => {
+  const state = await ledger(t);
+  const leo = await state.import('leo.jsonl', 'Leo plans the synthetic Deneb demo.');
+  const ali = await state.import('ali.jsonl', 'Ali reviews the synthetic Deneb demo.');
+  const leoGraph = await state.publish(v2(leo, 'leo', 'Deneb goal'));
+  // Graph IDs are content hashes, and a room stores the smaller one as graph_a. Publish
+  // until an ali graph sorts after leo's, so leo is graph_a and ali matches only as graph_b.
+  let aliGraph;
+  for (let index = 0; !aliGraph || aliGraph.id < leoGraph.id; index += 1) {
+    assert.ok(index < 40, 'some ali graph sorts after the leo graph');
+    aliGraph = await state.publish(v2(ali, 'ali', `Deneb review ${index}`));
+  }
+  const room = await state.room(leoGraph, aliGraph);
+  const ids = page => page.rooms.map(row => row.id);
+  assert.deepEqual(ids(await state.call('room_list', { party: 'ali' })), [room.id], 'party on the graph_b side');
+  assert.deepEqual(ids(await state.call('room_list', { party: 'leo' })), [room.id], 'party on the graph_a side');
+  assert.deepEqual(ids(await state.call('room_list', { graphId: aliGraph.id })), [room.id], 'graph on the graph_b side');
+  assert.deepEqual(ids(await state.call('room_list', { graphId: aliGraph.id, party: 'ali' })), [room.id]);
+  // Sorted by party even though leo's graph is graph_a, the order room_read uses too.
+  const expected = [{ party: 'ali', graphId: aliGraph.id, sessionId: ali.id }, { party: 'leo', graphId: leoGraph.id, sessionId: leo.id }];
+  assert.deepEqual((await state.call('room_list', {})).rooms[0].parties, expected);
+  assert.deepEqual(room.parties.map(entry => entry.party), ['ali', 'leo']);
+});
+
 test('list pages are stable while new graphs, rooms and sessions arrive', async t => {
   const state = await ledger(t);
   const leo = await state.import('leo.jsonl', 'Leo plans the synthetic Orion demo.');
@@ -255,7 +280,10 @@ test('the browser and CLI search still get every matching session', async t => {
   const state = await ledger(t);
   const keyword = 'quasar' + Date.now().toString(36);
   const imported = [];
-  for (let index = 0; index < 150; index += 1) imported.push((await state.import(`s${index}.jsonl`, `Synthetic ${keyword} session ${index}`)).id);
+  // The 120 oldest also carry "nova": more than 100 rows that still fit one result.
+  for (let index = 0; index < 150; index += 1) {
+    imported.push((await state.import(`s${index}.jsonl`, `Synthetic ${keyword} session ${index}${index < 120 ? ' nova' : ''}`)).id);
+  }
 
   const response = await fetch(`${state.server.origin}/api/sessions?q=${keyword}`);
   const bodyText = await response.text();
@@ -272,7 +300,18 @@ test('the browser and CLI search still get every matching session', async t => {
   for await (const chunk of cli.stdout) output += chunk;
   assert.deepEqual(JSON.parse(output).map(session => session.id), [...imported].reverse());
 
-  const first = await state.call('session_search', { query: keyword });
+  // Without a limit, session_search returns every match that fits, byte for byte as on
+  // 19f6522: 120 short rows fit one result, so there is no cut at 100 and no more.
+  const nova = await state.client.call(5000, 'session_search', { query: `${keyword} nova` });
+  assert.deepEqual(nova.content, [{ type: 'text', text: terminalJson({ sessions: (await state.get(`/api/sessions?q=${keyword}+nova`)).body.sessions }) }]);
+  assert.equal(JSON.parse(nova.content[0].text).sessions.length, 120);
+  // All 150 do not fit: the first page holds as many as fit, more than 100, then the rest.
+  const all = await walk(state, 'session_search', 'sessions', { query: keyword });
+  assert.deepEqual(all.map(session => session.id), [...imported].reverse());
+  const opening = await state.call('session_search', { query: keyword });
+  assert.ok(opening.sessions.length > 100 && opening.more, `${opening.sessions.length} sessions on the first page`);
+  // An explicit limit still pages by it.
+  const first = await state.call('session_search', { query: keyword, limit: 100 });
   assert.equal(first.sessions.length, 100);
   assert.equal(first.more.after, imported[50]);
   const second = await state.call('session_search', { query: keyword, after: first.more.after });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
-import { cutText, fitCount, maxResultCharacters, pageSections } from '../src/paging.mjs';
+import { cutText, fitCount, maxResultCharacters, pageSections, resultSize as measure } from '../src/paging.mjs';
 import { terminalJson, visibleText } from '../src/text.mjs';
 import { startMcp } from './mcp-client.mjs';
 import { mergePages, resultSize, walkJson } from './merge-pages.mjs';
@@ -97,8 +97,8 @@ test('unit: fitCount, cutText and pageSections keep to the limit', () => {
   const render = value => JSON.stringify(value);
   const pages = [];
   for (let fromItem = 1; fromItem;) {
-    const { result } = pageSections({ rootKey: 'graph', root, paths, fromItem, limit: 300, render, note, pastEnd });
-    assert.ok(render(result).length <= 300);
+    const { result } = pageSections({ rootKey: 'graph', root, paths, fromItem, limit: 500, render, note, pastEnd });
+    assert.ok(measure(render(result)) <= 500);
     pages.push(result);
     fromItem = result.more?.fromItem;
   }
@@ -295,8 +295,9 @@ test('latent text fallbacks page without rerunning the model, and latent answers
     { path: 'src/b.js', text: numbered(Array.from({ length: 3000 }, (_, index) => `line ${index}`)) },
   ];
   assert.ok(files.reduce((sum, file) => sum + file.text.length, 0) > 400_000);
+  // One escape-heavy citation each, so one finding fits beside the warning under the weighted measure.
   const finding = index => ({ id: `f${index + 1}`, label: 'Finding ' + tag.repeat(240),
-    evidence: Array.from({ length: 4 }, () => ({ path: tag.repeat(256), startLine: 1, endLine: 2, quote: rlo.repeat(200) })) });
+    evidence: [{ path: tag.repeat(256), startLine: 1, endLine: 2, quote: rlo.repeat(200) }] });
   let mode = 'text';
   const ledger = await fakeLedger(t, request => {
     if (request.url === '/api/latent/files') {
@@ -304,7 +305,9 @@ test('latent text fallbacks page without rerunning the model, and latent answers
       return { body: { mode: 'text', files: files.filter(file => paths.includes(file.path)) } };
     }
     if (request.url === '/api/latent/transfer') {
-      return { body: { mode: 'text', reason: 'No trained mapper exists for this model pair.', text: JSON.parse(request.body).text } };
+      const { text, paths: asked } = JSON.parse(request.body);
+      if (asked) return { body: { mode: 'text', reason: 'No trained mapper exists for this model pair.', files } };
+      return { body: { mode: 'text', reason: 'No trained mapper exists for this model pair.', text } };
     }
     if (mode === 'latent') {
       return { body: { mode: 'latent', graph: { findings: Array.from({ length: 12 }, (_, index) => finding(index)), answer: 'A' + rlo.repeat(59_999),
@@ -376,6 +379,17 @@ test('latent text fallbacks page without rerunning the model, and latent answers
   assert.equal(partialNote(transferEnd), undefined);
   assert.equal(transfers(), 0);
   assert.deepEqual(ledger.requests.slice(filesCalls).map(request => request.url), ['/api/latent/files', '/api/latent/files']);
+
+  // latent_transfer's own first page of a long paths fallback names latent_transfer and
+  // its arguments, and following that note goes on in the same file.
+  const firstTransfer = pageText(await client.call(170, 'latent_transfer', { ...pair, paths }));
+  const transferNote = partialNote(firstTransfer);
+  assert.match(transferNote, /^More file text remains \(2 more files after this one\)\. Call latent_transfer again with the same sender, receiver, question and paths, and fromPath "src\/a\.js", fromLine (\d+)\.$/u);
+  assert.ok(withoutTop(firstTransfer).startsWith('No trained mapper exists for this model pair. Read the document below.\n\n=== FILE: src/a.js ===\n1| const value0 = '));
+  const nextLine = Number(transferNote.match(/fromLine (\d+)\.$/u)[1]);
+  const secondTransfer = pageText(await client.call(171, 'latent_transfer', { ...pair, paths, fromPath: 'src/a.js', fromLine: nextLine }));
+  assert.ok(withoutTop(secondTransfer).includes(`\n\n=== FILE: src/a.js (continued from line ${nextLine}) ===\n${nextLine}| `));
+  assert.equal(transfers(), 1, 'only the first page asked the models');
 
   // An 8,000-unit document of format characters: paged from the arguments, with no request.
   const document = rlo.repeat(8000);
@@ -519,12 +533,23 @@ test('context_for pages whole briefing lines and keeps the meter on every page',
   assert.equal(ledger.requests.length, 2, 'page 1 always asks the ledger again');
 });
 
-test('tools/list: thirteen closed tools, at most 3,500 characters more than 19f6522, no settlement words or route', async t => {
+// The tools of this cycle. Tools another branch adds (vuek0/subagent-graphs adds
+// handoff_publish, 1,881 characters) are that branch's growth, not this cycle's, so the
+// budget counts these 13 by name and survives that merge.
+const cycleTools = ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open',
+  'room_read', 'latent_read', 'latent_transfer', 'latent_team', 'graph_list', 'room_list'];
+const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name))).length;
+
+test('tools/list: the cycle\'s thirteen closed tools, at most 3,500 characters more than 19f6522, no settlement words or route', async t => {
   const client = mcp(t, 9);
   const { result } = await client.request(1, 'tools/list');
-  assert.equal(result.tools.length, 13);
-  const size = JSON.stringify(result.tools).length;
+  const names = result.tools.map(tool => tool.name);
+  assert.equal(new Set(names).size, names.length);
+  for (const name of cycleTools) assert.ok(names.includes(name), name);
+  const size = cycleSize(result.tools);
   assert.ok(size <= 7066 + 3500, `tools/list is ${size} characters`);
+  const merged = [...result.tools, { name: 'handoff_publish', description: 'x'.repeat(1800), inputSchema: { type: 'object', additionalProperties: false } }];
+  assert.equal(cycleSize(merged), size, 'another branch\'s tool does not use this cycle\'s budget');
   for (const tool of result.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.doesNotMatch(JSON.stringify(tool), /confirm|approv|reject|decide|decision|accept/i, tool.name);
@@ -568,7 +593,10 @@ test('results that fit are byte-identical to the 19f6522 rendering', async t => 
     if (request.url.endsWith('/context')) return { body: { context: { text: `Goal: ${rlo}ship`, meter: { tokens: 3 } } } };
     if (request.url.startsWith('/api/graphs')) return { body: graph };
     if (request.url.startsWith('/api/rooms')) return { body: room };
-    if (request.url === '/api/latent/transfer') return { body: { mode: 'text', reason: 'No mapper.', text: 'Hello\r\nthere' } };
+    if (request.url === '/api/latent/transfer') {
+      if (JSON.parse(request.body).paths) return { body: { mode: 'text', reason: 'No mapper.', files } };
+      return { body: { mode: 'text', reason: 'No mapper.', text: 'Hello\r\nthere' } };
+    }
     if (latent === 'latent') return { body: { mode: 'latent', graph: slice, receipt: { model: 'fake' }, stats: null } };
     return { body: { mode: 'text', reason: 'Down.', files } };
   });
@@ -586,6 +614,8 @@ test('results that fit are byte-identical to the 19f6522 rendering', async t => 
     [visibleText(`Down. Read the numbered files below.\n\n=== FILE: src/a.js ===\n${files[0].text}`)]);
   assert.deepEqual(await texts(9, 'latent_transfer', { sender: 'a/b', receiver: 'c/d', question: 'q', text: 'Hello\r\nthere' }),
     [visibleText('No mapper. Read the document below.\n\n=== TEXT ===\nHello\r\nthere')]);
+  assert.deepEqual(await texts(11, 'latent_transfer', { sender: 'a/b', receiver: 'c/d', question: 'q', paths: ['src/a.js'] }),
+    [visibleText(`No mapper. Read the document below.\n\n=== FILE: src/a.js ===\n${files[0].text}`)]);
   latent = 'latent';
   assert.deepEqual(await texts(10, 'latent_read', { paths: ['src/a.js'], question: 'q' }), [visibleText([
     'WARNING: 1 line(s) in these files read like instructions to an AI model (src/a.js:2). Findings citing them were dropped. ' +
@@ -595,4 +625,72 @@ test('results that fit are byte-identical to the 19f6522 rendering', async t => 
     'Findings dropped by the ledger: 0 (ungrounded: 0, bad quotes: 0, citing instruction-like lines: 0)',
     'Model answer (unchecked prose; trust the findings, read cited lines before acting): A is 1.',
   ].join('\n')), terminalJson({ receipt: { model: 'fake' }, stats: null })]);
+});
+
+test('graph_list and room_list trim a full page of long rows to the bound and continue after the last row shown', async t => {
+  const party = index => `p${index}`.padEnd(30, 'x') + 'yz';
+  const rooms = Array.from({ length: 250 }, (_, index) => ({ id: hex(index + 1), createdAt: '2026-11-11T09:00:00.000Z', parties: [
+    { party: party(index), graphId: hex(index + 1000), sessionId: hex(index + 2000) },
+    { party: party(index + 1), graphId: hex(index + 3000), sessionId: hex(index + 4000) }] }));
+  const graphs = Array.from({ length: 250 }, (_, index) => ({ id: hex(index + 1), sessionId: hex(index + 5000), sessionTitle: tag.repeat(120),
+    party: party(index), version: 2, createdAt: null, nodes: 100, edges: 300, links: 100 }));
+  const ledger = await fakeLedger(t, request => {
+    const url = new URL(request.url, 'http://ledger');
+    const rows = url.pathname === '/api/rooms' ? rooms : graphs;
+    const limit = Number(url.searchParams.get('limit'));
+    const after = url.searchParams.get('after');
+    const start = after ? rows.findIndex(row => row.id === after) + 1 : 0;
+    const shown = rows.slice(start, start + limit);
+    return { body: { [url.pathname === '/api/rooms' ? 'rooms' : 'graphs']: shown, next: start + limit < rows.length ? shown.at(-1).id : null } };
+  });
+  const client = mcp(t, ledger.port);
+  let id = 1;
+  for (const [name, key, rows] of [['room_list', 'rooms', rooms], ['graph_list', 'graphs', graphs]]) {
+    const seen = [];
+    let after;
+    for (let pages = 0; ; pages += 1) {
+      const page = JSON.parse(pageText(await client.call(id++, name, { limit: 100, ...(after ? { after } : {}) })));
+      if (pages === 0) assert.ok(page[key].length < 100, `${page[key].length} ${key} on a full page`);
+      seen.push(...page[key]);
+      if (!page.more) break;
+      assert.equal(Object.keys(page)[0], 'more');
+      assert.equal(page.more.after, page[key].at(-1).id, 'continues after the last row shown');
+      after = page.more.after;
+      assert.ok(pages < 50);
+    }
+    assert.deepEqual(seen, rows, `${name}: every row once, in order`);
+  }
+});
+
+test('token-dense pages stay near the token count of 40,000 characters of English', async t => {
+  // Han script is about one token per character, so a page holds at most 10,000 of them.
+  const han = Array.from({ length: 60_000 }, (_, index) => String.fromCodePoint(0x4e00 + (index % 2000))).join('');
+  const session = { id: 'b'.repeat(64), provider: 'claude', source: 'han.jsonl', messages: [
+    { role: 'user', line: 1, text: han.slice(0, 30_000) }, { role: 'assistant', line: 2, text: han.slice(30_000) }] };
+  // Numbered code: digits and punctuation count twice, so a page is well under 40,000 characters.
+  const code = Array.from({ length: 4000 }, (_, index) => `${index + 1}| if (value[${index}] !== 0) total += value[${index}] * 2;`).join('\n');
+  const ledger = await fakeLedger(t, request => (request.url.startsWith('/api/sessions/') ? { body: { session } }
+    : { body: { mode: 'text', reason: 'Down.', files: [{ path: 'src/sum.js', text: code }] } }));
+  const client = mcp(t, ledger.port);
+
+  let position = {};
+  let rebuilt = '';
+  for (let id = 1; ; id += 1) {
+    const page = pageText(await client.call(id, 'session_read', { sessionId: session.id, ...position }));
+    const hanCount = [...page].filter(character => /\p{Script=Han}/u.test(character)).length;
+    assert.ok(hanCount > 0 && hanCount <= 10_000, `${hanCount} Han characters on a page`);
+    rebuilt += [...page].filter(character => /\p{Script=Han}/u.test(character)).join('');
+    const continues = page.match(/fromLine (\d+) and fromOffset (\d+)\.\]$/u);
+    const next = page.match(/fromLine (\d+)\.\]$/u);
+    if (continues) position = { fromLine: Number(continues[1]), fromOffset: Number(continues[2]) };
+    else if (next) position = { fromLine: Number(next[1]) };
+    else break;
+    assert.ok(id < 50);
+  }
+  assert.equal(rebuilt, han, 'every Han character once, in order');
+
+  const first = pageText(await client.call(100, 'latent_read', { paths: ['src/sum.js'], question: 'q' }));
+  assert.ok(partialNote(first));
+  assert.ok(first.length <= 32_000, `a code page of ${first.length} characters`);
+  assert.ok(first.length >= 20_000, 'and still a full page');
 });

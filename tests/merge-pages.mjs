@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { resultSize as measure } from '../src/paging.mjs';
 
 // Put paged JSON results back together, as a client following more would.
 export function mergePages(rootKey, pages) {
@@ -33,7 +34,8 @@ function writePath(root, name, items) {
   value[path.at(-1)] = items;
 }
 
-export const resultSize = result => result.content.reduce((sum, item) => sum + item.text.length, 0);
+/** A result's size against the bound, as src/paging.mjs measures it (never less than its length). */
+export const resultSize = result => result.content.reduce((sum, item) => sum + measure(item.text), 0);
 
 /**
  * Follow more.fromItem from a first call until the last page. Checks the bound, that

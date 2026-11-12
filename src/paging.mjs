@@ -5,6 +5,26 @@
 /** Text across all content items of one tool result, in UTF-16 code units, after escaping. */
 export const maxResultCharacters = 40_000;
 
+/**
+ * The size of result text against maxResultCharacters. Clients cap tokens, not
+ * characters, and cycle 7 measured English prose of 40,000 characters (about 4 per
+ * token) reaching Codex whole. Token-dense text is weighted so that a page stays near
+ * that token count: an ASCII letter or whitespace counts 1, any other ASCII character
+ * (digits, punctuation, as in code, JSON, IDs and escapes) 2, and any other UTF-16 code
+ * unit (Han script, for example, about one token per character) 4. Never less than the
+ * length, so a page that fits is also at most 40,000 characters.
+ */
+export function resultSize(value) {
+  let size = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x80) size += 4;
+    else if ((code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a) || code === 0x20 || code === 0x0a || code === 0x09) size += 1;
+    else size += 2;
+  }
+  return size;
+}
+
 /** Largest x in [low, high] for which fits(x) holds, assuming fits is true then false. low - 1 if none. */
 export function largest(low, high, fits) {
   let found = low - 1;
@@ -20,11 +40,11 @@ export function largest(low, high, fits) {
   return found;
 }
 
-/** The largest k from 1 to n with render(k).length <= limit; at least 1, or 0 when n is 0. */
+/** The largest k from 1 to n with resultSize(render(k)) <= limit; at least 1, or 0 when n is 0. */
 export function fitCount(render, n, limit) {
   if (n <= 0) return 0;
-  if (render(n).length <= limit) return n;
-  return Math.max(1, largest(1, n - 1, k => render(k).length <= limit));
+  if (resultSize(render(n)) <= limit) return n;
+  return Math.max(1, largest(1, n - 1, k => resultSize(render(k)) <= limit));
 }
 
 const isHigh = code => code >= 0xd800 && code <= 0xdbff;
@@ -47,7 +67,7 @@ function firstEnd(raw, start) {
 
 /**
  * The largest end index for which render(end) fits the limit. render(end) renders the
- * part raw.slice(start, end) with whatever surrounds it, as a string or its length. The
+ * part raw.slice(start, end) with whatever surrounds it, as a string or its resultSize. The
  * cut falls on a code-point boundary, never inside a CRLF, preferably just after a
  * newline in the last tenth of the part, and always takes at least one code point.
  * maxEnd bounds the search (escaping never shrinks text below half its raw length).
@@ -56,7 +76,7 @@ export function cutText(raw, start, limit, render, maxEnd = raw.length) {
   const minimum = firstEnd(raw, start);
   const size = end => {
     const rendered = render(end);
-    return typeof rendered === 'number' ? rendered : rendered.length;
+    return typeof rendered === 'number' ? rendered : resultSize(rendered);
   };
   const found = largest(minimum, Math.min(maxEnd, raw.length), end => {
     const snapped = snapEnd(raw, end, start);
@@ -140,10 +160,10 @@ export function pageSections({ rootKey, root, paths, fromItem, limit, render, no
 
   if (fromItem > total) {
     const result = build(0);
-    return render(result).length <= limit ? { result } : { tooLarge: true };
+    return resultSize(render(result)) <= limit ? { result } : { tooLarge: true };
   }
   const available = total - fromItem + 1;
   const count = fitCount(k => render(build(k)), available, limit);
   const result = build(count);
-  return render(result).length <= limit ? { result } : { tooLarge: true };
+  return resultSize(render(result)) <= limit ? { result } : { tooLarge: true };
 }
