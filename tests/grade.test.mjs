@@ -86,7 +86,7 @@ test('review of the follow-up: each strict rule is needed, and paraphrases grade
   const renewals = freshQuestion('renewals');
   const [count, length] = renewals.required;
   const renewalExamples = ['It can be renewed 2 times, 14 days each.', 'It can be renewed twice, 14 days each.', 'At most 2, 14 days each.',
-    'The renewal limit is 2; 14 days each.'];
+    'The renewal limit is 2; 14 days each.', 'MAX_RENEWALS = 2 and RENEWAL_DAYS = 14.'];
   assert.equal(count.length, renewalExamples.length);
   for (const index of count.keys()) {
     const only = { ...renewals, required: [[count[index]], length] };
@@ -211,4 +211,22 @@ test('second confirming review: raises an error, two successive renewals, offere
     'The hold expires and the item is offered to the next waiting member.',
     'The hold expires and the next waiting member can collect the item.',
   ]), [true, true]);
+});
+
+// Measured on 2026-11-12 against 90 answers written from the fixture code by an agent that did not
+// see these rules: every right answer passes, and 9 of 45 wrong ones still pass. Those nine state the
+// core facts and add a wrong detail (a fee, a reminder, the wrong error); a keyword grader cannot
+// see an extra false claim. This test keeps both numbers from getting worse.
+test('labelled paraphrases: no right answer refused, at most nine wrong ones accepted', () => {
+  const set = JSON.parse(readFileSync(new URL('../evals/latent/fresh-paraphrases.json', import.meta.url), 'utf8'));
+  assert.equal(set.answers.length, 90);
+  const refused = [];
+  const accepted = [];
+  for (const entry of set.answers) {
+    const correct = gradeSlice(freshQuestion(entry.id), slice(entry.answer)).correct;
+    if (entry.right && !correct) refused.push(entry.answer);
+    if (!entry.right && correct) accepted.push(entry.answer);
+  }
+  assert.deepEqual(refused, [], 'every right answer passes');
+  assert.ok(accepted.length <= 9, `${accepted.length} wrong answers accepted:\n${accepted.join('\n')}`);
 });

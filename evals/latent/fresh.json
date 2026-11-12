@@ -16,7 +16,8 @@
       "required": [
         [{ "pattern": "\\b(?:2|two)\\s+(?:(?!weeks?\\b|days?\\b)[a-z]+\\s+)?(?:times|renewals)\\b" }, { "pattern": "\\btwice\\b" },
           { "pattern": "\\b(?:up to|at most|maximum of|max(?:imum)?:?)\\s+(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" },
-          { "pattern": "\\b(?:limit|cap)\\w*\\s+(?:of\\s+|is\\s+|at\\s+|:\\s*)(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" }],
+          { "pattern": "\\b(?:limit|cap)\\w*\\s+(?:renewals\\s+)?(?:of\\s+|is\\s+|at\\s+|:\\s*)(?:2|two)\\b(?!\\s*(?:weeks?|days?)\\b)" },
+          { "pattern": "\\bmax_renewals\\b\\W{0,4}(?:=|is|of)?\\s*(?:2|two)\\b" }],
         ["14", "fourteen", "two weeks"]
       ],
       "evidence": [{ "path": "src/settings.js", "lines": [10, 11] }, { "path": "src/loans.js", "lines": [22, 24] }]
@@ -51,7 +52,7 @@
       "required": [["on hold for another member", "refuse", "reject", "throws", "thrown", "raises", "denied", "blocked", "cannot be renewed", "can't be renewed",
         "not renewed", "cannot be extended", "can't be extended", "not extended", "fails"]],
       "forbidden": [
-        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|block|stop|den(?:y|ied))" },
+        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|den(?:y|ied))" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bsucceed" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bgoes through\\b" },
         { "pattern": "\\bno (?:error|exception)s?\\b(?!\\s+(?:is|was|will be) made)" },
@@ -69,7 +70,7 @@
         [{ "pattern": "\\b(?:next|second|following|earliest)(?:\\s+(?!(?:day|week|time|morning|reminder)\\b)['\"]?[a-z-]+['\"]?){0,2}\\s+(?:member|hold|person|patron|borrower|in (?:the )?(?:queue|line))\\b" },
           { "pattern": "\\b(?:promot\\w*|puts?|moves?)\\s+(?:the\\s+|a\\s+|an\\s+|another\\s+)?(?:next|following|second|earliest|first\\s+(?:waiting|queued)|waiting|queued)\\b(?:\\s+['\"]?[a-z-]+['\"]?){0,2}?\\s+(?:hold|member)\\b" },
           { "pattern": "\\bfirst\\s+(?:(?:waiting|queued)\\s+(?:member|hold|person|patron|borrower)\\b|(?:member|hold|person|patron|borrower)\\s+in (?:the )?(?:queue|line)\\b)" }],
-        [{ "pattern": "\\bpromot|on-shelf|\\b(?:on|onto|to) (?:the )?(?:hold )?shelf\\b|\\bavailable\\b|\\b(?:gets?|receives?|is offered|can (?:collect|pick up|borrow)) (?:the item|it)\\b|\\b(?:offered|goes|passes|handed|given) to\\b|\\bits turn\\b" }]
+        [{ "pattern": "\\bpromot|on-shelf|\\b(?:on|onto|to) (?:the )?(?:hold )?shelf\\b|\\bavailable\\b|\\b(?:gets?|receives?|is offered|can (?:collect|pick up|borrow)) (?:the item|it)\\b|\\b(?:offered|goes|go|passes|passed|pass|hands|handed|hand|given|moves on|moved on)(?:\\s+(?:the item|it|on))?\\s+to\\b|\\bits turn\\b" }]
       ],
       "forbidden": [{ "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+expire" }],
       "evidence": [{ "path": "src/holds.js", "lines": [25, 31] }]

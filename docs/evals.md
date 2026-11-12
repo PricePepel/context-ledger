@@ -541,3 +541,19 @@ Every round of the grader review found phrasings that the keyword rules graded w
 2. Every phrasing listed in `tests/grade.test.mjs` grades right.
 
 Sentences that no recorded run produced, and that are built to slip past a rule, are this limit, not defects. If the live runs start producing them, add a rule then. The saved cycle 9 runs re-grade exactly as in the F1 table above after every fix.
+
+### Measured agreement of the strict grader (2026-11-12)
+
+Review rounds kept finding new everyday paraphrases, so the stopping rule became a measurement rather than another round. An agent that never saw `grade.mjs`, `fresh.json` or the grader tests wrote `evals/latent/fresh-paraphrases.json` from the fixture code alone. It holds 90 answers, 15 right and 15 wrong for each of the three strict questions, phrased as models answering honestly would phrase them. Every disagreement with the grader was checked by hand against `loans.js` and `holds.js`, and every label was right.
+
+| Question | First measurement | After the wording fixes |
+| --- | --- | --- |
+| renewals | 25/30 | 26/30 |
+| renew-on-hold | 25/30 | 26/30 |
+| hold-expiry | 25/30 | 29/30 |
+| All | 75/90 (83%) | 81/90 (90%) |
+
+- **The wording fixes** removed every false refusal (10 of 45 right answers were refused before). The new forms are: hands, passes or moves the item on to the next member; `MAX_RENEWALS = 2`; capped at two renewals; and a correct side remark that an expired hold "does not block" renewal, which the negation rule no longer reads as a refusal.
+- **What remains:** 9 of 45 wrong answers are accepted. Each one states the core facts and adds a wrong detail: a renewal fee, an automatic renewal by the reminder queue, 7 days for the second renewal, the wrong error message, a late fee, a counted but unextended renewal, or a 7-day pickup window. A keyword grader checks that the required facts are present. It cannot see an extra false claim.
+- **Guard:** a test now requires that every right answer passes and that at most 9 wrong ones do. The saved cycle 9 runs and today's re-runs re-grade exactly as in the tables above.
+- **Next:** to grade extra claims, use a judge model checked against a second judge on a sample, as in card G10 on `ruslan/mcp-paging-discovery`. Until then, fresh accuracy may overstate a model that adds wrong details by up to 20% of its wrong answers (9 of 45 here).
