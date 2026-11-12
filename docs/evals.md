@@ -503,3 +503,23 @@ Branch `ruslan/m2a-m2c-tuning` (PR #7). Synthetic data only. The runtime change 
 **F3 — The runtime folds whitespace as the ledger does.** The quote enum folds runs of exactly the characters that JavaScript's `\s` matches with the `u` flag, not Python's `str.split()`. For every code point from U+0000 to U+FFFF, the runtime's fold and the ledger's `normalizeSpace` agree. Lines that differ only in U+001C–U+001F or U+0085 are separate choices, and U+FEFF folds as a space.
 
 **Re-run.** The M2a gate is re-run live after f8ada62 and F1: the default setup (7B, strict off) and the opt-in (14B, strict on), three runs each of the original, held-out and fresh sets, plus the injection probe. Suites: node, runtime (Windows and WSL), graph and Playwright.
+
+### Results — F1, the strict fresh grader (2026-11-12)
+
+Implemented in 8580f3a. Every saved cycle 9 fresh-set run, 24 rounds over 8 setups, was re-graded offline with the new grader from the answers and finding labels it recorded. Citations are unchanged, because the grader's citation check did not change.
+
+| Setup | Fresh accuracy, cycle 9 grader | Strict grader | Question that changed |
+| --- | --- | --- | --- |
+| Claude Sonnet baseline | 8, 8, 8 | 8, 8, 8 | — |
+| 7B start, and the 7B default after the decision | 8, 8, 8 | 7, 7, 7 | hold-expiry: "a reminder is scheduled for the member" |
+| B: 14B | 7, 7, 7 | 6, 6, 6 | hold-expiry: "the item is placed back on the hold shelf" |
+| C, its reviewed re-run, and the 14B strict opt-in | 8, 8, 8 | 7, 7, 7 | hold-expiry: "the item is returned to the waiting queue" |
+| D: 7B + rule + enum | 8, 8, 8 | 8, 8, 8 | — |
+
+- Only hold-expiry changed. On the other seven questions every recorded answer grades as before, including all renewals and renew-on-hold answers, which were right.
+- D and the Claude baseline are the only setups that say the next waiting member gets the item.
+- **The gate verdicts stand.** The fresh criterion is at least 7/8 in 3/3 runs. C and the 14B strict opt-in now score 7/8, which still passes, and C still fails only on speed. D still fails on citations. B fails the fresh criterion as well as speed.
+- **Corrections to the claims above:**
+  - C is no longer "the only variant with 8/8 accuracy and 8/8 citations on the fresh set": its accuracy there is 7/8.
+  - The final re-measure's fresh accuracy is 7/8 for both setups, not 8/8.
+  - The "fresh 8/8" in the reviewed C re-run is 7/8.
