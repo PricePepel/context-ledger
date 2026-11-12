@@ -121,3 +121,31 @@ test('review of the follow-up: each strict rule is needed, and paraphrases grade
   assert.equal(gradeSlice(expiry, slice('The hold expires and the next waiting member gets the item.',
     [{ label: 'A hold does not expire before pickUpBy', evidence: [] }])).correct, true);
 });
+
+test('second review of the follow-up: negated success, spaced negations, and the promoted hold', () => {
+  assert.deepEqual(grades('renew-on-hold', [
+    'The renewal fails; it does not succeed while another member has a hold.',
+    'The renewal is rejected; the member is never allowed to renew.',
+    'The renewal is rejected; the member is not  allowed to renew.',
+    'The renewal throws, so it never goes through.',
+    'The renewal still succeeds.',
+    'The renewal goes through and no error is shown.',
+  ]), [true, true, true, true, false, false]);
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and the next eligible waiting member gets the item.',
+    'The hold expires and the next queued hold is moved to the shelf.',
+    "The hold expires and itemReturned promotes the next 'waiting' hold.",
+    'The hold expires and promotes another reminder for the original member.',
+    'The hold expires; the next day the member gets a reminder.',
+  ]), [true, true, true, false, false]);
+  // Each hold-expiry pattern is needed on its own.
+  const expiry = freshQuestion('hold-expiry');
+  const [expired, member] = expiry.required;
+  const examples = ['The hold expires and the following waiting member gets the item.', 'The hold expires, promoting another waiting hold to the shelf.'];
+  assert.equal(member.length, examples.length);
+  for (const [index, example] of examples.entries()) {
+    assert.equal(gradeSlice({ ...expiry, required: [expired, [member[index]]] }, slice(example)).correct, true, `pattern ${index} matches its example`);
+    const others = member.filter((_, other) => other !== index);
+    assert.equal(gradeSlice({ ...expiry, required: [expired, others] }, slice(example)).correct, false, `only pattern ${index} matches "${example}"`);
+  }
+});
