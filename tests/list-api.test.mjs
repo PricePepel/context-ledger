@@ -134,6 +134,29 @@ test('graph_list and room_list filter, page newest first and name the parties wi
   assert.doesNotMatch(JSON.stringify(rooms), /proposal|choice/i);
 });
 
+test('graph_list and room_list fold an ASCII party filter; the HTTP API stays strict', async t => {
+  const state = await ledger(t);
+  const leo = await state.import('leo.jsonl', 'Leo plans the synthetic Altair demo.');
+  const bot = await state.import('bot.jsonl', 'A bot reviews the synthetic Altair demo.');
+  const g1 = await state.publish(v2(leo, 'leo', 'Synthetic Altair demo'));
+  const g2 = await state.publish(v2(bot, 'ali-bot', 'Review the Altair demo'));
+  await state.room(g1, g2);
+  let id = 7000;
+  const raw = async (name, args) => {
+    const result = await state.client.call(id++, name, args);
+    assert.equal(result.isError, undefined, result.content[0].text);
+    return result.content.map(item => item.text).join('');
+  };
+  for (const [name, lower, others] of [['graph_list', 'leo', ['Leo', 'LEO', 'lEo']], ['graph_list', 'ali-bot', ['Ali-Bot', 'ALI-BOT']],
+    ['room_list', 'leo', ['Leo']], ['room_list', 'ali-bot', ['ALI-bot']]]) {
+    const expected = await raw(name, { party: lower });
+    assert.notEqual(JSON.parse(expected)[name === 'graph_list' ? 'graphs' : 'rooms'].length, 0);
+    for (const party of others) assert.equal(await raw(name, { party }), expected, `${name} ${party} is ${lower}, byte for byte`);
+  }
+  const strict = await state.get('/api/graphs?party=Leo');
+  assert.deepEqual(strict, { status: 400, body: { error: 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.' } });
+});
+
 test('room_list matches a party or graph on the graph_b side and lists the parties in party order', async t => {
   const state = await ledger(t);
   const leo = await state.import('leo.jsonl', 'Leo plans the synthetic Deneb demo.');

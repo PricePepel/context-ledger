@@ -444,7 +444,14 @@ test('bad paging arguments are fixed errors that echo nothing and reach no ledge
     ['session_search', { limit: 0 }, 'limit must be an integer from 1 to 100.'],
     ['graph_list', { limit: 101 }, 'limit must be an integer from 1 to 100.'],
     ['graph_list', { limit: '5' }, 'limit must be an integer from 1 to 100.'],
-    ['graph_list', { party: secret }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    // Upper case A-Z folds (a filter like Leo-SECRET-9 is now valid), so these stay invalid after folding.
+    ['graph_list', { party: secret + '!' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['graph_list', { party: String.fromCodePoint(0x212a) + 'eo' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['room_list', { party: String.fromCodePoint(0x130) + 'van' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['room_list', { party: 'A'.repeat(33) }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['graph_list', { party: 'Leo--Ali' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['graph_list', { party: 7 }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
+    ['room_list', { party: '' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
     ['graph_list', { party: 'a--b' }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
     ['room_list', { party: 'x'.repeat(33) }, 'party must be a party name of at most 32 lowercase letters, digits and single hyphens.'],
     ['graph_list', { sessionId: secret }, 'sessionId must be a 64-character lowercase hex session ID.'],
@@ -782,4 +789,18 @@ test('review round 3: latent_transfer text pages lose no line at a page break, a
   // One code unit before the end of a line is still a valid offset.
   const tail = pageText(await client.call(200, 'latent_read', { paths, question: 'q', fromPath: 'src/a.js', fromLine: 1, fromOffset: 4 }));
   assert.match(tail, /\n\n=== FILE: src\/a\.js \(continued from line 1, character 4\) ===\n1\+4\| t\n2\| second\n3\| third$/u);
+});
+
+test('a party filter in any ASCII case is sent to the ledger in lowercase', async t => {
+  const ledger = await fakeLedger(t, request => ({ body: request.url.startsWith('/api/graphs') ? { graphs: [], next: null } : { rooms: [], next: null } }));
+  const client = mcp(t, ledger.port);
+  const cases = [['graph_list', 'Leo', 'leo'], ['graph_list', 'LEO', 'leo'], ['room_list', 'lEo', 'leo'], ['room_list', 'Ali-Bot', 'ali-bot'],
+    ['graph_list', 'leo', 'leo'], ['graph_list', 'A'.repeat(32), 'a'.repeat(32)]];
+  let id = 0;
+  for (const [name, party, sent] of cases) {
+    pageText(await client.call(++id, name, { party }));
+    const url = new URL(ledger.requests.at(-1).url, 'http://ledger');
+    assert.equal(url.searchParams.get('party'), sent, `${name} ${party}`);
+  }
+  assert.equal(ledger.requests.length, cases.length);
 });

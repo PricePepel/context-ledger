@@ -11,6 +11,10 @@ const maxLineBytes = 16 * 1024 * 1024;
 const maxPacketBytes = 8 * 1024 * 1024;
 const hexId = /^[a-f0-9]{64}$/;
 const partyName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Stored party names are lowercase ASCII (the graph v2 schema), so a filter may use any
+// ASCII case. Only A-Z folds: toLowerCase would also map KELVIN SIGN to k.
+const partyFilter = /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
+const foldParty = value => value.replace(/[A-Z]/g, letter => letter.toLowerCase());
 const maxOffset = 16 * 1024 * 1024;
 
 const instructions = 'Context Ledger stores imported agent transcripts and cited semantic graphs on this machine. ' +
@@ -155,10 +159,12 @@ function listArguments(args, defaultLimit) {
 
 function optionalParty(args) {
   const { party } = args;
-  if (party !== undefined && (typeof party !== 'string' || party.length > 32 || !partyName.test(party))) {
+  if (party === undefined) return undefined;
+  const folded = typeof party === 'string' ? foldParty(party) : '';
+  if (folded.length > 32 || !partyName.test(folded)) {
     throw new ToolError('party must be a party name of at most 32 lowercase letters, digits and single hyphens.');
   }
-  return party;
+  return folded;
 }
 
 /** GET a list page. The ledger's cursor error becomes a fixed one that names no value. */
@@ -886,7 +892,7 @@ const tools = new Map([
       type: 'object',
       properties: {
         sessionId: hexSchema('Only graphs of this session.'),
-        party: { type: 'string', maxLength: 32, pattern: partyName.source, description: 'Only graphs of this party.' },
+        party: { type: 'string', maxLength: 32, pattern: partyFilter.source, description: 'Only graphs of this party, for example leo. Party names are lowercase; A-Z is folded.' },
         limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
         after: hexSchema('more.after of the previous page.'),
       },
@@ -914,7 +920,7 @@ const tools = new Map([
       type: 'object',
       properties: {
         graphId: hexSchema('Only rooms with this graph on either side.'),
-        party: { type: 'string', maxLength: 32, pattern: partyName.source, description: 'Only rooms with this party.' },
+        party: { type: 'string', maxLength: 32, pattern: partyFilter.source, description: 'Only rooms with this party, for example leo. Party names are lowercase; A-Z is folded.' },
         limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
         after: hexSchema('more.after of the previous page.'),
       },
