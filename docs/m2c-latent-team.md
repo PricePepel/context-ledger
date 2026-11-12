@@ -168,6 +168,30 @@ The same settings with `--seed 1`, which is another 200 GSM8K test questions.
 - **The m = 40 peak of seed 0 does not reproduce.** m = 30, 40 and 50 are within noise of each other: m = 40 minus m = 30 is −0.075 to +0.005, and minus m = 50 is −0.065 to +0.015. Read the step curve as a plateau from about 30 to 50 steps, with no sharp optimum.
 - **Conclusion for M2c on Qwen2.5-3B.** Latent thinking keeps text-team accuracy at a quarter of the tokens and about half the time. It needs real hidden states, but it does not beat one model solving alone. The untied-model check is still open.
 
+### A disjoint second sample (2026-11-12)
+
+The seed-1 sample shared 30 of its 200 questions with seed 0, so it was not an independent replication (PR #7 review). `--block` fixes that: `--seed 0 --block 1` takes questions 200 to 399 of the seed-0 shuffle, which share none with seed 0's questions 0 to 199. That was checked on the saved question text: 0 shared, against 30 for seed 1. The run used the seed-1 systems and steps, with the same model, greedy decoding and batches of 32. It took about 50 minutes on the same GPU.
+
+| System | Accuracy | Text tokens | Seconds per question |
+|---|---|---|---|
+| `single` | 0.850 | 285 | 1.17 |
+| `text_mas` | 0.830, 66.7% of agents capped | 880 | 3.19 |
+| `latent_mas` m = 30 | 0.825 | 248 | 1.63 |
+| `latent_mas` m = 40 | 0.855 | 246 | 1.78 |
+| `latent_mas` m = 50 | 0.875 | 248 | 1.86 |
+| `latent_random` m = 40 | 0.475 | 239 | 1.84 |
+
+- **The gate passes** at m = 40.
+  - It is within 2 points of `text_mas` (+0.025, interval −0.03 to +0.08), with 72% fewer tokens, and 1.8× faster.
+  - As on seed 1, the gain over `text_mas` is not significant.
+- **Not better than `single`:** −0.045 to +0.055.
+- **The control holds:** +0.31 to +0.45 over random vectors.
+- **A plateau again.** m = 40 minus m = 30 is −0.015 to +0.075, and m = 40 minus m = 50 is −0.06 to +0.02. The best value moved again, this time to m = 50 (0.875; −0.005 to +0.10 over `text_mas`), and the steps are within noise of each other.
+- **The conclusion above holds on an independent sample:**
+  - Latent thinking matches the text team at about a quarter of its tokens and half its time.
+  - It needs real hidden states.
+  - It does not beat one model solving alone.
+
 ## Serving
 
 - **Runtime.** `POST /latent/team` with `{question, latentSteps?}` returns the solver's answer and a receipt.

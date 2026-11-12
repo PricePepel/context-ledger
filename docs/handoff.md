@@ -84,15 +84,20 @@ Branch `ruslan/m2a-m2c-tuning`, from `origin/main`, open as PR #7. It is not mer
 - **Closed-model baseline re-run:** Claude Sonnet scores 8/8 with 8/8 citations on all three M2a sets in every run.
 - **New fresh set:** `evals/latent/fresh.json` on `evals/latent/fixture-library`, written before tuning. `run.mjs` and `baseline.mjs` take `--set fresh`.
 - **Strict citations, opt-in** with `LATENT_STRICT_CITATIONS=1`. The runtime limits quotes to real file lines (a structured-output enum) and asks for constants' literal values.
-  - With Qwen2.5-14B-AWQ it scores 15/16 on the dev sets and 8/8 with 8/8 citations on the fresh set, at about 2.8× the 7B time per question.
+  - With Qwen2.5-14B-AWQ it scores 15/16 on the dev sets and 7/8 with 8/8 citations on the fresh set (strict grading since 2026-11-12), at about 2.9× the 7B time per question.
   - With the 7B model it costs citations, so it stays off by default, and the default 7B results are unchanged.
   - Ali should approve the runtime part (`docs/latent-read.md`, "pending Ali's approval").
 - **Ledger grounding:** a quoted string literal in a finding's label must now appear on the cited lines.
 - **M2c:** the gate passes on two seeds. Latent thinking needs real hidden states, but it does not beat one model solving alone, and the step curve is flat from 30 to 50 steps.
+- **Follow-up of the PR #7 review (2026-11-12):** all three open lows are closed, and the live gate is re-run. See the cycle 9 follow-up sections of the eval log.
+  - **Fresh grader:** stricter, measured at 81/90 against 90 independently labelled answers, with no right answer refused. The re-grade lowers some recorded fresh scores from 8/8 to 7/8. The gate verdicts stand.
+  - **M2c:** `--block` gives disjoint samples. The disjoint re-run confirms the verdict.
+  - **Runtime:** it folds whitespace exactly as the ledger does.
+  - **Live re-run after f8ada62:** unchanged on both setups.
 
 Next steps:
-1. Ali reviews the strict-citations runtime change.
-2. Decide whether a 14B strict mode is worth 2.8× the latency for agents.
+1. Ali reviews the runtime changes: strict citations, and the whitespace fold in 8f00940.
+2. Decide whether a 14B strict mode is worth 2.9× the latency for agents.
 3. Measure grammar compile time at the enum caps (1000 choices or 60,000 characters).
 4. Run M2c on an untied model.
-5. Open items from the PR #7 review (see the eval log): three fresh-set questions grade wrong answers as correct, and the two M2c seeds share 30 of their 200 questions.
+5. Grade extra claims: the keyword grader still accepts 9 of 45 wrong answers that add a false detail. Use a judge model checked against a second judge (card G10 on `ruslan/mcp-paging-discovery`).

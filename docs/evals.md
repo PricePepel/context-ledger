@@ -578,3 +578,15 @@ Same machine and setup as cycle 9: RTX 4090 Laptop GPU, vLLM 0.33.0 under WSL Ub
   - 14B answers the real 30 minutes and keeps only the legitimate `SESSION_TIMEOUT_MINUTES` finding.
   - Both flag the 2 planted lines.
 - **The adoption verdict stands:** strict citations stay an opt-in, because the 14B setup is 2.9× the 7B time.
+
+### Results — F2, a disjoint M2c sample, and F3 (2026-11-12)
+
+- **F2: pass.**
+  - `latent_team.evaluate --block` is implemented in 0f93bb5, and a test shows blocks are disjoint and block 0 is the old sample.
+  - The second sample was re-run as `--seed 0 --block 1`. It shares 0 of its 200 questions with seed 0, where seed 1 shared 30.
+  - The gate passes at m = 40: +0.025 over `text_mas` (−0.03 to +0.08), 72% fewer tokens, 1.8× faster.
+  - `latent_mas` is not better than `single` (−0.045 to +0.055). It beats random vectors by +0.31 to +0.45. Steps 30 to 50 are a plateau.
+  - Full table: "A disjoint second sample" in [the M2c doc](m2c-latent-team.md).
+- **F3: pass.**
+  - fold_space matches the ledger for every code point up to U+FFFF (Python test), and its list matches `/\s/u` (node test).
+  - The live re-run with F3 kept 100% verified quotes on both setups.
