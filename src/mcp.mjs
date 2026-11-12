@@ -191,8 +191,10 @@ const listShape = (data, key) => isObject(data) && Array.isArray(data[key]) && O
   && (data.next === null || (typeof data.next === 'string' && hexId.test(data.next)));
 
 const arrayOrAbsent = value => value === undefined || Array.isArray(value);
-const graphSections = [['packet', 'nodes'], ['packet', 'edges'], ['packet', 'links'],
-  ['readyActionIds'], ['currentDecisionIds'], ['openQuestionIds']];
+// The derived state comes first, so the first page of a paged graph_publish result
+// carries the derived ID lists (ready actions, current choices, open questions) it promises.
+const graphSections = [['readyActionIds'], ['currentDecisionIds'], ['openQuestionIds'],
+  ['packet', 'nodes'], ['packet', 'edges'], ['packet', 'links']];
 // Item numbers must not move between calls. Every room section but agreedProposalIds has
 // a length fixed by the two graph snapshots; that one changes with people's choices, so
 // it comes last, where a change cannot shift the numbers of any other item.
@@ -334,8 +336,11 @@ function filePage({ intro, files, start, limit, next, heading }) {
     const block = `\n\n${heading(file, firstLine, firstOffset)}\n`;
     if (!file.lines.length) {
       const cost = resultSize(briefingText(block));
-      if (shown && size + cost + footer({ file: index + 1, line: 1, offset: 0 }) > limit) {
-        return stop({ file: index, line: 1, offset: 0 });
+      if (size + cost + footer({ file: index + 1, line: 1, offset: 0 }) > limit) {
+        // Stop before this heading once the page holds anything; a heading that cannot
+        // fit on an empty page means the page cannot be built.
+        if (pieces.length > 1) return stop({ file: index, line: 1, offset: 0 });
+        return undefined;
       }
       pieces.push(briefingText(block));
       size += cost;

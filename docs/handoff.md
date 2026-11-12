@@ -87,7 +87,7 @@ Branch `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Cycle 8 lives 
 - Merging `vuek0/subagent-graphs`: it also edits `src/mcp.mjs`, `src/store.mjs` and `src/server.mjs`. The new tools come last in the tools Map, and the new routes are separate blocks. If that branch needs a schema change, add it to `migrate.mjs` as version 2, with steps that check the schema the way version 1 does. The paging helpers sit between `requireHex` and `text`, away from where that branch adds `currentTranscript`. In `context_for`, put its quota note into the `after` items, which count against the bound. Later pages come from the briefing that page 1 fetched in this process (`pagedBriefings`), so a read-through fetches `/context` once and counts as one handoff. That branch adds `handoff_publish` (1,881 characters of tools/list); the tools/list budget test in `tests/paging.test.mjs` counts only the 13 tools of this cycle by name, so it passes after the merge, but `tests/mcp.test.mjs` pins the tool names and needs the new one added.
 - session_search without `limit` returns every match that fits, as on 19f6522; it reads ledger pages of 100 until the rows pass the bound. With `limit` it pages by that.
 
-Done: the implementation (51aae9a) and two review rounds (fixes in 2a02e98 and 404d7d7). A third review round, of 404d7d7, upheld five findings that are not fixed yet. Suites on Windows at 404d7d7, three runs each: node 119/120 (one skipped), Playwright 13/13. Nothing is pushed.
+Done: the implementation (51aae9a) and two review rounds (fixes in 2a02e98 and 404d7d7). A third review round, of 404d7d7, upheld five findings. The medium one and two lows are fixed in the commit after 80ef50e. Two low test gaps are left open. Suites on Windows after those fixes, three runs each: node 120/121 (one skipped), Playwright 13/13. Nothing is pushed.
 
 Known limits:
 
@@ -97,7 +97,7 @@ Known limits:
 
 Next steps:
 
-1. Fix the third-round findings listed under "Results — Cycle 10" in [the eval log](evals.md). The medium one: a paged `graph_publish` result leaves out the derived ready actions and decisions.
+1. Close the two round 3 test gaps listed under "Results — Cycle 10" in [the eval log](evals.md).
 2. Run the live evals: the Codex sentinel (English, code and Han pages), fresh-session discovery, and the demo rehearsal.
 3. Merge with `vuek0/subagent-graphs`. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
 4. Push only when the user asks, then run Linux CI.

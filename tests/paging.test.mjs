@@ -137,8 +137,9 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.deepEqual(mergePages('graph', graphPages.pages), leo);
   const [firstGraph] = graphPages.pages;
   assert.equal(firstGraph.page.totalItems, 100 + 300 + 100 + 50);
-  assert.deepEqual(firstGraph.page.sections, { 'packet.nodes': [1, 100], 'packet.edges': [101, 400], 'packet.links': [401, 500],
-    readyActionIds: [501, 550], currentDecisionIds: null, openQuestionIds: null });
+  // Derived state first, so a paged graph_publish result carries it on its first page.
+  assert.deepEqual(firstGraph.page.sections, { readyActionIds: [1, 50], currentDecisionIds: null, openQuestionIds: null,
+    'packet.nodes': [51, 150], 'packet.edges': [151, 450], 'packet.links': [451, 550] });
   assert.equal(firstGraph.graph.packet.party, 'leo', 'the head repeats on every page');
   assert.equal(graphPages.pages.at(-1).graph.packet.sessionId, leo.packet.sessionId);
   assert.match(firstGraph.more.note, new RegExp(`^Items ${firstGraph.more.fromItem} to 550 remain\\. Call graph_read again with this graphId and fromItem ${firstGraph.more.fromItem}\\.$`));
@@ -150,6 +151,10 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.equal(publishPage.page.fromItem, 1);
   assert.equal(publishPage.more.fromItem, publishPage.page.toItem + 1);
   assert.equal(publishPage.graph.id, leo.id);
+  // Review round 3: graph_publish promises the derived state, so its first page holds it.
+  assert.deepEqual(publishPage.graph.readyActionIds, leo.readyActionIds);
+  assert.deepEqual(publishPage.graph.currentDecisionIds, []);
+  assert.deepEqual(publishPage.graph.openQuestionIds, []);
 
   const past = JSON.parse(pageText(await client.call(101, 'graph_read', { graphId: leo.id, fromItem: 551 })));
   assert.equal(past.more, undefined);
@@ -539,6 +544,17 @@ test('context_for pages whole briefing lines and keeps the meter on every page',
 const cycleTools = ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open',
   'room_read', 'latent_read', 'latent_transfer', 'latent_team', 'graph_list', 'room_list'];
 const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name))).length;
+
+test('review round 3: required arguments are those of 19f6522, and every new paging argument is optional', async t => {
+  const client = mcp(t, 9);
+  const { result } = await client.request(1, 'tools/list');
+  const required = Object.fromEntries(result.tools.map(tool => [tool.name, tool.inputSchema.required ?? []]));
+  assert.deepEqual(required, {
+    session_search: [], session_read: ['sessionId'], graph_schema: [], graph_publish: ['packet'], graph_read: ['graphId'],
+    context_for: ['graphId'], room_open: ['graphIds'], room_read: ['roomId'], latent_read: ['paths', 'question'],
+    latent_transfer: ['sender', 'receiver', 'question'], latent_team: ['question'], graph_list: [], room_list: [],
+  });
+});
 
 test('tools/list: the cycle\'s thirteen closed tools, at most 3,500 characters more than 19f6522, no settlement words or route', async t => {
   const client = mcp(t, 9);

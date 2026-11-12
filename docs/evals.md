@@ -424,18 +424,20 @@ Three independent review rounds, each with five lenses (correctness, security, c
   - Medium: a page could exceed a client's token cap. Every size check now uses `resultSize`.
   - Low: the tools/list budget test would fail after merging vuek0. It now counts this cycle's 13 tools by name.
   - Low, tests: room_list's graph_b party filter, the parties order, latent_transfer's paths fallback, and graph_list and room_list trimming.
-- **Round 3, of 404d7d7: 5 findings upheld, not fixed yet.**
-  - Medium: a paged graph_publish result leaves out the derived ready actions and decisions that its description promises. The only way to get them is to read the whole graph back.
-  - Low: filePage adds headings of empty files without a size check until a line has been shown, so a fallback page can go over the bound.
-  - Low, tests: latent_transfer text paging across line boundaries (a dropped line would pass), a test that required arguments are unchanged and the paging arguments optional, and the fixed errors for a bad `fromOffset` in the file and text continuations.
+- **Round 3, of 404d7d7: 5 findings upheld. Three fixed, two test gaps open.**
+  - Medium, fixed: a paged graph_publish result left out the derived ready actions and decisions that its description promises. The derived ID lists are now the first graph sections, so page 1 carries them. Item numbers for `graph_read` changed with this order. `tests/paging.test.mjs` pins both.
+  - Low, fixed: filePage added headings of empty files without a size check until a line had been shown. Every heading is now checked, and a heading that cannot fit on an empty page fails as too large.
+  - Low, fixed: a test now pins that required arguments match 19f6522 and that every paging argument is optional.
+  - Low, open: no test for latent_transfer text paging across line boundaries (a dropped line would pass), and no test for the bad-`fromOffset` errors in the file continuation. The text-continuation error is tested.
+  - Suites after the fixes, Windows, three runs: node 120/121 (one skipped), Playwright 13/13.
 
 Left open:
 
-- The round 3 findings above.
+- The two round 3 test gaps above.
 - The live evals: the Codex sentinel (also with a code page and a Han page, since `resultSize` is an estimate), fresh-session discovery, and the demo rehearsal.
 - Documented limits: no caller-chosen page size; an ID inside `agreedProposalIds` can move if that list spans two pages and changes in between; an old ledger whose list fits 40,000 characters but not the weighted bound gets the restart error.
 - No real merge with `vuek0/subagent-graphs` has been done. Expect conflicts in `src/mcp.mjs`, and `tests/mcp.test.mjs` needs `handoff_publish` added.
-- The cycle stays open until round 3 is fixed and the live evals have run.
+- The cycle stays open until the live evals have run.
 
 ### Results — Cycle 10 implementation, 2026-11-11 (review pending)
 
