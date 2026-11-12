@@ -137,7 +137,7 @@ Paired 95% intervals for `latent_mas` at m = 40:
 
 | m | `latent_mas` | `latent_random` |
 |---|---|---|
-| 0 | 0.775 | 0.775 (the same run: no vectors) |
+| 0 | 0.775 | 0.775 (separate runs; with no vectors the two systems do the same work) |
 | 10 | 0.770 | 0.635 |
 | 20 | 0.785 | 0.610 |
 | 40 | 0.835 | 0.505 |
