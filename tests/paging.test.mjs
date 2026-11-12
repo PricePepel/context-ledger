@@ -710,3 +710,76 @@ test('token-dense pages stay near the token count of 40,000 characters of Englis
   assert.ok(first.length <= 32_000, `a code page of ${first.length} characters`);
   assert.ok(first.length >= 20_000, 'and still a full page');
 });
+
+test('review round 3: latent_transfer text pages lose no line at a page break, and file continuations reject a bad fromOffset', async t => {
+  // Escape-heavy lines, so 8,000 characters of text take several pages: 40 short lines, one
+  // line too long for any page (cut inside), then 10 more short lines.
+  const short = index => `L${index} ` + rlo.repeat(60);
+  const lines = [...Array.from({ length: 40 }, (_, index) => short(index)), 'W' + rlo.repeat(4500),
+    ...Array.from({ length: 10 }, (_, index) => short(40 + index))];
+  const document = lines.join('\n');
+  assert.ok(document.length <= 8000, `${document.length} characters`);
+  const files = [{ path: 'src/a.js', text: ['first', 'second', 'third'].map((line, index) => `${index + 1}| ${line}`).join('\n') }];
+  const ledger = await fakeLedger(t, request => {
+    if (request.url === '/api/latent/files') return { body: { mode: 'text', files } };
+    if (request.url === '/api/latent/transfer') return { body: { mode: 'text', reason: 'No trained mapper.', text: JSON.parse(request.body).text } };
+    return { body: { mode: 'text', reason: 'Down.', files } };
+  });
+  const client = mcp(t, ledger.port);
+  const pair = { sender: 'a/b', receiver: 'c/d', question: 'q' };
+
+  // Rebuild the document by line number from the page headings, and check that each page
+  // starts exactly where the previous note pointed.
+  const rebuilt = [];
+  let position = {};
+  let pages = 0;
+  for (let id = 1; ; id += 1) {
+    const page = pageText(await client.call(id, 'latent_transfer', { ...pair, text: document, ...position }));
+    pages += 1;
+    const footer = page.match(/\n\n\[More text remains\. Call latent_transfer again with the same sender, receiver, question and text, and fromLine (\d+)(?:, fromOffset (\d+))?\.\]$/u);
+    assert.equal(partialNote(page) !== undefined, Boolean(footer));
+    const body = withoutTop(footer ? page.slice(0, footer.index) : page);
+    const [, block] = body.split(/\n\n(?==== TEXT)/u);
+    const [heading, ...shown] = block.split('\n');
+    const match = heading.match(/^=== TEXT(?: \(continued from line (\d+)(?:, character (\d+))?\))? ===$/u);
+    assert.ok(match, heading);
+    const from = { line: Number(match[1] ?? 1), offset: Number(match[2] ?? 0) };
+    assert.deepEqual(from, { line: position.fromLine ?? 1, offset: position.fromOffset ?? 0 }, 'the page starts where the note said');
+    if (from.offset) {
+      assert.equal(rebuilt.length, from.line, 'a cut line continues the last line shown');
+      rebuilt[rebuilt.length - 1] += shown.shift();
+    } else {
+      assert.equal(rebuilt.length, from.line - 1, 'no line is skipped or repeated at a page break');
+    }
+    rebuilt.push(...shown);
+    if (!footer) break;
+    position = { fromLine: Number(footer[1]), ...(footer[2] ? { fromOffset: Number(footer[2]) } : {}) };
+    assert.ok(pages < 30);
+  }
+  assert.ok(pages >= 3, `${pages} pages`);
+  assert.deepEqual(rebuilt, lines.map(line => visibleText(line)), 'every line once, in order, and the cut line whole');
+  assert.equal(ledger.requests.filter(request => request.url === '/api/latent/transfer').length, 1, 'only the first page asked the ledger');
+
+  // File continuations: the files are read again, then a bad fromOffset is a fixed error.
+  const secret = 'Leo-SECRET-9';
+  const paths = ['src/a.js'];
+  const cases = [
+    ['latent_read', { paths, question: secret, fromPath: 'src/a.js', fromLine: 1, fromOffset: 5 }, 'fromOffset is past the end of that line.'],
+    ['latent_read', { paths, question: secret, fromPath: 'src/a.js', fromLine: 2, fromOffset: 60 }, 'fromOffset is past the end of that line.'],
+    ['latent_read', { paths, question: secret, fromPath: 'src/a.js', fromLine: 9, fromOffset: 1 }, 'fromOffset needs fromLine to be a line of that file.'],
+    ['latent_transfer', { ...pair, question: secret, paths, fromPath: 'src/a.js', fromLine: 3, fromOffset: 5 }, 'fromOffset is past the end of that line.'],
+    ['latent_transfer', { ...pair, question: secret, paths, fromPath: 'src/a.js', fromLine: 4, fromOffset: 2 }, 'fromOffset needs fromLine to be a line of that file.'],
+  ];
+  let id = 100;
+  const before = ledger.requests.length;
+  for (const [name, args, message] of cases) {
+    const result = await client.call(++id, name, args);
+    assert.deepEqual(result, { content: [{ type: 'text', text: message }], isError: true }, `${name} ${JSON.stringify(args)}`);
+  }
+  const asked = ledger.requests.slice(before);
+  assert.deepEqual(asked.map(request => request.url), cases.map(() => '/api/latent/files'), 'each case reads the files and asks no model');
+  assert.ok(asked.every(request => !request.body.includes(secret)), 'the question is not sent with the files request');
+  // One code unit before the end of a line is still a valid offset.
+  const tail = pageText(await client.call(200, 'latent_read', { paths, question: 'q', fromPath: 'src/a.js', fromLine: 1, fromOffset: 4 }));
+  assert.match(tail, /\n\n=== FILE: src\/a\.js \(continued from line 1, character 4\) ===\n1\+4\| t\n2\| second\n3\| third$/u);
+});
