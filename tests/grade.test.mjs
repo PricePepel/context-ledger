@@ -230,3 +230,11 @@ test('labelled paraphrases: no right answer refused, at most nine wrong ones acc
   assert.deepEqual(refused, [], 'every right answer passes');
   assert.ok(accepted.length <= 9, `${accepted.length} wrong answers accepted:\n${accepted.join('\n')}`);
 });
+
+test('review of the measurement: a negated block or raise is still a wrong answer', () => {
+  assert.deepEqual(grades('renew-on-hold', [
+    "The renewal is not blocked by another member's hold.",
+    'The system never raises an error when another member has a hold.',
+    "Renewal is denied with 'Item is on hold for another member.' A hold that has expired does not block renewal.",
+  ]), [false, false, true]);
+});

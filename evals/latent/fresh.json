@@ -52,7 +52,7 @@
       "required": [["on hold for another member", "refuse", "reject", "throws", "thrown", "raises", "denied", "blocked", "cannot be renewed", "can't be renewed",
         "not renewed", "cannot be extended", "can't be extended", "not extended", "fails"]],
       "forbidden": [
-        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|den(?:y|ied))" },
+        { "pattern": "(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}?\\s+(?:refus|reject|throw|fail|den(?:y|ied)|rais|blocked)" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bsucceed" },
         { "pattern": "(?<!(?:\\bnot|\\bnever|n't|\\bcannot)(?:\\s+(?!(?:and|or|but|so|then)\\b)[a-z]+){0,2}\\s+)\\bgoes through\\b" },
         { "pattern": "\\bno (?:error|exception)s?\\b(?!\\s+(?:is|was|will be) made)" },
