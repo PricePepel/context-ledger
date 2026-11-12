@@ -98,7 +98,7 @@ test('review of the follow-up: each strict rule is needed, and paraphrases grade
   const hold = freshQuestion('renew-on-hold');
   const base = "The renewal throws 'Item is on hold for another member.'";
   const wrong = ['It is not rejected.', 'It succeeds.', 'The loan goes through.', 'There is no error.', 'The member is allowed to renew anyway.',
-    'The loan is still renewed.', 'The loan can still be renewed.', 'The renewal is allowed.'];
+    'The due date is extended.', 'The loan is still renewed.', 'The loan can still be renewed.', 'The renewal is allowed.'];
   assert.equal(wrong.length, hold.forbidden.length);
   for (const [index, phrase] of wrong.entries()) {
     assert.equal(gradeSlice(hold, slice(`${base} ${phrase}`)).correct, false, phrase);
@@ -188,4 +188,18 @@ test('final review of the follow-up: ordinary paraphrases that were refused', ()
     'There is a cap of two renewals, each adding 14 days.',
     'The renewal cap is 2 weeks; up to 14 renewals.',
   ]), [true, true, false]);
+});
+
+test('confirming review of the follow-up: blocked renewals, a cap at two, and the handover to the next member', () => {
+  assert.deepEqual(grades('renew-on-hold', [
+    'Renewal is blocked until the other hold is cleared.',
+    'The loan cannot be extended while another member has a hold.',
+    'The renewal is not blocked and the due date is extended.',
+  ]), [true, true, false]);
+  assert.deepEqual(grades('renewals', ['Renewals are capped at two, adding 14 days each time.']), [true]);
+  assert.deepEqual(grades('hold-expiry', [
+    'The hold expires and the next waiting member is sent a reminder.',
+    'The hold expires and the next waiting member gets the item.',
+    'The hold expires and the next queued hold is moved to the shelf.',
+  ]), [false, true, true]);
 });
