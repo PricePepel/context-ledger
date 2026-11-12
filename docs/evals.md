@@ -482,3 +482,24 @@ An independent review used five lenses: the ledger, the runtime, eval method, te
 - **Low, open:** the M2c seeds overlap, as noted above.
 - **Low, open:** with strict citations on, the runtime's enum folds whitespace with Python `str.split()`, which differs from the ledger's JS `s` for U+001C–U+001F and U+0085.
 - **Process:** the runtime and `docs/latent-read.md` changes are Ali's to approve before merge, as the contract header says.
+
+### Cycle 9 follow-up — the three open lows and the re-run (defined 2026-11-12, before implementation)
+
+Branch `ruslan/m2a-m2c-tuning` (PR #7). Synthetic data only. The runtime change still needs Ali's approval before merge, as for the rest of this PR.
+
+**F1 — A fresh-set grader that refuses wrong answers.** Answers recorded in the cycle 9 runs show the gap. Several hold-expiry answers say "a reminder is scheduled" or "the item is returned to the waiting queue" and pass, because the grader only needs "expire". In `holds.js` the expired hold is skipped and the next waiting hold is promoted to the shelf.
+
+| Eval | Expected |
+| --- | --- |
+| Stricter options | An option can be a regular expression, and a question can list `forbidden` options. An answer is correct when every required group matches and no forbidden option does. |
+| renewals | "up to 2 times, each adds 14 days" passes. "unlimited renewals of two weeks", "14 renewals of 2 weeks each" and "renewed twice … 21 days" fail. "two weeks" no longer counts as the number of renewals. |
+| renew-on-hold | "throws 'Item is on hold for another member.'" and "the renewal is rejected" pass. "the renewal still succeeds", "it does not fail" and "it is not rejected" fail. |
+| hold-expiry | The answer must say the hold expires and that the next waiting member or hold gets the item. "never expires", "a reminder is scheduled" alone and "the item is returned to the waiting queue" alone fail. |
+| Every other question | Grades exactly as before on every answer recorded in the cycle 9 runs. |
+| Re-grade | Every saved cycle 9 fresh-set run is re-graded offline, and the eval log and gate verdicts are corrected where the score changes. |
+
+**F2 — Disjoint M2c samples.** `latent_team.evaluate` gains `--block N`: shuffle once with `--seed`, then take questions `N·count` to `(N+1)·count − 1`. `--block 0` is exactly today's sample, so seed 0 results stand. A unit test shows blocks 0 and 1 are disjoint and block 0 equals the old sample. The second sample is re-run as `--seed 0 --block 1` with the seed-1 systems (`single`, `text_mas`, `latent_mas` at m = 30, 40, 50, `latent_random` at m = 40), and the gate is reported on it.
+
+**F3 — The runtime folds whitespace as the ledger does.** The quote enum folds runs of exactly the characters that JavaScript's `\s` matches with the `u` flag, not Python's `str.split()`. For every code point from U+0000 to U+FFFF, the runtime's fold and the ledger's `normalizeSpace` agree. Lines that differ only in U+001C–U+001F or U+0085 are separate choices, and U+FEFF folds as a space.
+
+**Re-run.** The M2a gate is re-run live after f8ada62 and F1: the default setup (7B, strict off) and the opt-in (14B, strict on), three runs each of the original, held-out and fresh sets, plus the injection probe. Suites: node, runtime (Windows and WSL), graph and Playwright.
