@@ -82,3 +82,17 @@ test('makes imports idempotent and rejects a malformed or foreign-origin import 
   const repeated = await request.get('/api/sessions?q=kepler');
   expect((await repeated.json()).sessions).toHaveLength(1);
 });
+
+// Cycle 10: list paging is opt-in, so the library still shows every match.
+test('the library search lists all 150 matching transcripts', async ({ page, request, baseURL }) => {
+  const keyword = `nebula${Date.now().toString(36)}`;
+  for (let index = 0; index < 150; index += 1) {
+    const transcript = asJsonl({ type: 'user', message: { role: 'user', content: `Synthetic ${keyword} transcript ${index}` } });
+    const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'claude', source: `n${index}.jsonl`, transcript } });
+    expect(imported.ok()).toBe(true);
+  }
+  await page.goto('/');
+  await page.getByLabel('Search transcripts').fill(keyword);
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.getByText('150 transcripts', { exact: true })).toBeVisible();
+});

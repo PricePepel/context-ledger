@@ -76,3 +76,14 @@ Result: on a long session the graph handoff was about 3× faster and used about 
 
 The user's Claude Code (user scope) and Codex (`~/.codex/config.toml`, rebuilt after it was found corrupted) both connect to the ledger. A recorded take passed end to end after the fixes in the eval log's "Take 2" notes. Next steps: record the final video, then run more rehearsal rounds for a time estimate with a spread.
 
+
+## Current checkpoint — cycle 10 (bounded MCP results and discovery, 2026-11-11)
+
+Branch `ruslan/mcp-paging-discovery`, from `origin/main` 19f6522. Cycle 8 lives on `vuek0/subagent-graphs` and cycle 9 on PR #7. Read the cycle 10 definition and results in [the eval log](evals.md).
+
+- Every MCP tool result is at most 40,000 escaped characters (`maxResultCharacters` in `src/paging.mjs`). A longer result comes in pages: JSON with `more` as its first key, or text that ends with a bracketed note naming the arguments to send next. A result that fits is byte-identical to before. `callTool` withholds any oversized result as a bug.
+- New tools `graph_list` and `room_list`, over the new `GET /api/graphs` and `GET /api/rooms`. `GET /api/sessions` pages only when it is given `limit` or `after`. `POST /api/latent/files` serves later pages of a latent text fallback without the model.
+- `src/migrate.mjs` gives the SQLite file a schema version (`user_version` 1). It adds `created_at` and `party` to graphs and `created_at` to rooms, with indexes, and two triggers that stamp new rows from any insert path. Recreate the triggers if those tables are ever rebuilt. A file with a newer version is refused.
+- Merging `vuek0/subagent-graphs`: it also edits `src/mcp.mjs`, `src/store.mjs` and `src/server.mjs`. The new tools come last in the tools Map, and the new routes are separate blocks. If that branch needs a schema change, add it to `migrate.mjs` as version 2, with steps that check the schema the way version 1 does.
+
+Next steps: an independent review, a debug pass, and the live evals (Codex sentinel, fresh-session discovery, demo rehearsal). Then push, and run Linux CI.

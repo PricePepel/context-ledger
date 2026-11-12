@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
-import { LatentError, latentRead, latentTeam, latentTransfer } from './latent.mjs';
+import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { InputError, isProvider, openStore } from './store.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -47,6 +47,34 @@ async function readJson(request, origin, operation) {
   }
 }
 
+const hexParameter = /^[a-f0-9]{64}$/u;
+const partyParameter = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+
+// Query parameters of the list routes. Errors are fixed text and never echo a value.
+function listParameters(url, filters) {
+  for (const name of ['limit', 'after', ...filters]) {
+    if (url.searchParams.getAll(name).length > 1) throw new InputError('Each list parameter may appear once.');
+  }
+  const limitText = url.searchParams.get('limit');
+  if (limitText !== null && (!/^[0-9]{1,3}$/u.test(limitText) || Number(limitText) < 1 || Number(limitText) > 100)) {
+    throw new InputError('limit must be an integer from 1 to 100.');
+  }
+  const values = { limit: limitText === null ? undefined : Number(limitText) };
+  for (const name of ['after', ...filters]) {
+    const value = url.searchParams.get(name);
+    if (value === null) continue;
+    if (name === 'party') {
+      if (value.length > 32 || !partyParameter.test(value)) {
+        throw new InputError('party must be a party name of at most 32 lowercase letters, digits and single hyphens.');
+      }
+    } else if (!hexParameter.test(value)) {
+      throw new InputError(`${name} must be a 64-character lowercase hex ID.`);
+    }
+    values[name] = value;
+  }
+  return values;
+}
+
 const port = Number(process.env.PORT ?? 4317);
 const store = openStore(process.env.CONTEXT_LEDGER_DB ?? '.context-ledger/ledger.sqlite');
 const server = createServer(async (request, response) => {
@@ -90,7 +118,22 @@ const server = createServer(async (request, response) => {
       const provider = url.searchParams.get('provider') ?? '';
       if (query.length > 512) throw new InputError('Search is limited to 512 characters.');
       if (provider && !isProvider(provider)) throw new InputError('Unknown provider.');
-      return json(response, 200, { sessions: store.list(query, provider) });
+      // The browser and the CLI send neither limit nor after and get every match, as before.
+      if (!url.searchParams.has('limit') && !url.searchParams.has('after')) {
+        return json(response, 200, { sessions: store.list(query, provider) });
+      }
+      const { limit = 100, after } = listParameters(url, []);
+      return json(response, 200, store.listSessionsPage({ query, provider, limit, after }));
+    }
+
+    if (method === 'GET' && url.pathname === '/api/graphs') {
+      const { limit = 20, after, sessionId, party } = listParameters(url, ['sessionId', 'party']);
+      return json(response, 200, store.listGraphs({ sessionId, party, limit, after }));
+    }
+
+    if (method === 'GET' && url.pathname === '/api/rooms') {
+      const { limit = 20, after, graphId, party } = listParameters(url, ['graphId', 'party']);
+      return json(response, 200, store.listRooms({ graphId, party, limit, after }));
     }
 
     const id = url.pathname.match(/^\/api\/sessions\/([a-f0-9]{64})$/u)?.[1];
@@ -125,6 +168,12 @@ const server = createServer(async (request, response) => {
         latentUrl: process.env.LATENT_URL ?? 'http://127.0.0.1:4320',
         latentRoot: process.env.LATENT_ROOT,
       }));
+    }
+
+    if (method === 'POST' && url.pathname === '/api/latent/files') {
+      // The fallback's numbered text without the runtime: MCP pages a long fallback with it.
+      const input = await readJson(request, origin, 'Reading latent files');
+      return json(response, 200, await latentFiles(input, { latentRoot: process.env.LATENT_ROOT }));
     }
 
     if (method === 'POST' && url.pathname === '/api/latent/team') {

@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
 import { InputError } from './errors.mjs';
 import { canonicalPacket, validateGraph } from './graph.mjs';
+import { migrate } from './migrate.mjs';
 import { mountRooms } from './rooms.mjs';
 
 export { InputError };
@@ -89,6 +90,19 @@ function sourceName(source) {
   return name;
 }
 
+function sessionFilter(query, provider) {
+  const tokens = [...new Set(query.toLowerCase().split(/\s+/u).filter(Boolean))];
+  const conditions = tokens.map(() => 'instr(search_text, ?) > 0');
+  const values = [...tokens];
+  if (provider) {
+    conditions.push('provider = ?');
+    values.push(provider);
+  }
+  return { conditions, values };
+}
+
+const whereClause = conditions => (conditions.length ? `WHERE ${conditions.join(' AND ')}` : '');
+
 function titleFor(messages) {
   const first = messages.find(message => message.role === 'user') ?? messages[0];
   // Cut by code point so a title never ends in half of a surrogate pair.
@@ -144,6 +158,41 @@ export function openStore(path) {
     const row = getGraph.get(id);
     if (row) return { id, ...JSON.parse(row.payload) };
   };
+  // Schema version 1 adds the listing columns. Its triggers stamp created_at and party
+  // on every new graph and room row, whichever build inserts it (src/migrate.mjs).
+  const rooms = mountRooms(database, readGraph);
+  try {
+    migrate(database);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+
+  // A list cursor is a row ID from an earlier page, resolved to its rowid at query time.
+  const cursors = {
+    sessions: database.prepare('SELECT rowid FROM sessions WHERE id = ?'),
+    graphs: database.prepare('SELECT rowid FROM graphs WHERE id = ?'),
+  };
+  const before = (table, after) => {
+    if (after === undefined || after === null) return null;
+    const row = cursors[table].get(after);
+    if (!row) throw new InputError('Unknown cursor.');
+    return row.rowid;
+  };
+  const page = (rows, limit) => ({ rows: rows.slice(0, limit), next: rows.length > limit ? rows[limit - 1].id : null });
+  const selectGraphs = database.prepare(`
+    SELECT g.id, g.session_id AS sessionId, s.title AS sessionTitle, g.party,
+      CASE WHEN json_valid(g.payload) THEN json_extract(g.payload, '$.packet.version') END AS version,
+      g.created_at AS createdAt,
+      CASE WHEN json_valid(g.payload) THEN json_array_length(g.payload, '$.packet.nodes') END AS nodes,
+      CASE WHEN json_valid(g.payload) THEN json_array_length(g.payload, '$.packet.edges') END AS edges,
+      CASE WHEN json_valid(g.payload) THEN coalesce(json_array_length(g.payload, '$.packet.links'), 0) END AS links
+    FROM graphs g LEFT JOIN sessions s ON s.id = g.session_id
+    WHERE ($sessionId IS NULL OR g.session_id = $sessionId)
+      AND ($party IS NULL OR g.party = $party)
+      AND ($before IS NULL OR g.rowid < $before)
+    ORDER BY g.rowid DESC LIMIT $n
+  `);
 
   return {
     importTranscript(input) {
@@ -163,15 +212,29 @@ export function openStore(path) {
     },
 
     list(query, provider) {
-      const tokens = [...new Set(query.toLowerCase().split(/\s+/u).filter(Boolean))];
-      const conditions = tokens.map(() => 'instr(search_text, ?) > 0');
-      const values = [...tokens];
-      if (provider) {
-        conditions.push('provider = ?');
-        values.push(provider);
+      const { conditions, values } = sessionFilter(query, provider);
+      return database.prepare(`SELECT ${summaryColumns} FROM sessions ${whereClause(conditions)} ORDER BY rowid DESC`).all(...values);
+    },
+
+    /** One page of list(), newest first; next is the last ID shown when more rows match. */
+    listSessionsPage({ query, provider, limit, after }) {
+      const { conditions, values } = sessionFilter(query, provider);
+      const rowid = before('sessions', after);
+      if (rowid !== null) {
+        conditions.push('rowid < ?');
+        values.push(rowid);
       }
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      return database.prepare(`SELECT ${summaryColumns} FROM sessions ${where} ORDER BY rowid DESC`).all(...values);
+      const rows = database.prepare(`SELECT ${summaryColumns} FROM sessions ${whereClause(conditions)} ORDER BY rowid DESC LIMIT ?`)
+        .all(...values, limit + 1);
+      const { rows: sessions, next } = page(rows, limit);
+      return { sessions, next };
+    },
+
+    /** Published graphs, newest first, optionally for one session and/or one party. */
+    listGraphs({ sessionId = null, party = null, limit, after }) {
+      const rows = selectGraphs.all({ $sessionId: sessionId, $party: party, $before: before('graphs', after), $n: limit + 1 });
+      const { rows: graphs, next } = page(rows, limit);
+      return { graphs, next };
     },
 
     get(id) {
@@ -202,7 +265,7 @@ export function openStore(path) {
 
     getGraph: readGraph,
 
-    ...mountRooms(database, readGraph),
+    ...rooms,
 
     close() {
       database.close();

@@ -108,7 +108,9 @@ Each packet is a snapshot of one imported session. An exact repeat returns its e
 
 ## Connect an agent over MCP
 
-`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`, `graph_list` and `room_list` (find graphs and rooms without being given an ID, newest first), and the latent tools. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+
+Every tool result is at most 40,000 characters of escaped text, because agents cut longer results without saying so. A longer result comes in pages and says how to get the rest: a JSON result has `more` as its first key (`more.fromItem` for `graph_read` and `room_read`, `more.after` for the lists), and a text result ends with a bracketed note that names the arguments to send next (`fromLine`, `fromOffset`, `fromPath`). A result that fits is exactly what it was before paging. `GET /api/graphs` and `GET /api/rooms` back the two lists and take `limit` (1 to 100, default 20), `after` and the filters `sessionId`, `graphId` and `party`. `GET /api/sessions` pages only when it gets `limit` or `after`, so the browser and the CLI still get every match. The ledger file carries a schema version (`PRAGMA user_version`) and upgrades an older file in place; graphs and rooms stored before that list with `createdAt: null`.
 
 Claude Code:
 

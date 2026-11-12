@@ -397,3 +397,18 @@ Bound: a tool result carries at most 40,000 characters (UTF-16 code units) of te
 | Full suites | Node suites and Playwright pass three times on Windows (pass^3 = 1.00). Linux CI runs the same suites. |
 | Live Codex sentinel | Codex calls a tool whose result is 39,900 characters, with a sentinel on its last line, and repeats the sentinel in 3 of 3 runs. If it cannot, lower `maxResultCharacters` and record it here. |
 | Live demo | `demo/rehearse.mjs` on the short fixture scores the same as in cycle 7, and session_read pages reach Codex with their notes. |
+
+### Results — Cycle 10 implementation, 2026-11-11 (review pending)
+
+Implemented on `ruslan/mcp-paging-discovery`. New modules: `src/paging.mjs` (the bound and the pagers) and `src/migrate.mjs` (schema version 1). New tests: `tests/paging.test.mjs` (F1 against a fake ledger), `tests/list-api.test.mjs` (F2 against the real server), `tests/migrate.test.mjs` (F3 on a version 0 file built with the 19f6522 DDL), a second round trip in `tests/mcp-live.test.mjs`, and a 150-transcript library search in Playwright.
+
+- **F1:** every row passes. Every page at the schema limits stays at or under 40,000 characters. Merged `graph_read` and `room_read` pages deepEqual the stored JSON, against both the fake and the real ledger. Split turns, split file lines, the transfer text and `context_for` pages rejoin into the whole escaped text. Results that fit are byte-identical to the 19f6522 rendering, which a test pins for every tool. tools/list is 13 tools and 10,101 characters, 3,035 more than before.
+- **F2:** every row passes except the live fresh-session discovery run, which is not run yet.
+- **F3:** every row passes. The concurrency check spawns two processes on one version 0 file. The injected failure is an index name that is already taken by a table, and it leaves `user_version` 0 and the old schema. The downgrade check replays the 19f6522 DDL and its INSERT statements on a migrated file.
+- **Suites (Windows):** node 114/115 (one skipped) in each of 3 runs; Playwright 13/13 in each of 3 runs. Linux CI has not run yet (nothing is pushed).
+- **Not run yet:** the live Codex sentinel, the live demo rehearsal and the live fresh-session discovery. They need the user's Codex and Claude Code sessions. The independent review and the debug pass are also still to do, so the cycle stays open.
+- **Spec notes:**
+  - `fromOffset` and `fromLine` in a latent continuation are code-unit offsets into the file line's own text, after its `N| ` prefix.
+  - A latent continuation with a `fromLine` past the end of `fromPath` gets a note and goes on with the next file.
+  - The latent pager has two more fixed errors: "fromOffset is past the end of that line." and "fromOffset needs fromLine to be a line of that file.", and a text continuation of `latent_transfer` has "text must be 1 to 8000 characters."
+  - Too-large errors name the tool, for example "session_read returned an item too large to show."
