@@ -991,3 +991,35 @@ What this means: the multi-LLM part is done; any chat template now runs. Whether
 - **Reviews of the system-message fold (104c41e):** Codex found that the retry got the full timeout again, so a slow refusal could hold a pool slot past the deadline (medium), and that the receipt time left out the refused attempt (low). Both are fixed in b88a914 with tests against a scripted server with delayed replies; both tests fail on 104c41e. Codex's confirming pass found nothing.
 - **PR review (#10):** a Codex pass over the whole PR, with a data check of every figure against the raw reports, recomputed the Phi McNemar counts and p-values and found them correct. It raised two findings, both fixed: the Granite accuracy comparison understated its dev-set lead (wording), and the real-tokenizer test left out Phi-3.5 and Granite (both now included; the test passes in WSL).
 - Codex noted that the fake vLLM's cache accounting does not prove real cache reuse. The live Mistral run does: vLLM's own counters show 96.8% prefix-cache hits with the folded prompts.
+
+## Cycle 13 — Tuning the latent hand-off (defined 2026-11-12, before any run)
+
+Card C13. In cycle 12 the latent team ran on Phi-3.5-mini, but its latent thoughts scored no better than random vectors (0.840 against 0.830, McNemar p = 0.84). This cycle tries three ways to make the hand-off between agents carry information, from cheapest to most expensive, on the same model:
+
+1. **Settings, no training:** thought mode (`soft`, and `aligned`, which uses the untied W_a and was never run on Phi), latent steps (10, 40, 80), and soft-thought sharpness (top-k 16 at temperature 1.0, against top-k 4 at 0.5).
+2. **A trained projection adapter:** the model stays frozen. A low-rank correction is added to the thought vector, zero-initialised so training starts from today's behaviour. It is trained on the solver's answer loss, back through the latent steps.
+3. **LoRA fine-tuning:** low-rank adapters on the attention projections, trained with the same loss through the same latent loop, so the model learns to read latent memory.
+
+### Data and splits
+
+- Training (levels 2 and 3) uses only the GSM8K train split. The target is the gold solution, ending "The answer is N."
+- Settings and training choices are tuned on GSM8K test block 3 of the seed-0 shuffle (questions 600–799; 100 questions while tuning).
+- Every claim is made on block 4 (questions 800–999, 200 questions), which is not looked at until the choices are fixed.
+- Blocks 0, 1 and 2 were used by cycles 9 and 12 and are not reused.
+
+### What counts
+
+- The question is whether the thoughts carry information. The primary test is **latent_mas against latent_random with the same weights, steps and thought norm**, on the same 200 block-4 questions, with an exact McNemar test.
+- A level "works" only if latent_mas beats the random control with p < 0.05.
+- Secondary figures, reported but not gated: latent_mas against single and against text_mas, tokens, and seconds per question.
+- For level 3 the controls must use the **same LoRA weights**. Fine-tuning on GSM8K will lift every system, so a higher score alone proves nothing; only the gap to the random control with the same weights counts.
+- A level that does not reach p < 0.05 is reported as not established, with its numbers. This rule is fixed here, before any result, because cycle 12's "below the control" rule was too weak.
+
+### Acceptance for the code
+
+- Unit tests run on the CPU with a tiny randomly initialised model, with no download and no GPU:
+  - the adapter starts as an exact no-op;
+  - LoRA starts as an exact no-op, and only the LoRA and adapter weights receive gradients;
+  - the loss covers only the target tokens;
+  - a saved checkpoint reloads to identical outputs.
+- No new runtime dependency: LoRA is written in a small module rather than added with `peft`.
