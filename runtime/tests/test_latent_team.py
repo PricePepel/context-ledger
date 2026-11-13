@@ -46,7 +46,12 @@ class NoTemplateTokenizer(CharTokenizer):
 
 
 class ChatMLCharTokenizer(CharTokenizer):
+    """Renders ChatML. The team derives every template, so this must render it, not just name it."""
     chat_template = "{% for m in messages %}<|im_start|>...{% endfor %}"
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        text = "".join("<|im_start|>" + m["role"] + "\n" + m["content"] + "<|im_end|>\n" for m in messages)
+        return text + ("<|im_start|>assistant\n" if add_generation_prompt else "")
 
 
 def tiny_team(tied=True, tokenizer=None):

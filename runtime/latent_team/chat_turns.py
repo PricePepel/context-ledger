@@ -23,12 +23,22 @@ opens a user turn with <|user|>: the common prefix "<|end|>\\n<|" is cut to "<|e
 PREFIX U2 SUFFIX is the rest, and SUFFIX must equal the first turn's SUFFIX, so every
 agent's assistant turn opens the same way.
 
-ChatML templates (Qwen, SmolLM) keep the hard-coded strings the measured results used; for
-them the derivation gives the same strings byte for byte (tests/test_chat_templates.py).
+LEAD is what the template writes between the generation prompt and an assistant's content
+(Mistral v0.3 writes " " + content|trim, so its LEAD is " "): `ended` before A1 is the first
+turn followed by LEAD. The team does not write LEAD; each agent's latent steps start right
+after the generation prompt, as generation does. The lead is recorded so a run can report
+it. It is None when a past assistant turn does not extend the generation prompt (a template
+whose prompt opens a reasoning block that history does not show).
+
+Every template is derived and checked. When the derived strings equal the hard-coded ChatML
+strings every measured result used (Qwen2.5, SmolLM2: tests/test_chat_templates.py), those
+strings are returned, marked chatml. A template that only resembles ChatML (other
+separators, a reasoning opener) gets its own strings, or is refused.
 
 This module needs neither torch nor transformers, so the template tests run anywhere.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Optional
 
 # Contents no template rewrites: letters only, nothing to trim or escape.
 USER_1, ASSISTANT_1, USER_2 = "qzxUSERONEqzx", "qzxASSISTANTONEqzx", "qzxUSERTWOqzx"
@@ -48,30 +58,22 @@ class ChatTurns:
     close: str           # ends an agent's (latent) assistant turn
     later_prefix: str    # opens a later agent's user turn, without a system block
     later_suffix: str    # closes that user turn and opens the assistant turn
-    chatml: bool = False
+    chatml: bool = False  # the derived strings are the measured ChatML strings
+    # What the template writes before an assistant's content; the team does not write it.
+    # None: a past assistant turn does not extend the generation prompt.
+    assistant_lead: Optional[str] = ""
 
     def later(self, prompt):
         return self.later_prefix + prompt + self.later_suffix
 
     def as_dict(self):
         return {"close": self.close, "laterPrefix": self.later_prefix, "laterSuffix": self.later_suffix,
-                "chatml": self.chatml}
+                "chatml": self.chatml, "assistantLead": self.assistant_lead}
 
 
 # The strings every ChatML result so far was measured with.
 CHATML = ChatTurns(close="<|im_end|>\n", later_prefix="<|im_start|>user\n",
                    later_suffix="<|im_end|>\n<|im_start|>assistant\n", chatml=True)
-
-
-def template_text(tokenizer):
-    template = getattr(tokenizer, "chat_template", None)
-    if isinstance(template, dict):  # named templates: the default one is used for chat
-        template = template.get("default")
-    return template if isinstance(template, str) else ""
-
-
-def is_chatml(tokenizer):
-    return "<|im_start|>" in template_text(tokenizer)
 
 
 def first_turn(tokenizer, prompt):
@@ -145,7 +147,9 @@ def derive_turns(tokenizer, model_name):
     later = render([user_1, assistant_1, {"role": "user", "content": USER_2}], True, "a second user turn")
 
     first_suffix = first[at(first, USER_1, "the first turn") + len(USER_1):]
-    after_ended = ended[at(ended, ASSISTANT_1, "the ended conversation") + len(ASSISTANT_1):]
+    before_ended = ended[:at(ended, ASSISTANT_1, "the ended conversation")]
+    lead = before_ended[len(first):] if before_ended.startswith(first) else None
+    after_ended = ended[len(before_ended) + len(ASSISTANT_1):]
     after_later = later[at(later, ASSISTANT_1, "the two-turn conversation") + len(ASSISTANT_1):]
     if USER_2 not in after_later:
         raise ChatTemplateError(model_name, "the second user turn does not follow the assistant turn")
@@ -161,7 +165,7 @@ def derive_turns(tokenizer, model_name):
     if suffix != first_suffix:
         raise ChatTemplateError(model_name, f"a later turn opens the assistant differently ({suffix!r}) from the "
                                             f"first turn ({first_suffix!r})")
-    turns = ChatTurns(close=close, later_prefix=prefix, later_suffix=suffix)
+    turns = ChatTurns(close=close, later_prefix=prefix, later_suffix=suffix, assistant_lead=lead)
     if callable(tokenizer):
         # The team tokenizes CLOSE and each later turn separately: that must give the
         # tokens of the template's own text, or the split cut through a token.
@@ -176,10 +180,15 @@ def derive_turns(tokenizer, model_name):
 
 
 def chat_turns(tokenizer, model_name):
-    """The turns the team uses: the measured ChatML strings, or ones derived from the template."""
-    if is_chatml(tokenizer):
+    """The turns the team uses, always derived from the template and checked.
+
+    When the derivation gives exactly the ChatML strings the measured results used, those
+    are returned (marked chatml); a template that only looks like ChatML gets its own.
+    """
+    derived = derive_turns(tokenizer, model_name)
+    if derived == replace(CHATML, chatml=False):
         return CHATML
-    return derive_turns(tokenizer, model_name)
+    return derived
 
 
 def close_token(tokenizer, close):

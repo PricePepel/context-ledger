@@ -52,8 +52,6 @@ EXPECTED = {
                      "<|end_of_text|>\n<|start_of_role|>assistant<|end_of_role|>")),
     OLMO: ("<|endoftext|><|user|>\nPLAN\n<|assistant|>\n", ("<|endoftext|>", "\n<|user|>\n", "\n<|assistant|>\n")),
 }
-# What the template writes before an assistant's content (Mistral: " " + content|trim).
-LEAD = {MISTRAL: " "}
 # Text that marks a system block, per family that injects one by default.
 DEFAULT_SYSTEM = {QWEN: "You are Qwen", SMOLLM: "named SmolLM", LLAMA: "Cutting Knowledge Date",
                   GRANITE: "Knowledge Cutoff Date"}
@@ -64,6 +62,11 @@ BOS = {LLAMA: "<|begin_of_text|>", MISTRAL: "<s>"}
 def tokenizer(name):
     from tests.chat_template_fixtures import TemplateTokenizer
     return TemplateTokenizer(name)
+
+
+def two_turns(tok, user_1, assistant_1, user_2):
+    return tok.apply_chat_template([{"role": "user", "content": user_1}, {"role": "assistant", "content": assistant_1},
+                                    {"role": "user", "content": user_2}], add_generation_prompt=True)
 
 
 @unittest.skipUnless(HAVE_JINJA, "jinja2 is needed to render chat templates")
@@ -89,20 +92,36 @@ class DerivedTurnsTest(unittest.TestCase):
                 if name in DEFAULT_SYSTEM:
                     self.assertIn(DEFAULT_SYSTEM[name], first_turn(tok, "PLAN"), "the first agent keeps it")
 
-    def test_the_team_stream_reads_as_the_models_own_conversation(self):
-        """First turn, an agent's turn, its close and the next turn: the template's two-turn text."""
+    def test_the_template_two_turn_text_is_first_turn_lead_content_close_later_turn(self):
+        """The template's own two-turn text, built from the derived pieces and the derived lead."""
         for name in EXPECTED:
             with self.subTest(name):
                 tok = tokenizer(name)
                 turns = derive_turns(tok, name)
-                stream = first_turn(tok, "PLAN") + LEAD.get(name, "") + "THOUGHTS" + turns.close + turns.later("SOLVE")
-                reference = tok.apply_chat_template(
-                    [{"role": "user", "content": "PLAN"}, {"role": "assistant", "content": "THOUGHTS"},
-                     {"role": "user", "content": "SOLVE"}], add_generation_prompt=True)
-                self.assertEqual(stream, reference)
+                stream = first_turn(tok, "PLAN") + turns.assistant_lead + "THOUGHTS" + turns.close + turns.later("SOLVE")
+                self.assertEqual(stream, two_turns(tok, "PLAN", "THOUGHTS", "SOLVE"))
                 # Three subagents and the solver: one system block at most, at the start.
                 team = first_turn(tok, "P") + "".join(turns.close + turns.later(p) for p in ("C", "R", "S"))
                 self.assertLessEqual(team.count("system"), 1)
+
+    def test_regression_review_finding_2_the_assistant_lead_is_derived_and_recorded(self):
+        """Mistral v0.3 writes ' ' + content|trim after [/INST]. The team starts each agent's latent
+        steps right after the generation prompt and writes no lead, so its stream differs from the
+        template's own text by exactly that lead. The derivation records it instead of the test
+        adding it by hand."""
+        for name in EXPECTED:
+            with self.subTest(name):
+                tok = tokenizer(name)
+                turns = derive_turns(tok, name)
+                self.assertEqual(turns.assistant_lead, " " if name == MISTRAL else "")
+                self.assertEqual(turns.as_dict()["assistantLead"], turns.assistant_lead)
+                team_stream = first_turn(tok, "PLAN") + "THOUGHTS" + turns.close + turns.later("SOLVE")
+                reference = two_turns(tok, "PLAN", "THOUGHTS", "SOLVE")
+                if turns.assistant_lead:
+                    self.assertNotEqual(team_stream, reference)
+                    self.assertEqual(team_stream.replace("[/INST]THOUGHTS", "[/INST] THOUGHTS"), reference)
+                else:
+                    self.assertEqual(team_stream, reference)
 
     def test_chatml_derivation_gives_todays_hard_coded_strings_byte_for_byte(self):
         self.assertEqual((CHATML.close, CHATML.later_prefix, CHATML.later_suffix), CHATML_LATER)
@@ -197,6 +216,54 @@ class UnusableTemplateTest(unittest.TestCase):
         with self.assertRaises(ChatTemplateError) as caught:
             derive_turns(tok, PHI)
         self.assertIn("token boundary", str(caught.exception))
+
+
+# A microsoft/phi-4-style template: ChatML tokens, but <|im_sep|> after the role and no newlines.
+PHI4_STYLE = (
+    "{% for m in messages %}{{ '<|im_start|>' + m['role'] + '<|im_sep|>' + m['content'] + '<|im_end|>' }}"
+    "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant<|im_sep|>' }}{% endif %}")
+# ChatML whose generation prompt opens a reasoning block that past assistant turns do not show.
+CHATML_THINK = (
+    "{% for m in messages %}{{ '<|im_start|>' + m['role'] + '\n' + m['content'] + '<|im_end|>\n' }}{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n<think>\n' }}{% endif %}")
+CHATML_SPECIALS = ["<|im_start|>", "<|im_end|>", "<|im_sep|>", "<|endoftext|>"]
+
+
+@unittest.skipUnless(HAVE_JINJA, "jinja2 is needed to render chat templates")
+class ChatMLLikeTemplateTest(unittest.TestCase):
+    """Regression, review finding 1: a template that merely contains <|im_start|> used to get the
+    hard-coded ChatML strings without any derivation or check."""
+
+    def tok(self, template):
+        from tests.chat_template_fixtures import TemplateTokenizer
+        return TemplateTokenizer("org/chatml-like", template=template, eos="<|im_end|>", specials=CHATML_SPECIALS)
+
+    def test_a_phi4_style_template_gets_its_own_separators(self):
+        tok = self.tok(PHI4_STYLE)
+        turns = chat_turns(tok, "org/chatml-like")
+        self.assertFalse(turns.chatml)
+        self.assertIsNot(turns, CHATML)
+        self.assertEqual(first_turn(tok, "PLAN"), "<|im_start|>user<|im_sep|>PLAN<|im_end|><|im_start|>assistant<|im_sep|>")
+        self.assertEqual(turns.close, "<|im_end|>")
+        self.assertEqual(turns.later("SOLVE"), "<|im_start|>user<|im_sep|>SOLVE<|im_end|><|im_start|>assistant<|im_sep|>")
+        stream = first_turn(tok, "PLAN") + turns.assistant_lead + "THOUGHTS" + turns.close + turns.later("SOLVE")
+        self.assertEqual(stream, two_turns(tok, "PLAN", "THOUGHTS", "SOLVE"))
+
+    def test_a_chatml_generation_prompt_with_a_reasoning_opener_keeps_it_on_later_turns(self):
+        tok = self.tok(CHATML_THINK)
+        turns = chat_turns(tok, "org/chatml-like")
+        self.assertFalse(turns.chatml)
+        self.assertTrue(first_turn(tok, "PLAN").endswith("<|im_start|>assistant\n<think>\n"))
+        self.assertEqual(turns.close, "<|im_end|>\n")
+        self.assertEqual(turns.later("SOLVE"), "<|im_start|>user\nSOLVE<|im_end|>\n<|im_start|>assistant\n<think>\n")
+        # A past assistant turn is rendered without <think>: there is no lead to record.
+        self.assertIsNone(turns.assistant_lead)
+
+    def test_a_chatml_template_the_team_cannot_use_is_refused_not_given_the_chatml_strings(self):
+        tok = self.tok("{% for m in messages %}<|im_start|>{{ m['role'] }}<|im_end|>{% endfor %}")
+        with self.assertRaises(ChatTemplateError) as caught:
+            chat_turns(tok, "org/chatml-like")
+        self.assertIn("exactly once", str(caught.exception))
 
 
 def cached_tokenizer(name):
