@@ -389,6 +389,27 @@ class TrainingRunTest(unittest.TestCase):
                 train(tiny_team(), items[1:], args, log=lambda line: None)
         self.assertEqual((record["examples"], record["tooLong"]), (1, 1))
 
+    def test_examples_over_the_prompt_limit_are_skipped_and_counted(self):
+        # Cycle 13: memory grows with the question, which all four turns repeat, so the
+        # longest questions ran out of GPU memory with gradients through two subagents.
+        from latent_team.team import LATENT_PROMPTS
+        from latent_team.train import train
+        team = tiny_team()
+        short = "What is 2 + 3?"
+        limit = max(len(team._token_ids(p.format(question=short))) for p in LATENT_PROMPTS.values())
+        items = [{"question": short, "solution": "#### 5", "gold": 5.0},
+                 {"question": QUESTION, "solution": SOLUTION, "gold": 72.0}]
+        with tempfile.TemporaryDirectory() as out:
+            args = train_args("--level", "adapter", "--steps", "1", "--grad-accum", "1", "--rank", "2",
+                              "--max-prompt-tokens", str(limit), "--out", out)
+            record = train(team, items, args, log=lambda line: None)
+            with self.assertRaises(ValueError):
+                train(tiny_team(), items[1:], args, log=lambda line: None)
+        self.assertEqual((record["examples"], record["longPrompts"], record["tooLong"]), (1, 1, 0))
+        from latent_team.train import check, parser
+        self.assertEqual(check(parser().parse_args(["--level", "lora", "--out", "x", "--max-prompt-tokens", "0"])),
+                         ["--max-prompt-tokens must be at least 1"])
+
     def test_a_few_steps_on_one_repeated_example_lower_its_loss(self):
         from latent_team.train import train
         for level in ("adapter", "lora", "both"):

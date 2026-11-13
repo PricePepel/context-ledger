@@ -86,6 +86,9 @@ def parser():
     p.add_argument("--max-grad-norm", type=float, default=1.0, help="0 turns clipping off")
     p.add_argument("--max-target-tokens", type=int, default=256,
                    help="examples whose target is longer are skipped, not cut (a cut target never stops)")
+    p.add_argument("--max-prompt-tokens", type=int, default=None,
+                   help="examples whose subagent prompt is longer are skipped; each of the four turns"
+                        " repeats the question, so it bounds memory most (default: no limit)")
     p.add_argument("--grad-agents", type=int, default=3, choices=(1, 2, 3),
                    help="subagents (the last ones) that keep gradients; fewer bounds memory, 3 is the full loop")
     p.add_argument("--log-every", type=int, default=10, help="optimizer steps between log lines")
@@ -115,6 +118,8 @@ def check(args):
     for name in ("rank", "lora_rank", "epochs", "grad_accum", "max_target_tokens", "log_every", "train_count"):
         if getattr(args, name) < 1:
             problems.append(f"--{name.replace('_', '-')} must be at least 1")
+    if args.max_prompt_tokens is not None and args.max_prompt_tokens < 1:
+        problems.append("--max-prompt-tokens must be at least 1")
     if not args.lr > 0:
         problems.append("--lr must be above 0")
     if not 0 <= args.lora_dropout < 1:
@@ -181,23 +186,29 @@ def train(team, items, args, log=_print):
         torch.cuda.reset_peak_memory_stats()
     close = team.close_turn()
     from .team import IGNORE, LATENT_PROMPTS
-    targets, kept, too_long = [], [], 0
+    targets, kept, too_long, long_prompts = [], [], 0, 0
     for item in items:
         text = target_text(item["solution"], close)
         prompt = LATENT_PROMPTS["solver"].format(question=item["question"])
         if int(team.target_batch([prompt], [text])[2].ne(IGNORE).sum()) > args.max_target_tokens:
             too_long += 1
             continue
+        if args.max_prompt_tokens is not None and max(
+                len(team._token_ids(LATENT_PROMPTS[role].format(question=item["question"]))) for role in LATENT_PROMPTS
+        ) > args.max_prompt_tokens:
+            long_prompts += 1
+            continue
         targets.append(text)
         kept.append(item)
     items = kept
     if not items:
-        raise ValueError("every target is longer than --max-target-tokens")
+        raise ValueError("every example is over --max-target-tokens or --max-prompt-tokens")
     record = {"model": team.model_name, "config": {k: v for k, v in vars(args).items()},
               "chatTemplate": team.turns.as_dict(), "examples": len(items),
               "trainable": {name: sum(p.numel() for p in group) for name, group in groups.items()},
-              "tooLong": too_long, "history": [], "epochs": [], "skipped": 0}
-    log(json.dumps({"event": "start", "trainable": record["trainable"], "examples": len(items), "tooLong": too_long}))
+              "tooLong": too_long, "longPrompts": long_prompts, "history": [], "epochs": [], "skipped": 0}
+    log(json.dumps({"event": "start", "trainable": record["trainable"], "examples": len(items), "tooLong": too_long,
+                    "longPrompts": long_prompts}))
     rng = random.Random(args.seed)
     order = list(range(len(items)))
     step, start = 0, time.perf_counter()
