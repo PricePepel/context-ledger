@@ -36,7 +36,11 @@ import re
 import time
 
 LEVELS = ("adapter", "lora", "both")
-TRAIN_MODES = ("soft", "aligned")  # random is the control: it is never trained
+# Random is the control and is never trained. Aligned is not trained either (Codex review of
+# 334ce35): the random control is noise at the *soft* thought's norm, so a trained aligned
+# run would be compared at a different magnitude; and aligned lost to random in level 1
+# (0.13-0.23 against 0.84-0.88 on Phi-3.5-mini, docs/evals.md cycle 13).
+TRAIN_MODES = ("soft",)
 ANNOTATION = re.compile(r"<<[^>]*>>")
 
 

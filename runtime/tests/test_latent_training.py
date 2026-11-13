@@ -80,7 +80,11 @@ class TargetTextTest(unittest.TestCase):
 
     def test_the_cli_refuses_the_random_mode_and_bad_numbers(self):
         from latent_team.train import check, parser
-        for argv in (["--level", "adapter", "--mode", "random", "--out", "x"], ["--level", "neither", "--out", "x"]):
+        # Codex review of 334ce35: aligned thoughts are not norm-matched to the random
+        # control, and they lost to it in level 1, so they are not trained.
+        for argv in (["--level", "adapter", "--mode", "random", "--out", "x"],
+                     ["--level", "adapter", "--mode", "aligned", "--out", "x"],
+                     ["--level", "neither", "--out", "x"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 parser().parse_args(argv)
         args = parser().parse_args(["--level", "lora", "--out", "x", "--grad-accum", "0", "--lr", "0"])
