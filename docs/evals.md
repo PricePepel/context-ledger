@@ -1201,6 +1201,33 @@ All systems use the self-distilled LoRA on the 100 block-6 questions:
 - **Secondary, predicted before the run:** if self-distillation removes the style shortcut, single with the self-distilled LoRA stays within 3 points of the untrained single on block 5, and its mean answer length stays within 25% of the untrained length. Reported, not gated. Passing it only shows that the style damage is gone. It does not show that the thoughts carry information.
 - Training on answers the model already gets right can still leave the thoughts with nothing to add. If so, the primary test fails, and that is a result.
 
+### Block 5 results (2026-11-13)
+
+Phi-3.5-mini, bf16, batch 4, questions 1000–1199 of the seed-0 shuffle (200 questions), m = 40 as fixed above. The first three rows share the self-distilled LoRA; the last is the untrained model.
+
+| System | Accuracy | Mean tokens | Seconds per question |
+|---|---|---|---|
+| single, LoRA | 0.870 | 273.9 | 4.32 |
+| latent_mas @40, LoRA | 0.870 | 275.1 | 6.28 |
+| latent_random @40, LoRA | 0.860 | 272.1 | 6.39 |
+| single, untrained | 0.870 | 274.5 | 3.90 |
+
+Exact McNemar tests on the same 200 questions (questions only the first system got right / only the second):
+
+| Comparison | Split | p |
+|---|---|---|
+| latent_mas vs latent_random (primary) | 7 / 5 | 0.77 |
+| latent_mas vs single, LoRA | 10 / 10 | 1.00 |
+| latent_random vs single, LoRA | 8 / 10 | 0.81 |
+| single, LoRA vs single, untrained | 8 / 8 | 1.00 |
+
+- **Primary: not established.** The team is one point above random vectors with the same weights (0.870 against 0.860, 7 / 5, p = 0.77). This is far from p < 0.05. As in cycle 13, this is a failure to show an advantage at this sample size, not proof that the thoughts carry nothing.
+- **Secondary prediction: passed.** Single with the self-distilled LoRA is 0 points from the untrained single (limit 3) and its answers are 0.2% shorter (limit 25%). The drop seen with the gold-trained LoRA in cycle 13 (0.855 to 0.730, 280 to 102 tokens) does not appear with self targets. This run changes only the target, but it does not isolate why. Passing shows only that accuracy and length stay inside the stated limits on this sample.
+- **Reading:** the LoRA is now close to neutral. Single, the team and random all land within one point of each other and of the untrained model. The training produced no measurable advantage over random thoughts; that is not proof the solver ignores them. A likely reason, not tested here, is the one cycle 13 found: the solver already reads the whole question, and the shared cache also holds the other agents' prompts, so the hand-off has nothing it alone can supply. Cycle 15 tests that directly with sealed agents and split facts.
+- **Cost:** the team took 6.3 seconds per question against 4.3 for single with the same LoRA, for the same accuracy.
+- **Code review:** Codex reviewed a420d9d. It found no bug in how targets are built, which questions are kept, the split read, or the fairness of latent against random. It found two test gaps: the distill CLI test passed its items in, so a different sample from `train.py`'s would go unseen; and no test kept a generated answer, so a scorer that always says wrong would pass. 7eb5009 adds an end-to-end test that runs both CLIs on their own sampling, and both mutations Codex named now fail it.
+- **Data check:** Codex recomputed every figure in this section from the raw reports and logs (except the memory table, from a printed profiling run). All match: the counts and lengths of the targets, the training run, tuning, block-5 accuracy, tokens and times, the four McNemar splits and p-values, and the style gap. It confirmed the same question order in all four block-5 systems, the C14 LoRA path, m = 40, and no checkpoint in the baseline. It flagged three sentences that claimed more than the tests show (that self targets "removed" the damage, that passing showed the style damage "is gone", and that the solver uses "nothing" from the thoughts). All three are reworded above.
+
 ### Acceptance for the code
 
 - CPU unit tests with the tiny model, with no download and no GPU:

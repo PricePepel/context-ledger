@@ -197,3 +197,19 @@ Next steps:
 1. Ali reviews the trainer and the LoRA module. The Codex reviews are recorded in the eval log.
 2. If the hand-off is tried again, train against the model's own correct answers (self-distillation), not the gold solutions. With gold-solution training, the adapter shortened answers, and the LoRA shortened them and lowered single from 0.855 to 0.730. The cause is not isolated.
 3. Train at the step count that is evaluated, which needs more memory or a model with grouped-query attention. A Qwen or Llama model with grouped-query attention would cut the key and value cost several times over.
+
+## Current checkpoint — cycle 14 (self-distilled LoRA targets, 2026-11-13)
+
+Branch `ruslan/self-distill`, based on `ruslan/latent-tuning` (C13, PR #11). Card C14. Read the cycle 14 definition and results in [the eval log](evals.md).
+
+- **Result: not established.** On the unused block 5 (200 questions), the team with the self-distilled LoRA scores 0.870 against 0.860 for random vectors with the same weights (7 / 5, p = 0.77).
+- **No style damage this time.** Single with the LoRA scores 0.870 with 274-token answers, the same as the untrained model. The gold-trained LoRA of cycle 13 had cut this to 0.730 and 102 tokens.
+- **New code:**
+  - `runtime/latent_team/distill.py` writes the untrained model's greedy single answers on the GSM8K train sample. It keeps only right answers that stopped inside the budget.
+  - `train.py --targets <file>` trains on those answers instead of the gold solutions. Questions with no kept answer are skipped and counted, never filled with gold. A file from another model is refused.
+- **Run settings:** C13 level 3 settings with `--max-target-tokens 512`. The run trained on 1,734 examples in 103 minutes, with a 14.25 GB peak. The targets file holds GSM8K train text and stays with the run outputs; it is not committed.
+
+Next steps:
+
+1. A human reviews the distill code with the C13 trainer. The Codex code review and data check are recorded in the eval log.
+2. Do not run more GSM8K training variants against this setup. Two training targets and three levels all tie random. Cycle 15 (sealed agents, split facts, Qwen2.5-3B) tests whether the hand-off can matter at all when the solver cannot read the facts itself.
