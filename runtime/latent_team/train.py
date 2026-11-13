@@ -193,9 +193,9 @@ def train(team, items, args, log=_print):
         if int(team.target_batch([prompt], [text])[2].ne(IGNORE).sum()) > args.max_target_tokens:
             too_long += 1
             continue
-        if args.max_prompt_tokens is not None and max(
-                len(team._token_ids(LATENT_PROMPTS[role].format(question=item["question"]))) for role in LATENT_PROMPTS
-        ) > args.max_prompt_tokens:
+        # Measured as rendered, chat template included (Codex review of 8bfbf51: the raw
+        # prompt text left out the template tokens the model actually reads).
+        if args.max_prompt_tokens is not None and max(team.turn_tokens(item["question"]).values()) > args.max_prompt_tokens:
             long_prompts += 1
             continue
         targets.append(text)

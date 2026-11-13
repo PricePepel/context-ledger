@@ -396,7 +396,7 @@ class TrainingRunTest(unittest.TestCase):
         from latent_team.train import train
         team = tiny_team()
         short = "What is 2 + 3?"
-        limit = max(len(team._token_ids(p.format(question=short))) for p in LATENT_PROMPTS.values())
+        limit = max(team.turn_tokens(short).values())
         items = [{"question": short, "solution": "#### 5", "gold": 5.0},
                  {"question": QUESTION, "solution": SOLUTION, "gold": 72.0}]
         with tempfile.TemporaryDirectory() as out:
@@ -406,6 +406,15 @@ class TrainingRunTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 train(tiny_team(), items[1:], args, log=lambda line: None)
         self.assertEqual((record["examples"], record["longPrompts"], record["tooLong"]), (1, 1, 0))
+        # The cap counts the chat template too (Codex review of 8bfbf51): at the raw text
+        # length of the longest prompt, the rendered turn is over the cap and is skipped.
+        raw = max(len(team._token_ids(p.format(question=short))) for p in LATENT_PROMPTS.values())
+        self.assertLess(raw, limit)
+        with tempfile.TemporaryDirectory() as out:
+            args = train_args("--level", "adapter", "--steps", "1", "--grad-accum", "1", "--rank", "2",
+                              "--max-prompt-tokens", str(raw), "--out", out)
+            with self.assertRaises(ValueError):
+                train(tiny_team(), items[:1], args, log=lambda line: None)
         from latent_team.train import check, parser
         self.assertEqual(check(parser().parse_args(["--level", "lora", "--out", "x", "--max-prompt-tokens", "0"])),
                          ["--max-prompt-tokens must be at least 1"])

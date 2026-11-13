@@ -1071,7 +1071,7 @@ Runs queued: level 2 on 1,000 train questions (lr 1e-3, accumulation 8), then le
 | 2 | 11.67 GB | 13.05 GB | 13.15 GB | out of memory |
 | 1 | 10.11 GB | 11.05 GB | 11.22 GB | 13.88 GB |
 
-The runs use two subagents with gradients (the first runs without; all three still run) and skip prompts over 160 tokens (`--max-prompt-tokens`, 8bfbf51). The worst kept case, a 160-token prompt with a 256-token target, peaks at 13.55 GB.
+The runs use two subagents with gradients (the first runs without; all three still run) and skip prompts over 160 tokens (`--max-prompt-tokens`, 8bfbf51). The worst kept case, a 160-token prompt with a 256-token target, peaks at 13.55 GB. These runs counted the prompt text without the chat-template tokens. Codex's review of 8bfbf51 found that mismatch, and the cap now counts each turn as rendered, so the same `--max-prompt-tokens 160` keeps somewhat fewer questions than these runs did.
 
 | Run | Examples kept | Skipped (prompt / target) | Steps | Final logged loss | Peak memory | Hours |
 |---|---|---|---|---|---|---|

@@ -342,6 +342,16 @@ class LatentTeam:
             return torch.tensor(grid, dtype=torch.long, device=self.device)
         return tensor(ids), tensor(mask), tensor(labels)
 
+    def turn_tokens(self, question):
+        """Token count of each agent's turn as latent_mas and training render it: the first
+        subagent with the chat template's preamble, the others and the solver as later turns."""
+        counts = {}
+        for index, role in enumerate(ROLES):
+            prompt = LATENT_PROMPTS[role].format(question=question)
+            counts[role] = len(self._token_ids(first_turn(self.tokenizer, prompt) if index == 0 else self.turn(prompt)))
+        counts["solver"] = len(self._token_ids(self.turn(LATENT_PROMPTS["solver"].format(question=question))))
+        return counts
+
     def _token_ids(self, text):
         row = self.tokenizer([text], add_special_tokens=False)["input_ids"][0]
         return row.tolist() if hasattr(row, "tolist") else list(row)
