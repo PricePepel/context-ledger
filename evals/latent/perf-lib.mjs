@@ -14,6 +14,13 @@ export const COUNTERS = [
   'vllm:num_preemptions_total',
 ];
 
+// Exported only when speculative decoding is on, so their absence is not "missing".
+export const OPTIONAL_COUNTERS = [
+  'vllm:spec_decode_num_drafts_total',
+  'vllm:spec_decode_num_draft_tokens_total',
+  'vllm:spec_decode_num_accepted_tokens_total',
+];
+
 export const HISTOGRAMS = [
   'vllm:time_to_first_token_seconds',
   'vllm:inter_token_latency_seconds',
@@ -128,6 +135,10 @@ export function snapshot(series, { model } = {}) {
     counters[name] = entries ? sum(entries.map(entry => entry.value)) : null;
     if (!entries) missing.push(name);
   }
+  for (const name of OPTIONAL_COUNTERS) {
+    const entries = byName.get(name);
+    counters[name] = entries ? sum(entries.map(entry => entry.value)) : null;
+  }
   const histograms = {};
   for (const name of HISTOGRAMS) {
     const buckets = byName.get(`${name}_bucket`);
@@ -183,7 +194,7 @@ export function delta(before, after) {
     return { reset: true, missing };
   }
   const counters = {};
-  for (const name of COUNTERS) {
+  for (const name of [...COUNTERS, ...OPTIONAL_COUNTERS]) {
     const a = before.counters[name];
     const b = after.counters[name];
     if (a === null || b === null || a === undefined || b === undefined) { counters[name] = null; continue; }
@@ -355,6 +366,13 @@ export function summarizeRun({ reads, totalDelta, coveredReads = reads.length, r
     tokensPerSecond: {
       perRequestDecode: tpotMean ? 1 / tpotMean : null,
       aggregate: generated !== null && coveredMs > 0 ? generated / (coveredMs / 1000) : null,
+    },
+    // Null when speculative decoding is off (vLLM then exports no spec_decode counters).
+    specDecode: counter('vllm:spec_decode_num_draft_tokens_total') === null ? null : {
+      drafts: counter('vllm:spec_decode_num_drafts_total'),
+      draftTokens: counter('vllm:spec_decode_num_draft_tokens_total'),
+      acceptedTokens: counter('vllm:spec_decode_num_accepted_tokens_total'),
+      acceptanceRate: ratio(counter('vllm:spec_decode_num_accepted_tokens_total'), counter('vllm:spec_decode_num_draft_tokens_total')),
     },
     memory: {
       gpuUsedMiB: gpu ? { idle: gpu[0], peak: Math.max(...gpu) } : null,

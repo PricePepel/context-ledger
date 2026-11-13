@@ -150,6 +150,7 @@ try {
   console.log(`  ttft mean ${fmt(summary.ttft?.mean)}s p50 ${fmt(summary.ttft?.p50)}s p90 ${fmt(summary.ttft?.p90)}s over ${summary.vllmCalls ?? 'n/a'} calls`);
   console.log(`  prefix cache hit ${fmt(summary.prefixCache.hitRate)} receipts cached ${fmt(summary.prefixCache.receiptCachedShare)}`);
   console.log(`  tokens/s decode ${fmt(summary.tokensPerSecond.perRequestDecode, 1)} aggregate ${fmt(summary.tokensPerSecond.aggregate, 1)}`);
+  if (summary.specDecode) console.log(`  spec decode accepted ${summary.specDecode.acceptedTokens}/${summary.specDecode.draftTokens} draft tokens (${fmt(summary.specDecode.acceptanceRate)})`);
   console.log(`  read ms p50 ${fmt(summary.latency.readMs.p50, 0)} p90 ${fmt(summary.latency.readMs.p90, 0)} mean ${fmt(summary.latency.readMs.mean, 0)}`);
   console.log(`  gpu MiB idle ${summary.memory.gpuUsedMiB?.idle ?? 'n/a'} peak ${summary.memory.gpuUsedMiB?.peak ?? 'n/a'}; kv pool ${summary.memory.kvPool?.tokens ?? 'n/a'} tokens; peak kv use ${fmt(summary.memory.peakKvUsage)}; kv MiB/read mean ${fmt(summary.memory.kvMiBPerRead?.mean, 1)} max ${fmt(summary.memory.kvMiBPerRead?.max, 1)}`);
   console.log(`  cold read ${summary.cold?.failed ? 'failed' : `${summary.cold?.readMs ?? 'n/a'}ms`} vs steady ${fmt(summary.cold?.steadyReadMs, 0)}ms; ${summary.latency.failedReads} failed reads left out of latency`);

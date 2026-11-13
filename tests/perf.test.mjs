@@ -482,6 +482,29 @@ test('delta treats a changed process start time as a restart', () => {
   assert.equal(delta(noStart, after).reset, false, 'unknown start time: counters decide');
 });
 
+test('speculative decoding counters are optional: read when exported, never listed as missing', () => {
+  const l = `engine="0",model_name="${MODEL}"`;
+  const spec = (drafts, tokens, accepted) => [
+    `vllm:spec_decode_num_drafts_total{${l}} ${drafts}`,
+    `vllm:spec_decode_num_draft_tokens_total{${l}} ${tokens}`,
+    `vllm:spec_decode_num_accepted_tokens_total{${l}} ${accepted}`,
+  ].join('\n');
+  const before = snapshot(parsePrometheus(spec(10, 40, 12)), { model: MODEL });
+  const after = snapshot(parsePrometheus(spec(110, 440, 172)), { model: MODEL });
+  assert.equal(before.missing.some(name => name.includes('spec_decode')), false);
+  const d = delta(before, after);
+  assert.equal(d.counters['vllm:spec_decode_num_draft_tokens_total'], 400);
+  assert.equal(d.counters['vllm:spec_decode_num_accepted_tokens_total'], 160);
+  const reads = [{ ms: 1000, correct: true, cited: true, calls: [], ttftMean: null, kvUsagePeak: null }];
+  const on = summarizeRun({ reads, totalDelta: d, gpuSamplesMiB: null, kvPool: null, bytesPerToken: null });
+  assert.deepEqual(on.specDecode, { drafts: 100, draftTokens: 400, acceptedTokens: 160, acceptanceRate: 0.4 });
+  const plain = snapshot(parsePrometheus(`vllm:generation_tokens_total{${l}} 5`), { model: MODEL });
+  assert.equal(plain.counters['vllm:spec_decode_num_draft_tokens_total'], null);
+  assert.equal(plain.missing.some(name => name.includes('spec_decode')), false);
+  const off = summarizeRun({ reads, totalDelta: delta(plain, plain), gpuSamplesMiB: null, kvPool: null, bytesPerToken: null });
+  assert.equal(off.specDecode, null, 'no speculative decoding, no specDecode block');
+});
+
 test('kvDtypeMismatch compares bytes per value with the server cache dtype', () => {
   assert.match(kvDtypeMismatch('auto', 'fp8'), /KV cache dtype fp8 but --kv-dtype is auto/u);
   assert.match(kvDtypeMismatch('fp8', 'auto'), /pass --kv-dtype auto/u);
