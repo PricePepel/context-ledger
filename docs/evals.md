@@ -1107,3 +1107,34 @@ One setting per level, each the best gap to random on the tuning questions:
 | 3 | LoRA (l3-lora), m = 10 | single, latent_mas, latent_random |
 
 Block 4 is questions 800–999 of the seed-0 shuffle (`--count 200 --block 4`), batch 4. Each level is judged by its own McNemar test against random at p < 0.05. Three tests are run, so a single p just under 0.05 is read with that in mind.
+
+### Block 4 results (2026-11-13)
+
+Phi-3.5-mini, bf16, batch 4, questions 800–999 of the seed-0 shuffle (200 questions), the settings fixed above. Every system in a run uses the same weights.
+
+| Level | single | latent_mas | latent_random | Split (latent only / random only) | McNemar p | Verdict |
+|---|---|---|---|---|---|---|
+| 1, sharp soft (top-k 4, T 0.5), m = 40 | 0.855 | 0.845 | 0.845 | 7 / 7 | 1.00 | not established |
+| 2, adapter, m = 40 | 0.855 | 0.815 | 0.840 | 10 / 15 | 0.42 | not established |
+| 3, LoRA, m = 10 | 0.730 | 0.750 | 0.775 | 4 / 9 | 0.27 | not established |
+
+Secondary figures:
+
+| Run | System | Mean tokens | Seconds per question |
+|---|---|---|---|
+| Level 1 | single | 279.6 | 3.80 |
+| Level 1 | text_mas (0.825; 72% of agent turns hit the token cap) | 850.9 | 11.00 |
+| Level 1 | latent_mas @40 | 254.3 | 4.97 |
+| Level 1 | latent_random @40 | 239.1 | 4.76 |
+| Level 2 | latent_mas @40 | 140.4 | 4.02 |
+| Level 2 | latent_random @40 | 244.1 | 5.12 |
+| Level 3 | single | 102.2 | 1.78 |
+| Level 3 | latent_mas @10 | 99.5 | 2.39 |
+| Level 3 | latent_random @10 | 102.7 | 2.49 |
+
+- **No level makes the latent thoughts carry information on Phi-3.5-mini.** Under the rule fixed before any result, all three are reported as not established.
+- **Level 1:** the sharp setting that scored 0.93 on the tuning questions ties random exactly on block 4. Its tuning lead was noise.
+- **Level 1 gate:** latent_mas passes the M2c gate against text_mas (0.845 against 0.825, interval −0.03 to +0.07, 70% fewer tokens, 55% less time). Random vectors pass the same gate (0.845, 239 tokens), so the gate measures the cheaper pipeline, not the thoughts.
+- **Level 2:** the adapter makes the solver write much shorter answers (140 tokens against 244 for random), and accuracy falls 2.5 points with it (not significant). The adapter learned to shorten the answer, not to pass on reasoning.
+- **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730. Training on GSM8K's short solutions taught the model a terse style that costs it accuracy. The latent team does not recover the loss through its thoughts: it is 2.5 points below random with the same weights.
+- **What this suggests for a next cycle:** the target was the gold solution, so the cheapest way to lower the loss was to change the answer style, not the hand-off. A next attempt should train against the model's own correct answers (self-distillation), so the style stays fixed and only the hand-off can lower the loss. It should also train at the evaluation step count; these runs trained at m = 10 for memory.

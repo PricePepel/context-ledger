@@ -173,3 +173,27 @@ Next steps:
 1. Ali reviews the runtime changes: the system-message fold, and the chat-template derivation in the latent team.
 2. Strict citations (`LATENT_STRICT_CITATIONS=1`) have only been measured on Qwen. Run them on Granite and Mistral.
 3. Mistral cites 5 of 8 held-out answers; check whether strict citations close that gap.
+
+## Current checkpoint — cycle 13 (tuning the latent hand-off, 2026-11-13)
+
+Branch `ruslan/latent-tuning`, based on `ruslan/multi-llm` (C12, PR #10). Card C13. Read the cycle 13 definition and results in [the eval log](evals.md).
+
+- **Result: not established at any level.** On 200 held-back GSM8K questions (block 4), latent thoughts on Phi-3.5-mini score no better than random vectors with the same weights:
+  - level 1, settings: 0.845 against 0.845;
+  - level 2, trained adapter: 0.815 against 0.840;
+  - level 3, LoRA: 0.750 against 0.775.
+- **The trainer, `runtime/latent_team/train.py`:**
+  - The model is frozen. A thought adapter (`--level adapter`) or a hand-written LoRA (`--level lora`, no `peft`) is trained on the solver's answer loss, back through the latent loop.
+  - Checkpoints load into `latent_team.evaluate` with `--adapter` / `--lora`, and every system in that run then uses the same weights.
+  - Only soft thoughts are trained. Aligned (W_a) thoughts break Phi-3.5-mini (0.13–0.23) and would not be norm-matched to the random control.
+- **Memory on the 16 GB laptop GPU:**
+  - Use `--grad-agents 2 --max-prompt-tokens 160` and train at m = 10.
+  - Phi-3.5-mini has no grouped-query attention, so every latent step keeps a full key and value copy for the backward pass.
+  - The cap now counts the chat-template tokens (18fba6e). The completed runs counted the raw prompt text.
+- **Run times:** the adapter took 46 minutes on 947 questions, and the LoRA 2 hours on 1,893.
+
+Next steps:
+
+1. Ali reviews the trainer and the LoRA module. The Codex reviews are recorded in the eval log.
+2. If the hand-off is tried again, train against the model's own correct answers (self-distillation), not the gold solutions. Gold-solution training here mostly changed the answer style: the adapter shortened answers, and the LoRA lowered single from 0.855 to 0.730.
+3. Train at the step count that is evaluated, which needs more memory or a model with grouped-query attention. A Qwen or Llama model with grouped-query attention would cut the key and value cost several times over.
