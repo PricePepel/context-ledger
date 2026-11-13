@@ -991,3 +991,151 @@ What this means: the multi-LLM part is done; any chat template now runs. Whether
 - **Reviews of the system-message fold (104c41e):** Codex found that the retry got the full timeout again, so a slow refusal could hold a pool slot past the deadline (medium), and that the receipt time left out the refused attempt (low). Both are fixed in b88a914 with tests against a scripted server with delayed replies; both tests fail on 104c41e. Codex's confirming pass found nothing.
 - **PR review (#10):** a Codex pass over the whole PR, with a data check of every figure against the raw reports, recomputed the Phi McNemar counts and p-values and found them correct. It raised two findings, both fixed: the Granite accuracy comparison understated its dev-set lead (wording), and the real-tokenizer test left out Phi-3.5 and Granite (both now included; the test passes in WSL).
 - Codex noted that the fake vLLM's cache accounting does not prove real cache reuse. The live Mistral run does: vLLM's own counters show 96.8% prefix-cache hits with the folded prompts.
+
+## Cycle 13 — Tuning the latent hand-off (defined 2026-11-12, before any run)
+
+Card C13. In cycle 12 the latent team ran on Phi-3.5-mini, but its latent thoughts scored no better than random vectors (0.840 against 0.830, McNemar p = 0.84). This cycle tries three ways to make the hand-off between agents carry information, from cheapest to most expensive, on the same model:
+
+1. **Settings, no training:** thought mode (`soft`, and `aligned`, which uses the untied W_a and was never run on Phi), latent steps (10, 40, 80), and soft-thought sharpness (top-k 16 at temperature 1.0, against top-k 4 at 0.5).
+2. **A trained projection adapter:** the model stays frozen. A low-rank correction is added to the thought vector, zero-initialised so training starts from today's behaviour. It is trained on the solver's answer loss, back through the latent steps.
+3. **LoRA fine-tuning:** low-rank adapters on the attention projections, trained with the same loss through the same latent loop, so the model learns to read latent memory.
+
+### Data and splits
+
+- Training (levels 2 and 3) uses only the GSM8K train split. The target is the gold solution, ending "The answer is N."
+- Settings and training choices are tuned on GSM8K test block 3 of the seed-0 shuffle (questions 600–799; 100 questions while tuning).
+- Every claim is made on block 4 (questions 800–999, 200 questions), which is not looked at until the choices are fixed.
+- Blocks 0, 1 and 2 were used by cycles 9 and 12 and are not reused.
+
+### What counts
+
+- The question is whether the thoughts carry information. The primary test is **latent_mas against latent_random with the same weights, steps and thought norm**, on the same 200 block-4 questions, with an exact McNemar test.
+- A level "works" only if latent_mas beats the random control with p < 0.05.
+- Secondary figures, reported but not gated: latent_mas against single and against text_mas, tokens, and seconds per question.
+- For level 3 the controls must use the **same LoRA weights**. Fine-tuning on GSM8K will lift every system, so a higher score alone proves nothing; only the gap to the random control with the same weights counts.
+- A level that does not reach p < 0.05 is reported as not established, with its numbers. This rule is fixed here, before any result, because cycle 12's "below the control" rule was too weak.
+
+### Acceptance for the code
+
+- Unit tests run on the CPU with a tiny randomly initialised model, with no download and no GPU:
+  - the adapter starts as an exact no-op;
+  - LoRA starts as an exact no-op, and only the LoRA and adapter weights receive gradients;
+  - the loss covers only the target tokens;
+  - a saved checkpoint reloads to identical outputs.
+- No new runtime dependency: LoRA is written in a small module rather than added with `peft`.
+
+### Level 1 results (tuning questions, 2026-11-13)
+
+Phi-3.5-mini, bf16, batch 4, tuning questions 600–699 (block 6 of 100 in the seed-0 shuffle, inside tuning block 3). These are tuning figures, not claims.
+
+| System | m = 10 | m = 40 | m = 80 |
+|---|---|---|---|
+| single | 0.86 | | |
+| soft (top-k 16, T 1.0) | 0.86 | 0.89 | 0.86 |
+| aligned (W_a) | 0.13 | 0.15 | 0.23 |
+| random control | 0.88 | 0.88 | 0.84 |
+| soft, sharp (top-k 4, T 0.5) | | 0.93 | |
+| random control, same run | | 0.89 | |
+
+Exact McNemar test against the random control at the same steps (questions only the thought mode got right / only random got right):
+
+| Comparison | Split | p |
+|---|---|---|
+| soft @10 | 2 / 4 | 0.69 |
+| soft @40 | 3 / 2 | 1.00 |
+| soft @80 | 7 / 5 | 0.77 |
+| soft, sharp @40 | 6 / 2 | 0.29 |
+| aligned @10, @40, @80 | 1 / 76, 1 / 74, 2 / 63 | < 0.001 (worse than random) |
+
+- No setting beats the random control. The sharp soft setting is the best on these questions, but it is not significant.
+- Aligned thoughts break Phi-3.5-mini's answers. The untied W_a ridge map gives vectors the model cannot read.
+- Decision, made before training: levels 2 and 3 train soft thoughts only. Aligned is dropped from the trainer (Codex review of 334ce35: the random control is noise at the soft norm, so a trained aligned run would not be norm-matched to it).
+- Training runs at m = 10 for memory: the backward pass keeps every latent step's keys and values. Trained checkpoints are evaluated at m = 10 and m = 40.
+
+Smoke runs on 16 train questions at m = 10, with all three subagents keeping gradients:
+
+| Level | Trainable weights | Seconds per example | Peak memory |
+|---|---|---|---|
+| 2, adapter rank 16 | 98,304 | 3.6 | 12.1 GB |
+| 3, LoRA rank 16 on `qkv_proj` and `o_proj` | 9,437,184 | 5.6 | 13.3 GB |
+
+Runs queued: level 2 on 1,000 train questions (lr 1e-3, accumulation 8), then level 3 on 2,000 (lr 2e-4, alpha 32, accumulation 8), one epoch each. Each is evaluated on the same 100 tuning questions before block 4 is opened.
+
+### Levels 2 and 3 results (tuning questions, 2026-11-13)
+
+**Memory.** The first full runs stopped with "CUDA driver error: out of memory" within minutes. Phi-3.5-mini has no grouped-query attention, so every latent step keeps a full key and value copy for the backward pass, and the cost grows with the prompt. Peak memory by example length, measured on the train split (prompt p50 / p90 / max 93 / 130 / 259 tokens):
+
+| Subagents keeping gradients | Median | p90 | p99 | Longest |
+|---|---|---|---|---|
+| 3 | 12.72 GB | 14.36 GB | 14.42 GB | out of memory |
+| 2 | 11.67 GB | 13.05 GB | 13.15 GB | out of memory |
+| 1 | 10.11 GB | 11.05 GB | 11.22 GB | 13.88 GB |
+
+The runs use two subagents with gradients (the first runs without; all three still run) and skip prompts over 160 tokens (`--max-prompt-tokens`, 8bfbf51). The worst kept case, a 160-token prompt with a 256-token target, peaks at 13.55 GB. These runs counted the prompt text without the chat-template tokens. Codex's review of 8bfbf51 found that mismatch, and the cap now counts each turn as rendered, so the same `--max-prompt-tokens 160` keeps somewhat fewer questions than these runs did.
+
+| Run | Examples kept | Skipped (prompt / target) | Steps | Final logged loss | Peak memory | Hours |
+|---|---|---|---|---|---|---|
+| Level 2, adapter rank 16, lr 1e-3 | 947 of 1,000 | 49 / 4 | 119 | 0.835 → 0.645 | 12.25 GB | 0.77 |
+| Level 3, LoRA rank 16, alpha 32, lr 2e-4 | 1,893 of 2,000 | 94 / 13 | 237 | 0.626 → 0.424 | 13.46 GB | 2.04 |
+
+Tuning questions 600–699, same weights for every system in a run:
+
+| Run | single | soft @10 | random @10 | soft @40 | random @40 |
+|---|---|---|---|---|---|
+| Level 2 adapter | 0.86 | 0.83 | 0.88 | 0.85 | 0.84 |
+| Level 3 LoRA | 0.79 | 0.80 | 0.81 | 0.77 | 0.79 |
+
+| Comparison | Split | p |
+|---|---|---|
+| Level 2 soft @10 vs random | 2 / 7 | 0.18 |
+| Level 2 soft @40 vs random | 6 / 5 | 1.00 |
+| Level 3 soft @10 vs random | 4 / 5 | 1.00 |
+| Level 3 soft @40 vs random | 2 / 4 | 0.69 |
+
+- Neither trained level beats the random control on the tuning questions.
+- The LoRA lowers single from 0.86 to 0.79 and shortens answers from 263 to 90 tokens: it learned the terse GSM8K solution style, which costs Phi-3.5-mini accuracy. Every system in that run carries the same LoRA, so the comparison with random is still fair.
+- The adapter roughly halves the answer length of soft thoughts at m = 10 (107 tokens against 226 for random). Accuracy is 5 points lower (0.83 against 0.88, split 2 / 7, p = 0.18), a difference that is not significant.
+
+### Block 4 choices (fixed 2026-11-13, before block 4 is run)
+
+One setting per level, each the best gap to random on the tuning questions:
+
+| Level | Setting | Systems |
+|---|---|---|
+| 1 | soft, top-k 4, T 0.5, m = 40, no training | single, text_mas, latent_mas, latent_random |
+| 2 | adapter (l2-adapter), m = 40 | single, latent_mas, latent_random |
+| 3 | LoRA (l3-lora), m = 10 | single, latent_mas, latent_random |
+
+Block 4 is questions 800–999 of the seed-0 shuffle (`--count 200 --block 4`), batch 4. Each level is judged by its own McNemar test against random at p < 0.05. Three tests are run, so a single p just under 0.05 is read with that in mind.
+
+### Block 4 results (2026-11-13)
+
+Phi-3.5-mini, bf16, batch 4, questions 800–999 of the seed-0 shuffle (200 questions), the settings fixed above. Every system in a run uses the same weights.
+
+| Level | single | latent_mas | latent_random | Split (latent only / random only) | McNemar p | Verdict |
+|---|---|---|---|---|---|---|
+| 1, sharp soft (top-k 4, T 0.5), m = 40 | 0.855 | 0.845 | 0.845 | 7 / 7 | 1.00 | not established |
+| 2, adapter, m = 40 | 0.855 | 0.815 | 0.840 | 10 / 15 | 0.42 | not established |
+| 3, LoRA, m = 10 | 0.730 | 0.750 | 0.775 | 4 / 9 | 0.27 | not established |
+
+Secondary figures:
+
+| Run | System | Mean tokens | Seconds per question |
+|---|---|---|---|
+| Level 1 | single | 279.6 | 3.80 |
+| Level 1 | text_mas (0.825; 72% of agent turns hit the token cap) | 850.9 | 11.00 |
+| Level 1 | latent_mas @40 | 254.3 | 4.97 |
+| Level 1 | latent_random @40 | 239.1 | 4.76 |
+| Level 2 | latent_mas @40 | 140.4 | 4.02 |
+| Level 2 | latent_random @40 | 244.1 | 5.12 |
+| Level 3 | single | 102.2 | 1.78 |
+| Level 3 | latent_mas @10 | 99.5 | 2.39 |
+| Level 3 | latent_random @10 | 102.7 | 2.49 |
+
+- **No level shows that the latent thoughts beat random vectors on Phi-3.5-mini.** Under the rule fixed before any result, all three are reported as not established. This is a failure to show an advantage at this sample size, not proof that the thoughts carry nothing.
+- **Level 1:** the sharp setting that scored 0.93 on the tuning questions ties random exactly on block 4. Its tuning lead (6 / 2) did not replicate (7 / 7, p = 1.00).
+- **Level 1 gate:** latent_mas passes the M2c gate against text_mas (0.845 against 0.825, interval −0.03 to +0.07, 70% fewer tokens, 55% less time). Random vectors pass the same gate (0.845, 239 tokens), so the gate measures the cheaper pipeline, not the thoughts.
+- **Level 2:** the adapter makes the solver write much shorter answers (140 tokens against 244 for random), and accuracy is 2.5 points lower (not significant). It changes the answers, but shows no accuracy advantage over random.
+- **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730, and answers shorten from 280 to 102 tokens. A likely cause is the short style of GSM8K's gold solutions, but this run does not isolate it. The latent team does not recover the loss: it is 2.5 points below random with the same weights (not significant).
+- **A hypothesis for a next cycle (untested):** with the gold solution as the target, a change of answer style can lower the loss without any help from the hand-off. Training against the model's own correct answers (self-distillation) would keep the target close to the model's own style, leaving less to gain that way. It would not rule out other shortcuts. A next attempt should also train at the evaluation step count; these runs trained at m = 10 for memory.
+- **Review:** a Codex data check recomputed every figure in the level 2 and 3 and block 4 sections from the raw reports and training logs, and all of them match. It found one wrong statement ("without changing accuracy" hid a 5-point drop on the tuning questions) and five conclusions that claimed more than the tests show. All six are reworded above. The prompt-length and memory profile figures came from profiling runs whose output was printed, not saved, so they could not be rechecked.

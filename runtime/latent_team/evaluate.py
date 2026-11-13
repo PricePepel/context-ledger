@@ -2,6 +2,7 @@
 
     python -m latent_team.evaluate --count 200 --out report.json
     python -m latent_team.evaluate --systems latent_mas --steps 0,20,40,80 --count 100 --out steps.json
+    python -m latent_team.evaluate --systems latent_mas,latent_random --adapter run/adapter --lora run/lora ...
 
 Gate (docs/m2c-latent-team.md): latent_mas accuracy >= text_mas - 2 points, at least
 50% fewer generated tokens than text_mas, and faster wall time.
@@ -9,6 +10,7 @@ Gate (docs/m2c-latent-team.md): latent_mas accuracy >= text_mas - 2 points, at l
 import argparse
 import glob
 import json
+import math
 import os
 import random
 import re
@@ -27,7 +29,8 @@ def gsm8k(split="test"):
     rows = []
     for path in files:
         for row in pq.read_table(path).to_pylist():
-            rows.append({"question": row["question"], "gold": gold_number(row["answer"])})
+            # The worked solution is kept for training (train.py, train split only).
+            rows.append({"question": row["question"], "gold": gold_number(row["answer"]), "solution": row["answer"]})
     return rows
 
 
@@ -109,6 +112,20 @@ def paired_interval(a, b, rounds=2000, seed=0):
     return [round(diffs[int(0.025 * rounds)], 4), round(diffs[int(0.975 * rounds)], 4)]
 
 
+def mcnemar(a, b):
+    """Exact two-sided McNemar test of a against b over the same questions.
+
+    Returns {aOnly, bOnly, p}: questions only a got right, only b got right, and the
+    binomial p-value of that split under "no difference" (cycle 13's primary test)."""
+    if len(a) != len(b):
+        raise ValueError("mcnemar needs the same questions on both sides")
+    a_only = sum(1 for x, y in zip(a, b) if x["correct"] and not y["correct"])
+    b_only = sum(1 for x, y in zip(a, b) if y["correct"] and not x["correct"])
+    n, k = a_only + b_only, min(a_only, b_only)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n if n else 1.0
+    return {"aOnly": a_only, "bOnly": b_only, "p": round(min(1.0, 2 * tail), 4)}
+
+
 def sample_block(items, count, seed, block=0):
     """Questions block*count to (block+1)*count - 1 of one shuffle by seed.
 
@@ -131,11 +148,30 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--block", type=int, default=0,
                         help="which block of --count questions of the --seed shuffle; blocks are disjoint")
+    parser.add_argument("--soft-top-k", type=int, default=None,
+                        help="tokens mixed into a soft thought (default: LatentTeam.soft_top_k, 16)")
+    parser.add_argument("--soft-temperature", type=float, default=None,
+                        help="softmax temperature of a soft thought (default: LatentTeam.soft_temperature, 1.0)")
+    parser.add_argument("--adapter", default=None,
+                        help="thought adapter saved by latent_team.train (its adapter/ directory); soft and aligned only")
+    parser.add_argument("--lora", default=None,
+                        help="LoRA weights saved by latent_team.train (its lora/ directory); every system uses them")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    if args.soft_top_k is not None and args.soft_top_k < 1:
+        parser.error("--soft-top-k must be at least 1")
+    if args.soft_temperature is not None and not args.soft_temperature > 0:
+        parser.error("--soft-temperature must be above 0")
     items = sample_block(gsm8k("test"), args.count, args.seed, args.block)
     from .team import LatentTeam  # torch is only needed to run the models, not to score answers
     team = LatentTeam(args.model)
+    # Before the warm-up, so every system runs with the same weights (cycle 13: the random
+    # control uses the same LoRA weights; the adapter never touches random thoughts).
+    checkpoints = team.load_checkpoints(adapter=args.adapter, lora=args.lora)
+    if args.soft_top_k is not None:
+        team.soft_top_k = args.soft_top_k
+    if args.soft_temperature is not None:
+        team.soft_temperature = args.soft_temperature
     # Warm-up at the real batch size, so the first system does not pay kernel set-up costs.
     warm = [item["question"] for item in items[:args.batch]]
     team.single(warm, max_new_tokens=8)
@@ -143,6 +179,8 @@ def main():
     # The turn texts come from the model's chat template; recorded so runs on different
     # families can be read side by side.
     report = {"model": args.model, "sample": {"seed": args.seed, "block": args.block, "count": args.count},
+              "soft": {"topK": team.soft_top_k, "temperature": team.soft_temperature},
+              "checkpoints": checkpoints,
               "chatTemplate": team.turns.as_dict(), "stopTokenIds": sorted(team.eos), "systems": {}}
     for system in args.systems.split(","):
         latent = system in LATENT_MODES
@@ -165,10 +203,20 @@ def main():
             }
             gate[key]["passed"] = all(gate[key].values())
         report["gate"] = gate
+    # Cycle 13's primary test: each latent mode against the random control at the same steps.
+    controls = {}
+    for key in report["systems"]:
+        system, _, steps = key.partition("@")
+        control = f"latent_random@{steps}"
+        if system in LATENT_MODES and system != "latent_random" and control in report["systems"]:
+            controls[f"{key} vs {control}"] = mcnemar(report["systems"][key]["results"],
+                                                      report["systems"][control]["results"])
+    if controls:
+        report["vsRandom"] = controls
     report["summaries"] = summaries
     with open(args.out, "w") as handle:
         json.dump(report, handle, indent=1)
-    print(json.dumps({"summaries": summaries, "gate": report.get("gate")}, indent=1))
+    print(json.dumps({"summaries": summaries, "gate": report.get("gate"), "vsRandom": report.get("vsRandom")}, indent=1))
 
 
 if __name__ == "__main__":
