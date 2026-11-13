@@ -16,7 +16,11 @@ class CharTokenizer:
     padding_side = "left"
 
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
-        return "[u]" + messages[0]["content"] + "[a]"
+        # A user turn is "[u]<content>", an assistant turn "[a]<content>\n", a generation
+        # prompt "[a]": the team derives the close "\n" and the later turn "[u]<p>[a]".
+        text = "".join("[u]" + m["content"] if m["role"] == "user" else "[a]" + m["content"] + "\n"
+                       for m in messages)
+        return text + ("[a]" if add_generation_prompt else "")
 
     def encode(self, text):
         return [3 + (ord(ch) % 90) for ch in text]
@@ -35,15 +39,24 @@ class CharTokenizer:
         return None
 
 
-def tiny_team(tied=True):
+class NoTemplateTokenizer(CharTokenizer):
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        # What transformers raises when tokenizer.chat_template is not set.
+        raise ValueError("Cannot use chat template functions because tokenizer.chat_template is not set")
+
+
+class ChatMLCharTokenizer(CharTokenizer):
+    chat_template = "{% for m in messages %}<|im_start|>...{% endfor %}"
+
+
+def tiny_team(tied=True, tokenizer=None):
     from latent_team.team import LatentTeam
     torch.manual_seed(0)
     config = Qwen2Config(vocab_size=96, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
                          num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=4096,
                          tie_word_embeddings=tied)
     model = Qwen2ForCausalLM(config).eval()
-    return LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=CharTokenizer(),
-                      allow_non_chatml=True)
+    return LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=tokenizer or CharTokenizer())
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for M2c")
@@ -134,15 +147,25 @@ class WorkingMemoryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             team.latent_mas(["q"], steps=0, mode="nonsense")
 
-    def test_non_chatml_models_are_refused_unless_opted_in(self):
+    def test_a_tokenizer_without_a_chat_template_is_refused_naming_the_model(self):
+        from latent_team.chat_turns import ChatTemplateError
         from latent_team.team import LatentTeam
         model = tiny_team().model
-        with self.assertRaises(NotImplementedError):
-            LatentTeam("tiny", device="cpu", dtype=torch.float32, model=model, tokenizer=CharTokenizer())
+        with self.assertRaises(ChatTemplateError) as caught:
+            LatentTeam("org/no-template", device="cpu", dtype=torch.float32, model=model,
+                       tokenizer=NoTemplateTokenizer())
+        self.assertIn("org/no-template", str(caught.exception))
+
+    def test_non_chatml_turns_come_from_the_template(self):
+        team = tiny_team()
+        self.assertFalse(team.chatml())
+        self.assertEqual(team.turn("hi"), "[u]hi[a]")
+        self.assertEqual(team.close_turn(), "\n")
+        self.assertEqual(team.eos, {CharTokenizer.eos_token_id})
 
     def test_chatml_turns_close_and_skip_the_system_block(self):
-        team = tiny_team()
-        team.tokenizer.chat_template = "{% for m in messages %}<|im_start|>...{% endfor %}"
+        team = tiny_team(tokenizer=ChatMLCharTokenizer())
+        self.assertTrue(team.chatml())
         self.assertEqual(team.turn("hi"), "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n")
         self.assertEqual(team.close_turn(), "<|im_end|>\n")
 

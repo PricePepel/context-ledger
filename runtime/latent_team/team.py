@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
+from .chat_turns import ChatTemplateError, chat_turns, first_turn, stop_ids
+
 ROLES = ("planner", "critic", "refiner")
 
 # Our own wording of the paper's role instructions.
@@ -79,61 +81,49 @@ def align(hidden, w_a, target):
 
 class LatentTeam:
     def __init__(self, model_name="Qwen/Qwen2.5-3B-Instruct", device="cuda", dtype=torch.bfloat16, model=None,
-                 tokenizer=None, allow_non_chatml=False):
+                 tokenizer=None):
         self.model_name = model_name
         self.device = device
-        self.allow_non_chatml = allow_non_chatml
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_name)
-        if not self.chatml() and not allow_non_chatml:
-            raise NotImplementedError(f"{model_name}: the latent team supports ChatML chat templates only (Qwen, SmolLM).")
+        # Before the weights load: a chat template the team cannot use fails here, naming the model.
+        self.turns = chat_turns(self.tokenizer, model_name)
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = model or AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
         self.model.eval()
         self.w_a, self.target = alignment(self.model)
-        self.eos = {self.tokenizer.eos_token_id}
-        for token in ("<|im_end|>", "<|endoftext|>", "<|eot_id|>"):
-            token_id = self.tokenizer.convert_tokens_to_ids(token)
-            if isinstance(token_id, int) and token_id >= 0 and token_id != self.tokenizer.unk_token_id:
-                self.eos.add(token_id)
+        self.eos = stop_ids(self.tokenizer, getattr(self.model, "generation_config", None), self.turns.close)
+        if not self.eos:
+            raise ChatTemplateError(model_name, "no stop token: the tokenizer and generation config name no eos token")
 
     # ------------------------------------------------------------------ helpers
     def render(self, prompts, first=True):
         """Chat-format each prompt and tokenize the batch, left padded.
 
-        Only the first agent's turn carries the chat template's system preamble. A later
-        agent's turn is a plain user turn, so the accumulated memory reads as one
-        well-formed conversation instead of a system prompt inside every reply.
+        Only the first agent's turn carries the chat template's preamble (bos, system
+        block). A later agent's turn is a plain user turn, so the accumulated memory reads
+        as one well-formed conversation instead of a system prompt inside every reply.
         """
-        if first:
-            texts = [self.tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False,
-                                                         add_generation_prompt=True) for p in prompts]
-        else:
-            texts = [self.turn(p) for p in prompts]
+        texts = [first_turn(self.tokenizer, p) if first else self.turn(p) for p in prompts]
         encoded = self.tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False)
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
     def chatml(self):
-        return "<|im_start|>" in (getattr(self.tokenizer, "chat_template", None) or "")
+        return self.turns.chatml
 
     def turn(self, prompt):
         """A later agent's turn: a user turn and an open assistant turn, without a system block.
 
-        Only ChatML (Qwen, SmolLM) is supported. Other templates (Llama 3, Mistral) need
-        their own close token and system-block handling, or the memory reads as a system
-        prompt inside an assistant reply, the bug fixed in a8808ad.
+        The texts come from the model's own chat template (chat_turns.py); ChatML keeps the
+        strings the measured results used. A system block here would make the memory read
+        as a system prompt inside an assistant reply, the bug fixed in a8808ad.
         """
-        if not self.chatml() and not self.allow_non_chatml:
-            raise NotImplementedError("The latent team supports ChatML chat templates only (Qwen, SmolLM).")
-        if self.chatml():
-            return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-        return self.tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False,
-                                                  add_generation_prompt=True)
+        return self.turns.later(prompt)
 
     def close_turn(self):
         """Text that ends an agent's (latent) assistant turn before the next agent speaks."""
-        return "<|im_end|>\n" if self.chatml() else "\n"
+        return self.turns.close
 
     @staticmethod
     def positions(full_mask, new_tokens):
@@ -154,7 +144,7 @@ class LatentTeam:
         kwargs = dict(input_ids=ids, inputs_embeds=embeds, attention_mask=full, past_key_values=memory,
                       position_ids=self.positions(full, new.shape[1]), use_cache=True)
         if hidden_only:
-            return self.model.model(**kwargs), full
+            return self.model.base_model(**kwargs), full
         return self.model(**kwargs, logits_to_keep=1), full
 
     def thought(self, hidden, mode):
