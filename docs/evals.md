@@ -1139,3 +1139,43 @@ Secondary figures:
 - **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730, and answers shorten from 280 to 102 tokens. A likely cause is the short style of GSM8K's gold solutions, but this run does not isolate it. The latent team does not recover the loss: it is 2.5 points below random with the same weights (not significant).
 - **A hypothesis for a next cycle (untested):** with the gold solution as the target, a change of answer style can lower the loss without any help from the hand-off. Training against the model's own correct answers (self-distillation) would keep the target close to the model's own style, leaving less to gain that way. It would not rule out other shortcuts. A next attempt should also train at the evaluation step count; these runs trained at m = 10 for memory.
 - **Review:** a Codex data check recomputed every figure in the level 2 and 3 and block 4 sections from the raw reports and training logs, and all of them match. It found one wrong statement ("without changing accuracy" hid a 5-point drop on the tuning questions) and five conclusions that claimed more than the tests show. All six are reworded above. The prompt-length and memory profile figures came from profiling runs whose output was printed, not saved, so they could not be rechecked.
+
+## Cycle 14 — Self-distilled targets for the LoRA hand-off (defined 2026-11-13, before any run)
+
+Card C14. In cycle 13, LoRA trained on GSM8K's gold solutions lowered every system on Phi-3.5-mini: single fell from 0.855 to 0.730 and answers shortened from 280 to 102 tokens. The latent team was not better than random vectors with the same weights (0.750 against 0.775, p = 0.27). The likely cause is that the loss could fall by copying the short gold style, with no help from the hand-off. This cycle changes only the training target. It becomes the model's own correct answer (self-distillation), which is already in the model's style.
+
+### Method
+
+- `latent_team.distill` runs the untrained model as the single system: greedy decoding, the single prompt, at most 512 new tokens. It covers the same 2,000 GSM8K **train** questions that `train.py` takes (seed 0).
+- An answer becomes a target only if its number is right and it stopped before the 512-token budget. Every other question is skipped (`noTarget`). The gold solution is never used to fill a gap.
+- `latent_team.train --targets` trains LoRA on these answers, each followed by the chat template's close. The other settings are those of cycle 13 level 3:
+  - m = 10 latent steps while training;
+  - rank 16, alpha 32, learning rate 2e-4;
+  - gradient accumulation 8, gradients through the last 2 subagents;
+  - one epoch;
+  - prompt cap 160 tokens, now counted with the chat template.
+- The target-length cap is the one setting that has to change, because the model's own answers are longer than the gold ones. It is chosen from the distilled answer lengths and a short memory check on the 16 GB GPU, before training starts, and recorded here before any evaluation.
+- The output file holds GSM8K train questions and the model's answers. It stays with the run outputs and is not committed.
+
+### Data and splits
+
+- Training uses the GSM8K train split only.
+- Tuning: questions 600–699 of the seed-0 test shuffle (`--count 100 --block 6`), the same tuning questions as cycle 13. Systems: single, latent_mas and latent_random at m = 10 and m = 40. The step count with the larger gap to random is chosen.
+- Confirmation: **block 5** (`--count 200 --block 5`, questions 1000–1199), which no cycle has used. Cycle 13 already looked at block 4, so it is not reused for a claim. Systems: single, latent_mas and latent_random at the chosen m, all with the self-distilled LoRA. The untrained model's single system is also run on block 5 as the baseline for the style check.
+
+### What counts
+
+- **Primary:** latent_mas against latent_random with the same LoRA weights, steps and thought norm, on the 200 block-5 questions, with an exact McNemar test. The hand-off "works" only if latent_mas beats random with p < 0.05. Otherwise it is reported as not established, with its numbers.
+- **Secondary, predicted before the run:** if self-distillation removes the style shortcut, single with the self-distilled LoRA stays within 3 points of the untrained single on block 5, and its mean answer length stays within 25% of the untrained length. Reported, not gated. Passing it only shows that the style damage is gone. It does not show that the thoughts carry information.
+- Training on answers the model already gets right can still leave the thoughts with nothing to add. If so, the primary test fails, and that is a result.
+
+### Acceptance for the code
+
+- CPU unit tests with the tiny model, with no download and no GPU:
+  - only right answers that stopped inside the budget are kept;
+  - a targets file from another model, or in another format, is refused;
+  - the CLI writes the single system's greedy answers in the train-sample order;
+  - with `--targets`, the targets are the kept self answers plus the close, and the other questions are skipped and counted;
+  - without `--targets`, training still uses the gold solutions as in cycle 13;
+  - a file with no kept answer stops the run.
+- No new runtime dependency.
