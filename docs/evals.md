@@ -1139,3 +1139,78 @@ Secondary figures:
 - **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730, and answers shorten from 280 to 102 tokens. A likely cause is the short style of GSM8K's gold solutions, but this run does not isolate it. The latent team does not recover the loss: it is 2.5 points below random with the same weights (not significant).
 - **A hypothesis for a next cycle (untested):** with the gold solution as the target, a change of answer style can lower the loss without any help from the hand-off. Training against the model's own correct answers (self-distillation) would keep the target close to the model's own style, leaving less to gain that way. It would not rule out other shortcuts. A next attempt should also train at the evaluation step count; these runs trained at m = 10 for memory.
 - **Review:** a Codex data check recomputed every figure in the level 2 and 3 and block 4 sections from the raw reports and training logs, and all of them match. It found one wrong statement ("without changing accuracy" hid a 5-point drop on the tuning questions) and five conclusions that claimed more than the tests show. All six are reworded above. The prompt-length and memory profile figures came from profiling runs whose output was printed, not saved, so they could not be rechecked.
+
+## Cycle 15 — Teams of many agents, and a split-facts test of the hand-off (defined 2026-11-13, before any run)
+
+Card C15. Every earlier cycle ran a team of three thinking agents (Planner, Critic, Refiner) and a Solver. This cycle asks two questions:
+
+1. What happens to accuracy, time and memory as the team grows to 10 or 100 agents?
+2. Does the latent hand-off carry information when the Solver cannot do without it?
+
+On GSM8K the Solver already reads the whole question, so cycles 12 and 13 could not tell "the thoughts carry nothing" apart from "the Solver did not need them". Part 2 splits the facts between the agents to remove that escape.
+
+A measured design fact matters for both parts. The team shares one key-value memory, and it holds every agent's **prompt** as well as its latent steps. So an unsealed later agent, and the Solver, can read the earlier prompts, the question among them, directly. Part 2 therefore adds a **sealed** team. In it, every earlier agent's prompt is hidden from attention (`team.chain`, `sealed=True`), and only the latent steps and the turn-closing tokens stay visible. Their keys and values were computed while each agent read its own prompt. So even a sealed team with random thought vectors can pass on some of what an agent read, and the no-hand-off floor is the Solver alone.
+
+### Setup
+
+- Model: Qwen2.5-3B-Instruct, bf16. It has 2 key-value heads, so it stores about 36 KB of memory per position against about 384 KB for Phi-3.5-mini, and a 100-agent memory fits on the 16 GB GPU.
+- No training and no tuned setting. Soft thoughts use the defaults (top-k 16, temperature 1.0), m = 40 latent steps per thinking agent, batch 8.
+- Team of N thinking agents: the Planner, then Critic and Refiner in alternation (`chain_roles`), then the Solver. N = 3 is the team of every earlier cycle.
+- Text team of N agents: each Critic reads the latest plan, each Refiner reads the latest plan and critique, and the Solver reads the latest plan. Each turn is capped at 256 tokens.
+- Vote of N: N independent single answers sampled at temperature 0.7, and the most common number wins. This spends many calls without any hand-off, which is the fair comparison for a team of N agents.
+- Questions: block 4 of the seed-0 test shuffle (`--count 200 --block 4`, questions 800–999). Cycle 13 used block 4 with Phi-3.5-mini. Nothing in this cycle is tuned on it, and the model is different.
+
+### Part 1, scale (every agent sees the question)
+
+- N = 3, 11, 31 and 101.
+- Systems: single; latent_mas@N; latent_random@N; vote@N; and text_mas@N for N = 3 and 11. The text team grows too fast in tokens for larger N.
+- Reported for each system: accuracy, mean generated tokens, latent vectors, seconds per question, wall time and peak GPU memory.
+
+### Part 2, split facts
+
+- The questions are the block-4 questions with at least two sentences before the last one. A question's facts are those sentences, and its ask is the last sentence. The number excluded is reported.
+- Fact j goes to thinking agent j mod N, and every agent also sees the ask. The Solver sees only the ask.
+- N = 3 and 11.
+- Systems:
+  - single_full: one model with the whole question (the ceiling);
+  - alone: one model with the ask only (the floor);
+  - latent_sealed@N and random_sealed@N;
+  - latent_open@N and random_open@N (unsealed: the facts can also be read from the earlier prompts);
+  - text_mas@N, where only the notes reach the Solver.
+
+### What counts
+
+There are eight primary tests, each an exact McNemar test on the same questions, with Bonferroni correction. A result is "established" only at **p < 0.05 / 8 = 0.00625**; anything else is reported as not established, with its numbers.
+
+| Test | Systems compared | Question it answers |
+|---|---|---|
+| 1–4 | latent_mas@N against latent_random@N, for N = 3, 11, 31 and 101 | Do the thoughts beat random at any team size? |
+| 5–6 | latent_sealed@N against alone, for N = 3 and 11 | Does the sealed latent hand-off carry facts at all? |
+| 7–8 | latent_sealed@N against random_sealed@N, for N = 3 and 11 | Does the content of the thought vectors matter, beyond what any latent step's keys and values pass on? |
+
+Secondary figures, reported but not gated:
+- latent_mas@N against vote@N and against single;
+- text_mas against latent_sealed;
+- the open systems;
+- time and memory against N.
+
+Predictions, written before the run:
+- Tests 1–4 are not established.
+- vote@N is at least as accurate as latent_mas@N for N ≥ 11.
+- Seconds per question grow at least linearly with N for latent_mas.
+- Test 5 is established, because the latent positions carry what their agent read.
+- Tests 7–8 are the open question.
+
+### Acceptance for the code
+
+- CPU unit tests with the tiny model:
+  - chain_roles starts with the Planner and alternates, and chain_roles(3) is the old team;
+  - the default latent_mas is unchanged;
+  - an all-zero hide changes nothing;
+  - sealed hides exactly the prompt columns, and noise written into them does not change the Solver's logits, while unsealed it does;
+  - sealed thoughts still carry what their agent read;
+  - the text team passes the latest plan and critique;
+  - sampling is grouped per question and reproducible by seed, and temperature 0 is greedy;
+  - the split rules and the vote tally behave as described;
+  - both parts of the runner produce every system and comparison.
+- The full runtime suite still passes, and the three-agent path of earlier cycles is unchanged.

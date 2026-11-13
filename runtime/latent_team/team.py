@@ -24,6 +24,17 @@ from .chat_turns import ChatTemplateError, chat_turns, first_turn, stop_ids
 
 ROLES = ("planner", "critic", "refiner")
 
+
+def chain_roles(agents):
+    """The thinking agents of an `agents`-long chain (C15): the Planner, then Critic and
+    Refiner turns in alternation. chain_roles(3) is ROLES, the team every earlier cycle ran."""
+    if agents < 1:
+        raise ValueError("a team needs at least one thinking agent")
+    roles = ["planner"]
+    while len(roles) < agents:
+        roles.append("refiner" if roles[-1] == "critic" else "critic")
+    return tuple(roles)
+
 # Our own wording of the paper's role instructions.
 LATENT_PROMPTS = {
     "planner": ("You are the Planner. Design a short step-by-step plan for solving the question below. "
@@ -178,18 +189,26 @@ class LatentTeam:
         """Position ids of the last new_tokens columns, counting only real tokens before them."""
         return (full_mask.cumsum(-1) - 1).clamp(min=0)[:, -new_tokens:]
 
-    def forward(self, memory, memory_mask, ids=None, mask=None, embeds=None, hidden_only=False):
+    def forward(self, memory, memory_mask, ids=None, mask=None, embeds=None, hidden_only=False, hide=None):
         """One step over new tokens or embeddings on top of the memory.
 
         hidden_only=True runs the base model only (no lm_head) and returns its
         last_hidden_state, which is post final norm: the state lm_head would read.
         Otherwise only the last position's logits are computed.
+
+        hide (C15, sealed teams) is a 0/1 tensor over the first memory columns: those marked 1
+        are left out of attention but still count for positions, so the visible keys keep
+        the positions they were written at. The returned mask is the padding mask, unhidden.
         """
         new = ids if ids is not None else embeds
         if mask is None:
             mask = torch.ones(new.shape[:2], dtype=torch.long, device=self.device)
         full = mask if memory_mask is None else torch.cat([memory_mask, mask], dim=1)
-        kwargs = dict(input_ids=ids, inputs_embeds=embeds, attention_mask=full, past_key_values=memory,
+        attention = full
+        if hide is not None and hide.shape[1]:
+            attention = full.clone()
+            attention[:, :hide.shape[1]] *= 1 - hide.to(full.dtype)
+        kwargs = dict(input_ids=ids, inputs_embeds=embeds, attention_mask=attention, past_key_values=memory,
                       position_ids=self.positions(full, new.shape[1]), use_cache=True)
         if hidden_only:
             return self.model.base_model(**kwargs), full
@@ -243,36 +262,45 @@ class LatentTeam:
     soft_top_k = 16
     soft_temperature = 1.0
 
-    def think(self, memory, memory_mask, prompts, steps, mode="soft", first=True):
+    def think(self, memory, memory_mask, prompts, steps, mode="soft", first=True, hide=None):
         """One subagent: read its prompt on top of the memory, take `steps` latent steps,
-        then close its turn so the next agent's turn starts a fresh one."""
+        then close its turn so the next agent's turn starts a fresh one. hide: see forward."""
         ids, mask = self.render(prompts, first=first)
-        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask, hidden_only=True)
+        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask, hidden_only=True, hide=hide)
         memory = out.past_key_values
         hidden = out.last_hidden_state[:, -1]
         for _ in range(steps):
             vector = self.thought(hidden, mode)
-            out, full = self.forward(memory, full, embeds=vector.to(self.model.dtype)[:, None, :], hidden_only=True)
+            out, full = self.forward(memory, full, embeds=vector.to(self.model.dtype)[:, None, :], hidden_only=True,
+                                     hide=hide)
             memory = out.past_key_values
             hidden = out.last_hidden_state[:, -1]
         close = self.tokenizer([self.close_turn()] * len(prompts), return_tensors="pt", add_special_tokens=False)
         out, full = self.forward(memory, full, ids=close["input_ids"].to(self.device),
-                                 mask=close["attention_mask"].to(self.device), hidden_only=True)
+                                 mask=close["attention_mask"].to(self.device), hidden_only=True, hide=hide)
         return out.past_key_values, full
 
-    def decode(self, memory, memory_mask, prompts, max_new_tokens, first=True):
-        """Greedy text decoding of a batch on top of the memory. Returns (texts, token counts).
+    def decode(self, memory, memory_mask, prompts, max_new_tokens, first=True, hide=None, temperature=0.0,
+               generator=None):
+        """Text decoding of a batch on top of the memory. Returns (texts, token counts).
 
+        Greedy by default; temperature > 0 samples (C15's vote baseline) with `generator`.
         Tokens stay on the GPU until the end; the only per-step sync is the all-done check.
         """
+        def pick(logits):
+            if temperature <= 0:
+                return logits.argmax(-1)
+            probs = torch.softmax(logits.float() / temperature, dim=-1)
+            return torch.multinomial(probs, 1, generator=generator)[:, 0]
+
         ids, mask = self.render(prompts, first=first)
-        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask)
+        out, full = self.forward(memory, memory_mask, ids=ids, mask=mask, hide=hide)
         memory = out.past_key_values
         batch = ids.shape[0]
         eos = torch.tensor(sorted(self.eos), device=self.device)
         done = torch.zeros(batch, dtype=torch.bool, device=self.device)
         steps = []
-        next_ids = out.logits[:, -1].argmax(-1)
+        next_ids = pick(out.logits[:, -1])
         for index in range(max_new_tokens):
             done = done | torch.isin(next_ids, eos)
             if bool(done.all()):
@@ -281,9 +309,9 @@ class LatentTeam:
             if index + 1 == max_new_tokens:
                 break  # budget spent: no forward pass whose output would be thrown away
             step = torch.where(done, torch.full_like(next_ids, int(eos[0])), next_ids)[:, None]
-            out, full = self.forward(memory, full, ids=step)
+            out, full = self.forward(memory, full, ids=step, hide=hide)
             memory = out.past_key_values
-            next_ids = out.logits[:, -1].argmax(-1)
+            next_ids = pick(out.logits[:, -1])
         if not steps:
             return [""] * batch, [0] * batch
         grid = torch.stack(steps, dim=1).tolist()
@@ -301,13 +329,35 @@ class LatentTeam:
         runs the earlier ones without, to bound memory; None keeps the caller's grad mode
         for all three. The forward computation is the same either way.
         """
-        memory, mask = DynamicCache(), None
-        first_grad = 0 if grad_agents is None else len(ROLES) - grad_agents
-        for index, role in enumerate(ROLES):
-            with torch.set_grad_enabled(torch.is_grad_enabled() and index >= first_grad):
-                memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions],
-                                          steps, mode=mode, first=index == 0)
+        memory, mask, _ = self.chain(questions, steps, mode, grad_agents=grad_agents)
         return memory, mask
+
+    def chain(self, questions, steps, mode, grad_agents=None, roles=ROLES, views=None, sealed=False):
+        """The thinking agents of `roles` in turn. Returns (memory, padding mask, hide).
+
+        views (C15, split facts) gives each agent its own text in place of the question:
+        views[k][b] is what agent k sees of question b; None shows every agent the question.
+        sealed (C15) hides every earlier agent's prompt from the agents after it and from
+        the solver, so only the latent steps (and the turn-closing tokens) pass on. Unsealed,
+        a later agent also reads the earlier prompts in the shared memory, the question
+        among them. hide is None unless sealed.
+        """
+        memory, mask, hide = DynamicCache(), None, None
+        first_grad = 0 if grad_agents is None else len(roles) - grad_agents
+        for index, role in enumerate(roles):
+            texts = questions if views is None else views[index]
+            prompts = [LATENT_PROMPTS[role].format(question=q) for q in texts]
+            start = 0 if mask is None else mask.shape[1]
+            width = self.render(prompts, first=index == 0)[0].shape[1] if sealed else 0
+            with torch.set_grad_enabled(torch.is_grad_enabled() and index >= first_grad):
+                memory, mask = self.think(memory, mask, prompts, steps, mode=mode, first=index == 0, hide=hide)
+            if sealed:
+                grown = torch.zeros_like(mask)
+                if hide is not None:
+                    grown[:, :hide.shape[1]] = hide
+                grown[:, start:start + width] = 1
+                hide = grown
+        return memory, mask, hide
 
     def target_batch(self, prompts, targets, max_target_tokens=None):
         """The solver turns followed by the teacher-forced targets, left padded.
@@ -370,33 +420,48 @@ class LatentTeam:
 
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
-    def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False):
+    def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False, agents=3,
+                   views=None, solver_questions=None, sealed=False):
+        """The latent team. agents, views, solver_questions and sealed are C15's: the number of
+        thinking agents (chain_roles), what each sees, what the solver sees (default: the
+        question) and whether earlier prompts are hidden (chain). The defaults are the
+        three-agent team of cycles 9 to 14."""
         mode = "random" if random_thoughts else mode
         if mode not in self.MODES:
             raise ValueError(f"Unknown thought mode: {mode}")
+        roles = chain_roles(agents)
         start = time.perf_counter()
-        memory, mask = self.working_memory(questions, steps, mode)
-        answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
-                                      max_new_tokens, first=False)
+        memory, mask, hide = self.chain(questions, steps, mode, roles=roles, views=views, sealed=sealed)
+        solver = questions if solver_questions is None else solver_questions
+        answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in solver],
+                                      max_new_tokens, first=False, hide=hide)
         self._sync()
         names = {"soft": "latent_mas", "aligned": "latent_aligned", "random": "latent_random"}
-        receipt = Receipt(names[mode], steps, counts, steps * len(ROLES), time.perf_counter() - start)
+        receipt = Receipt(names[mode], steps, counts, steps * len(roles), time.perf_counter() - start)
         return answers, receipt
 
     @torch.no_grad()
-    def text_mas(self, questions, max_agent_tokens=256, max_new_tokens=512):
+    def text_mas(self, questions, max_agent_tokens=256, max_new_tokens=512, agents=3, views=None,
+                 solver_questions=None):
+        """The text team. With more agents (C15) each Critic reads the latest plan and each
+        Refiner the latest plan and critique, and its output becomes the latest plan, which
+        the solver reads. With agents=3 this is cycle 9's Planner, Critic, Refiner team."""
         start = time.perf_counter()
         notes = [{} for _ in questions]
         totals = [0] * len(questions)
         self.capped = [0] * len(questions)  # subagents per question that hit max_agent_tokens
-        for role in ROLES:
-            prompts = [TEXT_PROMPTS[role].format(question=q, **n) for q, n in zip(questions, notes)]
+        for index, role in enumerate(chain_roles(agents)):
+            seen = questions if views is None else views[index]
+            prompts = [TEXT_PROMPTS[role].format(question=q, **n) for q, n in zip(seen, notes)]
             texts, counts = self.generate(prompts, max_agent_tokens)
             for n, text, row in zip(notes, texts, range(len(questions))):
                 n[role] = text
+                if role != "critic":
+                    n["planner"] = n["refiner"] = text  # the latest plan
                 totals[row] += counts[row]
                 self.capped[row] += counts[row] >= max_agent_tokens
-        answers, counts = self.generate([TEXT_PROMPTS["solver"].format(question=q, **n) for q, n in zip(questions, notes)],
+        solver = questions if solver_questions is None else solver_questions
+        answers, counts = self.generate([TEXT_PROMPTS["solver"].format(question=q, **n) for q, n in zip(solver, notes)],
                                         max_new_tokens)
         self._sync()
         totals = [a + b for a, b in zip(totals, counts)]
@@ -408,6 +473,25 @@ class LatentTeam:
         answers, counts = self.generate([SINGLE_PROMPT.format(question=q) for q in questions], max_new_tokens)
         self._sync()
         return answers, Receipt("single", 0, counts, 0, time.perf_counter() - start)
+
+    @torch.no_grad()
+    def sample(self, questions, samples, temperature=0.7, max_new_tokens=512, rows=96, seed=0):
+        """`samples` independent single answers per question, sampled at `temperature` (C15's
+        vote baseline). Returns (one list of texts per question, receipt with the tokens
+        summed per question). rows bounds the batch, so many samples fit in memory."""
+        start = time.perf_counter()
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+        flat = [q for q in questions for _ in range(samples)]
+        texts, counts = [], []
+        for begin in range(0, len(flat), rows):
+            chunk = [SINGLE_PROMPT.format(question=q) for q in flat[begin:begin + rows]]
+            out, n = self.decode(None, None, chunk, max_new_tokens, temperature=temperature, generator=generator)
+            texts += out
+            counts += n
+        self._sync()
+        grouped = [texts[i * samples:(i + 1) * samples] for i in range(len(questions))]
+        totals = [sum(counts[i * samples:(i + 1) * samples]) for i in range(len(questions))]
+        return grouped, Receipt("vote", 0, totals, 0, time.perf_counter() - start)
 
     def _sync(self):
         if str(self.device).startswith("cuda"):

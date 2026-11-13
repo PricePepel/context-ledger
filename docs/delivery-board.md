@@ -25,5 +25,6 @@ Claim a card before working on it (AGENTS.md section 2). States: Backlog, Ready,
 | C11 Latent runtime performance baseline | Claude Code (for Ruslan) | `ruslan/latent-perf` | Measure time to first token, prefix-cache hit rate, tokens per second and memory per request on the 4090; then measure FP8 KV cache, n-gram speculative decoding, files on the WSL disk and FP8 weights | In review |
 | C12 Multi-LLM latent runtime | Claude Code (for Ruslan) | `ruslan/multi-llm` (on C11) | M2a pool on Llama 3.1, Mistral and Granite through vLLM; M2c latent team beyond ChatML (Phi-3.5, Granite) and on an untied model | In review |
 | C13 Tuning the latent hand-off | Claude Code (for Ruslan) | `ruslan/latent-tuning` (on C12) | Level 1 settings sweep, level 2 trained projection adapter, level 3 LoRA through the latent loop, on Phi-3.5-mini; latent vs random control on a held-back block | In review |
+| C15 Many agents and split facts | Claude Code (for Ruslan) | `ruslan/agent-scale` (on C13) | Latent teams of 3 to 101 agents on Qwen2.5-3B against random thoughts, a vote of N samples and a text team; a split-facts test with a sealed hand-off | In progress |
 
 Cards marked "after P1" depend on the new storage layer; build them on `product/v1` once P1 is Done. Cards G7 to G12 come from a read of the public Graphify repository (2026-11-12): ideas only, no code copied.
