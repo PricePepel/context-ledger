@@ -1023,3 +1023,40 @@ Card C13. In cycle 12 the latent team ran on Phi-3.5-mini, but its latent though
   - the loss covers only the target tokens;
   - a saved checkpoint reloads to identical outputs.
 - No new runtime dependency: LoRA is written in a small module rather than added with `peft`.
+
+### Level 1 results (tuning questions, 2026-11-13)
+
+Phi-3.5-mini, bf16, batch 4, tuning questions 600–699 (block 6 of 100 in the seed-0 shuffle, inside tuning block 3). These are tuning figures, not claims.
+
+| System | m = 10 | m = 40 | m = 80 |
+|---|---|---|---|
+| single | 0.86 | | |
+| soft (top-k 16, T 1.0) | 0.86 | 0.89 | 0.86 |
+| aligned (W_a) | 0.13 | 0.15 | 0.23 |
+| random control | 0.88 | 0.88 | 0.84 |
+| soft, sharp (top-k 4, T 0.5) | | 0.93 | |
+| random control, same run | | 0.89 | |
+
+Exact McNemar test against the random control at the same steps (questions only the thought mode got right / only random got right):
+
+| Comparison | Split | p |
+|---|---|---|
+| soft @10 | 2 / 4 | 0.69 |
+| soft @40 | 3 / 2 | 1.00 |
+| soft @80 | 7 / 5 | 0.77 |
+| soft, sharp @40 | 6 / 2 | 0.29 |
+| aligned @10, @40, @80 | 1 / 76, 1 / 74, 2 / 63 | < 0.001 (worse than random) |
+
+- No setting beats the random control. The sharp soft setting is the best on these questions, but it is not significant.
+- Aligned thoughts break Phi-3.5-mini's answers. The untied W_a ridge map gives vectors the model cannot read.
+- Decision, made before training: levels 2 and 3 train soft thoughts only. Aligned is dropped from the trainer (Codex review of 334ce35: the random control is noise at the soft norm, so a trained aligned run would not be norm-matched to it).
+- Training runs at m = 10 for memory: the backward pass keeps every latent step's keys and values. Trained checkpoints are evaluated at m = 10 and m = 40.
+
+Smoke runs on 16 train questions at m = 10, with all three subagents keeping gradients:
+
+| Level | Trainable weights | Seconds per example | Peak memory |
+|---|---|---|---|
+| 2, adapter rank 16 | 98,304 | 3.6 | 12.1 GB |
+| 3, LoRA rank 16 on `qkv_proj` and `o_proj` | 9,437,184 | 5.6 | 13.3 GB |
+
+Runs queued: level 2 on 1,000 train questions (lr 1e-3, accumulation 8), then level 3 on 2,000 (lr 2e-4, alpha 32, accumulation 8), one epoch each. Each is evaluated on the same 100 tuning questions before block 4 is opened.
