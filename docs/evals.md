@@ -1094,7 +1094,7 @@ Tuning questions 600–699, same weights for every system in a run:
 
 - Neither trained level beats the random control on the tuning questions.
 - The LoRA lowers single from 0.86 to 0.79 and shortens answers from 263 to 90 tokens: it learned the terse GSM8K solution style, which costs Phi-3.5-mini accuracy. Every system in that run carries the same LoRA, so the comparison with random is still fair.
-- The adapter roughly halves the answer length of soft thoughts at m = 10 (107 tokens against 226 for random) without changing accuracy.
+- The adapter roughly halves the answer length of soft thoughts at m = 10 (107 tokens against 226 for random). Accuracy is 5 points lower (0.83 against 0.88, split 2 / 7, p = 0.18), a difference that is not significant.
 
 ### Block 4 choices (fixed 2026-11-13, before block 4 is run)
 
@@ -1132,9 +1132,10 @@ Secondary figures:
 | Level 3 | latent_mas @10 | 99.5 | 2.39 |
 | Level 3 | latent_random @10 | 102.7 | 2.49 |
 
-- **No level makes the latent thoughts carry information on Phi-3.5-mini.** Under the rule fixed before any result, all three are reported as not established.
-- **Level 1:** the sharp setting that scored 0.93 on the tuning questions ties random exactly on block 4. Its tuning lead was noise.
+- **No level shows that the latent thoughts beat random vectors on Phi-3.5-mini.** Under the rule fixed before any result, all three are reported as not established. This is a failure to show an advantage at this sample size, not proof that the thoughts carry nothing.
+- **Level 1:** the sharp setting that scored 0.93 on the tuning questions ties random exactly on block 4. Its tuning lead (6 / 2) did not replicate (7 / 7, p = 1.00).
 - **Level 1 gate:** latent_mas passes the M2c gate against text_mas (0.845 against 0.825, interval −0.03 to +0.07, 70% fewer tokens, 55% less time). Random vectors pass the same gate (0.845, 239 tokens), so the gate measures the cheaper pipeline, not the thoughts.
-- **Level 2:** the adapter makes the solver write much shorter answers (140 tokens against 244 for random), and accuracy falls 2.5 points with it (not significant). The adapter learned to shorten the answer, not to pass on reasoning.
-- **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730. Training on GSM8K's short solutions taught the model a terse style that costs it accuracy. The latent team does not recover the loss through its thoughts: it is 2.5 points below random with the same weights.
-- **What this suggests for a next cycle:** the target was the gold solution, so the cheapest way to lower the loss was to change the answer style, not the hand-off. A next attempt should train against the model's own correct answers (self-distillation), so the style stays fixed and only the hand-off can lower the loss. It should also train at the evaluation step count; these runs trained at m = 10 for memory.
+- **Level 2:** the adapter makes the solver write much shorter answers (140 tokens against 244 for random), and accuracy is 2.5 points lower (not significant). It changes the answers, but shows no accuracy advantage over random.
+- **Level 3:** LoRA lowers every system: single falls from 0.855 to 0.730, and answers shorten from 280 to 102 tokens. A likely cause is the short style of GSM8K's gold solutions, but this run does not isolate it. The latent team does not recover the loss: it is 2.5 points below random with the same weights (not significant).
+- **A hypothesis for a next cycle (untested):** with the gold solution as the target, a change of answer style can lower the loss without any help from the hand-off. Training against the model's own correct answers (self-distillation) would keep the target close to the model's own style, leaving less to gain that way. It would not rule out other shortcuts. A next attempt should also train at the evaluation step count; these runs trained at m = 10 for memory.
+- **Review:** a Codex data check recomputed every figure in the level 2 and 3 and block 4 sections from the raw reports and training logs, and all of them match. It found one wrong statement ("without changing accuracy" hid a 5-point drop on the tuning questions) and five conclusions that claimed more than the tests show. All six are reworded above. The prompt-length and memory profile figures came from profiling runs whose output was printed, not saved, so they could not be rechecked.

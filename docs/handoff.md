@@ -195,5 +195,5 @@ Branch `ruslan/latent-tuning`, based on `ruslan/multi-llm` (C12, PR #10). Card C
 Next steps:
 
 1. Ali reviews the trainer and the LoRA module. The Codex reviews are recorded in the eval log.
-2. If the hand-off is tried again, train against the model's own correct answers (self-distillation), not the gold solutions. Gold-solution training here mostly changed the answer style: the adapter shortened answers, and the LoRA lowered single from 0.855 to 0.730.
+2. If the hand-off is tried again, train against the model's own correct answers (self-distillation), not the gold solutions. With gold-solution training, the adapter shortened answers, and the LoRA shortened them and lowered single from 0.855 to 0.730. The cause is not isolated.
 3. Train at the step count that is evaluated, which needs more memory or a model with grouped-query attention. A Qwen or Llama model with grouped-query attention would cut the key and value cost several times over.
