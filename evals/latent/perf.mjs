@@ -3,7 +3,9 @@
 // Usage: LEDGER=http://127.0.0.1:4317 node evals/latent/perf.mjs [--set questions|heldout|fresh]
 //   [--repeat 3] [--label A] [--out report.json] [--vllm http://127.0.0.1:8000]
 //   [--hf-config path/to/config.json] [--kv-dtype auto|bfloat16|float16|fp8...]
-//   [--model <id>] [--nvidia-smi <command>]
+//   [--model <id>] [--nvidia-smi <command>] [--gpu 0]
+// --gpu picks the device nvidia-smi samples (its --id), so a multi-GPU machine does
+// not mix devices; --repeat must be a positive whole number.
 // The ledger must run with LATENT_ROOT pointing at the set's fixture, as for run.mjs.
 // --model is needed only when /metrics carries more than one model; --nvidia-smi
 // replaces the sampler command (tests point it at a missing command).
@@ -12,7 +14,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { gradeSlice } from './grade.mjs';
 import {
-  delta, kvBytesPerToken, kvDtypeMismatch, measureReads, parsePrometheus, snapshot, startKvPoller, summarizeRun,
+  chooseModel, delta, kvBytesPerToken, kvDtypeMismatch, measureReads, nvidiaSmiArgs, parsePrometheus, parseRepeat, snapshot,
+  startKvPoller, summarizeRun,
 } from './perf-lib.mjs';
 
 const { values } = parseArgs({
@@ -26,6 +29,7 @@ const { values } = parseArgs({
     'kv-dtype': { type: 'string', default: 'auto' },
     model: { type: 'string' },
     'nvidia-smi': { type: 'string', default: 'nvidia-smi' },
+    gpu: { type: 'string', default: '0' },
   },
 });
 const sets = { questions: './questions.json', heldout: './heldout.json', fresh: './fresh.json' };
@@ -33,7 +37,8 @@ if (!sets[values.set]) throw new Error('--set must be questions, heldout or fres
 const ledger = process.env.LEDGER ?? 'http://127.0.0.1:4317';
 const vllm = values.vllm.replace(/\/+$/u, '');
 const set = JSON.parse(await readFile(new URL(sets[values.set], import.meta.url), 'utf8'));
-const repeat = Math.max(1, Number(values.repeat) || 1);
+const repeat = parseRepeat(values.repeat);
+const gpuArgs = nvidiaSmiArgs(values.gpu);
 const kvDtype = values['kv-dtype'];
 
 let bytesPerToken = null;
@@ -79,8 +84,7 @@ function startGpuSampler(command) {
   let ready;
   const first = new Promise(resolve => { ready = resolve; });
   try {
-    child = spawn(command, ['--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '200'],
-      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    child = spawn(command, gpuArgs, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
   } catch {
     available = false;
     ready();
@@ -123,8 +127,7 @@ process.once('SIGINT', () => { stopGpu(); process.exit(130); });
 try {
   const firstSeries = await scrape();
   const models = snapshot(firstSeries).models;
-  const model = values.model ?? (models.length === 1 ? models[0] : null);
-  if (!model) throw new Error(`/metrics names ${models.length ? `several models (${models.join(', ')}); pass --model` : 'no model'}.`);
+  const model = chooseModel(models, values.model);
   const start = snapshot(firstSeries, { model });
   const mismatch = kvDtypeMismatch(kvDtype, start.kvPool?.cacheDtype);
   if (mismatch) throw new Error(mismatch);

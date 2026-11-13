@@ -840,6 +840,68 @@ A new harness, `evals/latent/perf.mjs`, sends the dev set (`questions.json`, 8 q
 - A quick win is recommended as a default only if it improves its target metric and loses at most one correct-and-cited answer out of 24 against A in the same session. Otherwise it is recorded and left off.
 - The numbers are for one laptop GPU and one synthetic fixture; the doc says so wherever they are quoted.
 
+## Results — Cycle 11 (latent runtime performance), 2026-11-12
+
+Hardware and software: RTX 4090 Laptop GPU (16 GB), WSL2 Ubuntu 24.04, vLLM 0.33.0, `--gpu-memory-utilization 0.85`, prefix caching on. Each configuration ran the 8 dev questions 3 times (24 reads; a successful read makes 6 vLLM calls) through a test ledger, with `evals/latent/perf.mjs`. These figures are for one laptop GPU and one small synthetic fixture (5 files, about 1,900 tokens of prefix). They show where the time goes, not what a larger repository would cost.
+
+How to read the table: TTFT is from vLLM's histogram, so p50 and p90 are bucket estimates. "Tokens/s per request" is 1 / mean time per output token; "aggregate" is generated tokens / summed read time. "KV MiB per read" has two figures: the sampled peak (the highest KV-cache use seen by a 200 ms poll × pool size × KV bytes per token; a shorter spike between polls can be missed) and the mean token-based upper bound (every call's prompt and completion tokens, counting the shared prefix once per call, averaged over the reads). A, A2, A3 and A4 are the same default setup run at different times in the session, to show the run-to-run spread.
+
+| Config | Correct and cited | TTFT ms mean / p50 / p90 | Prefix-cache hits | Tokens/s per request / aggregate | Read s p50 / p90 | Cold read s | GPU MiB idle / peak | KV pool tokens | KV MiB per read: sampled peak / mean token-based upper bound | Spec. acceptance | Failed reads |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 18/24 | 89 / 40 / 179 | 96.7% | 88.5 / 98.6 | 5.18 / 8.19 | 11.6 | 14078 / 14410 | 137136 | 151 / 706 | — | 0 |
+| A2 | 18/24 | 94 / 40 / 176 | 96.8% | 89.5 / 99.8 | 5.13 / 7.72 | 11.4 | 14078 / 14410 | 137136 | 151 / 705 | — | 0 |
+| A3 | 18/24 | 132 / 39 / 180 | 96.8% | 88.8 / 97.3 | 5.23 / 7.87 | 12.4 | 14078 / 14410 | 137136 | 151 / 705 | — | 0 |
+| A4 | 18/24 | 122 / 40 / 194 | 96.8% | 90.0 / 99.1 | 5.16 / 7.70 | 12.2 | 14078 / 14410 | 137136 | 151 / 705 | — | 0 |
+| A-triton | 18/24 | 101 / 41 / 186 | 96.8% | 92.6 / 101.5 | 5.07 / 7.50 | 11.7 | 14074 / 14423 | 137136 | 151 / 705 | — | 0 |
+| C | 0/24 | 61 / 31 / 39 | 97.8% | 121.2 / 75.4 | n/a / n/a | failed | 14074 / 14414 | 273616 | 66 / n/a | — | 24 |
+| D | 18/24 | 101 / 44 / 180 | 96.8% | 105.4 / 135.5 | 3.67 / 5.22 | 9.2 | 14088 / 14420 | 135200 | 151 / 705 | 33% | 0 |
+| E | 18/24 | 126 / 44 / 199 | 96.8% | 96.7 / 109.4 | 4.56 / 7.17 | 11.4 | 14078 / 14410 | 137136 | 151 / 705 | — | 0 |
+| E2 | 18/24 | 97 / 44 / 176 | 96.8% | 96.7 / 109.0 | 4.59 / 7.15 | 11.7 | 14078 / 14410 | 137136 | 151 / 705 | — | 0 |
+| E3 | 18/24 | 108 / 43 / 179 | 96.7% | 97.0 / 109.6 | 4.57 / 7.44 | 11.6 | 14078 / 14410 | 137136 | 151 / 706 | — | 0 |
+| F | 16/24 | 102 / 55 / 212 | 95.2% | 55.9 / 62.4 | 8.55 / 11.96 | 11.8 | 13306 / 13584 | 66960 | 154 / 705 | — | 0 |
+| B | 21/24 | 323 / 327 / 499 | 89.4% | 48.1 / 59.8 | 17.14 / 19.36 | 21.5 | 14144 / 14438 | 17104 | 616 / 2579 | — | 0 |
+| B-C | 20/24 | 200 / 68 / 453 | 93.5% | 51.2 / 64.4 | 14.48 / 18.72 | 21.0 | 12892 / 13186 | 21168 | 303 / 1283 | — | 0 |
+
+Configurations: A = Qwen2.5-7B-Instruct-AWQ, default settings (FLASH_ATTN). A-triton = A on the Triton attention backend. C = FP8 KV cache (Triton). D = n-gram speculative decoding, 4 draft tokens. E = the fixture on the WSL disk instead of `/mnt/c`. F = FP8 weights (`RedHatAI/Qwen2.5-7B-Instruct-FP8-dynamic`). B = Qwen2.5-14B-Instruct-AWQ with strict citations and a max model length of 8192. B-C = B with an FP8 KV cache (Triton).
+
+### The baseline (A)
+
+- **Time to first token:** 40 ms at p50 and 179 ms at p90; the mean of about 90–130 ms is pulled up by the calls whose prefix is not cached yet. The first read on a new prefix (cold) takes 11.6 s against about 5.6 s for the rest.
+- **Prefix cache:** 96.8% of prompt tokens are served from the cache. vLLM's counters and the receipts agree to the third decimal.
+- **Decode:** about 89 tokens/s per request, 98–100 tokens/s aggregate. A read waits 5.2 s at p50 and 7.7–8.2 s at p90.
+- **Memory:** the 4-bit weights take 5.29 GiB, and vLLM's 85% reservation holds the GPU at 14,078 MiB (13.7 GiB) from the start; a run adds 332 MiB. The KV pool holds 137,136 tokens (7.32 GiB at 56 KiB per token). The sampled peak of one read is about 151 MiB (2% of the pool). Counting every call's tokens separately gives 706 MiB on average (731.5 MiB at most), about 4.7× the sampled peak, which is consistent with the six calls sharing the prefix blocks. The sampled peak is a lower bound on the true peak, so the 4.7× is an estimate, not a measured reduction.
+- **Run-to-run spread:** across A, A2, A3 and A4, read p50 stays within 5.13–5.23 s and decode within 88.5–90.0 tokens/s.
+
+### The quick wins
+
+- **D, n-gram speculative decoding: recommended.** Reads drop from about 5.2 s to 3.67 s at p50 (−29%) and from 7.7–8.2 s to 5.22 s at p90. Aggregate throughput rises from about 99 to 135.5 tokens/s (+37%). Accuracy is unchanged at 18 of 24. 33% of drafted tokens are accepted. It works alongside the JSON-schema structured outputs. It is opt-in for now (`VLLM_NGRAM=1`), because the runtime defaults are Ali's to change.
+- **C, FP8 KV cache: rejected for the 7B model.** The pool doubles to 273,616 tokens, but all 24 reads fail: the planner's structured replies come back with wrong content. The grammar still holds, so the JSON parses, but its content is wrong. vLLM warns that FP8 KV without scaling factors can lose accuracy, and these AWQ checkpoints carry no KV scales. vLLM 0.33 cannot compute scales at load time. The backend is not the cause: A-triton matches A. FLASH_ATTN on this GPU does not take an FP8 KV cache, and FlashInfer needs `nvcc`, so Triton is the only backend that runs it here. (C's TTFT and tokens/s come from the failing planner calls only.)
+- **B-C, FP8 KV cache on the 14B strict setup: usable.** It loses one answer (20 of 24 against 21), inside the acceptance rule, and keeps 24 of 24 citations. Reads are 15% faster (14.5 s against 17.1 s at p50), with mean TTFT 200 ms against 323 ms. The capacity gain is smaller than expected: KV bytes per token halve, but vLLM gave the pool 1.94 GiB instead of 3.13 GiB, so the pool grew only from 17,104 to 21,168 tokens. That is not enough to lift the 8192-token limit much. Why vLLM sizes the pool smaller here is not yet known. It is opt-in (`VLLM_KV_FP8=1`).
+- **E, files on the WSL disk: faster, cause unknown.** Three E runs gave reads of 4.56–4.59 s at p50, against 5.13–5.23 s for the four default runs, alternated in the same session. Decode was 96.7–97.0 against 88.5–90.0 tokens/s. Prompt totals agree within 0.1% and output totals within 3.1% across these seven runs, the root path is not in the prompt, and the pool reads the files once per request. So the file read itself cannot explain a faster per-token decode. The measurement is reproducible, but the mechanism is not established. Until it is, the advice is: keep `LATENT_ROOT` on the WSL disk when the files can live there.
+- **F, FP8 weights: rejected.** Decode drops from about 89 to 56 tokens/s and reads take 8.55 s at p50. Two fewer answers are correct and cited (16 against 18). Single-request decode is limited by memory bandwidth, and the FP8 weights load as 8.18 GiB against 5.29 GiB for AWQ, about 1.5× the bytes read per generated token. The larger weights also halve the KV pool to 66,960 tokens.
+
+### The 14B strict setup (B)
+
+21 of 24 correct and cited, with every answer cited. It costs 17.1 s per read at p50 (3.3× A), 323 ms mean TTFT and 48 tokens/s decode. Its KV pool is only 17,104 tokens (3.13 GiB at 192 KiB per token) once the 9.38 GiB of weights are loaded, and one read peaks at 616 MiB, about 19% of the pool. This is why the 14B model runs with a max model length of 8192.
+
+### Open after this cycle
+
+- Why the files' location changes decode speed (E).
+- Why the FP8 KV pool is smaller than expected on the 14B model (B-C), and whether a higher `--gpu-memory-utilization` recovers the full 2× capacity.
+- FP8 KV for the 7B model would need a checkpoint with calibrated KV scales.
+- vLLM 0.33 refuses GPTQ checkpoints with `desc_act=True` (the RedHat W4A16 builds of Llama 3.1 and Mistral v0.3), found while preparing cycle 12.
+
+### Suites and review
+
+- Node 168/169 (one skipped); `tests/perf.test.mjs` 29/29 runs without a GPU. Graph 9/9, Playwright 13/13, runtime unittest OK (24 skipped).
+- The `serve-vllm.sh` switches were checked with a stub `vllm` that prints its arguments: default, `VLLM_NGRAM=1`, `VLLM_KV_FP8=1` and both.
+- **Harness reviews:** the harness was built by a Claude subagent, then reviewed by Codex and a separate Claude reviewer. They raised nine findings: mid-run restarts, failed scrapes, failed reads in latency, a lost in-flight KV sample, an unchecked `--kv-dtype`, the TPOT fallback, a correct-and-cited count and missing tests. All nine are fixed with tests in de4e060. The speculative-decoding counters were added in c224f74.
+- **PR review:** a second Codex pass covered the whole PR, including a data check that recomputed every figure in this section from the raw reports and vLLM logs. It confirmed the main comparisons: D is 29.2% faster at p50 with 37.3% more throughput and 32.6% of drafts accepted; B-C is 15.5% faster; B is 3.31× A. It raised eight findings, all fixed in b451511, each code fix with a test. A confirming pass found one more low: a `--repeat` of 309 nines overflowed to Infinity. It is fixed with a safe-integer check and a test. The eight were:
+  - An explicit `--model` that vLLM does not serve is now refused.
+  - `nvidia-smi` samples one GPU (`--gpu`).
+  - `--repeat` must be a positive whole number.
+  - Five wording fixes: the sampled peak, MiB units, the mean upper bound, six calls per successful read, and the 3.1% output spread.
+
 ## Cycle 12 — Multi-LLM latent runtime (defined 2026-11-12, before measuring)
 
 Card C12. Until now every latent measurement used Qwen, and the latent team (M2c) refused any chat template that was not ChatML. This cycle checks which parts work with other open model families and makes the latent team work with them.

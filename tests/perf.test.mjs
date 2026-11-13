@@ -11,8 +11,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
-  delta, histogramQuantile, kvBytesPerToken, kvDtypeMismatch, measureReads, parsePrometheus, percentile, readStats, snapshot,
-  startKvPoller, summarizeRun,
+  chooseModel, delta, histogramQuantile, kvBytesPerToken, kvDtypeMismatch, measureReads, nvidiaSmiArgs, parsePrometheus, parseRepeat,
+  percentile, readStats, snapshot, startKvPoller, summarizeRun,
 } from '../evals/latent/perf-lib.mjs';
 
 const execute = promisify(execFile);
@@ -664,6 +664,37 @@ test('perf.mjs refuses /metrics with several models unless --model is given', as
   const { stderr, ledgerRequests } = await perfRefuses(text);
   assert.match(stderr, /several models \(.*other\/model.*\); pass --model/u);
   assert.equal(ledgerRequests.length, 0);
+});
+
+test('perf.mjs refuses an explicit --model that /metrics does not name', async () => {
+  const { stderr, ledgerRequests } = await perfRefuses(fakeVllmMetrics({ reads: 0, calls: 0 }), ['--model', 'not/served']);
+  assert.match(stderr, /--model not\/served is not served by this vLLM \(\/metrics names Qwen\/Qwen2\.5-7B-Instruct-AWQ\)/u);
+  assert.equal(ledgerRequests.length, 0);
+});
+
+test('perf.mjs refuses a --repeat that is not a positive whole number, before any request', async () => {
+  for (const bad of ['Infinity', '1.5', '0', '-2', 'three']) {
+    const { stderr, ledgerRequests } = await perfRefuses(fakeVllmMetrics({ reads: 0, calls: 0 }), [`--repeat=${bad}`]);
+    assert.match(stderr, /--repeat must be a positive whole number/u, bad);
+    assert.equal(ledgerRequests.length, 0, bad);
+  }
+});
+
+test('parseRepeat, chooseModel and nvidiaSmiArgs', () => {
+  assert.equal(parseRepeat('3'), 3);
+  assert.equal(parseRepeat(' 12 '), 12);
+  for (const bad of ['Infinity', '1.5', '0', '', '1e3', '-1', undefined, '9'.repeat(309), '9007199254740993']) {
+    assert.throws(() => parseRepeat(bad), /positive whole number/u, String(bad).slice(0, 20));
+  }
+  assert.equal(parseRepeat('9007199254740991'), Number.MAX_SAFE_INTEGER, 'the largest safe integer is still accepted');
+  assert.equal(chooseModel(['a/b'], undefined), 'a/b');
+  assert.equal(chooseModel(['a/b', 'c/d'], 'c/d'), 'c/d');
+  assert.throws(() => chooseModel(['a/b'], 'x/y'), /--model x\/y is not served/u);
+  assert.throws(() => chooseModel(['a/b', 'c/d'], undefined), /several models/u);
+  assert.throws(() => chooseModel([], undefined), /no model/u);
+  assert.deepEqual(nvidiaSmiArgs('0'), ['--id=0', '--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '200']);
+  assert.equal(nvidiaSmiArgs(1)[0], '--id=1', 'one device only, so samples never mix GPUs');
+  for (const bad of ['', 'all', '-1', '0,1']) assert.throws(() => nvidiaSmiArgs(bad), /--gpu must be a GPU index/u, bad);
 });
 
 test('perf.mjs refuses a --kv-dtype that does not match the server KV cache dtype', async () => {

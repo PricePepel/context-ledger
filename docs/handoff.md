@@ -127,3 +127,28 @@ Next steps:
 3. Merge with `vuek0/subagent-graphs` once that branch has its own PR and review. Expect conflicts in `src/mcp.mjs` (the instructions string and `context_for`), and check `src/store.mjs` and `src/server.mjs`. Add `handoff_publish` to the tool names in `tests/mcp.test.mjs`.
 4. Review round 4 is settled (one low, fixed in d1600d2). PR #8 is still a draft: mark it ready for review on GitHub, then get a human review before merging, because it changes the stored schema (migration to version 1).
 5. Backlog cards G7 to G12 on [the delivery board](delivery-board.md) come from a comparison with the public Graphify repository. G7 (quoted or inferred nodes) and G10 (a published handoff benchmark) are the cheapest and strengthen the pitch most.
+
+## Current checkpoint — cycle 11 (latent runtime performance baseline, 2026-11-12)
+
+Branch `ruslan/latent-perf`, from `origin/main` 17ecef0 (PR #8 merged). Card C11. Read the cycle 11 definition and results in [the eval log](evals.md).
+
+- `evals/latent/perf.mjs` measures a latent configuration end to end, with the pure helpers in `evals/latent/perf-lib.mjs` and 26 tests in `tests/perf.test.mjs`. It sends the dev set through the ledger like `run.mjs` and reads vLLM's `/metrics` before and after every read. It reports TTFT, prefix-cache hit rate, tokens per second, speculative-decoding acceptance, GPU memory (`nvidia-smi`), KV pool and per-read KV memory, read latency and accuracy.
+  - Usage: `LEDGER=http://127.0.0.1:4327 node evals/latent/perf.mjs --repeat 3 --label A --hf-config <model config.json> --out report.json`.
+  - The ledger must run with the dev fixture, as for `run.mjs`.
+- **Baseline on the 4090 Laptop (Qwen2.5-7B AWQ):**
+  - TTFT 40 ms at p50 and 179 ms at p90
+  - 96.8% of prompt tokens from the prefix cache
+  - about 89 tokens/s per request
+  - 5.2 s per read at p50
+  - 14,078 MiB (13.7 GiB) of GPU memory, held by vLLM's reservation
+  - a sampled peak of about 151 MiB of KV cache per read
+- `runtime/serve-vllm.sh` has two opt-in switches, both off by default, because runtime defaults are Ali's to change:
+  - `VLLM_NGRAM=1`: n-gram speculative decoding. 7B reads are 29% faster at p50 with the same accuracy, so it is recommended as the default.
+  - `VLLM_KV_FP8=1`: FP8 KV cache on Triton. Usable with the 14B strict setup; it breaks the 7B AWQ model.
+- FP8 weights are slower than AWQ on this GPU and were rejected.
+
+Next steps:
+
+1. Ali decides whether `VLLM_NGRAM=1` becomes the default in `serve-vllm.sh`.
+2. Find why the fixture on the WSL disk decodes about 9% faster (configuration E), and why the 14B FP8 KV pool is smaller than expected (B-C).
+3. C12 (multi-LLM) continues on `ruslan/multi-llm`, which is based on this branch.
