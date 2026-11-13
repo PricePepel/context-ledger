@@ -1173,12 +1173,27 @@ Card C14. In cycle 13, LoRA trained on GSM8K's gold solutions lowered every syst
 - **Cap chosen: 512.** It keeps every self target. A lower cap would drop the longest answers, which are mostly the harder questions, so the training set would lean toward easy ones.
 - **What the run trains on:** 1,734 examples. 168 questions have no kept self answer, and 98 are over the 160-token prompt cap.
 - **Memory setting:** the run uses `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to limit fragmentation over the two-hour run.
+- **Training run:** one epoch, 217 optimizer steps over 1,734 examples in 103 minutes. Mean loss 0.042 (0.085 over the first 25 steps, 0.031 by step 200). Peak memory 14.25 GB, with no out-of-memory failure.
 
 ### Data and splits
 
 - Training uses the GSM8K train split only.
 - Tuning: questions 600–699 of the seed-0 test shuffle (`--count 100 --block 6`), the same tuning questions as cycle 13. Systems: single, latent_mas and latent_random at m = 10 and m = 40. The step count with the larger gap to random is chosen.
 - Confirmation: **block 5** (`--count 200 --block 5`, questions 1000–1199), which no cycle has used. Cycle 13 already looked at block 4, so it is not reused for a claim. Systems: single, latent_mas and latent_random at the chosen m, all with the self-distilled LoRA. The untrained model's single system is also run on block 5 as the baseline for the style check.
+
+### Tuning result and the chosen step count (fixed 2026-11-13, before block 5)
+
+All systems use the self-distilled LoRA on the 100 block-6 questions:
+
+| System | m = 10 | m = 40 |
+|---|---|---|
+| single | 0.90 (258 tokens) | — |
+| latent_mas | 0.88 | 0.90 |
+| latent_random | 0.89 | 0.90 |
+| latent_mas − random | −1 point | 0 points |
+
+- **Chosen: m = 40**, by the rule above (the larger gap to random). Neither gap is a real lead. At m = 10 the team is one question behind random; at m = 40 they tie. So the tuning gives no sign that the thoughts help, and block 5 decides.
+- **Style:** single with the LoRA scored 0.90 with 258-token answers. In cycle 13 the gold-trained LoRA gave 102-token answers, so the style shortcut looks gone. This is only a tuning read; the style prediction is scored on block 5.
 
 ### What counts
 
