@@ -65,14 +65,23 @@ class VllmClient:
         that refuses a system message (Mistral v0.3) is retried once with the
         system text folded into the user message, and later calls fold at once.
         """
+        budget = self.timeout if timeout is None else min(self.timeout, timeout)
+        started = time.perf_counter()
         try:
-            return self._chat(system, user, max_tokens, schema, schema_name, timeout)
+            return self._chat(system, user, max_tokens, schema, schema_name, budget)
         except _SystemRoleRefused:
             self.fold_system = True
-            try:
-                return self._chat(system, user, max_tokens, schema, schema_name, timeout)
-            except _SystemRoleRefused:
-                raise ApiError(502, "Model server returned HTTP 400.") from None
+        # The retry gets only what is left of this call's budget, and the receipt's ms
+        # covers both attempts, so a slow refusal cannot hold a slot past the deadline.
+        left = budget - (time.perf_counter() - started)
+        if left <= 0:
+            raise ApiError(502, "Model server timed out.")
+        try:
+            result = self._chat(system, user, max_tokens, schema, schema_name, left)
+        except _SystemRoleRefused:
+            raise ApiError(502, "Model server returned HTTP 400.") from None
+        result.ms = round((time.perf_counter() - started) * 1000)
+        return result
 
     def _chat(self, system, user, max_tokens, schema, schema_name, timeout):
         folded = self.fold_system
