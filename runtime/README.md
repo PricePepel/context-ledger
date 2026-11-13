@@ -40,7 +40,7 @@ WSL2 forwards localhost by default, so a ledger running on Windows reaches the p
 | `LATENT_PORT` | `4320` | Port, bound on 127.0.0.1 only. |
 | `LATENT_STRICT_CITATIONS` | `0` | `1` limits quotes to real file lines and asks for constants' literal values (cycle 9). Measured best with `LATENT_MODEL=Qwen/Qwen2.5-14B-Instruct-AWQ` and `VLLM_MAX_MODEL_LEN=8192`, at about 2.8× the 7B model's time per question. |
 
-`serve-vllm.sh` also reads `VLLM_VENV`, `VLLM_PORT`, `VLLM_MAX_MODEL_LEN` and `VLLM_GPU_UTIL`. Extra arguments are passed to `vllm serve`.
+`serve-vllm.sh` also reads `VLLM_VENV`, `VLLM_PORT`, `VLLM_MAX_MODEL_LEN` and `VLLM_GPU_UTIL`. Extra arguments are passed to `vllm serve`. Two opt-in speed settings, measured in cycle 11 of [the eval log](../docs/evals.md): `VLLM_NGRAM=1` turns on n-gram speculative decoding (7B reads 29% faster at p50, same accuracy), and `VLLM_KV_FP8=1` stores the KV cache in FP8 on the Triton attention backend (fine with the 14B AWQ model, but it breaks the 7B AWQ model, whose checkpoint has no KV scales). Both are off by default until Ali approves a default change.
 
 ## Endpoints
 
