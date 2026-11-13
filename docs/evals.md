@@ -1157,6 +1157,23 @@ Card C14. In cycle 13, LoRA trained on GSM8K's gold solutions lowered every syst
 - The target-length cap is the one setting that has to change, because the model's own answers are longer than the gold ones. It is chosen from the distilled answer lengths and a short memory check on the 16 GB GPU, before training starts, and recorded here before any evaluation.
 - The output file holds GSM8K train questions and the model's answers. It stays with the run outputs and is not committed.
 
+### Targets and the length cap (fixed 2026-11-13, before training)
+
+- **Answers:** distillation answered 2,000 train questions; 1,833 are right, and 1,832 of those stopped inside 512 tokens (91.6%).
+- **Length:** the kept answers are much longer than the gold solutions (cycle 13's gold-trained answers averaged 102 tokens): 261 generated tokens on average (median 250, 95th percentile 402, longest 509).
+- **Memory:** peak GPU memory for one training example (m = 10, gradients through 2 subagents) at the longest target under each cap:
+
+  | Cap (target tokens) | Examples kept | Peak memory (GB) |
+  |---|---|---|
+  | 320 | 1,403 | 12.52 |
+  | 384 | 1,623 | 13.87 |
+  | 448 | 1,711 | 13.93 |
+  | 512 | 1,734 | 14.08 |
+
+- **Cap chosen: 512.** It keeps every self target. A lower cap would drop the longest answers, which are mostly the harder questions, so the training set would lean toward easy ones.
+- **What the run trains on:** 1,734 examples. 168 questions have no kept self answer, and 98 are over the 160-token prompt cap.
+- **Memory setting:** the run uses `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to limit fragmentation over the two-hour run.
+
 ### Data and splits
 
 - Training uses the GSM8K train split only.
