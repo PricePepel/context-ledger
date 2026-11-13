@@ -2,6 +2,7 @@
 
     python -m latent_team.evaluate --count 200 --out report.json
     python -m latent_team.evaluate --systems latent_mas --steps 0,20,40,80 --count 100 --out steps.json
+    python -m latent_team.evaluate --systems latent_mas,latent_random --adapter run/adapter --lora run/lora ...
 
 Gate (docs/m2c-latent-team.md): latent_mas accuracy >= text_mas - 2 points, at least
 50% fewer generated tokens than text_mas, and faster wall time.
@@ -28,7 +29,8 @@ def gsm8k(split="test"):
     rows = []
     for path in files:
         for row in pq.read_table(path).to_pylist():
-            rows.append({"question": row["question"], "gold": gold_number(row["answer"])})
+            # The worked solution is kept for training (train.py, train split only).
+            rows.append({"question": row["question"], "gold": gold_number(row["answer"]), "solution": row["answer"]})
     return rows
 
 
@@ -150,6 +152,10 @@ def main():
                         help="tokens mixed into a soft thought (default: LatentTeam.soft_top_k, 16)")
     parser.add_argument("--soft-temperature", type=float, default=None,
                         help="softmax temperature of a soft thought (default: LatentTeam.soft_temperature, 1.0)")
+    parser.add_argument("--adapter", default=None,
+                        help="thought adapter saved by latent_team.train (its adapter/ directory); soft and aligned only")
+    parser.add_argument("--lora", default=None,
+                        help="LoRA weights saved by latent_team.train (its lora/ directory); every system uses them")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     if args.soft_top_k is not None and args.soft_top_k < 1:
@@ -159,6 +165,9 @@ def main():
     items = sample_block(gsm8k("test"), args.count, args.seed, args.block)
     from .team import LatentTeam  # torch is only needed to run the models, not to score answers
     team = LatentTeam(args.model)
+    # Before the warm-up, so every system runs with the same weights (cycle 13: the random
+    # control uses the same LoRA weights; the adapter never touches random thoughts).
+    checkpoints = team.load_checkpoints(adapter=args.adapter, lora=args.lora)
     if args.soft_top_k is not None:
         team.soft_top_k = args.soft_top_k
     if args.soft_temperature is not None:
@@ -171,6 +180,7 @@ def main():
     # families can be read side by side.
     report = {"model": args.model, "sample": {"seed": args.seed, "block": args.block, "count": args.count},
               "soft": {"topK": team.soft_top_k, "temperature": team.soft_temperature},
+              "checkpoints": checkpoints,
               "chatTemplate": team.turns.as_dict(), "stopTokenIds": sorted(team.eos), "systems": {}}
     for system in args.systems.split(","):
         latent = system in LATENT_MODES

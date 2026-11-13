@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
 from .chat_turns import ChatTemplateError, chat_turns, first_turn, stop_ids
@@ -61,6 +62,25 @@ class Receipt:
                 "latentVectors": self.latent_vectors, "seconds": round(self.seconds, 3)}
 
 
+IGNORE = -100  # label of a position the loss does not score
+
+
+def target_loss(hidden, labels, head):
+    """Mean cross-entropy of the target tokens only (C13 training).
+
+    hidden [B, T, d] are the last-layer states of one segment and labels [B, T] its tokens,
+    IGNORE everywhere but the target. The state at t predicts the token at t + 1; only
+    states that predict a target token reach the head, so prompt, padding and latent
+    positions cannot affect the loss.
+    """
+    shifted = labels[:, 1:]
+    keep = shifted != IGNORE
+    if not bool(keep.any()):
+        raise ValueError("no target token to score")
+    logits = head(hidden[:, :-1][keep]).float()
+    return F.cross_entropy(logits, shifted[keep])
+
+
 def alignment(model, ridge=1e-4):
     """W_a and the target norm. Solved once per model, in fp32."""
     w_in = model.get_input_embeddings().weight.detach().float()
@@ -96,6 +116,34 @@ class LatentTeam:
         self.eos = stop_ids(self.tokenizer, getattr(self.model, "generation_config", None), self.turns.close)
         if not self.eos:
             raise ChatTemplateError(model_name, "no stop token: the tokenizer and generation config name no eos token")
+        # C13 level 2: a trained correction of soft and aligned thoughts (adapter.py). None
+        # leaves every mode exactly as it was.
+        self.adapter = None
+
+    def load_checkpoints(self, adapter=None, lora=None):
+        """Load a thought adapter and/or LoRA weights saved by latent_team.train.
+
+        LoRA changes the model, so it applies to every system, the random control included
+        (cycle 13: the controls use the same weights); the adapter applies to soft and
+        aligned thoughts only. Returns what was loaded, for the report.
+        """
+        loaded = {}
+        if lora:
+            from .lora import load_lora
+            config = dict(load_lora(self.model, lora))
+            config.pop("modules", None)
+            loaded["lora"] = {"path": str(lora), **config}
+            self.model.eval()
+        if adapter:
+            from .adapter import ThoughtAdapter
+            module, config = ThoughtAdapter.load(adapter, device=self.device)
+            dim = self.model.get_input_embeddings().weight.shape[1]
+            if module.out_dim != dim or module.dim != self.model.config.hidden_size:
+                raise ValueError(f"the adapter maps {module.dim} to {module.out_dim} dims; this model has hidden size "
+                                 f"{self.model.config.hidden_size} and embeds in {dim}")
+            self.adapter = module.eval()
+            loaded["adapter"] = {"path": str(adapter), **config}
+        return loaded
 
     # ------------------------------------------------------------------ helpers
     def render(self, prompts, first=True):
@@ -158,22 +206,30 @@ class LatentTeam:
                  point inside the hull of real input embeddings, so it stays in
                  distribution; it is still a continuous mixture, not a chosen token.
         random   the eval's control: noise at the mean input norm.
+
+        With an adapter loaded (C13 level 2), soft and aligned thoughts get its correction
+        delta(h) added; random thoughts never do, so the control stays the same noise.
         """
         if mode not in self.MODES:
             raise ValueError(f"Unknown thought mode: {mode}")
         if mode == "aligned":
-            return align(hidden, self.w_a, self.target)
+            return self._adapted(align(hidden, self.w_a, self.target), hidden)
         logits = self.model.get_output_embeddings()(hidden.to(self.model.dtype)).float()
         top = logits.topk(self.soft_top_k, dim=-1)
         weights = torch.softmax(top.values / self.soft_temperature, dim=-1)
         table = self.model.get_input_embeddings().weight
         soft = (weights[..., None] * table[top.indices].float()).sum(-2)
         if mode == "soft":
-            return soft
+            return self._adapted(soft, hidden)
         # random: noise with each row's soft-thought norm, so the control differs from
         # latent_mas in content only, not in magnitude.
         noise = torch.randn_like(soft)
         return noise * (soft.norm(dim=-1, keepdim=True) / noise.norm(dim=-1, keepdim=True))
+
+    def _adapted(self, vector, hidden):
+        if self.adapter is None:
+            return vector
+        return vector + self.adapter(hidden)
 
     MODES = ("soft", "aligned", "random")
 
@@ -231,6 +287,70 @@ class LatentTeam:
     def generate(self, prompts, max_new_tokens):
         return self.decode(None, None, prompts, max_new_tokens)
 
+    def working_memory(self, questions, steps, mode, grad_agents=None):
+        """The three latent subagents in turn: the memory the solver reads.
+
+        grad_agents (training only) keeps gradients for the last that many subagents and
+        runs the earlier ones without, to bound memory; None keeps the caller's grad mode
+        for all three. The forward computation is the same either way.
+        """
+        memory, mask = DynamicCache(), None
+        first_grad = 0 if grad_agents is None else len(ROLES) - grad_agents
+        for index, role in enumerate(ROLES):
+            with torch.set_grad_enabled(torch.is_grad_enabled() and index >= first_grad):
+                memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions],
+                                          steps, mode=mode, first=index == 0)
+        return memory, mask
+
+    def target_batch(self, prompts, targets, max_target_tokens=None):
+        """The solver turns followed by the teacher-forced targets, left padded.
+
+        Returns (ids, mask, labels); labels are IGNORE except on target tokens. A target is
+        tokenized in context, after its turn text, so its tokens are the ones the template
+        text gives (a SentencePiece tokenizer adds a prefix space to text tokenized on its
+        own); if the joint tokens do not start with the turn's own tokens, the target is
+        tokenized alone.
+        """
+        rows = []
+        for prompt, target in zip(prompts, targets):
+            turn = self.turn(prompt)
+            head = self._token_ids(turn)
+            joint = self._token_ids(turn + target)
+            tail = joint[len(head):] if joint[:len(head)] == head else self._token_ids(target)
+            if max_target_tokens is not None:
+                tail = tail[:max_target_tokens]
+            if not tail:
+                raise ValueError("a target has no tokens")
+            rows.append((head, tail))
+        width = max(len(h) + len(t) for h, t in rows)
+        pad = self.tokenizer.pad_token_id
+        ids, mask, labels = [], [], []
+        for head, tail in rows:
+            fill = width - len(head) - len(tail)
+            ids.append([pad] * fill + head + tail)
+            mask.append([0] * fill + [1] * (len(head) + len(tail)))
+            labels.append([IGNORE] * (fill + len(head)) + tail)
+
+        def tensor(grid):
+            return torch.tensor(grid, dtype=torch.long, device=self.device)
+        return tensor(ids), tensor(mask), tensor(labels)
+
+    def _token_ids(self, text):
+        row = self.tokenizer([text], add_special_tokens=False)["input_ids"][0]
+        return row.tolist() if hasattr(row, "tolist") else list(row)
+
+    def latent_loss(self, questions, targets, steps, mode="soft", max_target_tokens=None, grad_agents=None):
+        """C13 training loss: latent_mas's three subagents (same prompts, think() and turns)
+        with gradients, then the solver turn and the teacher-forced target; cross-entropy on
+        the target tokens only. Run it with gradients enabled; nothing is decoded."""
+        if mode not in self.MODES:
+            raise ValueError(f"Unknown thought mode: {mode}")
+        memory, mask = self.working_memory(questions, steps, mode, grad_agents)
+        prompts = [LATENT_PROMPTS["solver"].format(question=q) for q in questions]
+        ids, new_mask, labels = self.target_batch(prompts, targets, max_target_tokens)
+        out, _ = self.forward(memory, mask, ids=ids, mask=new_mask, hidden_only=True)
+        return target_loss(out.last_hidden_state, labels, self.model.get_output_embeddings())
+
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
     def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False):
@@ -238,10 +358,7 @@ class LatentTeam:
         if mode not in self.MODES:
             raise ValueError(f"Unknown thought mode: {mode}")
         start = time.perf_counter()
-        memory, mask = DynamicCache(), None
-        for index, role in enumerate(ROLES):
-            memory, mask = self.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions], steps,
-                                      mode=mode, first=index == 0)
+        memory, mask = self.working_memory(questions, steps, mode)
         answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
                                       max_new_tokens, first=False)
         self._sync()
