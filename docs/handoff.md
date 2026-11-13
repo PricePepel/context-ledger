@@ -159,7 +159,7 @@ Branch `ruslan/multi-llm`, based on `ruslan/latent-perf` (C11, PR #9). Card C12.
 
 - **M2a pool: any vLLM-served chat model.** It is measured on four families (Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), with no failed reads.
   - The one code change is in `runtime/latent_pool/vllm_client.py`. When a chat template refuses system messages (Mistral), the client folds the system text into the user message after the first refusal. The shared prefix stays first, so caching still works.
-  - Granite matches Qwen on accuracy, Mistral leads the dev set but cites less on the held-out set, and Llama 3.1 is weakest.
+  - Granite does at least as well as Qwen (better on the dev set, equal on the held-out set), Mistral leads the dev set but cites less on the held-out set, and Llama 3.1 is weakest.
   - Run another model with `LATENT_MODEL=<hf id>` for both `serve-vllm.sh` and the pool.
   - vLLM 0.33 refuses GPTQ checkpoints with `desc_act=True`.
 - **M2c latent team: any chat template.**

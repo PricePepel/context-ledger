@@ -292,7 +292,10 @@ class CachedTokenizerTest(unittest.TestCase):
     REAL = {"Qwen/Qwen2.5-0.5B-Instruct": QWEN, "Qwen/Qwen2.5-3B-Instruct": QWEN,
             "HuggingFaceTB/SmolLM2-360M-Instruct": SMOLLM,
             "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16": LLAMA,
-            "RedHatAI/Mistral-7B-Instruct-v0.3-quantized.w4a16": MISTRAL}
+            "RedHatAI/Mistral-7B-Instruct-v0.3-quantized.w4a16": MISTRAL,
+            # Cycle 12 names both; the PR #10 review found them missing here.
+            "microsoft/Phi-3.5-mini-instruct": PHI,
+            "RedHatAI/granite-3.1-8b-instruct-quantized.w4a16": GRANITE}
 
     def test_real_tokenizers_derive_the_fixture_turns(self):
         checked = 0
