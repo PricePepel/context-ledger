@@ -23,6 +23,6 @@ Claim a card before working on it (AGENTS.md section 2). States: Backlog, Ready,
 | G11 Graph diff between snapshots | Unassigned | — | What changed between two graphs of one party (added, removed, superseded nodes), for agents and for a room whose graph was republished | Backlog |
 | G12 Export for code-graph tools | Unassigned | — | Export a decision graph in a node-link JSON that code-graph tools such as Graphify can merge, so decisions can sit beside code | Backlog |
 | C11 Latent runtime performance baseline | Claude Code (for Ruslan) | `ruslan/latent-perf` | Measure time to first token, prefix-cache hit rate, tokens per second and memory per request on the 4090; then measure FP8 KV cache, n-gram speculative decoding, files on the WSL disk and FP8 weights | In progress |
-| C12 Multi-LLM latent runtime | Claude Code (for Ruslan) | after C11 | M2a pool on Llama 3.1, Mistral and Granite through vLLM; M2c latent team beyond ChatML (Phi-3.5, Granite) and on an untied model | Ready (after C11) |
+| C12 Multi-LLM latent runtime | Claude Code (for Ruslan) | `ruslan/multi-llm` (on C11) | M2a pool on Llama 3.1, Mistral and Granite through vLLM; M2c latent team beyond ChatML (Phi-3.5, Granite) and on an untied model | In progress |
 
 Cards marked "after P1" depend on the new storage layer; build them on `product/v1` once P1 is Done. Cards G7 to G12 come from a read of the public Graphify repository (2026-11-12): ideas only, no code copied.

@@ -839,3 +839,31 @@ A new harness, `evals/latent/perf.mjs`, sends the dev set (`questions.json`, 8 q
 - Each configuration runs 3 rounds of the 8 dev questions (24 reads) and produces a report with every metric present, or a stated reason why vLLM does not export it.
 - A quick win is recommended as a default only if it improves its target metric and loses at most one correct-and-cited answer out of 24 against A in the same session. Otherwise it is recorded and left off.
 - The numbers are for one laptop GPU and one synthetic fixture; the doc says so wherever they are quoted.
+
+## Cycle 12 — Multi-LLM latent runtime (defined 2026-11-12, before measuring)
+
+Card C12. Until now every latent measurement used Qwen, and the latent team (M2c) refused any chat template that was not ChatML. This cycle checks which parts work with other open model families and makes the latent team work with them.
+
+### What changes
+
+- **M2a pool:** no code change is expected. It talks to vLLM's OpenAI-compatible API, so any model vLLM can serve with a chat template should work. This cycle measures that instead of assuming it.
+- **M2c latent team:** the turn texts (the open turn a later agent writes and the text that closes a turn) are derived from the tokenizer's own chat template by rendering small conversations and taking string differences, in `runtime/latent_team/chat_turns.py`. The ChatML strings stay byte-identical, so earlier M2c results stay comparable. A template the derivation cannot handle is refused with an error naming the model. The stop tokens come from the tokenizer and generation config plus the derived close token, instead of a fixed list.
+- **M2b transfer:** unchanged. A mapper is trained for one sender and receiver pair, so another pair needs its own training run. This is recorded, not built.
+
+### Models
+
+All are public, with no license gate and no custom code, loaded from their safetensors only:
+
+- Qwen2.5-7B-Instruct-AWQ: the reference.
+- Llama 3.1 8B Instruct, AWQ INT4 (`hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4`, Llama 3.1 Community License).
+- Mistral 7B Instruct v0.3, GPTQ 4-bit (`RedHatAI/Mistral-7B-Instruct-v0.3-GPTQ-4bit`, Apache-2.0).
+- Granite 3.1 8B Instruct, W4A16 (`RedHatAI/granite-3.1-8b-instruct-quantized.w4a16`, Apache-2.0).
+- For M2c, which runs unquantized in transformers: Phi-3.5-mini-instruct (MIT). It is not ChatML, and it has separate input and output embeddings, so it also covers the untied case that cycle 9 left open.
+- vLLM 0.33.0 refuses GPTQ checkpoints with `desc_act=True` (the RedHat W4A16 builds of Llama 3.1 and Mistral v0.3), which is why the AWQ and `desc_act=False` builds are used.
+
+### Acceptance
+
+- Unit tests without a GPU or network: for each of seven template families (Qwen2.5, SmolLM2, Phi-3.5, Llama 3.1, Mistral v0.3, Granite 3.1, OLMo-2), the first turn, a later turn with no system block, and the close turn. ChatML must stay byte-identical. A regression test fails on the a8808ad bug for templates that inject a default system block.
+- A check on the real cached tokenizers derives the turns for Qwen2.5, SmolLM2, Phi-3.5, Llama 3.1, Mistral v0.3 and Granite 3.1.
+- **M2a live:** each model runs the dev and held-out sets, 3 rounds each, through the unchanged pool, with the cycle 11 harness on the dev set. The result per family is its accuracy and citations next to the Qwen reference, plus its performance figures. A family "works" when every read returns a graph (no runtime errors). Its accuracy is reported, not gated, because these are untuned models.
+- **M2c live:** `latent_team.evaluate` on Phi-3.5-mini with the same protocol as cycle 9 (single, text_mas, latent_mas and the random control), on a disjoint block. It "works" when every system runs end to end and the random control scores below latent_mas. Whether latent_mas beats single is reported, not required.
