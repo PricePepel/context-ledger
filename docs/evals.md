@@ -1060,3 +1060,50 @@ Smoke runs on 16 train questions at m = 10, with all three subagents keeping gra
 | 3, LoRA rank 16 on `qkv_proj` and `o_proj` | 9,437,184 | 5.6 | 13.3 GB |
 
 Runs queued: level 2 on 1,000 train questions (lr 1e-3, accumulation 8), then level 3 on 2,000 (lr 2e-4, alpha 32, accumulation 8), one epoch each. Each is evaluated on the same 100 tuning questions before block 4 is opened.
+
+### Levels 2 and 3 results (tuning questions, 2026-11-13)
+
+**Memory.** The first full runs stopped with "CUDA driver error: out of memory" within minutes. Phi-3.5-mini has no grouped-query attention, so every latent step keeps a full key and value copy for the backward pass, and the cost grows with the prompt. Peak memory by example length, measured on the train split (prompt p50 / p90 / max 93 / 130 / 259 tokens):
+
+| Subagents keeping gradients | Median | p90 | p99 | Longest |
+|---|---|---|---|---|
+| 3 | 12.72 GB | 14.36 GB | 14.42 GB | out of memory |
+| 2 | 11.67 GB | 13.05 GB | 13.15 GB | out of memory |
+| 1 | 10.11 GB | 11.05 GB | 11.22 GB | 13.88 GB |
+
+The runs use two subagents with gradients (the first runs without; all three still run) and skip prompts over 160 tokens (`--max-prompt-tokens`, 8bfbf51). The worst kept case, a 160-token prompt with a 256-token target, peaks at 13.55 GB.
+
+| Run | Examples kept | Skipped (prompt / target) | Steps | Final logged loss | Peak memory | Hours |
+|---|---|---|---|---|---|---|
+| Level 2, adapter rank 16, lr 1e-3 | 947 of 1,000 | 49 / 4 | 119 | 0.835 → 0.645 | 12.25 GB | 0.77 |
+| Level 3, LoRA rank 16, alpha 32, lr 2e-4 | 1,893 of 2,000 | 94 / 13 | 237 | 0.626 → 0.424 | 13.46 GB | 2.04 |
+
+Tuning questions 600–699, same weights for every system in a run:
+
+| Run | single | soft @10 | random @10 | soft @40 | random @40 |
+|---|---|---|---|---|---|
+| Level 2 adapter | 0.86 | 0.83 | 0.88 | 0.85 | 0.84 |
+| Level 3 LoRA | 0.79 | 0.80 | 0.81 | 0.77 | 0.79 |
+
+| Comparison | Split | p |
+|---|---|---|
+| Level 2 soft @10 vs random | 2 / 7 | 0.18 |
+| Level 2 soft @40 vs random | 6 / 5 | 1.00 |
+| Level 3 soft @10 vs random | 4 / 5 | 1.00 |
+| Level 3 soft @40 vs random | 2 / 4 | 0.69 |
+
+- Neither trained level beats the random control on the tuning questions.
+- The LoRA lowers single from 0.86 to 0.79 and shortens answers from 263 to 90 tokens: it learned the terse GSM8K solution style, which costs Phi-3.5-mini accuracy. Every system in that run carries the same LoRA, so the comparison with random is still fair.
+- The adapter roughly halves the answer length of soft thoughts at m = 10 (107 tokens against 226 for random) without changing accuracy.
+
+### Block 4 choices (fixed 2026-11-13, before block 4 is run)
+
+One setting per level, each the best gap to random on the tuning questions:
+
+| Level | Setting | Systems |
+|---|---|---|
+| 1 | soft, top-k 4, T 0.5, m = 40, no training | single, text_mas, latent_mas, latent_random |
+| 2 | adapter (l2-adapter), m = 40 | single, latent_mas, latent_random |
+| 3 | LoRA (l3-lora), m = 10 | single, latent_mas, latent_random |
+
+Block 4 is questions 800–999 of the seed-0 shuffle (`--count 200 --block 4`), batch 4. Each level is judged by its own McNemar test against random at p < 0.05. Three tests are run, so a single p just under 0.05 is read with that in mind.
