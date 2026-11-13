@@ -3,7 +3,9 @@ test_latent_training. No download, no GPU."""
 import json
 import os
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 from test_latent_training import HAVE_TORCH, QUESTION, SOLUTION, tiny_team, train_args
 
@@ -68,6 +70,54 @@ class DistillRunTest(unittest.TestCase):
             # The random tiny model gets nothing right, so nothing is kept.
             self.assertEqual(data["kept"], 0)
             self.assertEqual(load_targets(path, "tiny-llama"), {})
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class DistillThenTrainTest(unittest.TestCase):
+    """Both CLIs on their own sampling, with the dataset loader replaced (Codex review of a420d9d:
+    the earlier tests passed items in, so a different sample or a broken scorer went unseen)."""
+
+    ROWS = [{"question": f"Train question {i}?", "gold": float(i), "solution": f"#### {i}"} for i in range(12)]
+
+    def test_the_kept_answer_is_the_right_stopped_one_and_both_clis_sample_the_same_questions(self):
+        from latent_team import distill, train
+        from latent_team.distill import load_targets
+        from latent_team.train import train_items
+        splits = []
+
+        def loader(split="test"):
+            splits.append(split)
+            return [dict(row) for row in self.ROWS]
+
+        with mock.patch("latent_team.evaluate.gsm8k", loader):
+            sample = train_items(3, 7)
+            team = tiny_team()
+            budget = 40
+            # Controlled single answers: right and stopped, wrong, right but cut at the budget.
+            replies = {sample[0]["question"]: (f"Step. The answer is {sample[0]['gold']:g}.", 12),
+                       sample[1]["question"]: ("The answer is -1.", 5),
+                       sample[2]["question"]: (f"The answer is {sample[2]['gold']:g}", budget)}
+            seen = []
+
+            def single(questions, max_new_tokens=512):
+                self.assertEqual(max_new_tokens, budget)
+                seen.extend(questions)
+                rows = [replies[q] for q in questions]
+                return [r[0] for r in rows], types.SimpleNamespace(generated_tokens=[r[1] for r in rows])
+
+            team.single = single
+            with tempfile.TemporaryDirectory() as out:
+                path = os.path.join(out, "t.json")
+                data = distill.main(["--train-count", "3", "--seed", "7", "--batch", "2", "--max-new-tokens",
+                                     str(budget), "--device", "cpu", "--out", path], team=team, log=lambda line: None)
+                self.assertEqual(seen, [item["question"] for item in sample])  # train.py's sample, in order
+                self.assertEqual((data["correct"], data["kept"]), (2, 1))
+                self.assertEqual(load_targets(path, "tiny-llama"), {sample[0]["question"]: replies[sample[0]["question"]][0]})
+                record_ = train.main(["--level", "lora", "--steps", "1", "--train-count", "3", "--seed", "7",
+                                      "--grad-accum", "1", "--lora-rank", "2", "--device", "cpu", "--targets", path,
+                                      "--out", out], team=tiny_team(), log=lambda line: None)
+        self.assertEqual((record_["examples"], record_["noTarget"], record_["targetSource"]), (1, 2, "self"))
+        self.assertEqual(set(splits), {"train"})  # the test split is never read
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch is not installed")
