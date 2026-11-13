@@ -85,6 +85,10 @@ class TargetTextTest(unittest.TestCase):
                 parser().parse_args(argv)
         args = parser().parse_args(["--level", "lora", "--out", "x", "--grad-accum", "0", "--lr", "0"])
         self.assertEqual(len(check(args)), 2)
+        # Codex review of 2d11edb: an adapter with no latent step has nothing to train.
+        zero = parser().parse_args(["--level", "adapter", "--steps", "0", "--out", "x"])
+        self.assertEqual(check(zero), ["--level adapter needs --steps of at least 1"])
+        self.assertEqual(check(parser().parse_args(["--level", "lora", "--steps", "0", "--out", "x"])), [])
         defaults = parser().parse_args(["--level", "lora", "--out", "x"])
         self.assertEqual((defaults.steps, defaults.train_count, defaults.mode), (10, 2000, "soft"))
         self.assertEqual(check(defaults), [])
@@ -137,6 +141,32 @@ class AdapterTest(unittest.TestCase):
         torch.manual_seed(11)
         b, _ = adapted.working_memory([QUESTION], 3, "random")
         self.assertTrue(torch.equal(a.layers[-1].keys, b.layers[-1].keys))
+
+    def test_an_adapted_thought_keeps_the_unadapted_norm_so_the_control_stays_norm_matched(self):
+        # Codex review of 2d11edb: a large correction made soft thoughts much longer than
+        # the random control, so a win could come from magnitude rather than content.
+        plain, adapted = tiny_team(), tiny_team()
+        adapted.adapter = self.fresh_adapter(adapted)
+        torch.nn.init.normal_(adapted.adapter.B.weight, std=50.0)  # a correction that dominates
+        hidden = torch.randn(3, 32)
+        for mode in ("soft", "aligned"):
+            before = plain.thought(hidden, mode)
+            after = adapted.thought(hidden, mode)
+            self.assertFalse(torch.allclose(before, after), mode)
+            self.assertTrue(torch.allclose(after.norm(dim=-1), before.norm(dim=-1), rtol=1e-5), mode)
+        torch.manual_seed(3)
+        control = adapted.thought(hidden, "random")
+        self.assertTrue(torch.allclose(control.norm(dim=-1), adapted.thought(hidden, "soft").norm(dim=-1), rtol=1e-5))
+
+    def test_the_last_partial_window_is_a_mean_over_its_own_examples(self):
+        from latent_team.train import rescale_remainder
+        weight = torch.nn.Parameter(torch.zeros(2))
+        grad_accum = 8
+        (weight * torch.tensor([3.0, 5.0])).sum().div(grad_accum).backward()  # one example in the window
+        rescale_remainder([weight], grad_accum, 1)
+        self.assertTrue(torch.allclose(weight.grad, torch.tensor([3.0, 5.0])), "one example's full gradient, not 1/8")
+        with self.assertRaises(ValueError):
+            rescale_remainder([weight], grad_accum, 0)
 
     def test_an_adapter_for_another_width_is_refused(self):
         from latent_team.adapter import ThoughtAdapter

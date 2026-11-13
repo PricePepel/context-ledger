@@ -90,10 +90,24 @@ def parser():
     return p
 
 
+def rescale_remainder(params, grad_accum, pending):
+    """An epoch's last, partial window: each loss was divided by grad_accum, so scale the
+    summed gradients up to the mean over the `pending` examples actually in the window.
+    Without this the last update is grad_accum / pending times too small (Codex review of 2d11edb)."""
+    if not 0 < pending <= grad_accum:
+        raise ValueError(f"pending {pending} is outside 1..{grad_accum}")
+    for param in params:
+        if param.grad is not None:
+            param.grad.mul_(grad_accum / pending)
+
+
 def check(args):
     problems = []
     if args.steps < 0:
         problems.append("--steps must be 0 or more")
+    if args.steps == 0 and args.level == "adapter":
+        # With no latent step the adapter is never called and nothing would train.
+        problems.append("--level adapter needs --steps of at least 1")
     for name in ("rank", "lora_rank", "epochs", "grad_accum", "max_target_tokens", "log_every", "train_count"):
         if getattr(args, name) < 1:
             problems.append(f"--{name.replace('_', '-')} must be at least 1")
@@ -225,7 +239,8 @@ def train(team, items, args, log=_print):
                 optimizer_step()
                 pending = 0
         if pending:
-            optimizer_step()  # the epoch's remainder (its gradients were divided by grad_accum)
+            rescale_remainder(params, args.grad_accum, pending)
+            optimizer_step()
         if team.adapter is not None:
             team.adapter.eval()
         set_lora_training(team.model, False)

@@ -227,9 +227,16 @@ class LatentTeam:
         return noise * (soft.norm(dim=-1, keepdim=True) / noise.norm(dim=-1, keepdim=True))
 
     def _adapted(self, vector, hidden):
+        """The adapter's correction, rescaled to the unadapted thought's norm.
+
+        The random control is noise at the unadapted soft norm, so an adapted thought
+        must keep that norm too: otherwise a trained win could come from magnitude, not
+        content (Codex review of 2d11edb). The adapter can turn the thought, not grow it.
+        """
         if self.adapter is None:
             return vector
-        return vector + self.adapter(hidden)
+        adapted = vector + self.adapter(hidden)
+        return adapted * (vector.norm(dim=-1, keepdim=True) / adapted.norm(dim=-1, keepdim=True).clamp(min=1e-6))
 
     MODES = ("soft", "aligned", "random")
 
