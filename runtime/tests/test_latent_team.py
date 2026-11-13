@@ -231,5 +231,24 @@ class SampleTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             sample_block(exact, 200, 3, 5)
 
+
+class McNemarTest(unittest.TestCase):
+    def test_counts_and_exact_p(self):
+        from latent_team.evaluate import mcnemar
+        row = lambda ok: {"correct": ok}
+        # The cycle 12 Phi split: 13 against 11 discordant questions, p = 0.8388.
+        a = [row(True)] * 13 + [row(False)] * 11 + [row(True)] * 150 + [row(False)] * 26
+        b = [row(False)] * 13 + [row(True)] * 11 + [row(True)] * 150 + [row(False)] * 26
+        self.assertEqual(mcnemar(a, b), {"aOnly": 13, "bOnly": 11, "p": 0.8388})
+        # A clear split: 20 against 3 gives p = 0.0005 (2 * P[X <= 3], X ~ Bin(23, 1/2)).
+        a = [row(True)] * 20 + [row(False)] * 3
+        b = [row(False)] * 20 + [row(True)] * 3
+        self.assertEqual(mcnemar(a, b), {"aOnly": 20, "bOnly": 3, "p": 0.0005})
+        # No discordant question: no evidence either way.
+        self.assertEqual(mcnemar([row(True)], [row(True)]), {"aOnly": 0, "bOnly": 0, "p": 1.0})
+        with self.assertRaises(ValueError):
+            mcnemar([row(True)], [])
+
+
 if __name__ == "__main__":
     unittest.main()
