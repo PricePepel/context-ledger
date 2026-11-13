@@ -277,8 +277,12 @@ export function kvDtypeMismatch(flag, serverDtype) {
 // would run a different number of rounds than the report states.
 export function parseRepeat(value) {
   const text = String(value ?? '').trim();
-  if (!/^[1-9][0-9]*$/u.test(text)) throw new Error(`--repeat must be a positive whole number, got ${JSON.stringify(value)}.`);
-  return Number(text);
+  const repeat = Number(text);
+  // The safe-integer check also refuses digit strings that overflow to Infinity or round.
+  if (!/^[1-9][0-9]*$/u.test(text) || !Number.isSafeInteger(repeat)) {
+    throw new Error(`--repeat must be a positive whole number, got ${JSON.stringify(value)}.`);
+  }
+  return repeat;
 }
 
 // The model whose series the report reads. An explicit --model must be one that

@@ -683,7 +683,10 @@ test('perf.mjs refuses a --repeat that is not a positive whole number, before an
 test('parseRepeat, chooseModel and nvidiaSmiArgs', () => {
   assert.equal(parseRepeat('3'), 3);
   assert.equal(parseRepeat(' 12 '), 12);
-  for (const bad of ['Infinity', '1.5', '0', '', '1e3', '-1', undefined]) assert.throws(() => parseRepeat(bad), /positive whole number/u, String(bad));
+  for (const bad of ['Infinity', '1.5', '0', '', '1e3', '-1', undefined, '9'.repeat(309), '9007199254740993']) {
+    assert.throws(() => parseRepeat(bad), /positive whole number/u, String(bad).slice(0, 20));
+  }
+  assert.equal(parseRepeat('9007199254740991'), Number.MAX_SAFE_INTEGER, 'the largest safe integer is still accepted');
   assert.equal(chooseModel(['a/b'], undefined), 'a/b');
   assert.equal(chooseModel(['a/b', 'c/d'], 'c/d'), 'c/d');
   assert.throws(() => chooseModel(['a/b'], 'x/y'), /--model x\/y is not served/u);
