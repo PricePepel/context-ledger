@@ -893,6 +893,11 @@ Configurations: A = Qwen2.5-7B-Instruct-AWQ, default settings (FLASH_ATTN). A-tr
 
 ### Suites and review
 
-- Node 165/166 (one skipped); `tests/perf.test.mjs` 26/26 runs without a GPU.
+- Node 168/169 (one skipped); `tests/perf.test.mjs` 29/29 runs without a GPU. Graph 9/9, Playwright 13/13, runtime unittest OK (24 skipped).
 - The `serve-vllm.sh` switches were checked with a stub `vllm` that prints its arguments: default, `VLLM_NGRAM=1`, `VLLM_KV_FP8=1` and both.
 - **Harness reviews:** the harness was built by a Claude subagent, then reviewed by Codex and a separate Claude reviewer. They raised nine findings: mid-run restarts, failed scrapes, failed reads in latency, a lost in-flight KV sample, an unchecked `--kv-dtype`, the TPOT fallback, a correct-and-cited count and missing tests. All nine are fixed with tests in de4e060. The speculative-decoding counters were added in c224f74.
+- **PR review:** a second Codex pass covered the whole PR, including a data check that recomputed every figure in this section from the raw reports and vLLM logs. It confirmed the main comparisons: D is 29.2% faster at p50 with 37.3% more throughput and 32.6% of drafts accepted; B-C is 15.5% faster; B is 3.31× A. It raised eight findings, all fixed in b451511, each code fix with a test:
+  - An explicit `--model` that vLLM does not serve is now refused.
+  - `nvidia-smi` samples one GPU (`--gpu`).
+  - `--repeat` must be a positive whole number.
+  - Five wording fixes: the sampled peak, MiB units, the mean upper bound, six calls per successful read, and the 3.1% output spread.
