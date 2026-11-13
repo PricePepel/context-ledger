@@ -140,7 +140,10 @@ def main():
     warm = [item["question"] for item in items[:args.batch]]
     team.single(warm, max_new_tokens=8)
     team.latent_mas(warm, steps=2, max_new_tokens=8)
-    report = {"model": args.model, "sample": {"seed": args.seed, "block": args.block, "count": args.count}, "systems": {}}
+    # The turn texts come from the model's chat template; recorded so runs on different
+    # families can be read side by side.
+    report = {"model": args.model, "sample": {"seed": args.seed, "block": args.block, "count": args.count},
+              "chatTemplate": team.turns.as_dict(), "stopTokenIds": sorted(team.eos), "systems": {}}
     for system in args.systems.split(","):
         latent = system in LATENT_MODES
         for steps in ([int(s) for s in args.steps.split(",")] if latent else [0]):

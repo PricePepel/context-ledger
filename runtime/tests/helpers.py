@@ -14,8 +14,19 @@ from latent_pool.vllm_client import VllmClient
 MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 
 
+def split_messages(body):
+    """(system, user) of a request, also when the client folded the system text into
+    the user message (a template that refuses system messages): it splits at the ROLE line."""
+    messages = body["messages"]
+    if len(messages) == 2:
+        return messages[0]["content"], messages[1]["content"]
+    content = messages[0]["content"]
+    at = content.find("\n\nROLE: ")
+    return (content[:at], content[at + 2:]) if at >= 0 else ("", content)
+
+
 def role_of(body):
-    user = body["messages"][1]["content"]
+    user = split_messages(body)[1]
     first = user.split("\n", 1)[0]
     return first[len("ROLE: "):] if first.startswith("ROLE: ") else "unknown"
 
@@ -43,8 +54,11 @@ class FakeVllm:
     (content, finish_reason) tuple. Requests are recorded in self.requests.
     """
 
-    def __init__(self, replies=None, report_cache=True, status=200, error_message="fake failure"):
+    def __init__(self, replies=None, report_cache=True, status=200, error_message="fake failure", reject_system=False):
         self.replies = dict(replies or {})
+        # Like Mistral v0.3's chat template: any system message is refused with HTTP 400.
+        self.reject_system = reject_system
+        self.rejected = 0
         self.error_message = error_message
         self.report_cache = report_cache
         self.status = status
@@ -85,7 +99,7 @@ class FakeVllm:
 
     def systems(self):
         with self.lock:
-            return [request["messages"][0]["content"] for request in self.requests]
+            return [split_messages(request)[0] for request in self.requests]
 
     def roles(self):
         with self.lock:
@@ -96,8 +110,13 @@ class FakeVllm:
             return 404, {"error": "not found"}
         if self.status != 200:
             return self.status, {"object": "error", "message": self.error_message, "code": self.status}
+        if self.reject_system and any(message["role"] == "system" for message in body["messages"]):
+            with self.lock:
+                self.rejected += 1
+            return 400, {"object": "error", "code": 400,
+                         "message": "Conversation roles must alternate user/assistant/user/assistant/..."}
         role = role_of(body)
-        system, user = body["messages"][0]["content"], body["messages"][1]["content"]
+        system, user = split_messages(body)
         with self.lock:
             self.requests.append(body)
             warm = system in self._seen_systems

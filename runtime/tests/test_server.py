@@ -330,6 +330,115 @@ class ModelErrorTest(unittest.TestCase):
         self.check(FakeVllm(status=500), 502)
 
 
+class SystemRoleRefusedTest(unittest.TestCase):
+    """C12: a chat template that refuses system messages (Mistral v0.3) still reads."""
+
+    def read(self, service):
+        return service.request("POST", "/latent/read",
+                               {"paths": PATHS, "question": "What is a3?", "budgetTokens": 600, "workers": 3})
+
+    def test_refused_system_message_is_folded_into_the_user_message_and_stays_folded(self):
+        fake = FakeVllm(reject_system=True)
+        service = Service(fake.url, files=FILES)
+        try:
+            status, payload = self.read(service)
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(fake.rejected, 1, "only the first call is refused; later calls fold at once")
+            status, payload = self.read(service)
+            self.assertEqual(status, 200, payload)
+            self.assertEqual(fake.rejected, 1)
+            self.assertTrue(fake.requests)
+            for request in fake.requests:
+                self.assertEqual([message["role"] for message in request["messages"]], ["user"])
+            # The folded message opens with the same system text, so the shared prefix
+            # is still the start of every prompt and the second read hits the cache.
+            systems = set(fake.systems())
+            self.assertEqual(len(systems), 1)
+            self.assertTrue(next(iter(systems)))
+            self.assertGreater(payload["receipt"]["calls"][0]["cachedTokens"], 0)
+        finally:
+            service.close()
+            fake.close()
+
+    def test_a_template_that_accepts_system_messages_is_never_folded(self):
+        fake = FakeVllm()
+        service = Service(fake.url, files=FILES)
+        try:
+            status, payload = self.read(service)
+            self.assertEqual(status, 200, payload)
+            for request in fake.requests:
+                self.assertEqual([message["role"] for message in request["messages"]], ["system", "user"])
+        finally:
+            service.close()
+            fake.close()
+
+    def scripted(self, steps):
+        """A /chat/completions that answers each request with the next (delay, status, body)."""
+        import threading
+        import time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        script = list(steps)
+        lock = threading.Lock()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                with lock:
+                    delay, status, body = script.pop(0) if len(script) > 1 else script[0]
+                time.sleep(delay)
+                data = json.dumps(body).encode()
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except OSError:
+                    pass  # the client gave up first
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/v1"
+
+    REFUSAL = {"object": "error", "code": 400, "message": "Conversation roles must alternate user/assistant/user/assistant/..."}
+    OK = {"choices": [{"message": {"content": "fine"}, "finish_reason": "stop"}],
+          "usage": {"prompt_tokens": 3, "completion_tokens": 1}}
+
+    def test_the_retry_gets_only_the_rest_of_the_call_budget(self):
+        # Codex review of 104c41e: the retry used to get the full timeout again, so a
+        # slow refusal could hold a pool slot past the request deadline.
+        from latent_pool import ApiError
+        from latent_pool.vllm_client import VllmClient
+        client = VllmClient(self.scripted([(0.3, 400, self.REFUSAL), (0.3, 200, self.OK)]), MODEL, timeout=10)
+        with self.assertRaises(ApiError) as caught:
+            client.chat("system", "ROLE: reader\nq", 8, timeout=0.45)
+        self.assertEqual(caught.exception.status, 502)
+        self.assertTrue(client.fold_system)
+
+    def test_the_receipt_time_covers_the_refused_attempt(self):
+        from latent_pool.vllm_client import VllmClient
+        client = VllmClient(self.scripted([(0.15, 400, self.REFUSAL), (0.15, 200, self.OK)]), MODEL, timeout=10)
+        result = client.chat("system", "ROLE: reader\nq", 8)
+        self.assertEqual(result.content, "fine")
+        self.assertGreaterEqual(result.ms, 300, "both attempts are timed, not only the retry")
+
+    def test_a_refusal_after_folding_is_a_502_not_a_loop(self):
+        fake = FakeVllm(status=400, error_message="Conversation roles must alternate user/assistant/user/assistant/...")
+        service = Service(fake.url, files=FILES)
+        try:
+            status, _ = service.request("POST", "/latent/warm", {"paths": PATHS})
+            self.assertEqual(status, 502)
+        finally:
+            service.close()
+            fake.close()
+
+
 class InputValidationTest(ServiceCase):
     def assert_status(self, expected, *args, **kwargs):
         status, payload = self.service.request(*args, **kwargs)
