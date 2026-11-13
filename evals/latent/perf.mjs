@@ -11,7 +11,9 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { gradeSlice } from './grade.mjs';
-import { delta, kvBytesPerToken, parsePrometheus, readStats, readTokens, snapshot, summarizeRun } from './perf-lib.mjs';
+import {
+  delta, kvBytesPerToken, kvDtypeMismatch, measureReads, parsePrometheus, snapshot, startKvPoller, summarizeRun,
+} from './perf-lib.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -57,7 +59,8 @@ async function scrape() {
   return parsePrometheus(await response.text());
 }
 
-// A failed scrape mid-run leaves that read's delta null instead of stopping the run.
+// A failed scrape mid-run resolves to null instead of stopping the run; measureReads
+// then takes a fresh baseline before the next read.
 async function take(model) {
   try {
     return snapshot(await scrape(), { model });
@@ -114,26 +117,6 @@ function startGpuSampler(command) {
   };
 }
 
-// Polls the KV-cache usage gauge while a read runs; the gauge is near zero between reads.
-function startKvPoller(model) {
-  let peak = null;
-  let busy = false;
-  const timer = setInterval(async () => {
-    if (busy) return;
-    busy = true;
-    const current = await take(model).catch(() => null);
-    const usage = current?.gauges['vllm:kv_cache_usage_perc'];
-    if (Number.isFinite(usage)) peak = peak === null ? usage : Math.max(peak, usage);
-    busy = false;
-  }, 200);
-  return { stop: () => { clearInterval(timer); return peak; } };
-}
-
-const maxOf = (...items) => {
-  const finite = items.filter(Number.isFinite);
-  return finite.length ? Math.max(...finite) : null;
-};
-
 const gpu = startGpuSampler(values['nvidia-smi']);
 const stopGpu = () => gpu.stop();
 process.once('SIGINT', () => { stopGpu(); process.exit(130); });
@@ -142,64 +125,38 @@ try {
   const models = snapshot(firstSeries).models;
   const model = values.model ?? (models.length === 1 ? models[0] : null);
   if (!model) throw new Error(`/metrics names ${models.length ? `several models (${models.join(', ')}); pass --model` : 'no model'}.`);
-  await gpu.first;
   const start = snapshot(firstSeries, { model });
-  const reads = [];
-  let before = start;
-  let end = start;
-  for (let round = 1; round <= repeat; round += 1) {
-    for (const question of set.questions) {
-      const poller = startKvPoller(model);
-      const started = Date.now();
-      let data = null;
-      let error = null;
-      try {
-        data = await ask(question);
-      } catch (failure) {
-        error = failure.message;
-      }
-      const ms = Date.now() - started;
-      const pollPeak = poller.stop();
-      const after = await take(model);
-      const readDelta = before && after ? delta(before, after) : null;
-      const grade = data ? gradeSlice(question, data.graph) : { id: question.id, correct: false, cited: false };
-      const calls = (data?.receipt?.calls ?? []).map(call => ({
-        role: call.role ?? null, promptTokens: call.promptTokens ?? 0, cachedTokens: call.cachedTokens ?? 0,
-        completionTokens: call.completionTokens ?? 0, ms: call.ms ?? null,
-      }));
-      const promptTokens = calls.reduce((total, call) => total + call.promptTokens, 0);
-      const read = {
-        round, ...grade, ...(error ? { error } : {}), ms, calls,
-        tokens: readTokens({ calls }),
-        receiptCachedShare: promptTokens > 0 ? calls.reduce((total, call) => total + call.cachedTokens, 0) / promptTokens : null,
-        ...readStats(readDelta),
-        kvUsagePeak: maxOf(pollPeak, after?.gauges['vllm:kv_cache_usage_perc']),
-        answer: data?.graph?.answer ?? '',
-        delta: readDelta,
-      };
-      reads.push(read);
-      before = after;
-      if (after) end = after;
-      const ttft = read.ttftMean === null ? 'n/a' : `${(read.ttftMean * 1000).toFixed(0)}ms`;
-      console.log(error
-        ? `round ${round} ${question.id}: FAILED ${error}`
-        : `round ${round} ${question.id}: correct=${grade.correct} cited=${grade.cited} ${ms}ms ttft=${ttft} hit=${read.hitRate?.toFixed(3) ?? 'n/a'} gen=${read.generatedTokens ?? 'n/a'}`);
-    }
-  }
+  const mismatch = kvDtypeMismatch(kvDtype, start.kvPool?.cacheDtype);
+  if (mismatch) throw new Error(mismatch);
+  await gpu.first;
+  const { reads, end, covered, restarted } = await measureReads({
+    questions: set.questions,
+    repeat,
+    start,
+    ask,
+    take: () => take(model),
+    grade: gradeSlice,
+    poll: () => startKvPoller(async () => (await take(model))?.gauges['vllm:kv_cache_usage_perc'] ?? null),
+    log: line => console.log(line),
+  });
   const totalDelta = delta(start, end);
   const gpuSamplesMiB = gpu.samples();
-  const wallMs = reads.reduce((total, read) => total + read.ms, 0);
-  const summary = summarizeRun({ reads, totalDelta, gpuSamplesMiB, kvPool: end.kvPool ?? start.kvPool, bytesPerToken, wallMs });
+  const summary = summarizeRun({
+    reads, totalDelta, coveredReads: covered, restarted, gpuSamplesMiB, kvPool: end.kvPool ?? start.kvPool, bytesPerToken,
+  });
   const fmt = (value, digits = 3) => (value === null || value === undefined ? 'n/a' : Number(value).toFixed(digits));
   console.log(`config ${values.label || '(no label)'} model ${model}: ${reads.length} reads`);
-  console.log(`  accuracy ${summary.accuracy.correct}/${summary.accuracy.total} correct, ${summary.accuracy.cited}/${summary.accuracy.total} cited`);
+  console.log(`  accuracy ${summary.accuracy.correct}/${summary.accuracy.total} correct, ${summary.accuracy.cited}/${summary.accuracy.total} cited, ${summary.accuracy.correctAndCited}/${summary.accuracy.total} both`);
   console.log(`  ttft mean ${fmt(summary.ttft?.mean)}s p50 ${fmt(summary.ttft?.p50)}s p90 ${fmt(summary.ttft?.p90)}s over ${summary.vllmCalls ?? 'n/a'} calls`);
   console.log(`  prefix cache hit ${fmt(summary.prefixCache.hitRate)} receipts cached ${fmt(summary.prefixCache.receiptCachedShare)}`);
   console.log(`  tokens/s decode ${fmt(summary.tokensPerSecond.perRequestDecode, 1)} aggregate ${fmt(summary.tokensPerSecond.aggregate, 1)}`);
   console.log(`  read ms p50 ${fmt(summary.latency.readMs.p50, 0)} p90 ${fmt(summary.latency.readMs.p90, 0)} mean ${fmt(summary.latency.readMs.mean, 0)}`);
   console.log(`  gpu MiB idle ${summary.memory.gpuUsedMiB?.idle ?? 'n/a'} peak ${summary.memory.gpuUsedMiB?.peak ?? 'n/a'}; kv pool ${summary.memory.kvPool?.tokens ?? 'n/a'} tokens; peak kv use ${fmt(summary.memory.peakKvUsage)}; kv MiB/read mean ${fmt(summary.memory.kvMiBPerRead?.mean, 1)} max ${fmt(summary.memory.kvMiBPerRead?.max, 1)}`);
-  console.log(`  cold read ${summary.cold?.readMs ?? 'n/a'}ms vs steady ${fmt(summary.cold?.steadyReadMs, 0)}ms`);
+  console.log(`  cold read ${summary.cold?.failed ? 'failed' : `${summary.cold?.readMs ?? 'n/a'}ms`} vs steady ${fmt(summary.cold?.steadyReadMs, 0)}ms; ${summary.latency.failedReads} failed reads left out of latency`);
   if (summary.serverReset) console.log('  vLLM restarted during the run: whole-run counters are not usable.');
+  if (summary.metricsCoverage.reads < summary.metricsCoverage.total) {
+    console.log(`  whole-run vLLM figures cover ${summary.metricsCoverage.reads} of ${summary.metricsCoverage.total} reads (final /metrics scrapes failed).`);
+  }
   if (summary.missing.length) console.log(`  missing: ${summary.missing.join(', ')}`);
   const report = {
     label: values.label || null, model, date: new Date().toISOString(), ledger, vllm, set: values.set, repeat,

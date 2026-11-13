@@ -1,6 +1,8 @@
-// Pure helpers for the latent runtime performance harness (card C11, docs/evals.md
-// "Cycle 11"). No I/O: perf.mjs fetches vLLM's Prometheus /metrics and nvidia-smi
-// samples and hands the text and numbers to these functions.
+// Helpers for the latent runtime performance harness (card C11, docs/evals.md
+// "Cycle 11"). No direct I/O: perf.mjs fetches vLLM's Prometheus /metrics and
+// nvidia-smi samples and hands the text and numbers to these functions, and the
+// measurement loop (measureReads) and KV poller (startKvPoller) take their I/O as
+// functions so tests can script failed scrapes and server restarts.
 
 export const COUNTERS = [
   'vllm:prefix_cache_queries_total',
@@ -27,6 +29,8 @@ export const HISTOGRAMS = [
 export const GAUGES = ['vllm:kv_cache_usage_perc', 'vllm:num_requests_running'];
 
 export const CACHE_CONFIG = 'vllm:cache_config_info';
+
+const PROCESS_START = 'process_start_time_seconds';
 
 const MIB = 1024 * 1024;
 
@@ -163,14 +167,21 @@ export function snapshot(series, { model } = {}) {
   }
   if (!kvPool) missing.push(CACHE_CONFIG);
   const models = [...new Set(kept.map(entry => entry.labels.model_name).filter(name => name !== undefined))];
-  return { models, counters, histograms, gauges, kvPool, missing };
+  // Used only to detect a restart; not every vLLM build exports it, so it is not listed in `missing`.
+  const started = byName.get(PROCESS_START)?.[0]?.value;
+  const processStart = Number.isFinite(started) ? started : null;
+  return { models, counters, histograms, gauges, kvPool, processStart, missing };
 }
 
 // after - before for counters and histograms. A counter, histogram count, sum or
-// bucket that went down means the server restarted between the scrapes, so the
-// delta is { reset: true } rather than negative numbers.
+// bucket that went down, or a changed process start time, means the server
+// restarted between the scrapes, so the delta is { reset: true } rather than
+// negative (or silently too small) numbers.
 export function delta(before, after) {
   const missing = [...new Set([...before.missing, ...after.missing])];
+  if (Number.isFinite(before.processStart) && Number.isFinite(after.processStart) && before.processStart !== after.processStart) {
+    return { reset: true, missing };
+  }
   const counters = {};
   for (const name of COUNTERS) {
     const a = before.counters[name];
@@ -235,12 +246,27 @@ export function percentile(values, p) {
 
 const KV_BYTES = { auto: 2, bfloat16: 2, float16: 2 };
 
+// Bytes per stored KV value for a vLLM --kv-cache-dtype; undefined when unknown.
+export function kvBytesPerValue(kvDtype) {
+  const dtype = String(kvDtype).toLowerCase();
+  return KV_BYTES[dtype] ?? (dtype.startsWith('fp8') ? 1 : undefined);
+}
+
+// Compares perf.mjs --kv-dtype with the cache_dtype vLLM reports in
+// vllm:cache_config_info. Returns an error message when they store a different
+// number of bytes per value, null when they agree or the server value is unknown.
+export function kvDtypeMismatch(flag, serverDtype) {
+  if (serverDtype === null || serverDtype === undefined || serverDtype === '') return null;
+  const server = kvBytesPerValue(serverDtype);
+  if (server === undefined || server === kvBytesPerValue(flag)) return null;
+  return `vLLM reports KV cache dtype ${serverDtype} but --kv-dtype is ${flag}; pass --kv-dtype ${serverDtype} so KV bytes per token match the server.`;
+}
+
 // KV-cache bytes per token: layers x KV heads x head dim x 2 (K and V) x bytes per
 // value. 'auto' takes the model's 16-bit dtype; every fp8 variant is 1 byte.
 export function kvBytesPerToken(hfConfig, kvDtype = 'auto') {
   const config = hfConfig?.num_hidden_layers === undefined && hfConfig?.text_config ? hfConfig.text_config : hfConfig;
-  const dtype = String(kvDtype).toLowerCase();
-  const bytes = KV_BYTES[dtype] ?? (dtype.startsWith('fp8') ? 1 : undefined);
+  const bytes = kvBytesPerValue(kvDtype);
   if (bytes === undefined) throw new Error(`Unknown KV-cache dtype "${kvDtype}" (use auto, bfloat16, float16 or an fp8 variant).`);
   const layers = config?.num_hidden_layers;
   const heads = config?.num_attention_heads;
@@ -276,17 +302,26 @@ const MISSING_REASONS = {
   kvBytesPerToken: 'No --hf-config was given, so KV bytes per token (and KV MiB per read) are unknown.',
 };
 
-// The report summary. `reads` are perf.mjs read records: { ms, correct, cited, calls,
-// ttftMean, kvUsagePeak }. `totalDelta` is the whole-run delta, `gpuSamplesMiB` the
-// nvidia-smi samples (null when nvidia-smi was missing), `wallMs` the summed read time.
-export function summarizeRun({ reads, totalDelta, gpuSamplesMiB, kvPool, bytesPerToken, wallMs }) {
-  const usable = totalDelta && !totalDelta.reset ? totalDelta : null;
+// The report summary. `reads` are measureReads read records: { ms, correct, cited,
+// error?, calls, ttftMean, kvUsagePeak, delta }. `totalDelta` is the whole-run delta
+// and covers the first `coveredReads` reads (all of them unless the last /metrics
+// scrapes failed); aggregate tokens/s divides its generated tokens by the summed time
+// of those same reads. `restarted` is measureReads' scrape-to-scrape restart flag;
+// a reset in any read's own delta also counts, and either makes the whole-run vLLM
+// figures null. `gpuSamplesMiB` are the nvidia-smi samples (null when it was missing).
+// Latency and cold/steady figures use only reads that finished without an error.
+export function summarizeRun({ reads, totalDelta, coveredReads = reads.length, restarted = false, gpuSamplesMiB, kvPool, bytesPerToken }) {
+  const serverReset = Boolean(totalDelta?.reset || restarted || reads.some(read => read.delta?.reset));
+  const usable = totalDelta && !serverReset ? totalDelta : null;
   const histogram = name => usable?.histograms[name] ?? null;
   const counter = name => usable?.counters[name] ?? null;
   const ttft = histogram('vllm:time_to_first_token_seconds');
-  const tpot = histogram('vllm:request_time_per_output_token_seconds') ?? histogram('vllm:inter_token_latency_seconds');
-  const tpotMean = histogramMean(tpot);
+  // Request TPOT only: the inter-token histogram has one observation per token
+  // interval, not per request, so it is not a stand-in for it.
+  const tpotMean = histogramMean(histogram('vllm:request_time_per_output_token_seconds'));
   const generated = counter('vllm:generation_tokens_total');
+  const covered = Math.max(0, Math.min(reads.length, coveredReads));
+  const coveredMs = sum(reads.slice(0, covered).map(read => (Number.isFinite(read.ms) ? read.ms : 0)));
   const calls = reads.flatMap(read => read.calls ?? []);
   const promptTotal = sum(calls.map(call => call.promptTokens ?? 0));
   const cachedTotal = sum(calls.map(call => call.cachedTokens ?? 0));
@@ -294,16 +329,23 @@ export function summarizeRun({ reads, totalDelta, gpuSamplesMiB, kvPool, bytesPe
   const kvMiB = bytesPerToken ? withCalls.map(read => (readTokens(read) * bytesPerToken) / MIB) : [];
   const gpu = Array.isArray(gpuSamplesMiB) && gpuSamplesMiB.length ? gpuSamplesMiB : null;
   const kvPeaks = reads.map(read => read.kvUsagePeak).filter(Number.isFinite);
-  const readMs = reads.map(read => read.ms);
-  const rest = reads.slice(1);
+  const finished = read => !read.error;
+  const readMs = reads.filter(finished).map(read => read.ms);
+  const first = reads[0];
+  const rest = reads.slice(1).filter(finished);
   const restTtft = rest.map(read => read.ttftMean).filter(Number.isFinite);
   const missing = [...(totalDelta?.missing ?? [])];
   const missingReasons = Object.fromEntries(missing.map(name => [name, 'vLLM did not export this metric.']));
   for (const [name, absent] of [['gpuMemory', !gpu], ['kvBytesPerToken', !bytesPerToken]]) {
     if (absent) { missing.push(name); missingReasons[name] = MISSING_REASONS[name]; }
   }
+  if (covered < reads.length) {
+    missing.push('wholeRunMetrics');
+    missingReasons.wholeRunMetrics = `The last /metrics scrapes failed, so whole-run vLLM figures cover only the first ${covered} of ${reads.length} reads.`;
+  }
   return {
-    serverReset: Boolean(totalDelta?.reset),
+    serverReset,
+    metricsCoverage: { reads: covered, total: reads.length },
     vllmCalls: ttft ? ttft.count : null,
     ttft: ttft ? { mean: histogramMean(ttft), p50: histogramQuantile(ttft.buckets, 0.5), p90: histogramQuantile(ttft.buckets, 0.9) } : null,
     prefixCache: {
@@ -312,7 +354,7 @@ export function summarizeRun({ reads, totalDelta, gpuSamplesMiB, kvPool, bytesPe
     },
     tokensPerSecond: {
       perRequestDecode: tpotMean ? 1 / tpotMean : null,
-      aggregate: generated !== null && wallMs > 0 ? generated / (wallMs / 1000) : null,
+      aggregate: generated !== null && coveredMs > 0 ? generated / (coveredMs / 1000) : null,
     },
     memory: {
       gpuUsedMiB: gpu ? { idle: gpu[0], peak: Math.max(...gpu) } : null,
@@ -322,15 +364,138 @@ export function summarizeRun({ reads, totalDelta, gpuSamplesMiB, kvPool, bytesPe
       kvMiBPerRead: kvMiB.length ? { mean: mean(kvMiB), max: Math.max(...kvMiB) } : null,
       kvMiBPerReadBasis: 'Upper bound: prompt plus completion tokens summed over every call of a read, so prefix blocks shared between calls are counted once per call.',
     },
-    latency: { readMs: { p50: percentile(readMs, 50), p90: percentile(readMs, 90), mean: mean(readMs.filter(Number.isFinite)) } },
-    accuracy: { correct: reads.filter(read => read.correct).length, cited: reads.filter(read => read.cited).length, total: reads.length },
-    cold: reads.length ? {
-      readMs: reads[0].ms,
-      ttft: reads[0].ttftMean ?? null,
+    latency: {
+      readMs: { p50: percentile(readMs, 50), p90: percentile(readMs, 90), mean: mean(readMs.filter(Number.isFinite)) },
+      reads: readMs.length,
+      failedReads: reads.length - readMs.length,
+    },
+    accuracy: {
+      correct: reads.filter(read => read.correct).length,
+      cited: reads.filter(read => read.cited).length,
+      correctAndCited: reads.filter(read => read.correct && read.cited).length,
+      total: reads.length,
+    },
+    cold: first ? {
+      failed: !finished(first),
+      readMs: finished(first) ? first.ms : null,
+      ttft: finished(first) ? first.ttftMean ?? null : null,
       steadyReadMs: rest.length ? mean(rest.map(read => read.ms)) : null,
       steadyTtft: restTtft.length ? mean(restTtft) : null,
     } : null,
     missing,
     missingReasons,
   };
+}
+
+// ------------------------------------------------------------------ measurement
+
+export const KV_POLL_MS = 200;
+
+// Polls sample() (an async function resolving to the KV-cache usage gauge, or null)
+// every intervalMs while a read runs; the gauge is near zero between reads. stop()
+// clears the timer and waits for a poll still in flight, so its sample is counted,
+// then resolves to the peak (null when no poll returned a number).
+export function startKvPoller(sample, intervalMs = KV_POLL_MS) {
+  let peak = null;
+  let inFlight = null;
+  const poll = async () => {
+    try {
+      const usage = await sample();
+      if (Number.isFinite(usage)) peak = peak === null ? usage : Math.max(peak, usage);
+    } catch {
+      // A failed poll only loses that sample.
+    }
+  };
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = poll().finally(() => { inFlight = null; });
+  }, intervalMs);
+  return {
+    async stop() {
+      clearInterval(timer);
+      if (inFlight) await inFlight;
+      return peak;
+    },
+  };
+}
+
+export const maxOf = (...items) => {
+  const finite = items.filter(Number.isFinite);
+  return finite.length ? Math.max(...finite) : null;
+};
+
+const noPoller = () => ({ stop: async () => null });
+
+// The perf.mjs measurement loop with its I/O passed in. `start` is the first good
+// snapshot. ask(question) resolves to the ledger reply or throws; take() resolves to
+// a snapshot, or null when the scrape failed; grade(question, graph) returns
+// { id, correct, cited }; poll() starts a KV poller (startKvPoller) for one read.
+//
+// Scrape bookkeeping:
+// - A read's delta needs a good scrape on each side. After a failed scrape the next
+//   read takes a fresh baseline before it starts, so one failure costs one delta.
+// - Every good scrape is compared with the previous good one, so a restart anywhere
+//   in the run sets `restarted`, even when the counters later climb past where
+//   they were.
+// - `end` is the last good scrape and `covered` the number of reads it covers. When
+//   the scrape after the last read fails, one more scrape is tried after the loop.
+export async function measureReads({ questions, repeat = 1, start, ask, take, grade, poll = noPoller, now = Date.now, log = () => {} }) {
+  const reads = [];
+  let restarted = false;
+  let lastGood = start;
+  let end = start;
+  let covered = 0;
+  const good = snap => {
+    if (!snap) return;
+    if (lastGood && delta(lastGood, snap).reset) restarted = true;
+    lastGood = snap;
+    end = snap;
+    covered = reads.length;
+  };
+  let before = start;
+  for (let round = 1; round <= repeat; round += 1) {
+    for (const question of questions) {
+      if (!before) {
+        before = await take();
+        good(before);
+      }
+      const poller = poll();
+      const started = now();
+      let data = null;
+      let error = null;
+      try {
+        data = await ask(question);
+      } catch (failure) {
+        error = String(failure?.message ?? failure);
+      }
+      const ms = now() - started;
+      const pollPeak = await poller.stop();
+      const after = await take();
+      const readDelta = before && after ? delta(before, after) : null;
+      const graded = data ? grade(question, data.graph) : { id: question.id, correct: false, cited: false };
+      const calls = (data?.receipt?.calls ?? []).map(call => ({
+        role: call.role ?? null, promptTokens: call.promptTokens ?? 0, cachedTokens: call.cachedTokens ?? 0,
+        completionTokens: call.completionTokens ?? 0, ms: call.ms ?? null,
+      }));
+      const promptTokens = sum(calls.map(call => call.promptTokens));
+      const read = {
+        round, ...graded, ...(error ? { error } : {}), ms, calls,
+        tokens: readTokens({ calls }),
+        receiptCachedShare: promptTokens > 0 ? sum(calls.map(call => call.cachedTokens)) / promptTokens : null,
+        ...readStats(readDelta),
+        kvUsagePeak: maxOf(pollPeak, after?.gauges['vllm:kv_cache_usage_perc']),
+        answer: data?.graph?.answer ?? '',
+        delta: readDelta,
+      };
+      reads.push(read);
+      good(after);
+      before = after;
+      const ttft = read.ttftMean === null ? 'n/a' : `${(read.ttftMean * 1000).toFixed(0)}ms`;
+      log(error
+        ? `round ${round} ${question.id}: FAILED ${error}`
+        : `round ${round} ${question.id}: correct=${graded.correct} cited=${graded.cited} ${ms}ms ttft=${ttft} hit=${read.hitRate?.toFixed(3) ?? 'n/a'} gen=${read.generatedTokens ?? 'n/a'}`);
+    }
+  }
+  if (covered < reads.length) good(await take());
+  return { reads, end, covered, restarted };
 }

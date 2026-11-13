@@ -11,7 +11,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
-  delta, histogramQuantile, kvBytesPerToken, parsePrometheus, percentile, readStats, snapshot, summarizeRun,
+  delta, histogramQuantile, kvBytesPerToken, kvDtypeMismatch, measureReads, parsePrometheus, percentile, readStats, snapshot,
+  startKvPoller, summarizeRun,
 } from '../evals/latent/perf-lib.mjs';
 
 const execute = promisify(execFile);
@@ -220,7 +221,7 @@ test('summarizeRun on a hand-built two-read input', () => {
       calls: [{ role: 'worker', promptTokens: 1000, cachedTokens: 900, completionTokens: 24 }] },
   ];
   const kvPool = { blockSize: 16, numGpuBlocks: 8571, tokens: 137136, cacheDtype: 'auto' };
-  const summary = summarizeRun({ reads, totalDelta, gpuSamplesMiB: [1000, 1500, 1200], kvPool, bytesPerToken: 57344, wallMs: 3000 });
+  const summary = summarizeRun({ reads, totalDelta, gpuSamplesMiB: [1000, 1500, 1200], kvPool, bytesPerToken: 57344 });
   assert.equal(summary.serverReset, false);
   assert.equal(summary.vllmCalls, 4);
   close(summary.ttft.mean, 0.2);
@@ -238,16 +239,17 @@ test('summarizeRun on a hand-built two-read input', () => {
   close(summary.memory.kvMiBPerRead.mean, 83.34375);
   close(summary.memory.kvMiBPerRead.max, 110.6875);
   assert.match(summary.memory.kvMiBPerReadBasis, /Upper bound/u);
-  assert.deepEqual(summary.latency.readMs, { p50: 1500, p90: 1900, mean: 1500 });
-  assert.deepEqual(summary.accuracy, { correct: 2, cited: 1, total: 2 });
-  assert.deepEqual(summary.cold, { readMs: 2000, ttft: 0.3, steadyReadMs: 1000, steadyTtft: 0.1 });
+  assert.deepEqual(summary.latency, { readMs: { p50: 1500, p90: 1900, mean: 1500 }, reads: 2, failedReads: 0 });
+  assert.deepEqual(summary.accuracy, { correct: 2, cited: 1, correctAndCited: 1, total: 2 });
+  assert.deepEqual(summary.cold, { failed: false, readMs: 2000, ttft: 0.3, steadyReadMs: 1000, steadyTtft: 0.1 });
+  assert.deepEqual(summary.metricsCoverage, { reads: 2, total: 2 });
   assert.deepEqual(summary.missing, ['vllm:num_preemptions_total']);
   assert.match(summary.missingReasons['vllm:num_preemptions_total'], /did not export/u);
 });
 
 test('summarizeRun without GPU samples, model config or a usable delta', () => {
   const reads = [{ ms: 500, correct: false, cited: false, error: 'boom', calls: [], ttftMean: null, kvUsagePeak: null }];
-  const summary = summarizeRun({ reads, totalDelta: { reset: true, missing: [] }, gpuSamplesMiB: null, kvPool: null, bytesPerToken: null, wallMs: 500 });
+  const summary = summarizeRun({ reads, totalDelta: { reset: true, missing: [] }, gpuSamplesMiB: null, kvPool: null, bytesPerToken: null });
   assert.equal(summary.serverReset, true);
   assert.equal(summary.ttft, null);
   assert.equal(summary.prefixCache.hitRate, null);
@@ -256,8 +258,10 @@ test('summarizeRun without GPU samples, model config or a usable delta', () => {
   assert.equal(summary.memory.gpuUsedMiB, null);
   assert.equal(summary.memory.kvMiBPerRead, null);
   assert.deepEqual(summary.missing, ['gpuMemory', 'kvBytesPerToken']);
-  assert.deepEqual(summary.accuracy, { correct: 0, cited: 0, total: 1 });
-  assert.deepEqual(summary.cold, { readMs: 500, ttft: null, steadyReadMs: null, steadyTtft: null });
+  assert.deepEqual(summary.accuracy, { correct: 0, cited: 0, correctAndCited: 0, total: 1 });
+  assert.deepEqual(summary.cold, { failed: true, readMs: null, ttft: null, steadyReadMs: null, steadyTtft: null }, 'a failed first read is not a cold measurement');
+  assert.equal(summary.latency.readMs.p50, null);
+  assert.equal(summary.latency.failedReads, 1);
 });
 
 // ------------------------------------------------------------------ end to end
@@ -265,7 +269,8 @@ test('summarizeRun without GPU samples, model config or a usable delta', () => {
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
 
 // Fake vLLM: every successful read adds 3 calls with TTFT 0.05 s, 0.02 s per output
-// token, 300 queried / 240 hit prefix tokens and 60 generated tokens.
+// token, 300 queried / 240 hit prefix tokens and 60 generated tokens. The KV gauge is
+// 0.5 while state.busy (a read in progress) and 0.01 otherwise once a read has run.
 function fakeVllmMetrics(state) {
   const l = `engine="0",model_name="${MODEL}"`;
   const histogram = (name, value) => [
@@ -296,11 +301,195 @@ function fakeVllmMetrics(state) {
     ...histogram('vllm:request_queue_time_seconds', 0.001),
     ...histogram('vllm:request_prompt_tokens', 0.1),
     ...histogram('vllm:request_generation_tokens', 0.1),
-    `vllm:kv_cache_usage_perc{${l}} ${state.reads ? 0.01 : 0}`,
+    `vllm:kv_cache_usage_perc{${l}} ${state.busy ? 0.5 : state.reads ? 0.01 : 0}`,
     `vllm:num_requests_running{${l}} 0`,
-    `vllm:cache_config_info{block_size="16",cache_dtype="auto",engine="0",num_gpu_blocks="8571",model_name="${MODEL}"} 1`,
+    `vllm:cache_config_info{block_size="16",cache_dtype="${state.cacheDtype ?? 'auto'}",engine="0",num_gpu_blocks="8571",model_name="${MODEL}"} 1`,
+    '# TYPE process_start_time_seconds gauge',
+    `process_start_time_seconds ${state.processStart ?? 1.7e9}`,
   ].join('\n') + '\n';
 }
+
+// ------------------------------------------------------------------ measurement loop (scripted I/O)
+
+const metricsSnap = state => snapshot(parsePrometheus(fakeVllmMetrics({ calls: state.reads * 3, ...state })), { model: MODEL });
+const okReply = {
+  graph: { answer: 'a' },
+  receipt: { calls: [{ role: 'worker', promptTokens: 100, cachedTokens: 80, completionTokens: 20, ms: 40 }] },
+};
+
+// takes: one fake-vLLM state per expected scrape (null = that scrape fails); replies:
+// one { ms, error? } per read. The clock advances only inside ask(), so read times are exact.
+async function runScript({ takes, replies, start = { reads: 0 } }) {
+  let clock = 0;
+  let asked = 0;
+  const queue = takes.map(state => (state === null ? null : metricsSnap(state)));
+  const questions = replies.map((_, index) => ({ id: `q${index + 1}`, question: `question ${index + 1}` }));
+  const first = metricsSnap(start);
+  const result = await measureReads({
+    questions,
+    start: first,
+    now: () => clock,
+    take: async () => {
+      if (!queue.length) throw new Error('unexpected /metrics scrape');
+      return queue.shift();
+    },
+    ask: async () => {
+      const reply = replies[asked++];
+      clock += reply.ms;
+      if (reply.error) throw new Error(reply.error);
+      return okReply;
+    },
+    grade: question => ({ id: question.id, correct: true, cited: true }),
+  });
+  const summary = summarizeRun({
+    reads: result.reads, totalDelta: delta(first, result.end), coveredReads: result.covered, restarted: result.restarted,
+    gpuSamplesMiB: null, kvPool: null, bytesPerToken: null,
+  });
+  return { ...result, summary, unusedScrapes: queue.length };
+}
+
+const reads = n => Array.from({ length: n }, () => ({ ms: 1000 }));
+const at = n => ({ reads: n });
+
+test('measureReads: a restart inside a read is reported even when the counters climb back past the start', async () => {
+  // Fresh server at 0; reads 1-3 bring it to 180 tokens; it restarts during read 4.
+  const run = await runScript({ takes: [at(1), at(2), at(3), at(1), at(2)], replies: reads(5) });
+  assert.equal(run.reads[3].delta.reset, true);
+  assert.equal(run.reads[3].generatedTokens, null);
+  assert.equal(delta(metricsSnap(at(0)), run.end).reset, false, 'start-to-end alone cannot see this restart');
+  assert.equal(run.restarted, true);
+  assert.equal(run.summary.serverReset, true);
+  assert.equal(run.summary.tokensPerSecond.aggregate, null, 'no undercounted aggregate');
+  assert.equal(run.summary.vllmCalls, null);
+  // summarizeRun alone also catches it from the reads' own deltas.
+  const again = summarizeRun({ reads: run.reads, totalDelta: delta(metricsSnap(at(0)), run.end), gpuSamplesMiB: null, kvPool: null, bytesPerToken: null });
+  assert.equal(again.serverReset, true);
+});
+
+test('measureReads: a restart hidden behind a failed scrape is caught by comparing consecutive good scrapes', async () => {
+  // Scrape after read 2 fails; the server restarted meanwhile, so the baseline for read 3 is back at 0.
+  const run = await runScript({ takes: [at(1), null, at(0), at(1)], replies: reads(3) });
+  assert.equal(run.reads[1].delta, null);
+  assert.equal(run.reads[2].delta.reset, false, 'read 3 itself is clean');
+  assert.equal(run.restarted, true);
+  assert.equal(run.summary.serverReset, true);
+});
+
+test('measureReads: one failed scrape nulls one read delta, not two', async () => {
+  // The scrape after read 2 fails; read 3 takes a fresh baseline first.
+  const run = await runScript({ takes: [at(1), null, at(2), at(3), at(4)], replies: reads(4) });
+  assert.equal(run.unusedScrapes, 0);
+  assert.equal(run.reads[1].delta, null);
+  assert.equal(run.reads[1].generatedTokens, null);
+  for (const index of [0, 2, 3]) {
+    assert.equal(run.reads[index].generatedTokens, 60, `read ${index + 1}`);
+    close(run.reads[index].ttftMean, 0.05);
+    close(run.reads[index].hitRate, 0.8);
+    assert.equal(run.reads[index].vllmCalls, 3);
+  }
+  assert.deepEqual(run.summary.metricsCoverage, { reads: 4, total: 4 });
+  close(run.summary.tokensPerSecond.aggregate, 60, '240 tokens over 4 s');
+});
+
+test('measureReads: a failed final scrape is retried once so the totals include the last read', async () => {
+  const takes = [1, 2, 3, 4, 5, 6, 7].map(at);
+  const run = await runScript({ takes: [...takes, null, at(8)], replies: reads(8) });
+  assert.equal(run.unusedScrapes, 0);
+  assert.equal(run.covered, 8);
+  assert.equal(run.summary.vllmCalls, 24);
+  close(run.summary.tokensPerSecond.aggregate, 60, '480 tokens over 8 s');
+  assert.deepEqual(run.summary.metricsCoverage, { reads: 8, total: 8 });
+  assert.ok(!run.summary.missing.includes('wholeRunMetrics'));
+});
+
+test('measureReads: when the retry also fails the summary says so and divides by the covered reads only', async () => {
+  const takes = [1, 2, 3, 4, 5, 6, 7].map(at);
+  const run = await runScript({ takes: [...takes, null, null], replies: reads(8) });
+  assert.equal(run.covered, 7);
+  assert.deepEqual(run.summary.metricsCoverage, { reads: 7, total: 8 });
+  assert.equal(run.summary.vllmCalls, 21);
+  close(run.summary.tokensPerSecond.aggregate, 60, '420 tokens over the 7 s those counters cover');
+  assert.ok(run.summary.missing.includes('wholeRunMetrics'));
+  assert.match(run.summary.missingReasons.wholeRunMetrics, /first 7 of 8 reads/u);
+});
+
+test('measureReads and summarizeRun: failed reads stay out of latency and the cold read', async () => {
+  // Reads 1 and 4 fail at once with HTTP 500; nothing reaches vLLM for them.
+  const replies = [{ ms: 20, error: 'q1: HTTP 500' }, { ms: 1000 }, { ms: 1000 }, { ms: 20, error: 'q4: HTTP 500' }, { ms: 1000 }];
+  const run = await runScript({ takes: [at(0), at(1), at(2), at(2), at(3)], replies });
+  const { summary } = run;
+  assert.deepEqual(summary.latency, { readMs: { p50: 1000, p90: 1000, mean: 1000 }, reads: 3, failedReads: 2 });
+  const { steadyTtft, ...cold } = summary.cold;
+  assert.deepEqual(cold, { failed: true, readMs: null, ttft: null, steadyReadMs: 1000 });
+  close(steadyTtft, 0.05);
+  assert.equal(run.reads[0].ms, 20, 'the read record keeps its own time');
+  // The counters' window includes the failed reads, so their time stays in the aggregate.
+  close(summary.tokensPerSecond.aggregate, 180 / 3.04);
+});
+
+test('startKvPoller: stop waits for a poll in flight and keeps its sample', async () => {
+  let finish;
+  let polls = 0;
+  const poller = startKvPoller(() => {
+    polls += 1;
+    return new Promise(resolve => { finish = resolve; });
+  }, 10);
+  while (!polls) await new Promise(resolve => setTimeout(resolve, 5));
+  const stopping = poller.stop();
+  setTimeout(() => finish(0.8), 30);
+  assert.equal(await stopping, 0.8);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(polls, 1, 'no poll starts after stop');
+  const idle = startKvPoller(async () => 0.3, 10_000);
+  assert.equal(await idle.stop(), null, 'no poll ran');
+  const failing = startKvPoller(async () => { throw new Error('scrape failed'); }, 5);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await failing.stop(), null);
+});
+
+test('summarizeRun: correct-and-cited is counted per read', () => {
+  const summary = summarizeRun({
+    reads: [{ ms: 1, correct: true, cited: false }, { ms: 1, correct: false, cited: true }, { ms: 1, correct: true, cited: true }],
+    totalDelta: null, gpuSamplesMiB: null, kvPool: null, bytesPerToken: null,
+  });
+  assert.deepEqual(summary.accuracy, { correct: 2, cited: 2, correctAndCited: 1, total: 3 });
+});
+
+test('summarizeRun: no request TPOT histogram means no per-request decode figure', () => {
+  const totalDelta = {
+    reset: false,
+    missing: ['vllm:request_time_per_output_token_seconds'],
+    counters: { 'vllm:generation_tokens_total': 101 },
+    histograms: {
+      // Request 1: one interval of 0.01 s; request 2: 100 intervals of 0.1 s.
+      'vllm:inter_token_latency_seconds': { buckets: [{ le: 0.01, count: 1 }, { le: 0.1, count: 101 }, { le: Infinity, count: 101 }], sum: 10.01, count: 101 },
+      'vllm:request_time_per_output_token_seconds': null,
+    },
+  };
+  const summary = summarizeRun({ reads: [{ ms: 1000 }], totalDelta, gpuSamplesMiB: null, kvPool: null, bytesPerToken: null });
+  assert.equal(summary.tokensPerSecond.perRequestDecode, null);
+  assert.ok(summary.missing.includes('vllm:request_time_per_output_token_seconds'));
+});
+
+test('delta treats a changed process start time as a restart', () => {
+  const before = metricsSnap({ reads: 3, processStart: 1.7e9 });
+  const after = metricsSnap({ reads: 9, processStart: 1.7e9 + 600 });
+  assert.equal(before.processStart, 1.7e9);
+  assert.equal(delta(before, after).reset, true, 'counters went up, but it is a new process');
+  assert.equal(delta(before, metricsSnap({ reads: 9 })).reset, false);
+  const noStart = structuredClone(before);
+  noStart.processStart = null;
+  assert.equal(delta(noStart, after).reset, false, 'unknown start time: counters decide');
+});
+
+test('kvDtypeMismatch compares bytes per value with the server cache dtype', () => {
+  assert.match(kvDtypeMismatch('auto', 'fp8'), /KV cache dtype fp8 but --kv-dtype is auto/u);
+  assert.match(kvDtypeMismatch('fp8', 'auto'), /pass --kv-dtype auto/u);
+  assert.equal(kvDtypeMismatch('fp8', 'fp8_e4m3'), null);
+  assert.equal(kvDtypeMismatch('bfloat16', 'auto'), null);
+  assert.equal(kvDtypeMismatch('auto', null), null, 'server does not say');
+  assert.equal(kvDtypeMismatch('auto', 'something-new'), null, 'unknown server dtype cannot be checked');
+});
 
 test('perf.mjs end to end against a fake ledger and fake vLLM', async () => {
   const questions = JSON.parse(await readFile(new URL('../evals/latent/questions.json', import.meta.url), 'utf8'));
@@ -328,14 +517,24 @@ test('perf.mjs end to end against a fake ledger and fake vLLM', async () => {
       const question = questions.questions.find(entry => entry.question === parsed.question);
       const answer = question.required.map(group => group[0]).join(', ');
       const [{ path, lines: [startLine, endLine] }] = question.evidence;
-      state.reads += 1;
-      state.calls += 3;
-      reply(200, {
-        mode: 'latent',
-        graph: { answer, findings: [{ label: answer, evidence: [{ path, startLine, endLine }], quoteVerified: true }], rejectedFindings: 0, badQuotes: 0 },
-        receipt: { calls: [1, 2, 3].map(index => ({ role: index === 3 ? 'reducer' : 'worker', promptTokens: 100, cachedTokens: 80, completionTokens: 20, ms: 40 })) },
-        stats: { prefixTokens: 1000, sliceTokensEstimate: 50, cachedShare: 0.8 },
-      });
+      const send = () => {
+        state.busy = false;
+        state.reads += 1;
+        state.calls += 3;
+        reply(200, {
+          mode: 'latent',
+          graph: { answer, findings: [{ label: answer, evidence: [{ path, startLine, endLine }], quoteVerified: true }], rejectedFindings: 0, badQuotes: 0 },
+          receipt: { calls: [1, 2, 3].map(index => ({ role: index === 3 ? 'reducer' : 'worker', promptTokens: 100, cachedTokens: 80, completionTokens: 20, ms: 40 })) },
+          stats: { prefixTokens: 1000, sliceTokensEstimate: 50, cachedShare: 0.8 },
+        });
+      };
+      // Read 2 runs for 700 ms with the KV gauge at 0.5; only the poller can see that.
+      if (state.requests === 2) {
+        state.busy = true;
+        setTimeout(send, 700);
+        return;
+      }
+      send();
     });
   });
   const vllmUrl = await listen(vllm);
@@ -377,9 +576,10 @@ test('perf.mjs end to end against a fake ledger and fake vLLM', async () => {
     assert.equal(first.generatedTokens, 60);
     close(first.receiptCachedShare, 0.8);
     assert.equal(first.kvUsagePeak, 0.01);
+    assert.equal(report.reads[1].kvUsagePeak, 0.5, 'the poller saw the gauge during the slow read');
 
     const { summary } = report;
-    assert.deepEqual(summary.accuracy, { correct: 7, cited: 7, total: 8 });
+    assert.deepEqual(summary.accuracy, { correct: 7, cited: 7, correctAndCited: 7, total: 8 });
     assert.equal(summary.vllmCalls, 21);
     close(summary.ttft.mean, 0.05);
     close(summary.ttft.p50, 0.055, 'bucket estimate inside (0.01, 0.1]');
@@ -387,12 +587,17 @@ test('perf.mjs end to end against a fake ledger and fake vLLM', async () => {
     close(summary.prefixCache.hitRate, 0.8);
     close(summary.prefixCache.receiptCachedShare, 0.8);
     close(summary.tokensPerSecond.perRequestDecode, 50);
-    assert.ok(summary.tokensPerSecond.aggregate > 0);
+    const readSeconds = report.reads.reduce((total, read) => total + read.ms, 0) / 1000;
+    close(summary.tokensPerSecond.aggregate, 420 / readSeconds, '420 generated tokens over the summed read time');
+    assert.deepEqual(summary.metricsCoverage, { reads: 8, total: 8 });
+    assert.equal(summary.serverReset, false);
+    assert.equal(summary.latency.failedReads, 1);
+    assert.equal(summary.latency.reads, 7);
     assert.equal(summary.memory.gpuUsedMiB, null);
     assert.deepEqual(summary.memory.kvPool, { blockSize: 16, numGpuBlocks: 8571, tokens: 137136, cacheDtype: 'auto' });
     assert.equal(summary.memory.kvBytesPerToken, 57344);
     close(summary.memory.kvMiBPerRead.mean, 19.6875, '360 tokens x 57344 B');
-    assert.equal(summary.memory.peakKvUsage, 0.01);
+    assert.equal(summary.memory.peakKvUsage, 0.5);
     assert.ok(summary.latency.readMs.p50 >= 0);
     assert.deepEqual(summary.missing, ['gpuMemory']);
     assert.equal(report.totalDelta.counters['vllm:generation_tokens_total'], 420);
@@ -401,4 +606,45 @@ test('perf.mjs end to end against a fake ledger and fake vLLM', async () => {
     await new Promise(resolve => vllm.close(resolve));
     await new Promise(resolve => ledger.close(resolve));
   }
+});
+
+// Runs perf.mjs against a fake /metrics that it should refuse before any ledger call.
+async function perfRefuses(metricsText, args = []) {
+  const ledgerRequests = [];
+  const vllm = createServer((request, response) => {
+    if (request.url === '/metrics') { response.writeHead(200, { 'Content-Type': 'text/plain' }); response.end(metricsText); return; }
+    response.writeHead(404).end();
+  });
+  const ledger = createServer((request, response) => { ledgerRequests.push(request.url); response.writeHead(500).end(); });
+  const vllmUrl = await listen(vllm);
+  const ledgerUrl = await listen(ledger);
+  try {
+    const script = fileURLToPath(new URL('../evals/latent/perf.mjs', import.meta.url));
+    let failure = null;
+    try {
+      await execute(process.execPath, [script, '--repeat', '1', '--vllm', vllmUrl, '--nvidia-smi', 'nvidia-smi-not-installed-c11', ...args],
+        { env: { ...process.env, LEDGER: ledgerUrl }, timeout: 30_000 });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure, 'perf.mjs should exit with an error');
+    assert.notEqual(failure.code, 0);
+    return { stderr: String(failure.stderr), ledgerRequests };
+  } finally {
+    await new Promise(resolve => vllm.close(resolve));
+    await new Promise(resolve => ledger.close(resolve));
+  }
+}
+
+test('perf.mjs refuses /metrics with several models unless --model is given', async () => {
+  const text = exposition({ queries: 1000, hits: 600, prompt: 1000, cached: 600, gen: 100, stop: 4, length: 1, ttft: [3, 5, 5, 1.2], other: true });
+  const { stderr, ledgerRequests } = await perfRefuses(text);
+  assert.match(stderr, /several models \(.*other\/model.*\); pass --model/u);
+  assert.equal(ledgerRequests.length, 0);
+});
+
+test('perf.mjs refuses a --kv-dtype that does not match the server KV cache dtype', async () => {
+  const { stderr, ledgerRequests } = await perfRefuses(fakeVllmMetrics({ reads: 0, calls: 0, cacheDtype: 'fp8' }));
+  assert.match(stderr, /KV cache dtype fp8 but --kv-dtype is auto/u);
+  assert.equal(ledgerRequests.length, 0);
 });
