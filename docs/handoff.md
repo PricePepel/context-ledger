@@ -140,8 +140,8 @@ Branch `ruslan/latent-perf`, from `origin/main` 17ecef0 (PR #8 merged). Card C11
   - 96.8% of prompt tokens from the prefix cache
   - about 89 tokens/s per request
   - 5.2 s per read at p50
-  - 14.1 GB of GPU memory, held by vLLM's reservation
-  - at most 151 MiB of KV cache per read
+  - 14,078 MiB (13.7 GiB) of GPU memory, held by vLLM's reservation
+  - a sampled peak of about 151 MiB of KV cache per read
 - `runtime/serve-vllm.sh` has two opt-in switches, both off by default, because runtime defaults are Ali's to change:
   - `VLLM_NGRAM=1`: n-gram speculative decoding. 7B reads are 29% faster at p50 with the same accuracy, so it is recommended as the default.
   - `VLLM_KV_FP8=1`: FP8 KV cache on Triton. Usable with the 14B strict setup; it breaks the 7B AWQ model.

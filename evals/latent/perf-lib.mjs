@@ -273,6 +273,36 @@ export function kvDtypeMismatch(flag, serverDtype) {
   return `vLLM reports KV cache dtype ${serverDtype} but --kv-dtype is ${flag}; pass --kv-dtype ${serverDtype} so KV bytes per token match the server.`;
 }
 
+// --repeat must be a finite positive integer: Infinity never ends and a fraction
+// would run a different number of rounds than the report states.
+export function parseRepeat(value) {
+  const text = String(value ?? '').trim();
+  if (!/^[1-9][0-9]*$/u.test(text)) throw new Error(`--repeat must be a positive whole number, got ${JSON.stringify(value)}.`);
+  return Number(text);
+}
+
+// The model whose series the report reads. An explicit --model must be one that
+// /metrics names, or every model-labelled metric would be filtered away while the
+// ledger still runs its own model.
+export function chooseModel(models, requested) {
+  if (requested !== undefined && requested !== null && requested !== '') {
+    if (!models.includes(requested)) {
+      throw new Error(`--model ${requested} is not served by this vLLM (/metrics names ${models.length ? models.join(', ') : 'no model'}).`);
+    }
+    return requested;
+  }
+  if (models.length === 1) return models[0];
+  throw new Error(`/metrics names ${models.length ? `several models (${models.join(', ')}); pass --model` : 'no model'}.`);
+}
+
+// nvidia-smi arguments for one GPU, so a multi-GPU machine does not mix devices
+// into one series of samples. The index is nvidia-smi's own (--id).
+export function nvidiaSmiArgs(gpu) {
+  const text = String(gpu ?? '').trim();
+  if (!/^[0-9]+$/u.test(text)) throw new Error(`--gpu must be a GPU index such as 0, got ${JSON.stringify(gpu)}.`);
+  return [`--id=${text}`, '--query-gpu=memory.used', '--format=csv,noheader,nounits', '-lms', '200'];
+}
+
 // KV-cache bytes per token: layers x KV heads x head dim x 2 (K and V) x bytes per
 // value. 'auto' takes the model's 16-bit dtype; every fp8 variant is 1 byte.
 export function kvBytesPerToken(hfConfig, kvDtype = 'auto') {
