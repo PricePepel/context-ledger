@@ -929,3 +929,64 @@ All are public, with no license gate and no custom code, loaded from their safet
 - A check on the real cached tokenizers derives the turns for Qwen2.5, SmolLM2, Phi-3.5, Llama 3.1, Mistral v0.3 and Granite 3.1.
 - **M2a live:** each model runs the dev and held-out sets, 3 rounds each, through the unchanged pool, with the cycle 11 harness on the dev set. The result per family is its accuracy and citations next to the Qwen reference, plus its performance figures. A family "works" when every read returns a graph (no runtime errors). Its accuracy is reported, not gated, because these are untuned models.
 - **M2c live:** `latent_team.evaluate` on Phi-3.5-mini with the same protocol as cycle 9 (single, text_mas, latent_mas and the random control), on a disjoint block. It "works" when every system runs end to end and the random control scores below latent_mas. Whether latent_mas beats single is reported, not required.
+
+## Results — Cycle 12 (multi-LLM latent runtime), 2026-11-12
+
+Same machine and harness as cycle 11: RTX 4090 Laptop GPU, vLLM 0.33.0, default settings, strict citations off. Each model ran the dev set 3 times with `perf.mjs` and the held-out set 3 times with `run.mjs`, through the same pool code. The held-out gate is the M2a one: accuracy and citations each at least 7 of 8, plus the slice and cache shares.
+
+### M2a pool across four families
+
+| Model | Dev: correct and cited (24) | Held-out: correct and cited per round (8) | Held-out passes the gate | Read s p50 (dev) | TTFT ms p50 / p90 | Tokens/s per request | Prefix-cache hits | KV KiB per token | KV pool tokens | Failed reads |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen2.5-7B AWQ | 18 | 7, 7, 7 | 3 of 3 | 4.89 | 40 / 186 | 90.8 | 96.8% | 56 | 137136 | 0 |
+| Llama 3.1 8B AWQ | 12 | 6, 6, 6 | 0 of 3 | 8.62 | 38 / 189 | 84.9 | 96.3% | 128 | 59760 | 0 |
+| Mistral 7B v0.3 GPTQ (folded system) | 24 | 5, 4, 4 | 0 of 3 | 7.93 | 38 / 193 | 93.6 | 96.8% | 128 | 73232 | 0 |
+| Granite 3.1 8B W4A16 | 21 | 7, 7, 7 | 3 of 3 | 11.06 | 47 / 243 | 79.7 | 95.4% | 160 | 53648 | 0 |
+
+- **Every family works.** After one fix, none of the 4 × 48 reads failed. Accuracy is reported, not gated, because these models are untuned.
+- **Mistral needed the one code change.** On the first run all 24 Mistral reads failed with 502: its chat template refuses a system message ("Conversation roles must alternate"), and the pool sends the shared prefix as a system message. `VllmClient` now retries such a refusal once with the system text opening the user message, and keeps folding for later calls. vLLM logged exactly one refusal in the rerun. The system text is still the start of every prompt, so the prefix cache hit 96.8%, as with Qwen. Of the four families, Mistral scores best on the dev set (24 of 24) but cites least on the held-out set (5 of 8 in every round), so it fails that gate on citations.
+- **Granite 3.1 matches Qwen on accuracy:** 21 of 24 on the dev set (24 of 24 correct, 21 cited), and 7 of 8 with every answer cited on the held-out set, passing the gate in all three rounds. It is the slowest at 11.1 s per read.
+- **Llama 3.1 is the weakest here:** 12 of 24 on the dev set and 6 of 8 on the held-out set. It cites every held-out answer but gets two wrong.
+- **Cost differs mostly through the KV cache.** Qwen2.5-7B stores 56 KiB of KV per token (4 KV heads); Llama 3.1 and Mistral store 128 KiB (8 KV heads, 32 layers) and Granite 160 KiB (40 layers). So with the same 85% reservation the pool holds 137,136 tokens for Qwen but 53,648–73,232 for the others. That still fits 1.6–2.2 full 32,768-token requests.
+- **Per-token decode speed is similar** (80–94 tokens/s), because all four are 4-bit models of 7–8B parameters. The other families take longer per read (7.9–11.1 s against 4.9 s) mainly because they write more: 898 (Llama), 941 (Mistral) and 1,278 (Granite) output tokens per read against 563 for Qwen. They also make slightly more retry calls (6.1–6.25 calls per read against 6.0).
+- **Two checkpoints vLLM 0.33 cannot load:** the RedHat W4A16 builds of Llama 3.1 8B and Mistral 7B v0.3 use GPTQ `desc_act=True`, which vLLM 0.33 refuses ("GPTQ group activation ordering ... is no longer supported"). The AWQ build of Llama and the `desc_act=False` GPTQ build of Mistral load.
+
+### Latent team (M2c) chat templates
+
+- The derivation gives the right turn texts for all six real tokenizers in the local cache, checked on the CPU in WSL:
+  - Qwen2.5 and SmolLM2 keep the exact ChatML strings.
+  - Phi-3.5 closes a turn with `<|end|>\n`, Llama 3.1 with `<|eot_id|>`, Mistral v0.3 with `</s>`, and Granite 3.1 with `<|end_of_text|>\n`.
+  - Each later turn carries no system block, and each stop set includes the close token: Phi `[32000, 32001, 32007]`, Llama `[128001, 128008, 128009]`.
+- The template unit tests cover seven families (adding OLMo-2) and run without a GPU or network; they skip cleanly where `jinja2` is missing.
+- **Reviews:** Codex and a separate Claude reviewer found two issues, both fixed in 43b6120 with regression tests:
+  - A template that only contained `<|im_start|>` was handed the ChatML strings unchecked. Every template is now derived, and ChatML is used only when the derived strings equal it.
+  - The assistant lead (Mistral's leading space) is now derived and recorded.
+
+### Latent team (M2c) on Phi-3.5-mini
+
+`latent_team.evaluate --model microsoft/Phi-3.5-mini-instruct --steps 40 --count 200 --batch 4 --seed 0 --block 2`. Block 2 shares no question with the cycle 9 samples (blocks 0 and 1). The setup is bf16 in transformers; `nvidia-smi` read 13,906 MiB in use during latent_mas.
+
+| System | Accuracy (200) | Mean tokens | Latent vectors | Seconds per question |
+| --- | --- | --- | --- | --- |
+| single | 0.855 | 268.5 | 0 | 3.78 |
+| text_mas | 0.870 | 852.5 | 0 | 11.02 |
+| latent_mas@40 (soft) | 0.840 | 235.9 | 120 | 5.04 |
+| latent_random@40 (control) | 0.830 | 232.6 | 120 | 5.07 |
+
+- **The machinery works on a model that is not ChatML and has untied embeddings.** Every system ran all 200 questions end to end, with the turn texts derived from Phi's own template: `<|user|>\n` … `<|end|>\n<|assistant|>\n`, closed by `<|end|>\n`, with stop ids 32000, 32001 and 32007.
+- **The latent thoughts carry no measurable signal on Phi.** The random control scores 0.830 against 0.840 for latent_mas. Over 200 paired questions, latent_mas alone is right on 13 and the control alone on 11 (exact McNemar p = 0.84). On Qwen2.5-3B in cycle 9 the control fell to 0.475. The written acceptance rule ("the random control scores below latent_mas") is met numerically, but a 1-point gap on 2 questions is not evidence. That rule was too weak, and the result is recorded as **not established on Phi**.
+- **Against single and text_mas, no difference is significant** either: latent_mas vs single p = 0.65, latent_mas vs text_mas p = 0.33, text_mas vs single p = 0.70.
+- On cost, latent_mas still keeps its shape: 72% fewer tokens than text_mas and 2.2× faster.
+- **Cycle 9 gate:** latent_mas fails it on accuracy. It is 3 points below text_mas, beyond the allowed 2, with a 95% paired interval of −0.08 to +0.02. It passes on tokens and speed.
+- Only the `soft` thought mode was run, which mixes real token embeddings. The `aligned` mode, the one that uses the untied W_a, was not run on Phi.
+- **Batch size:** batch 8 spills past the laptop's 16 GB: latent_mas took 20.9 s per question on the 8-question smoke run against 4.6 s at batch 4. Phi-3.5-mini has 32 KV heads (no grouped-query attention), so its KV cache costs 384 KiB per token.
+
+What this means: the multi-LLM part is done; any chat template now runs. Whether latent thinking helps is a property of the model. It showed on Qwen2.5-3B (cycle 9) but not on Phi-3.5-mini. A next run should try the `aligned` mode on an untied model and a second non-Qwen family before any claim that latent thinking transfers across families.
+
+### Suites and review
+
+- Node 168/169 (one skipped), graph 9/9, Playwright 13/13.
+- Runtime unittest: 154 OK on Windows (26 skipped for torch and jinja2), and 154 OK in WSL on CPU with none skipped.
+- **Reviews of the chat-template derivation:** Codex and a separate Claude reviewer found two issues, both fixed in 43b6120 (above).
+- **Reviews of the system-message fold (104c41e):** Codex found that the retry got the full timeout again, so a slow refusal could hold a pool slot past the deadline (medium), and that the receipt time left out the refused attempt (low). Both are fixed in b88a914 with tests against a scripted server with delayed replies; both tests fail on 104c41e. Codex's confirming pass found nothing.
+- Codex noted that the fake vLLM's cache accounting does not prove real cache reuse. The live Mistral run does: vLLM's own counters show 96.8% prefix-cache hits with the folded prompts.

@@ -152,3 +152,24 @@ Next steps:
 1. Ali decides whether `VLLM_NGRAM=1` becomes the default in `serve-vllm.sh`.
 2. Find why the fixture on the WSL disk decodes about 9% faster (configuration E), and why the 14B FP8 KV pool is smaller than expected (B-C).
 3. C12 (multi-LLM) continues on `ruslan/multi-llm`, which is based on this branch.
+
+## Current checkpoint — cycle 12 (multi-LLM latent runtime, 2026-11-12)
+
+Branch `ruslan/multi-llm`, based on `ruslan/latent-perf` (C11, PR #9). Card C12. Read the cycle 12 definition and results in [the eval log](evals.md).
+
+- **M2a pool: any vLLM-served chat model.** It is measured on four families (Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), with no failed reads.
+  - The one code change is in `runtime/latent_pool/vllm_client.py`. When a chat template refuses system messages (Mistral), the client folds the system text into the user message after the first refusal. The shared prefix stays first, so caching still works.
+  - Granite matches Qwen on accuracy, Mistral leads the dev set but cites less on the held-out set, and Llama 3.1 is weakest.
+  - Run another model with `LATENT_MODEL=<hf id>` for both `serve-vllm.sh` and the pool.
+  - vLLM 0.33 refuses GPTQ checkpoints with `desc_act=True`.
+- **M2c latent team: any chat template.**
+  - `runtime/latent_team/chat_turns.py` derives the turn texts from the tokenizer's own template. ChatML is byte-identical to before, and a template it cannot handle is refused by name.
+  - The stop tokens come from the tokenizer, the generation config and the derived close token.
+  - Measured on Phi-3.5-mini, which is not ChatML and has untied embeddings: see the eval log. Run it with `python -m latent_team.evaluate --model microsoft/Phi-3.5-mini-instruct --batch 4`. Batch 8 spills past the laptop's 16 GB and runs about 4.5× slower.
+- **M2b transfer** is still per pair: another sender and receiver need their own trained mapper.
+
+Next steps:
+
+1. Ali reviews the runtime changes: the system-message fold, and the chat-template derivation in the latent team.
+2. Strict citations (`LATENT_STRICT_CITATIONS=1`) have only been measured on Qwen. Run them on Granite and Mistral.
+3. Mistral cites 5 of 8 held-out answers; check whether strict citations close that gap.
