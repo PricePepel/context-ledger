@@ -124,6 +124,137 @@ class SealedTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class SealedLeakTest(unittest.TestCase):
+    """Codex review of 66da55f: corrupting the prompts only after the whole chain, and reading
+    only the solver's first step, would miss a leak through a later agent or a later decode step."""
+
+    QUESTIONS = ["q?", "a much longer question here?"]  # rows of different lengths: padded columns
+    VIEWS = [["Tom has 3 apples. q?", "x. a much longer question here?"],
+             ["Ann gives 4 more apples to him. q?", "y. a much longer question here?"],
+             ["He eats 2. q?", "z z z z z z z z z z z. a much longer question here?"]]
+
+    def run_team(self, team, sealed, corrupt_hidden):
+        """latent_mas with the hidden (or, unsealed, the would-be hidden) columns overwritten with
+        noise before every later agent and before the solver. Returns the visible memory and
+        every logit the solver's decode computed."""
+        from latent_team.team import LATENT_PROMPTS
+        think, forward = team.think, team.forward
+        state, logits = {"columns": []}, []
+
+        def spoiled(memory, memory_mask, prompts, steps, mode="soft", first=True, hide=None):
+            if corrupt_hidden and state["columns"]:
+                corrupt(memory, torch.tensor(state["columns"]))
+            start = 0 if memory_mask is None else memory_mask.shape[1]
+            width = team.render(prompts, first=first)[0].shape[1]
+            out = think(memory, memory_mask, prompts, steps, mode=mode, first=first, hide=hide)
+            state["columns"] += list(range(start, start + width))
+            return out
+
+        def recording(*args, **kwargs):
+            out = forward(*args, **kwargs)
+            if not kwargs.get("hidden_only"):
+                logits.append(out[0].logits.detach().clone())
+            return out
+
+        team.think = spoiled
+        with torch.no_grad():
+            memory, mask, hide = team.chain(self.QUESTIONS, 2, "soft", views=self.VIEWS, sealed=sealed)
+            if corrupt_hidden:
+                corrupt(memory, torch.tensor(state["columns"]))
+            visible = [c for c in range(mask.shape[1]) if c not in set(state["columns"])]
+            kept = [(layer.keys[:, :, visible].clone(), layer.values[:, :, visible].clone()) for layer in memory.layers]
+            team.forward = recording
+            solver = [LATENT_PROMPTS["solver"].format(question=q) for q in self.QUESTIONS]
+            texts = team.decode(memory, mask, solver, 6, first=False, hide=hide)[0]
+        team.think, team.forward = think, forward
+        return kept, logits, texts
+
+    def test_noise_in_hidden_prompts_changes_nothing_downstream_when_sealed(self):
+        clean_memory, clean_logits, clean_texts = self.run_team(tiny_team(), True, False)
+        memory, logits, texts = self.run_team(tiny_team(), True, True)
+        for (k0, v0), (k1, v1) in zip(clean_memory, memory):  # later agents never read the noise
+            self.assertTrue(torch.allclose(k0, k1, atol=1e-5) and torch.allclose(v0, v1, atol=1e-5))
+        self.assertEqual(len(logits), len(clean_logits))
+        self.assertGreater(len(logits), 1)  # several decode steps, not only the first
+        for a, b in zip(clean_logits, logits):
+            self.assertTrue(torch.allclose(a, b, atol=1e-5))
+        self.assertEqual(texts, clean_texts)
+
+    def test_the_same_noise_does_change_an_unsealed_team(self):
+        clean_memory, clean_logits, _ = self.run_team(tiny_team(), False, False)
+        memory, logits, _ = self.run_team(tiny_team(), False, True)
+        self.assertFalse(all(torch.allclose(k0, k1, atol=1e-5) for (k0, _), (k1, _) in zip(clean_memory, memory)))
+        self.assertFalse(torch.allclose(clean_logits[0], logits[0], atol=1e-5))
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class CompatibilityTest(unittest.TestCase):
+    def test_the_default_team_is_the_old_three_agent_computation(self):
+        # The cycle 9-14 algorithm written out: three agents in turn on one memory, every one
+        # reading the question, then a greedy solver turn (Codex review of 66da55f).
+        from transformers import DynamicCache
+        from latent_team.team import LATENT_PROMPTS, ROLES
+        questions = [QUESTION, "What is 2 + 3?"]
+        team = tiny_team()
+        with torch.no_grad():
+            memory, mask = DynamicCache(), None
+            for index, role in enumerate(ROLES):
+                memory, mask = team.think(memory, mask, [LATENT_PROMPTS[role].format(question=q) for q in questions],
+                                          2, mode="soft", first=index == 0)
+            # decode() appends to the cache in place: keep the memory as the agents left it.
+            snapshot = [(layer.keys.clone(), layer.values.clone()) for layer in memory.layers]
+            old = team.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions], 6,
+                              first=False)
+            new_memory, new_mask = team.working_memory(questions, 2, "soft")
+        self.assertEqual(team.latent_mas(questions, steps=2, max_new_tokens=6)[0], old[0])
+        self.assertTrue(torch.equal(mask, new_mask))
+        for (keys, values), layer in zip(snapshot, new_memory.layers):
+            self.assertTrue(torch.equal(keys, layer.keys) and torch.equal(values, layer.values))
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class RunnerFixTest(unittest.TestCase):
+    def test_a_unanimous_vote_keeps_every_digit_of_its_number(self):
+        from latent_team import scale
+        import types
+        team = tiny_team()
+        items = [{"question": "Big?", "gold": 1234567.0}, {"question": "Odd?", "gold": 123456.7}]
+        replies = {"Big?": "The answer is 1,234,567.", "Odd?": "The answer is 123456.7."}
+        team.sample = lambda qs, n, **kw: ([[replies[q]] * n for q in qs], types.SimpleNamespace(
+            generated_tokens=[1] * len(qs), seconds=0.0))
+        with tempfile.TemporaryDirectory() as out:
+            report = scale.main(["--part", "scale", "--agents", "3", "--only", "vote@3", "--out",
+                                 os.path.join(out, "v.json")], team=team, items=items)
+        self.assertEqual(report["summaries"]["vote@3"]["accuracy"], 1.0)
+
+    def test_a_random_system_draws_the_same_noise_alone_or_after_others(self):
+        from unittest import mock
+        from latent_team import scale
+        items = ScaleRunTest.ITEMS
+        runs, states = [], []
+        real_run = scale.run
+
+        def watched(team, spec, *args):
+            if spec["key"] == "latent_random@3":
+                states.append(torch.random.get_rng_state().clone())  # the generator as the system starts
+            return real_run(team, spec, *args)
+
+        # The second run first runs another random system, which draws from the same global
+        # generator; without a per-system seed latent_random@3 would start from another state.
+        for agents, only in (("3", "latent_random@3"), ("1,3", "latent_random@1,latent_random@3")):
+            team = tiny_team()
+            team.latent_mas = _short(team.latent_mas)
+            with tempfile.TemporaryDirectory() as out, mock.patch.object(scale, "run", watched):
+                report = scale.main(["--part", "scale", "--agents", agents, "--steps", "2", "--only", only, "--out",
+                                     os.path.join(out, "r.json")], team=team, items=items)
+            runs.append([r["answer"] for r in report["systems"]["latent_random@3"]["results"]])
+        self.assertEqual(len(states), 2)
+        self.assertTrue(torch.equal(states[0], states[1]))
+        self.assertEqual(runs[0], runs[1])
+        self.assertNotEqual(scale.system_seed(0, "latent_random@3"), scale.system_seed(1, "latent_random@3"))
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
 class TextTeamTest(unittest.TestCase):
     def test_each_agent_reads_the_latest_plan_and_critique(self):
         team = tiny_team()

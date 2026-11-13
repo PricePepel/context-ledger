@@ -31,6 +31,7 @@ import json
 import os
 import re
 import time
+import zlib
 from collections import Counter
 
 from .evaluate import correct, gsm8k, mcnemar, predicted_number, sample_block, summarize
@@ -60,6 +61,11 @@ def tally(texts):
     """The most common predicted number of the texts (first seen wins a tie), or None."""
     numbers = [n for n in (predicted_number(t) for t in texts) if n is not None]
     return Counter(numbers).most_common(1)[0][0] if numbers else None
+
+
+def system_seed(seed, key):
+    """The torch seed of one system: fixed by --seed and the system's key, not by run order."""
+    return (seed * 1_000_003 + zlib.crc32(key.encode())) % 2 ** 31
 
 
 def systems_for(part, agents, text_agents):
@@ -119,10 +125,18 @@ def run(team, spec, items, batch, steps, split, args):
             for texts, row in zip(groups, extra):
                 winner = tally(texts)
                 row["votes"] = [predicted_number(t) for t in texts]
-                answers.append("" if winner is None else f"The answer is {winner:g}.")
+                row["winner"] = winner
+                # repr keeps every digit; the score below reads the number itself (Codex review of
+                # 66da55f: ":g" turned 1234567 into 1.23457e+06, which parses as 1.23457).
+                answers.append("" if winner is None else f"The answer is {winner!r}.")
         for item, answer, tokens, more in zip(chunk, answers, receipt.generated_tokens, extra):
+            if "winner" in more:
+                winner = more["winner"]
+                right = winner is not None and item["gold"] is not None and abs(winner - item["gold"]) < 1e-6
+            else:
+                right = correct(answer, item["gold"])
             results.append({"question": item["question"], "gold": item["gold"], "answer": answer,
-                            "correct": correct(answer, item["gold"]), "tokens": tokens, "latentVectors": vectors,
+                            "correct": right, "tokens": tokens, "latentVectors": vectors,
                             "cappedAgents": more.pop("cappedAgents", 0), "seconds": receipt.seconds / len(chunk),
                             **more})
         print(f"{spec['key']}: {len(results)}/{len(items)} acc={sum(r['correct'] for r in results) / len(results):.3f}",
@@ -203,6 +217,11 @@ def main(argv=None, team=None, items=None):
         if cuda:
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
+        # Random thoughts draw from torch's global generator: seed it per system, from --seed
+        # and the system's name, so a rerun or an --only run of one system draws the same
+        # noise (Codex review of 66da55f).
+        spec["torchSeed"] = system_seed(args.seed, spec["key"])
+        torch.manual_seed(spec["torchSeed"])
         began = time.perf_counter()
         results = run(team, spec, items, args.batch, args.steps, split, args)
         summary = summarize(results)

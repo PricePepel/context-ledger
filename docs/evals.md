@@ -1214,3 +1214,8 @@ Predictions, written before the run:
   - the split rules and the vote tally behave as described;
   - both parts of the runner produce every system and comparison.
 - The full runtime suite still passes, and the three-agent path of earlier cycles is unchanged.
+- **Code review (Codex, 66da55f):** no sealed-mode leak and no change to the three-agent path were found. Four findings were fixed, each with a test that fails when the fix is reverted:
+  1. A vote's winner was written back with `:g`, so 1234567 read as 1.23457. The winner is now scored as a number.
+  2. Random thoughts were not seeded per system. Each system now seeds torch from `--seed` and its name.
+  3. The leak test corrupted the hidden prompts only after the whole chain and read only the Solver's first step. It now corrupts them before every later agent and over a multi-step decode, with padded rows; removing `hide` at any of the three places fails it.
+  4. The compatibility test compared the new code with itself. It now compares with the three-agent algorithm written out. A one-off run of the parent commit's `team.py` beside the new one gives identical latent_mas (soft, aligned, random), text_mas, single, working memory and training loss on the tiny model.
