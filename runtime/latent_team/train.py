@@ -7,8 +7,10 @@ One example is one GSM8K *train* question. The three latent subagents run exactl
 latent_mas (same prompts, think() and chat turns), with gradients; then the solver turn is
 read and the target is teacher-forced: the gold solution with its calculator annotations
 <<...>> removed, its "#### N" line replaced by "The answer is N.", and the template's close
-text, so the model also learns to stop. The loss is the cross-entropy of the target tokens
-only (team.target_loss); prompts and latent positions are not scored.
+text, so the model also learns to stop. With --targets (cycle 14) the target is instead the
+model's own correct answer from latent_team.distill, with the same close. The loss is the
+cross-entropy of the target tokens only (team.target_loss); prompts and latent positions are
+not scored.
 
 Every base weight is frozen. Only the thought adapter (level adapter, adapter.py) and/or
 the LoRA factors (level lora, lora.py) train, with AdamW, batch 1 and gradient
@@ -91,6 +93,8 @@ def parser():
                         " repeats the question, so it bounds memory most (default: no limit)")
     p.add_argument("--grad-agents", type=int, default=3, choices=(1, 2, 3),
                    help="subagents (the last ones) that keep gradients; fewer bounds memory, 3 is the full loop")
+    p.add_argument("--targets", default=None,
+                   help="self targets from latent_team.distill (cycle 14); default: the gold solutions")
     p.add_argument("--log-every", type=int, default=10, help="optimizer steps between log lines")
     p.add_argument("--device", default="cuda")
     p.add_argument("--out", required=True)
@@ -173,6 +177,44 @@ def _print(line):
     print(line, flush=True)
 
 
+def build_targets(team, items, args):
+    """(targets, kept items, skip counts) for one run.
+
+    The target is the gold solution (target_text), or with --targets the model's own kept
+    answer from distill.py followed by the template's close (cycle 14). A question with no
+    kept self answer is skipped and counted as noTarget, never filled in with the gold one."""
+    from .team import IGNORE, LATENT_PROMPTS
+    close = team.close_turn()
+    own = None
+    if args.targets:
+        from .distill import load_targets
+        own = load_targets(args.targets, team.model_name)
+    targets, kept = [], []
+    counts = {"tooLong": 0, "longPrompts": 0, "noTarget": 0}
+    for item in items:
+        if own is None:
+            text = target_text(item["solution"], close)
+        elif item["question"] in own:
+            text = own[item["question"]].strip() + close
+        else:
+            counts["noTarget"] += 1
+            continue
+        prompt = LATENT_PROMPTS["solver"].format(question=item["question"])
+        if int(team.target_batch([prompt], [text])[2].ne(IGNORE).sum()) > args.max_target_tokens:
+            counts["tooLong"] += 1
+            continue
+        # Measured as rendered, chat template included (Codex review of 8bfbf51: the raw
+        # prompt text left out the template tokens the model actually reads).
+        if args.max_prompt_tokens is not None and max(team.turn_tokens(item["question"]).values()) > args.max_prompt_tokens:
+            counts["longPrompts"] += 1
+            continue
+        targets.append(text)
+        kept.append(item)
+    if not kept:
+        raise ValueError("every example is over --max-target-tokens or --max-prompt-tokens, or has no self target")
+    return targets, kept, counts
+
+
 def train(team, items, args, log=_print):
     """The training loop. Returns the training log (also written to <out>/train-log.json)."""
     import torch
@@ -184,31 +226,14 @@ def train(team, items, args, log=_print):
     cuda = str(team.device).startswith("cuda")
     if cuda:
         torch.cuda.reset_peak_memory_stats()
-    close = team.close_turn()
-    from .team import IGNORE, LATENT_PROMPTS
-    targets, kept, too_long, long_prompts = [], [], 0, 0
-    for item in items:
-        text = target_text(item["solution"], close)
-        prompt = LATENT_PROMPTS["solver"].format(question=item["question"])
-        if int(team.target_batch([prompt], [text])[2].ne(IGNORE).sum()) > args.max_target_tokens:
-            too_long += 1
-            continue
-        # Measured as rendered, chat template included (Codex review of 8bfbf51: the raw
-        # prompt text left out the template tokens the model actually reads).
-        if args.max_prompt_tokens is not None and max(team.turn_tokens(item["question"]).values()) > args.max_prompt_tokens:
-            long_prompts += 1
-            continue
-        targets.append(text)
-        kept.append(item)
-    items = kept
-    if not items:
-        raise ValueError("every example is over --max-target-tokens or --max-prompt-tokens")
+    targets, items, counts = build_targets(team, items, args)
     record = {"model": team.model_name, "config": {k: v for k, v in vars(args).items()},
               "chatTemplate": team.turns.as_dict(), "examples": len(items),
               "trainable": {name: sum(p.numel() for p in group) for name, group in groups.items()},
-              "tooLong": too_long, "longPrompts": long_prompts, "history": [], "epochs": [], "skipped": 0}
-    log(json.dumps({"event": "start", "trainable": record["trainable"], "examples": len(items), "tooLong": too_long,
-                    "longPrompts": long_prompts}))
+              "targetSource": "self" if args.targets else "gold", **counts,
+              "history": [], "epochs": [], "skipped": 0}
+    log(json.dumps({"event": "start", "trainable": record["trainable"], "examples": len(items),
+                    "targetSource": record["targetSource"], **counts}))
     rng = random.Random(args.seed)
     order = list(range(len(items)))
     step, start = 0, time.perf_counter()
