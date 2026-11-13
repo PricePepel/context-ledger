@@ -806,3 +806,36 @@ A second independent review, of 2a02e98, upheld seven findings. Each fix has a t
 - **latent_transfer's paths fallback was not covered** (low). The byte-identical test now includes a `paths` transfer that falls back to files, and the paging test reads the first page of a long one: its note names latent_transfer and its arguments, and following it continues the same file. Both fail on the review's mutation (`textFallback('latent_read', ..., intro + ' X', ...)`).
 - **graph_list and room_list trimming was not exercised** (low). A fake ledger serves 250 rooms with 32-character party names and 250 graphs with 120-tag titles. With `limit: 100`, each first page holds fewer than 100 rows and stays in the bound, `more.after` is the last row shown, and the walk returns every row once, in order. It fails if room_list skips `listResult`.
 - **Suites (Windows):** node 119/120 (one skipped), Playwright 13/13. tools/list is 10,104 characters.
+
+## Cycle 11 — Latent runtime performance baseline (defined 2026-11-12, before measuring)
+
+Card C11. Until now the latent runtime had accuracy evals but no performance figures. This cycle measures it on the RTX 4090 Laptop GPU (16 GB), vLLM 0.33.0 in WSL2, with the synthetic fixtures only.
+
+### What is measured
+
+A new harness, `evals/latent/perf.mjs`, sends the dev set (`questions.json`, 8 questions, `evals/latent/fixture`) through the ledger's `/api/latent/read`, as `run.mjs` does, and reads vLLM's Prometheus `/metrics` before and after every read. For each configuration it reports:
+
+1. **Time to first token (TTFT):** mean, p50 and p90 over every vLLM call, from vLLM's TTFT histogram. Quantiles come from the histogram buckets, so they are bucket estimates.
+2. **Prefix-cache hit rate:** vLLM's prefix-cache hits divided by queries (tokens), cross-checked against the receipts' `cachedTokens / promptTokens`.
+3. **Tokens per second:** per-request decode speed (1 / mean time per output token) and the aggregate rate (generated tokens / wall time of the reads).
+4. **Memory:** GPU memory used after loading and the peak during the run (`nvidia-smi`, sampled every 200 ms), the size of vLLM's KV-cache pool, the peak KV-cache use, and the KV memory per request: tokens of that request times the KV bytes per token from the model's config (layers × KV heads × head dim × 2 × bytes per value). Weights are shared by every request, so the KV cache is the per-request part.
+5. **End-to-end read latency:** p50 and p90 of the ledger call, which is what an agent waits for.
+6. **Accuracy:** the existing grader on the same reads (correct and cited), so a faster setting that loses answers is visible.
+
+### Configurations
+
+- **A.** Default: Qwen2.5-7B-Instruct-AWQ, strict citations off, files on `/mnt/c`.
+- **B.** Qwen2.5-14B-Instruct-AWQ, strict citations on, max model length 8192 (the cycle 9 strict setup).
+- Quick wins, each measured against A in the same session:
+  - **C.** FP8 KV cache (`--kv-cache-dtype fp8`).
+  - **D.** N-gram speculative decoding (prompt lookup), since cited answers copy text from the files in the prompt.
+  - **E.** The fixture copied to the WSL disk, so the pool does not read through `/mnt/c`.
+  - **F.** FP8 weights (`RedHatAI/Qwen2.5-7B-Instruct-FP8-dynamic`) instead of AWQ.
+- For B, the 14B run is also repeated with C, because FP8 KV is the cheapest way to raise its 8192-token limit.
+
+### Acceptance
+
+- Unit tests (`node:test`) for the pure parts: Prometheus text parsing, counter and histogram deltas, bucket quantiles, KV bytes per token, and the report summary. They run without a GPU.
+- Each configuration runs 3 rounds of the 8 dev questions (24 reads) and produces a report with every metric present, or a stated reason why vLLM does not export it.
+- A quick win is recommended as a default only if it improves its target metric and loses at most one correct-and-cited answer out of 24 against A in the same session. Otherwise it is recorded and left off.
+- The numbers are for one laptop GPU and one synthetic fixture; the doc says so wherever they are quoted.
