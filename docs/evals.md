@@ -1386,3 +1386,37 @@ Exact McNemar tests on the same 200 questions (questions only the first system g
   - without `--targets`, training still uses the gold solutions as in cycle 13;
   - a file with no kept answer stops the run.
 - No new runtime dependency.
+
+## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
+
+Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
+
+### What is tested and the expected result
+
+- **Imported as agent turns.** Either form with plain text imports as a message with role `agent`, its `author` and `recipient`, its line number, and its text exactly as written (envelope included), so a graph can cite it. Only `input_text` blocks count in the first form. One delivery written in both forms on adjacent records (opposite forms, the same original paths and text) is kept once; two identical messages of one form are both kept. A `null` record is skipped, as before.
+- **Encrypted parts stay out.** Encrypted content is never imported, in either form. A message with only encrypted content is skipped, as before.
+- **Old imports gain them.** Importing again a Codex file that was stored before I3 adds its agent turns under the same session ID, keeping every line it had, so graphs that cite it still validate.
+- **Odd paths are bounded.** An author or recipient that is missing, not a string or longer than 200 characters is stored as `unknown`.
+- **Ordinary messages are unchanged.** Codex user and assistant messages, and every Claude Code record, import exactly as before; a Claude Code record that looks like an `agent_message` is still ignored.
+- **Shown with direction.** The browser labels the turn "Agent /root/worker to /root", with control and format characters in the paths shown as escapes. The CLI hand-off and `session_read` head it `## agent /root/worker to /root · line N`, with the paths on one line and every control and format character escaped (zero-width joiners included), Markdown in them shown literally, and `session_read` paging still splits and rejoins such turns exactly.
+- **Searchable.** The text of an agent message is found by session search.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` and `npx playwright test` pass, with the cases above in `tests/import-agent-messages.test.mjs` and the library browser spec.
+- No new dependency and no schema change.
+
+### I3 results (2026-11-17)
+
+- `tests/import-agent-messages.test.mjs` 12/12 and the library browser spec 5/5. Full suites on Windows are listed in the PR.
+- **Codex, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) Codex also saves these messages in its own `inter_agent_communication` rollout record, which was still dropped. Both forms are now read, without encrypted content.
+  - (medium) A Codex file imported before I3 kept its old row on a new import. A new import now refreshes the row when every line it had is still there, keeping the session ID, so graphs that cite it still validate.
+  - (medium) Headings kept U+200C and U+200D and did not escape `~`. Agent paths now use a strict one-line escape, `labelText` in `src/text.mjs`.
+  - (low) `output_text` blocks were accepted in `agent_message`. Only `input_text` counts now.
+  - (low) The paging test did not rejoin a split turn. It now pages a long agent turn with escaped paths and a body that never repeats, rejoins the slices exactly and reads the turn after it.
+- **Codex, round 2:** no high findings; one medium and two low, fixed with tests:
+  - (medium) Two identical messages were merged into one. Now only opposite forms on adjacent records, with the same original paths, are merged.
+  - (low) A `null` record made a Codex import fail. It is skipped again.
+  - (low) The browser showed raw control and format characters in agent paths. They are shown as escapes.
+- **Note:** the refresh can change a graph context's savings estimate for an old session, because the hand-off it measures now includes the agent turns.

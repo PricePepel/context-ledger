@@ -235,3 +235,9 @@ Next steps:
 2. G10: a person checks the 82 labels in `evals/handoff/labelled.json`, then live runs (`node evals/handoff/run.mjs --agent claude --model M --runs 10`, the same for codex, then `--summary`). Check token and cost parsing on the first live Claude run.
 3. Still owed from earlier: Ali's review of the runtime changes from cycle 9, the human review of PR #8's schema migration, and Ali's decision on `VLLM_NGRAM=1` (cycle 11).
 4. PR #3 (Ali's draft M0 benchmark, based on `feature/semantic-graph`) was left open: it is Ali's and conflicts with its base.
+
+## Current checkpoint — I3 Codex agent-to-agent messages (2026-11-17)
+
+Branch `ruslan/i3-codex-agent-messages`. Codex messages between agents are now imported as turns with role `agent`, `author` and `recipient`, from both the `response_item` `agent_message` form and the rollout's `inter_agent_communication` form. Encrypted content is never stored. The browser, the CLI hand-off and `session_read` show "agent <author> to <recipient>", with the paths escaped. A Codex file imported before I3 gains its agent turns when it is imported again.
+
+Next owner: this branch and I2 (#33) both change `importTranscript` in `src/store.mjs`; whichever merges second must keep I2's skip report and I3's refresh.

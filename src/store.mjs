@@ -33,7 +33,45 @@ function isCodexContext(text, kind) {
     || /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>$/u.test(value);
 }
 
+// Card I3: an agent path is short; anything else is shown as unknown.
+const agentPath = value => (typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : 'unknown');
+
+/**
+ * A Codex multi-agent message between two agents, such as /root and /root/worker. Codex
+ * writes it in two forms: the model-facing response_item of type agent_message, with
+ * input_text and encrypted_content blocks, and the rollout's own inter_agent_communication
+ * record, with plain content and an optional encrypted_content. Only plain text is kept;
+ * encrypted content is never imported.
+ */
+function agentMessageAt(record, line) {
+  const payload = record?.payload;
+  let text;
+  if (record?.type === 'response_item' && payload?.type === 'agent_message' && Array.isArray(payload.content)) {
+    text = payload.content.filter(block => block?.type === 'input_text' && typeof block.text === 'string')
+      .map(block => block.text).join('\n');
+  } else if (record?.type === 'inter_agent_communication' && typeof payload?.content === 'string') {
+    text = payload.content;
+  } else {
+    return null;
+  }
+  if (!text.trim()) return undefined;
+  return { role: 'agent', author: agentPath(payload.author), recipient: agentPath(payload.recipient), text, line };
+}
+
+/**
+ * The same delivery written in both Codex forms on adjacent records: opposite forms, and
+ * the same original paths and text. Two records of one form are two deliveries.
+ */
+const bothForms = (previous, record, message) => previous?.message.text === message.text
+  && previous.record.type !== record.type
+  && previous.record.payload.author === record.payload.author
+  && previous.record.payload.recipient === record.payload.recipient;
+
 function messageAt(record, provider, line) {
+  if (provider === 'codex') {
+    const agent = agentMessageAt(record, line);
+    if (agent !== null) return agent;
+  }
   const message = provider === 'claude' ? record?.message : record?.payload;
   const role = message?.role;
   if (role !== 'user' && role !== 'assistant') return;
@@ -62,6 +100,8 @@ function messageAt(record, provider, line) {
 
 function parseTranscript(transcript, provider) {
   const messages = [];
+  // The agent message on the previous readable record, if there was one.
+  let previousAgent = null;
   for (const [index, rawLine] of transcript.split('\n').entries()) {
     const line = index + 1;
     const value = rawLine.trim();
@@ -74,7 +114,10 @@ function parseTranscript(transcript, provider) {
       throw new InputError(`Invalid JSONL at line ${line}.`);
     }
     const message = messageAt(record, provider, line);
-    if (message) messages.push(message);
+    const agent = message?.role === 'agent' ? { record, message } : null;
+    // A delivery written in both Codex forms, one right after the other, is kept once.
+    if (message && !(agent && bothForms(previousAgent, record, message))) messages.push(message);
+    previousAgent = agent;
   }
 
   if (messages.length === 0) throw new InputError('No supported conversation messages found.');
@@ -147,6 +190,7 @@ export function openStore(path) {
     ON CONFLICT (id) DO NOTHING
   `);
   const getSummary = database.prepare(`SELECT ${summaryColumns} FROM sessions WHERE id = ?`);
+  const refresh = database.prepare('UPDATE sessions SET title = ?, message_count = ?, messages = ?, search_text = ? WHERE id = ?');
   const getDetail = database.prepare(`SELECT ${summaryColumns}, messages FROM sessions WHERE id = ?`);
   const insertGraph = database.prepare(`
     INSERT INTO graphs (id, session_id, payload)
@@ -201,13 +245,22 @@ export function openStore(path) {
       if (typeof transcript !== 'string') throw new InputError('Transcript must be JSONL text.');
       const name = sourceName(source);
       const id = createHash('sha256').update(`${provider}\0`).update(transcript).digest('hex');
-      const existing = getSummary.get(id);
-      if (existing) return existing;
-
       const messages = parseTranscript(transcript, provider);
       const title = titleFor(messages);
+      const stored = JSON.stringify(messages);
       const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
-      insert.run(id, provider, name, title, messages.length, JSON.stringify(messages), searchText);
+      const existing = getDetail.get(id);
+      if (existing) {
+        // Card I3: a file imported before agent messages were read gains them on a new
+        // import. Its ID stays, and every line it had is kept, so graphs that cite it hold.
+        const lines = new Set(messages.map(message => message.line));
+        if (existing.messages !== stored && JSON.parse(existing.messages).every(message => lines.has(message.line))) {
+          refresh.run(title, messages.length, stored, searchText, id);
+        }
+        return getSummary.get(id);
+      }
+
+      insert.run(id, provider, name, title, messages.length, stored, searchText);
       return getSummary.get(id);
     },
 

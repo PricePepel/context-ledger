@@ -1,5 +1,5 @@
 // Session tools: session_search and session_read.
-import { handoffMarkdown } from '../handoff.mjs';
+import { handoffMarkdown, turnHeading } from '../handoff.mjs';
 import { cutText, maxResultCharacters, resultSize } from '../paging.mjs';
 import { terminalJson } from '../text.mjs';
 import { ToolError, briefingText, checkArguments, fromOffsetArgument, hexSchema, isObject, jsonResult, listArguments, maxOffset, requireHex, text, tooLarge } from './common.mjs';
@@ -16,7 +16,7 @@ function sessionPage(session, remaining, fromLine, fromOffset) {
     const shown = part ? { ...message, text: message.text.slice(part.start, part.end) } : message;
     const turn = handoffMarkdown({ ...session, messages: [shown] }).slice(header.length);
     if (!part) return turn;
-    const heading = `\n\n## ${message.role} · line ${message.line}`;
+    const heading = `\n\n${turnHeading(message)}`;
     return `${heading}\n[Part of the turn at line ${message.line}: characters ${part.start}–${part.end} of ${message.text.length}.]` +
       turn.slice(heading.length);
   };
@@ -137,7 +137,9 @@ export const sessionRead = ['session_read', {
     const session = data?.session;
     // Headings are built from role and line, so both must be exactly what the store writes.
     if (!isObject(session) || !Array.isArray(session.messages) || !session.messages.every(message => isObject(message) &&
-        (message.role === 'user' || message.role === 'assistant') && Number.isSafeInteger(message.line) &&
+        (message.role === 'user' || message.role === 'assistant'
+          || (message.role === 'agent' && typeof message.author === 'string' && typeof message.recipient === 'string'))
+        && Number.isSafeInteger(message.line) &&
         message.line >= 1 && typeof message.text === 'string')) {
       throw new ToolError('Context Ledger returned an unexpected session response.');
     }
