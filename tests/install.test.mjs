@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -475,7 +475,8 @@ test('review round 4: a relative CODEX_HOME is the same folder for Codex and for
   const where = spawnSync(process.execPath, [cli, 'install', '--agent', 'codex'], { cwd: box.root, env: { ...box.env, CODEX_HOME: 'other dir', STUB_ENV: 'CODEX_HOME' }, encoding: 'utf8' });
   assert.equal(where.status, 0, where.stdout + where.stderr);
   assert.ok(existsSync(join(box.root, 'other dir', 'AGENTS.md')));
-  assert.deepEqual([...new Set(box.envSeen())], [join(box.root, 'other dir')]);
+  // On macOS the temporary folder is behind a symlink (/var is /private/var), so compare real paths.
+  assert.deepEqual([...new Set(box.envSeen().map(path => realpathSync(path)))], [realpathSync(join(box.root, 'other dir'))]);
 });
 
 test('review round 4: an existing Codex HTTP entry is recognised and left alone', t => {
