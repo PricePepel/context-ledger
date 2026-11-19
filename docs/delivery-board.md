@@ -43,6 +43,7 @@ Claim a card before working on it (AGENTS.md section 2). States: Backlog, Ready,
 | U1 Console v0 | Unassigned | — | Read-only Grafana-style console in the loopback browser app, built on today's API: live graph as agents publish, evidence pane with cited lines highlighted, panels for handoffs, estimated tokens saved, quoted vs inferred nodes and which agent read or published what (aggregate counts only for dogfooding). Review actions stay in P3 | Backlog |
 | U2 Brand and mascot | Unassigned | — | Original character, palette and type for the console and video; take Capy's warmth as a reference only, no copied assets or look | Backlog |
 | U3 60-second demo video | Unassigned | — | Script and record install, two agents, graph growing, click-through to a cited line; synthetic transcripts only | Backlog (after U1, G8) |
+| U5 Library project picker | Claude Code (for Ali) | `ali/u5-project-picker` (stacked on #42) | Pick a project when importing a transcript, filter the library by project, and see each transcript's project; a read-only `GET /api/projects` lists the projects with their transcript counts | In review |
 | D1 T3 Code integration | Unassigned | — | Guide for adding the ledger as an outside MCP server in T3 Code, plus an explicit, user-chosen importer for T3's thread store | Backlog |
 | D2 Capy integration guide | Unassigned | — | Guide for adding the ledger as an MCP server for a Capy organization | Backlog |
 

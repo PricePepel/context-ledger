@@ -184,6 +184,9 @@ export function openStore(path) {
     ON CONFLICT (id) DO NOTHING
   `);
   const getSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
+  const listProjects = database.prepare(`
+    SELECT p.slug, COUNT(s.id) AS sessions FROM projects p LEFT JOIN sessions s ON s.project_id = p.id
+    GROUP BY p.id ORDER BY p.slug`);
   const getDetail = database.prepare(`SELECT ${summaryColumns}, s.messages FROM ${sessionRows} WHERE s.id = ?`);
   const insertProject = database.prepare(`
     INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -261,6 +264,11 @@ export function openStore(path) {
         if (open) database.exec('ROLLBACK');
       }
       return getSummary.get(id);
+    },
+
+    /** Card U5: every project by slug, with how many sessions it holds. */
+    listProjects() {
+      return listProjects.all();
     },
 
     list(query, provider, project) {

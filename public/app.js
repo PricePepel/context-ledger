@@ -8,6 +8,11 @@ const importStatus = document.querySelector('#import-status');
 const searchForm = document.querySelector('#search-form');
 const searchQuery = document.querySelector('#search-query');
 const filterAgent = document.querySelector('#filter-agent');
+const filterProject = document.querySelector('#filter-project');
+const importProject = document.querySelector('#import-project');
+const projectNames = document.querySelector('#project-names');
+// The same rule as isProjectSlug in src/store.mjs; the server checks it again.
+const projectSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const searchStatus = document.querySelector('#search-status');
 const searchResults = document.querySelector('#search-results');
 const readerHeading = document.querySelector('#reader-heading');
@@ -56,7 +61,7 @@ function resultRow(session) {
   button.dataset.session = session.id;
   button.addEventListener('click', () => openTranscript(session.id, true));
   const count = `${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}`;
-  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count}`, 'result-meta'));
+  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count} · ${session.project}`, 'result-meta'));
   return item;
 }
 
@@ -68,6 +73,7 @@ async function search() {
   const query = searchQuery.value.trim();
   if (query) params.set('q', query);
   if (filterAgent.value) params.set('provider', filterAgent.value);
+  if (filterProject.value) params.set('project', filterProject.value);
 
   searchStatus.textContent = 'Searching the archive…';
   searchResults.replaceChildren();
@@ -78,7 +84,7 @@ async function search() {
     renderSelection();
     searchStatus.textContent = sessions.length
       ? `${sessions.length} ${sessions.length === 1 ? 'transcript' : 'transcripts'}`
-      : query || filterAgent.value ? 'No matching transcripts.' : 'The archive is empty. Add a transcript to get started.';
+      : query || filterAgent.value || filterProject.value ? 'No matching transcripts.' : 'The archive is empty. Add a transcript to get started.';
   } catch (error) {
     if (!signal.aborted) searchStatus.textContent = `Search failed. ${error.message}`;
   }
@@ -111,7 +117,7 @@ async function openTranscript(id, focusHeading = false) {
     const { session } = await request(`/api/sessions/${encodeURIComponent(id)}`, { signal });
     if (signal.aborted) return;
     readerHeading.textContent = session.title;
-    readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`;
+    readerSource.textContent = `${agentNames[session.provider]} · ${session.source} · project ${session.project}`;
     renderRows(readerMessages, session.messages, messageRow);
     readerStatus.textContent = '';
     if (focusHeading) readerHeading.focus();
@@ -133,6 +139,12 @@ importForm.addEventListener('submit', async (event) => {
     return;
   }
   const provider = sourceAgent.value;
+  const project = importProject.value.trim();
+  if (project && (project.length > 64 || !projectSlug.test(project))) {
+    importStatus.textContent = 'Import failed. A project is at most 64 lowercase letters, digits and single hyphens.';
+    importProject.focus();
+    return;
+  }
   const readerAtImport = readerRequest;
   importButton.disabled = true;
   importStatus.textContent = 'Importing transcript…';
@@ -141,11 +153,11 @@ importForm.addEventListener('submit', async (event) => {
     const { session } = await request('/api/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, source: file.name, transcript: await file.text() }),
+      body: JSON.stringify({ provider, source: file.name, transcript: await file.text(), ...(project ? { project } : {}) }),
     });
     if (transcriptFile.files[0] === file) transcriptFile.value = '';
-    importStatus.textContent = `Imported ${session.source}.`;
-    const refresh = search();
+    importStatus.textContent = session.project === 'default' ? `Imported ${session.source}.` : `Imported ${session.source} into ${session.project}.`;
+    const refresh = loadProjects().then(search);
     if (readerRequest === readerAtImport) await openTranscript(session.id);
     await refresh;
   } catch (error) {
@@ -160,6 +172,24 @@ searchForm.addEventListener('submit', (event) => {
   void search();
 });
 filterAgent.addEventListener('change', search);
+filterProject.addEventListener('change', search);
+
+/** Card U5: fill the project filter and the import suggestions, keeping the chosen filter. */
+async function loadProjects() {
+  try {
+    const { projects } = await request('/api/projects');
+    const chosen = filterProject.value;
+    filterProject.replaceChildren(new Option('All projects', ''), ...projects.map(({ slug, sessions }) =>
+      new Option(`${slug} (${sessions})`, slug)));
+    filterProject.value = projects.some(({ slug }) => slug === chosen) ? chosen : '';
+    projectNames.replaceChildren(...projects.map(({ slug }) => new Option(slug, slug)));
+  } catch {
+    // The filter keeps "All projects" and search still works without the list.
+  }
+}
+
+// The first search does not wait for the project list: the filter starts at All projects.
+void loadProjects();
 void search();
 
 const roomForm = document.querySelector('#room-form');
