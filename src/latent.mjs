@@ -78,7 +78,7 @@ function checkPaths(paths, what) {
 }
 
 /** Read the requested files under the root, refusing anything that resolves outside it. */
-async function readFiles(root, paths) {
+async function readFiles(root, paths, refuseFiles = []) {
   if (!root) throw new LatentError(503, 'Latent reading is not configured: set LATENT_ROOT.');
   const realRoot = await realpath(root).catch(() => {
     throw new LatentError(503, 'LATENT_ROOT does not exist.');
@@ -97,6 +97,10 @@ async function readFiles(root, paths) {
     if (!inside || inside.startsWith('..' + sep) || inside === '..' || isAbsolute(inside)) {
       throw new InputError('Each path must stay inside the latent root.');
     }
+    // A link with an innocent name can still point at .env, a key or the token file.
+    if (isSecretPath(inside.split(sep))) {
+      throw new InputError('Paths must not name secret files (.env, .git, keys).');
+    }
     // Two spellings of one file (SRC/A.JS and src/a.js on Windows) count as a duplicate.
     const key = process.platform === 'win32' ? real.toLowerCase() : real;
     if (seen.has(key)) throw new InputError('Paths must be unique.');
@@ -108,6 +112,11 @@ async function readFiles(root, paths) {
     try {
       const info = await handle.stat();
       if (!info.isFile()) throw new InputError(`Not a regular file: ${path}`);
+      // The ledger's own token file, under any name (a hard link has an innocent one).
+      const identity = refuseFiles.length ? await handle.stat({ bigint: true }) : undefined;
+      if (refuseFiles.some(file => file.dev === identity.dev && file.ino === identity.ino)) {
+        throw new InputError('Paths must not name secret files (.env, .git, keys).');
+      }
       bytes += info.size;
       if (bytes > maxTextBytes) throw new LatentError(413, 'Latent read is limited to 512 KiB of file text.');
       buffer = await handle.readFile();
@@ -263,9 +272,17 @@ function anchorSpan(span, lines, getIndex) {
   return { span: { path: span.path, startLine: nearest[0], endLine: nearest[1], quote: stored }, verified: true, relocated: true };
 }
 
-const numberPattern =/(?<![\w.])\d+(?:\.\d+)?(?![\w])/gu;
-const identifierPattern = /\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b/gu;
-const hasToken = (text, token) => new RegExp(`(?<![\\w.])${token.replace(/\./gu, '\\.')}(?![\\w])`, 'u').test(text);
+// Numbers and code names are whole tokens in any script, on both sides: a letter, digit
+// or combining mark next to one makes it a different token (G7 review rounds 2 and 3).
+// For ASCII text these match what \d, \w and \b matched before.
+const numberPattern = /(?<![\p{L}\p{N}\p{M}_.])\p{Nd}+(?:\.\p{Nd}+)?(?![\p{L}\p{N}\p{M}_])/gu;
+const identifierPattern = /(?<![\p{L}\p{N}\p{M}_])(?:[A-Za-z]+_[\p{L}\p{N}\p{M}_]*|[a-z]+[A-Z][\p{L}\p{N}\p{M}]*)(?![\p{L}\p{N}\p{M}_])/gu;
+// 4317 is not in 4317.5 or in 4317 followed by an Arabic-Indic digit, but it is in "port 4317.".
+const hasToken = (text, token) =>
+  new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_.])${token.replace(/\./gu, '\\.')}(?![\\p{L}\\p{N}\\p{M}_]|\\.\\p{N})`, 'u').test(text);
+// retryCount is not in retryCounter, or in retryCount followed by an accent.
+const hasIdentifier = (text, identifier) =>
+  new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_])${identifier}(?![\\p{L}\\p{N}\\p{M}_])`, 'u').test(text);
 // A quoted string literal in a label: 'orbit-mail', "EUR", `shipped`. The quote must not
 // touch a letter or digit, so apostrophes inside words ("user's", "isn't") open nothing.
 const literalPattern = /(?<![\p{L}\p{N}])(['"`])([^'"`\n]{1,120})\1(?![\p{L}\p{N}])/gu;
@@ -296,7 +313,7 @@ export function isGrounded(label, citedText) {
     .map(match => match[2].trim()).filter(Boolean);
   if (!literals.every(literal => hasLiteral(citedText, literal))) return false;
   const identifiers = label.match(identifierPattern) ?? [];
-  if (identifiers.length) return identifiers.some(identifier => citedText.includes(identifier));
+  if (identifiers.length) return identifiers.some(identifier => hasIdentifier(citedText, identifier));
   if (numbers.length) return true;
   // No numbers or code names to compare. Live probe on Ali's preamble v2: a steered
   // finding said "The session timeout is set in src/util.js" while citing an
@@ -306,11 +323,29 @@ export function isGrounded(label, citedText) {
   // three-letter words count too. A short word must start a word in the cited lines
   // ("low" does not match "below"); longer words compare their first four letters.
   const words = (label.toLowerCase().match(/[a-z]{3,}/gu) ?? []).filter(word => !stopWords.has(word));
-  if (!words.length) return true;
+  // G7 review: a label in another script (Han, Cyrillic) has no [a-z] words. Each run of
+  // its letters counts as a word, matched by any two letters in a row (one for a
+  // one-letter run), so an all-Han label cannot pass on unrelated English. A pair must
+  // hold a non-ASCII letter: "café" must not pass on the "ca" of "cache" (review round 2).
+  // A letter keeps its combining marks (a Devanagari vowel sign, an accent), so की is
+  // not found in का (review round 3); both sides are compared in NFC.
+  const foreign = (label.normalize('NFC').toLowerCase().match(/[\p{L}\p{N}\p{M}]+/gu) ?? [])
+    .filter(run => /\P{ASCII}/u.test(run));
+  // Nothing to compare (only short or common words): no evidence either way, kept.
+  if (!words.length && !foreign.length) return true;
   const cited = citedText.toLowerCase();
+  const citedNfc = citedText.normalize('NFC').toLowerCase();
   return words.some(word => (word.length === 3
     ? new RegExp(`(?<![a-z])${word}`, 'u').test(cited)
-    : cited.includes(word.slice(0, 4))));
+    : cited.includes(word.slice(0, 4))))
+    || foreign.some(run => {
+      const letters = run.match(/\P{M}\p{M}*|\p{M}+/gu);
+      if (letters.length === 1) return citedNfc.includes(run);
+      return letters.slice(1).some((letter, index) => {
+        const pair = letters[index] + letter;
+        return /\P{ASCII}/u.test(pair) && citedNfc.includes(pair);
+      });
+    });
 }
 
 const stopWords = new Set(['the', 'and', 'for', 'are', 'was', 'not', 'but', 'its', 'set', 'get', 'has', 'had', 'can',
@@ -449,9 +484,9 @@ export function validateSlice(slice, files, question) {
  * Ask the warm pool for a slice. When the runtime is down, fall back to Tier 1:
  * return the numbered files so the closed model reads them itself.
  */
-export async function latentRead(input, { latentUrl = 'http://127.0.0.1:4320', latentRoot, fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
+export async function latentRead(input, { latentUrl = 'http://127.0.0.1:4320', latentRoot, refuseFiles, fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
   const request = checkInput(input);
-  const files = await readFiles(latentRoot, request.paths);
+  const files = await readFiles(latentRoot, request.paths, refuseFiles);
   let response;
   try {
     response = await fetchImpl(`${latentUrl}/latent/read`, {
@@ -558,9 +593,9 @@ function cleanTransferReceipt(receipt) {
   };
 }
 
-export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320', latentRoot, fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
+export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320', latentRoot, refuseFiles, fetchImpl = fetch, timeoutMs = defaultTimeoutMs } = {}) {
   const request = checkTransfer(input);
-  const files = request.paths ? await readFiles(latentRoot, request.paths)
+  const files = request.paths ? await readFiles(latentRoot, request.paths, refuseFiles)
     : [{ path: 'text', lines: request.text.split(/\r\n|\n|\r/u) }];
   const suspects = suspiciousLines(files);
   const textFallback = reason => (request.paths ? fallback(files, reason) : { mode: 'text', reason, text: request.text });
@@ -681,10 +716,10 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
  * adapter pages a long fallback with it, so a continuation never reruns the model.
  * Same path, secret and size rules as latent read.
  */
-export async function latentFiles(input, { latentRoot } = {}) {
+export async function latentFiles(input, { latentRoot, refuseFiles } = {}) {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new InputError('Latent files needs a JSON object.');
   if (Object.keys(input).some(key => key !== 'paths')) throw new InputError('Latent files accepts only paths.');
   checkPaths(input.paths, 'Latent files');
-  const files = await readFiles(latentRoot, input.paths);
+  const files = await readFiles(latentRoot, input.paths, refuseFiles);
   return { mode: 'text', files: files.map(file => ({ path: file.path, text: numbered(file) })) };
 }

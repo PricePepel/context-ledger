@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 
 // G2 acceptance: a published graph is retrievable after the server restarts on the same database.
 async function startServer(database) {
@@ -15,15 +16,15 @@ async function startServer(database) {
   let output = '';
   for await (const chunk of child.stdout) {
     output += chunk;
-    const match = output.match(/listening at (http:\/\/127\.0\.0\.1:\d+)/);
-    if (match) return { origin: match[1], stop: async () => { child.kill(); await once(child, 'exit'); } };
+    const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/);
+    if (match) return { origin: match[1], headers: bearer(await ledgerToken(database, Number(match[2]))), stop: async () => { child.kill(); await once(child, 'exit'); } };
   }
   throw new Error('Server exited before listening: ' + output);
 }
 
-const post = (origin, path, body) => fetch(origin + path, {
+const post = ({ origin, headers }, path, body) => fetch(origin + path, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', Origin: origin },
+  headers: { 'Content-Type': 'application/json', Origin: origin, ...headers },
   body: JSON.stringify(body),
 });
 
@@ -39,10 +40,10 @@ test('a published graph survives a server restart on the same database', async t
       { type: 'user', message: { role: 'user', content: 'Ship the synthetic Orion build.' } },
       { type: 'assistant', message: { role: 'assistant', content: 'Run the Orion smoke test next.' } },
     ].map(record => JSON.stringify(record)).join('\n');
-    const imported = await post(first.origin, '/api/import', { provider: 'claude', source: 'orion.jsonl', transcript });
+    const imported = await post(first, '/api/import', { provider: 'claude', source: 'orion.jsonl', transcript });
     assert.equal(imported.status, 200);
     const { session } = await imported.json();
-    const published = await post(first.origin, '/api/graphs', {
+    const published = await post(first, '/api/graphs', {
       version: 1,
       sessionId: session.id,
       nodes: [
@@ -59,7 +60,7 @@ test('a published graph survives a server restart on the same database', async t
 
   const second = await startServer(database);
   try {
-    const read = await fetch(second.origin + '/api/graphs/' + graph.id);
+    const read = await fetch(second.origin + '/api/graphs/' + graph.id, { headers: second.headers });
     assert.equal(read.status, 200);
     assert.deepEqual(await read.json(), { graph });
     assert.deepEqual(graph.readyActionIds, ['smoke']);

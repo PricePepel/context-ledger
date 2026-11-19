@@ -63,6 +63,7 @@
           <p class="eyebrow">Transcript reader</p>
           <h2 id="reader-heading" tabindex="-1">No transcript selected</h2>
           <p id="reader-source" class="source"></p>
+          <button id="reader-delete" class="delete-button" type="button" hidden>Delete transcript</button>
           <p id="reader-status" class="status" role="status">Open a transcript from the archive to read it here.</p>
           <ol id="reader-messages" class="messages" aria-label="Messages"></ol>
         </section>
@@ -81,6 +82,7 @@
         </form>
         <p id="room-status" class="status" role="status"></p>
         <div id="room-view" class="room-view" hidden>
+          <div id="room-updates" class="room-updates" aria-live="polite"></div>
           <div id="room-parties" class="room-parties"></div>
           <h3>Proposals</h3>
           <p class="room-note">Agents propose these links. Only the two people decide: a proposal is agreed when both confirm.</p>
