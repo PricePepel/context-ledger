@@ -54,11 +54,27 @@ export function homeOf(env = process.env, platform = process.platform) {
   return named || (env === process.env ? homedir() : (() => { throw new InstallError('No home folder in this environment.'); })());
 }
 
+/**
+ * CONTEXT_LEDGER_DB as an absolute path, or undefined when it is unset or empty.
+ * `:memory:` (which the server refuses) and control characters are refused.
+ */
+function databaseFor(env) {
+  const value = env.CONTEXT_LEDGER_DB;
+  if (!value) return undefined;
+  if (value === ':memory:' || /\p{Cc}/u.test(value)) throw new InstallError('Invalid CONTEXT_LEDGER_DB: give the path of the database file.');
+  return resolve(value);
+}
+
 /** The two agents, with their CLI, instruction file and MCP commands. */
 export function agentTargets(env = process.env) {
   const home = homeOf(env);
   const port = env.PORT && env.PORT !== defaultPort ? env.PORT : undefined;
   if (port !== undefined && (!/^[1-9]\d{0,4}$/u.test(port) || Number(port) > 65535)) throw new InstallError('Invalid PORT.');
+  // Card P5b: the MCP adapter finds the ledger's token next to its database (P1e), so a
+  // custom database goes to both servers too, as an absolute path: the agents start the
+  // adapter in another folder.
+  const database = databaseFor(env);
+  const pairs = [...(port ? [`PORT=${port}`] : []), ...(database ? [`CONTEXT_LEDGER_DB=${database}`] : [])];
   const server = ['node', mcpPath];
   return {
     claude: {
@@ -71,7 +87,7 @@ export function agentTargets(env = process.env) {
       // No get: `claude mcp get` can start project servers for a health check. `add`
       // itself refuses a name its scope already has.
       // -e takes every value up to the next option, so it must not sit just before the name.
-      add: ['mcp', 'add', ...(port ? ['-e', `PORT=${port}`] : []), '--scope', 'user', serverName, '--', ...server],
+      add: ['mcp', 'add', ...pairs.flatMap(pair => ['-e', pair]), '--scope', 'user', serverName, '--', ...server],
       remove: ['mcp', 'remove', '--scope', 'user', serverName],
       // Claude's own answer for a name its user scope has; any other failure stops install.
       // The whole line, so a longer message that contains it does not count.
@@ -87,7 +103,7 @@ export function agentTargets(env = process.env) {
       codexHome: env.CODEX_HOME ? resolve(env.CODEX_HOME) : undefined,
       // `codex mcp add` replaces an entry of the same name, so install asks first.
       get: ['mcp', 'get', serverName, '--json'],
-      add: ['mcp', 'add', serverName, ...(port ? ['--env', `PORT=${port}`] : []), '--', ...server],
+      add: ['mcp', 'add', serverName, ...pairs.flatMap(pair => ['--env', pair]), '--', ...server],
       remove: ['mcp', 'remove', serverName],
       absent: /^Error: No MCP server named 'context-ledger' found\.$/mu,
     },
