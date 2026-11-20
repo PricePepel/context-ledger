@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Pip, the CTM mascot, working">
+  <!-- Working: reading the citation tag it holds up, eyes on the tag, the spark bright. -->
+  <ellipse cx="60" cy="110" rx="30" ry="4.5" fill="#18181c" opacity="0.12"/>
+  <path d="M44 34h34l16 16v38a16 16 0 0 1-16 16H42a16 16 0 0 1-16-16V52a18 18 0 0 1 18-18z" fill="#723bfa"/>
+  <path d="M78 34v12a4 4 0 0 0 4 4h12z" fill="#9e7bff"/>
+  <path d="M38 96h44" stroke="#9e7bff" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M58 7c1.5 9.2 4.3 12 12.9 13.5-8.6 1.5-11.4 4.3-12.9 13.5-1.5-9.2-4.3-12-12.9-13.5 8.6-1.5 11.4-4.3 12.9-13.5z" fill="#b9f500"/>
+  <path d="M77 11l5-4M81 19l6-1" stroke="#b9f500" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M42 63q5 4 10 0M66 63q5 4 10 0" fill="none" stroke="#18181c" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M55 72h8" stroke="#18181c" stroke-width="2.2" stroke-linecap="round"/>
+  <ellipse cx="45" cy="106" rx="7" ry="3.6" fill="#5b2bd4"/>
+  <ellipse cx="75" cy="106" rx="7" ry="3.6" fill="#5b2bd4"/>
+  <rect x="42" y="76" width="34" height="18" rx="3" fill="#ffffff" stroke="#18181c" stroke-width="1.6"/>
+  <path d="M47 82h24M47 87h16" stroke="#723bfa" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M30 82l13 2M90 82l-13 2" stroke="#5b2bd4" stroke-width="5" stroke-linecap="round"/>
+</svg>

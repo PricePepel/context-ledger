@@ -48,7 +48,20 @@ test('the demo plays from empty to finished, and one click shows the proof', asy
   await expect(page.locator('.office-agent[data-state="waiting"]')).toHaveAttribute('aria-label', /leo/u);
   await expect(page.locator('.node')).toHaveCount(11);
   await expect(page.locator('.node.is-superseded')).toContainText('port 4400');
-  await expect(page.locator('.node[data-mark="none"]')).toHaveCount(11);
+  // Card U4: the rebuilt recording carries G7 marks, shown as a word as well as a colour.
+  await expect(page.locator('.node[data-mark="quoted"]')).toHaveCount(11);
+  await expect(page.locator('.node[data-mark="quoted"] .node-mark').first()).toHaveText(' · quoted');
+  // Card U4: each agent is its source's pixel sprite.
+  await expect(page.locator('.office-agent[data-sprite="claude"]')).toHaveCount(1);
+  await expect(page.locator('.office-agent[data-sprite="codex"]')).toHaveCount(1);
+  expect(await page.locator('.office-agent[data-sprite="claude"] .oa-sprite rect').count()).toBeGreaterThan(5);
+  expect(await page.locator('.office-agent [style]').count()).toBe(0);
+  // Card U4b: the furnished office and the logo.
+  await expect(page.locator('.office-room')).toHaveCount(2);
+  await expect(page.locator('.of-desk')).toHaveCount(12);
+  await expect(page.locator('.office-standing .office-agent[data-state="waiting"]')).toHaveCount(1);
+  expect(await page.locator('header img.brand').evaluate(img => img.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/console/logo.svg');
   await page.screenshot({ path: `${shotsDir}/03-finished.png`, fullPage: true });
 
   // Keyboard: focus the node and press Enter; focus stays on the node.
@@ -152,6 +165,76 @@ test('live mode shows a graph published while the page is open, and renders its 
   expect(writes()).toEqual([]);
 });
 
+test('card U4: live nodes show the ledger\'s quoted or inferred mark', async ({ page, request, baseURL }) => {
+  const writes = watchRequests(page);
+  await page.goto('/console/');
+  await expect(page.locator('#status')).toContainText('Live: watching the ledger');
+  const marker = `console-u4-${Date.now()}`;
+  const transcript = [
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `For ${marker}, the ledger stays on port 4317.` }] } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `For ${marker}, retry a few times.` }] } }),
+  ].join('\n');
+  const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'codex', source: `${marker}.jsonl`, transcript } });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  const { session } = await imported.json();
+  const party = `u4-${Date.now().toString(36)}`;
+  const published = await request.post('/api/graphs', {
+    headers: { origin: baseURL },
+    data: { version: 2, sessionId: session.id, party, edges: [], nodes: [
+      { id: 'port', kind: 'decision', label: 'Use port 4317', evidenceLines: [1] },
+      { id: 'retry', kind: 'decision', label: 'Retry 5 times', evidenceLines: [2] },
+    ] },
+  });
+  expect(published.ok(), await published.text()).toBe(true);
+
+  const quoted = page.getByRole('button', { name: /^decision, quoted: Use port 4317/u });
+  const inferred = page.getByRole('button', { name: /^decision, inferred: Retry 5 times/u });
+  await expect(quoted).toHaveAttribute('data-mark', 'quoted', { timeout: 3500 });
+  await expect(inferred).toHaveAttribute('data-mark', 'inferred');
+  await expect(inferred.locator('.node-mark')).toHaveText(' · inferred');
+  await expect(page.locator(`.office-agent[aria-label*="${party}"]`)).toHaveAttribute('data-sprite', 'codex');
+  await inferred.click();
+  await expect(page.locator('.turn.is-cited mark')).toContainText('retry a few times');
+  if (process.env.CONSOLE_SHOTS_DIR) await page.screenshot({ path: `${shotsDir}/06-marks-and-agent-turn.png`, fullPage: true });
+  expect(writes()).toEqual([]);
+});
+
+// Card I3 (PR #34) brings Codex agent-to-agent turns into the store. Until it lands on
+// the new message rows, the import keeps no agent turn, so this check waits for it.
+test.fixme('card U4: a Codex agent turn says who sent it', async ({ page, request, baseURL }) => {
+  const writes = watchRequests(page);
+  await page.goto('/console/');
+  await expect(page.locator('#status')).toContainText('Live: watching the ledger');
+  const marker = `console-u4-${Date.now()}`;
+  const transcript = [
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `For ${marker}, the ledger stays on port 4317.` }] } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', author: '/root/worker', recipient: '/root', content: [{ type: 'input_text', text: `For ${marker}, retry a few times.` }] } }),
+  ].join('\n');
+  const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'codex', source: `${marker}.jsonl`, transcript } });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  const { session } = await imported.json();
+  const party = `u4-${Date.now().toString(36)}`;
+  const published = await request.post('/api/graphs', {
+    headers: { origin: baseURL },
+    data: { version: 2, sessionId: session.id, party, edges: [], nodes: [
+      { id: 'port', kind: 'decision', label: 'Use port 4317', evidenceLines: [1] },
+      { id: 'retry', kind: 'decision', label: 'Retry 5 times', evidenceLines: [2] },
+    ] },
+  });
+  expect(published.ok(), await published.text()).toBe(true);
+
+  const quoted = page.getByRole('button', { name: /^decision, quoted: Use port 4317/u });
+  const inferred = page.getByRole('button', { name: /^decision, inferred: Retry 5 times/u });
+  await expect(quoted).toHaveAttribute('data-mark', 'quoted', { timeout: 3500 });
+  await expect(inferred).toHaveAttribute('data-mark', 'inferred');
+  await expect(inferred.locator('.node-mark')).toHaveText(' · inferred');
+  await expect(page.locator(`.office-agent[aria-label*="${party}"]`)).toHaveAttribute('data-sprite', 'codex');
+  await inferred.click();
+  await expect(page.locator('.turn.is-cited .turn-role')).toHaveText('Agent /root/worker to /root');
+  await expect(page.locator('.turn.is-cited mark')).toContainText('retry a few times');
+  expect(writes()).toEqual([]);
+});
+
 test('on a phone the parts stack with no sideways scroll', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto('/console/?demo&speed=8');
@@ -164,4 +247,85 @@ test('on a phone the parts stack with no sideways scroll', async ({ page }) => {
   expect(evidence.y).toBeGreaterThan(brain.y + brain.height - 1);
   await expect(page.locator('.flash-line')).toHaveCount(0);
   if (process.env.CONSOLE_SHOTS_DIR) await page.screenshot({ path: `${shotsDir}/05-phone.png`, fullPage: true });
+});
+
+test('card U4b: working agents sit at a lit desk, waiting ones stand beside it, idle ones go to the lounge', async ({ page }) => {
+  await mkdir(shotsDir, { recursive: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const writes = watchRequests(page);
+  await page.goto('/console/?demo&autoplay=0');
+  await expect(page.locator('body')).toHaveAttribute('data-demo', 'ready');
+  // Drive a second office with every state and every role (synthetic labels only).
+  const placed = await page.evaluate(async () => {
+    const { createOffice } = await import('/console/office.mjs');
+    const { seatAt, besideDesk, loungeSpot } = await import('/console/office-furniture.mjs');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.id = 'office-states';
+    document.querySelector('.office').appendChild(svg);
+    const office = createOffice(svg);
+    const agents = [
+      ['planner', 'working'], ['builder', 'working'], ['reviewer', 'waiting'], ['tests', 'working'], ['docs', 'idle'], ['scout', 'idle'],
+    ].flatMap(([label, state], i) => ['claude', 'codex'].map(provider => ({ key: `${provider}-${i}`, provider, label, state })));
+    office.update(agents);
+    const at = node => node.style.getPropertyValue('transform');
+    const px = ([x, y]) => `translate(${x}px, ${y}px)`;
+    const agent = key => svg.querySelector(`.office-agent[data-key="${key}"]`);
+    return {
+      working: at(agent('claude-0')) === px(seatAt(0)) && agent('claude-0').parentNode.classList.contains('office-seated'),
+      waiting: at(agent('codex-2')) === px(besideDesk(2)) && agent('codex-2').parentNode.classList.contains('office-standing'),
+      idle: at(agent('claude-4')) === px(loungeSpot(0)) && at(agent('claude-5')) === px(loungeSpot(1)),
+      lit: [...svg.querySelectorAll('.office-room-claude .of-desk')].map(desk => desk.classList.contains('is-lit')),
+      roles: [0, 1, 2, 3, 4, 5].map(i => agent(`codex-${i}`).dataset.role),
+      states: [0, 1, 2, 3, 4, 5].map(i => agent(`claude-${i}`).dataset.state),
+      stateWords: [...svg.querySelectorAll('.office-room-claude .oa-state')].map(node => node.textContent).sort(),
+      labels: agent('codex-2').getAttribute('aria-label'),
+      styled: svg.querySelectorAll('.office-agent [style]').length,
+    };
+  });
+  expect(placed.working).toBe(true);
+  expect(placed.waiting).toBe(true);
+  expect(placed.idle).toBe(true);
+  expect(placed.lit).toEqual([true, true, false, true, false, false]);
+  expect(placed.roles).toEqual(['planner', 'builder', 'reviewer', 'tester', 'writer', 'scout']);
+  expect(placed.states).toEqual(['working', 'working', 'waiting', 'working', 'idle', 'idle']);
+  expect(placed.stateWords).toEqual(['idle', 'idle', 'waiting', 'working', 'working', 'working']);
+  expect(placed.labels).toBe('reviewer, Codex, waiting');
+  expect(placed.styled).toBe(0);
+  await expect(page.locator('#office-states .is-new')).toHaveCount(0);
+  await page.locator('#office-states').scrollIntoViewIfNeeded();
+  await page.locator('#office-states').screenshot({ path: `${shotsDir}/07-office-states.png` });
+  // update() over time (review of U4b): desks stay put, a state change walks to the new spot,
+  // and more than six agents in a room show a "+n" chip.
+  const later = await page.evaluate(async () => {
+    const { seatAt, loungeSpot } = await import('/console/office-furniture.mjs');
+    const svg = document.getElementById('office-states');
+    const { createOffice } = await import('/console/office.mjs');
+    const office = createOffice(svg);
+    const agent = key => svg.querySelector(`.office-agent[data-key="${key}"]`);
+    const px = ([x, y]) => `translate(${x}px, ${y}px)`;
+    office.update([0, 1, 2, 3].map(i => ({ key: `c${i}`, provider: 'claude', label: `agent ${i}`, state: 'working' })));
+    await new Promise(resolve => setTimeout(resolve, 800));
+    office.update([
+      { key: 'c0', provider: 'claude', label: 'agent 0', state: 'idle' },
+      { key: 'c3', provider: 'claude', label: 'agent 3', state: 'working' },
+      ...Array.from({ length: 8 }, (_, i) => ({ key: `x${i}`, provider: 'codex', label: `codex ${i}`, state: 'working' })),
+    ]);
+    const walking = agent('c0').getAnimations().some(animation => animation.transitionProperty === 'transform');
+    return {
+      stayed: agent('c3').style.getPropertyValue('transform') === px(seatAt(3)),
+      lounge: agent('c0').style.getPropertyValue('transform') === px(loungeSpot(0)) && agent('c0').parentNode.classList.contains('office-standing'),
+      walking,
+      lit: [...svg.querySelectorAll('.office-room-claude .of-desk')].map(desk => desk.classList.contains('is-lit')),
+      gone: svg.querySelectorAll('.office-agent[data-key="c1"], .office-agent[data-key="c2"]').length,
+      tags: svg.querySelectorAll('.office-room-claude .oa-tag').length,
+      codex: svg.querySelectorAll('.office-room-codex .office-agent').length,
+      more: svg.querySelector('.office-room-codex .office-more.is-shown text')?.textContent,
+      hatless: agent('x0').dataset.role,
+    };
+  });
+  expect(later).toEqual({
+    stayed: true, lounge: true, walking: true, lit: [false, false, false, true, false, false],
+    gone: 0, tags: 2, codex: 6, more: '+2', hatless: 'none',
+  });
+  expect(writes()).toEqual([]);
 });

@@ -283,6 +283,15 @@ Next steps:
 1. **The 60-second recording (raw material for U3) is for a person to make.** Run `npm start`, open `http://127.0.0.1:4317/console/?demo&autoplay=0` in a 1440×900 window, start a screen recorder, click **Play demo**, wait for "Demo finished" (34 s), then click "The ledger stays on port 4317" to open its proof, and stop at about 60 s.
 2. A human review of the PR. It touches no security, export or signing code, but it does add static routes to the server.
 3. When G7 lands, give the quoted and inferred marks a field name and check the colours in the console.
+## Current checkpoint — U2 brand and mascot (2026-11-17)
+
+Branch `ruslan/u2-brand-mascot`. [docs/brand/brand.md](brand/brand.md) is the brand guide: the CTM site's colours (Deep Charcoal, Electric Violet, Acid Lime, Paper), with light (console) and dark (site, video) sets in [tokens.css](brand/tokens.css), each pair checked for WCAG AA contrast. It also sets the quoted and inferred mark colours, the type stacks, and Pip, an original mascot in three poses for the console's idle, working and waiting agents. `tests/brand.test.mjs` checks the colours, the contrast and the SVG rules.
+
+Next steps:
+
+1. Someone on the team signs off on Pip's look.
+2. Once U1 (PR #22) is merged, swap the office module's placeholder figure for the three Pip SVGs by state, and use the tokens in the console's CSS.
+3. U3 (the demo video) can use Pip and the dark set.
 
 ## Current checkpoint — H7 Windows deadline flake (2026-11-17)
 
@@ -403,6 +412,32 @@ Next steps:
 
 1. The console (U1, PR #22) reads a `grounding` field on nodes. Once both are merged, point its `nodeMark` at the graph's `quotedNodeIds` and `inferredNodeIds`.
 2. The mark is a floor, like the latent check: a label that only shares one content word with its line is quoted. A stricter check (all content words, or an exact quote field on the node) would be a new card with its own eval.
+## Current checkpoint — U4 console polish (2026-11-18)
+
+Branch `ali/u4-console-polish`, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34); the PR's base is `ruslan/console-v0`.
+
+- **Brand:** the console loads `docs/brand/tokens.css`, served at `/console/tokens.css` from its one source, and `console.css` and `office.css` use only `--ctm-*` variables (a node test checks each is defined).
+- **Office:** agents are 16 × 20 pixel sprites (`public/console/sprites.mjs`): Clawd for Claude Code, the purple Codex pet, and a neutral bot for anything else. They are vendor trademarks, drawn for the local console only: swap them for the bot before a public video or deploy.
+- **Marks:** `nodeMark(graph, id)` reads the graph's `quotedNodeIds` and `inferredNodeIds` (G7 next step 1, done). The word shows beside each node's kind. The rebuilt demo recording has 11 quoted nodes; the live e2e test covers inferred.
+- **Agent turns:** the evidence pane labels I3 turns "Agent /root/worker to /root" (`turnSpeaker`).
+
+Next steps:
+
+1. Merge order: U1, G7, U2 and I3 first; then rebase this branch on `main` and rebuild the recording (`node demo/console-recording.mjs`).
+2. `malformed transport input is answered without stopping the server` in `tests/mcp.test.mjs` fails on macOS with Node 26, on this branch and on `ruslan/console-v0` alike. Not checked on Node 22.
+3. P3 (reviewer prototype) is next, stacked on this branch: approve, edit or reject beside the evidence, with the decisions kept in the browser only.
+
+## Current checkpoint — U4b furnished pixel office (2026-11-19)
+
+Branch `ali/u4b-pixel-office`, stacked on U4 (#51). Ali approved the preview on 2026-11-19 (`docs/console/preview/approved-*.png`).
+
+- `public/console/office-furniture.mjs` draws one top-down room (desks, shelves, plants, windows and daylight, lamps, whiteboard, kitchen, lounge) and exports the agent spots: `seatAt`, `besideDesk`, `loungeSpot`.
+- `public/console/office.mjs` keeps `createOffice(svg)` → `{update, anchor, pulse}`, 6 per room and the `RANK` order. Each agent keeps its desk while shown; working agents sit behind it (monitor lit), waiting ones stand beside it, idle ones go to the lounge.
+- `public/console/sprites.mjs`: Ali's blue cloud Codex character, and `roleOf` plus `accessoryPixels` for six role props.
+- Office colours are `--ctm-office-*` tokens in `docs/brand/tokens.css`.
+- Logo: `/console/logo.svg` serves the CTM mark, `docs/brand/ctm-logo.svg`, also used as the favicon. The CSP gained `img-src 'self'` for it; a human should check that change.
+
+Next: swap the vendor sprites for the neutral bot before anything public.
 
 ## Current checkpoint — G9 scoped context with a budget (2026-11-17)
 

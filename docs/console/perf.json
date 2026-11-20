@@ -1,22 +1,26 @@
 {
-  "measuredAt": "2026-11-17T23:41:52.551Z",
+  "measuredAt": "2026-11-20T07:42:41.527Z",
   "how": "Playwright Chromium against the loopback server, demo mode, cache off (the server sends no-store). Bytes are response bodies, uncompressed.",
-  "totalBytes": 86561,
-  "totalKiB": 84.5,
+  "totalBytes": 110790,
+  "totalKiB": 108.2,
   "files": {
-    "/console/": 2628,
-    "/console/console.css": 7432,
-    "/console/office.css": 4504,
+    "/console/": 2871,
+    "/console/tokens.css": 3529,
+    "/console/console.css": 7920,
+    "/console/office.css": 6414,
+    "/console/logo.svg": 1647,
     "/console/console.mjs": 8302,
-    "/console/brain.mjs": 6460,
-    "/console/evidence.mjs": 2911,
-    "/console/model.mjs": 11076,
+    "/console/evidence.mjs": 2849,
+    "/console/brain.mjs": 6763,
     "/console/source.mjs": 8884,
-    "/console/office.mjs": 10081,
-    "/console/demo-recording.json": 24283
+    "/console/model.mjs": 12020,
+    "/console/office.mjs": 10220,
+    "/console/office-furniture.mjs": 9219,
+    "/console/sprites.mjs": 5944,
+    "/console/demo-recording.json": 24208
   },
-  "firstPaintMs": 84,
-  "firstContentfulPaintMs": 84,
-  "domContentLoadedMs": 62,
-  "loadMs": 62
+  "firstPaintMs": 24,
+  "firstContentfulPaintMs": 24,
+  "domContentLoadedMs": 25,
+  "loadMs": 25
 }
