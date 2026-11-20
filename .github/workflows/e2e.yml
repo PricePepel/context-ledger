@@ -7,7 +7,9 @@ jobs:
     # installs on, not only Linux.
     name: node (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # The whole Node suite takes over 20 minutes on the Windows runner (process start-up is
+    # slow there), so the job gets 45.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
