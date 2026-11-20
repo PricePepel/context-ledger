@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import ApiError, rules
+from . import ApiError, ModelTimeout, rules
 from .prefix import load_files, prefix_id, render_prefix
 
 PREAMBLE = (
@@ -376,13 +376,24 @@ class _Run:
         left = self.remaining()
         if left <= 0:
             raise ApiError(504, DEADLINE)
+        # Decided before the call: when what is left of the deadline is the shorter
+        # limit, a timeout of this call is the deadline running out. Reading the clock
+        # after the call is not enough: the socket's wait is timed by the OS, not by
+        # time.monotonic(), and on Windows it can end with a little time still showing.
+        capped = left <= getattr(self.client, "timeout", left)
         try:
             result = self.client.chat(self.system, user, max_tokens, schema=schema,
                                       schema_name=role, timeout=left)
         except ApiError as error:
-            if error.status == 502 and self.remaining() <= 0:
+            timed_out_on_deadline = capped and isinstance(error, ModelTimeout)
+            # H8: a 503 that comes back after the deadline is the deadline too.
+            if error.status in (502, 503) and (timed_out_on_deadline or self.remaining() <= 0):
                 raise ApiError(504, DEADLINE) from None
             raise
+        # H8: the client keeps to the duration it was given; a reply that still lands
+        # after the read's own deadline (a delayed hand-off, say) is not used.
+        if self.remaining() <= 0:
+            raise ApiError(504, DEADLINE)
         with self._lock:
             self.calls.append({
                 "role": role,

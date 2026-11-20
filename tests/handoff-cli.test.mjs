@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
@@ -27,7 +29,7 @@ test('handoff Markdown escapes bidi and tag characters but keeps emoji joiners',
   t.after(() => new Promise(resolve => server.close(resolve)));
 
   const { stdout } = await execute(process.execPath, ['src/cli.mjs', 'handoff', id], {
-    env: { ...process.env, PORT: String(server.address().port) },
+    env: { ...process.env, PORT: String(server.address().port), CONTEXT_LEDGER_DB: join(tmpdir(), 'context-ledger-no-ledger', 'none.sqlite') },
   });
   const raw = [...stdout].map(character => character.codePointAt(0));
   for (const point of [0x202e, 0xe0049, 0xe0067, 0xe006e, 0x1b]) {

@@ -236,6 +236,254 @@ Next steps:
 3. Still owed from earlier: Ali's review of the runtime changes from cycle 9, the human review of PR #8's schema migration, and Ali's decision on `VLLM_NGRAM=1` (cycle 11).
 4. PR #3 (Ali's draft M0 benchmark, based on `feature/semantic-graph`) was left open: it is Ali's and conflicts with its base.
 
+## Current checkpoint — G6 product and eval review (2026-11-17)
+
+Branch `codex/g6-product-review`. Codex, the card's owner, reviewed the product and evals as they stood on 2026-11-17 (read-only; run from Claude Code). The review is [docs/reviews/g6-2026-11-17.md](reviews/g6-2026-11-17.md). Its main points:
+
+- **Evidence.** The handoff savings rest on synthetic data. The cycle 7 figures come from six early facts, and G10's live runs are still owed. The latent team results show no advantage over random vectors.
+- **Risks.** A real citation can support a wrong label. Local transcript text reaches the agent through `session_read` and the latent fallback. Party names in rooms are not verified.
+- **Next cycle.** Run G10 live on Claude Code and Codex with human-checked labels, under a pass rule written in advance. Hold the "3× faster, 5× fewer tokens" claim until then.
+- **Board.** P1's design part is done. Its implementation should go back to Ready with a named owner and a first storage test.
+
+The board changes it recommends are left to the card owners; this PR only adds the review.
+
+## Current checkpoint — G12 export for code-graph tools (2026-11-17)
+
+Branch `ruslan/g12-graph-export`. `GET /api/export?graph=…`, `GET /api/graphs/:id/export` and `npm run ledger -- graph export <id>…` write graphs as one node-link file for Graphify (`src/export.mjs`). The eval and results are in the G12 section of [the eval log](evals.md).
+
+- Several graphs go in one file because `graphify merge-graphs` prefixes each input file's IDs, and links between graphs survive only inside one file.
+- Node IDs are `ctm_<16 hex of the graph ID>__<node id>`, so two snapshots never share a node. Links to graphs outside the export are left out and counted.
+- The export is undirected (`merge-graphs` refuses directed graphs), and `ledger_from` and `ledger_to` keep the direction. The HTTP body is the node-link JSON itself, escaped.
+
+Next steps:
+
+1. Merge with a real code graph from `graphify extract` and check that `graphify query` and `graphify explain` find the decisions. This card merged with a small synthetic code graph.
+2. Decisions that name files or functions could link to the matching code nodes. That needs Graphify's code node IDs and would be a new card.
+
+## Current checkpoint — U1 Console v0, light (2026-11-17)
+
+Branch `ruslan/console-v0`, from `main` 3a17536. Card U1. Read the U1 eval and its results in [the eval log](evals.md), and [the feature map](feature-map.md).
+
+- **What it is:** `npm start`, then `/console/`. One read-only page: an isometric SVG office (one room for Claude Code, one for Codex, one character per party that published today, shown working, waiting or idle), the ledger graph (one column per party, pop-ins, flash lines from the room to each new or changed node, dashed lines for links to another party's nodes, superseded decisions struck through), a one-click evidence panel (cited turns highlighted, hidden characters escaped as in `src/text.mjs`), an activity list and three numbers (hand-offs today, tokens saved as an estimate, superseded decisions).
+- **Data:** only GET routes that already existed. `public/console/source.mjs` polls `GET /api/graphs` every 2 s; graphs are snapshots, so `public/console/model.mjs` diffs each party's newest graph against its previous one to find new and changed nodes. The ledger records no reads, so a "read" line is drawn only from links in a published graph.
+- **Demo:** `/console/?demo` (`&speed=2`, `&autoplay=0`) replays `public/console/demo-recording.json`. `node demo/console-recording.mjs` rebuilds it by running the real store on `demo/leo-orbit.jsonl` and `demo/ali-orbit.jsonl`; a node test fails if the committed file differs. Rebuild it whenever the store, graph validation, the meter or those transcripts change.
+- **Server:** `src/server.mjs` gains only a fixed list of static files under `/console/`. A new console file must be added to that list.
+- **Weight:** 84.5 KB in total with the recording, first contentful paint 56 to 84 ms (Playwright, this laptop). Screenshots and `perf.json` are in `docs/console/`; rerun with `CONSOLE_SHOTS_DIR=docs/console npx playwright test tests/e2e/console.spec.mjs`.
+- **Built by:** Claude Code, with the office module (`office.mjs`, `office.css`) written by a subagent against a fixed interface. Reviewed by Codex (read-only) in three rounds; every finding is fixed or recorded as a limit in the eval log.
+
+Known limits:
+
+- G7 is not built, so every node is one neutral colour. `nodeMark` in `model.mjs` reads a `grounding` or `mark` field of `quoted` or `inferred` when G7 adds one.
+- Superseded decisions come from `supersedes` edges, not from G11's graph diff.
+- The live view starts at the start of today: a party whose newest graph is older is not drawn. More than 6 parties in one room show as "+N" in the office (each still has its graph column).
+- The office mascot is a placeholder until U2.
+
+Next steps:
+
+1. **The 60-second recording (raw material for U3) is for a person to make.** Run `npm start`, open `http://127.0.0.1:4317/console/?demo&autoplay=0` in a 1440×900 window, start a screen recorder, click **Play demo**, wait for "Demo finished" (34 s), then click "The ledger stays on port 4317" to open its proof, and stop at about 60 s.
+2. A human review of the PR. It touches no security, export or signing code, but it does add static routes to the server.
+3. When G7 lands, give the quoted and inferred marks a field name and check the colours in the console.
+
+## Current checkpoint — U3 60-second demo video (2026-11-17)
+
+Branch `ruslan/u3-demo-video`, stacked on U1 (`ruslan/console-v0`). [docs/video/u3-script.md](video/u3-script.md) is the shot list and voice-over, timed to 60 seconds. `node demo/record-console.mjs` records the console part as raw footage into `test-results/u3/console-demo.webm` (about 42 seconds, synthetic Orbit demo, not committed).
+
+Next steps:
+
+1. A person records the terminal shots and the voice-over and cuts the video to the shot list. The install shot uses `npm run ledger -- install` once G8 is merged, or the README's two `mcp add` commands before that.
+2. Swap in Pip for the title card once U2 is merged.
+3. Link the finished video in the U3 eval section, and move the card to Done.
+
+## Current checkpoint — U2 brand and mascot (2026-11-17)
+
+Branch `ruslan/u2-brand-mascot`. [docs/brand/brand.md](brand/brand.md) is the brand guide: the CTM site's colours (Deep Charcoal, Electric Violet, Acid Lime, Paper), with light (console) and dark (site, video) sets in [tokens.css](brand/tokens.css), each pair checked for WCAG AA contrast. It also sets the quoted and inferred mark colours, the type stacks, and Pip, an original mascot in three poses for the console's idle, working and waiting agents. `tests/brand.test.mjs` checks the colours, the contrast and the SVG rules.
+
+Next steps:
+
+1. Someone on the team signs off on Pip's look.
+2. Once U1 (PR #22) is merged, swap the office module's placeholder figure for the three Pip SVGs by state, and use the tokens in the console's CSS.
+3. U3 (the demo video) can use Pip and the dark set.
+
+## Current checkpoint — H7 Windows deadline flake (2026-11-17)
+
+The runtime job on the Windows runner failed at random on PRs that do not touch `runtime/` (#29–#32). Three deadline tests got 502 "Model server timed out." instead of 504. `_Run.call` (`runtime/latent_pool/pool.py`) now decides before each model call whether the read deadline is the shorter limit. If that call then times out, the read returns 504, whatever the clock reads afterwards. The client raises `ModelTimeout` (`runtime/latent_pool/__init__.py`), which is still a 502 with the same message, so the client's own timeout and every other 502 behave as before. Regression tests are in `runtime/tests/test_deadline_clock.py`. Eval and results: H7 in `docs/evals.md`.
+
+Next steps:
+
+1. After this merges, rerun the failed `runtime (windows-latest, Python 3.13)` job on any open PR still red from this flake.
+2. H8 (Backlog): keep each model call inside the read deadline as a whole, not per socket read, and map a deadline-capped connect timeout to 504 instead of 503.
+
+## Current checkpoint — P1 design landed, implementation split (2026-11-17)
+
+Branch `ruslan/p1-design`. `docs/architecture.md` comes from `product/v1` unchanged except for its links, a status note, and a new section 11 on where `main` has moved. It stays a proposal until P1's owner approves the PR. The board splits P1's implementation into P1a (storage engine decision, which needs the owner), P1b (projects), P1c (message rows and stable keys), P1d (delete and retention) and P1e (loopback token). P1 was "In progress" for "Claude Code workflows" with no commit since 2026-11-07. This session took it over with the user's approval on 2026-11-17, and the G6 review recommended this split.
+
+## Current checkpoint — P1a storage engine decision (2026-11-17)
+
+Branch `ruslan/p1a-storage-decision`, stacked on P1's design PR (#37). It proposes revising ADR-003: stay on `node:sqlite`, use FTS5 when the running Node has it (Node 22.23.4 in CI does; 22.14 locally does not), and fall back to `instr` search with a named warning otherwise. No dependency is added. P1c builds message rows on `node:sqlite` either way; the FTS5 index is a follow-up once this is accepted.
+
+## Current checkpoint — P1b projects (2026-11-17)
+
+Card P1b on `ruslan/p1b-projects`, from `main` 3a17536. The P1 split (PR #37) is not on `main` yet, so this branch adds its own P1b board row. The eval, its results and five rounds of Codex review are in the P1b section of [the eval log](evals.md).
+
+- **Schema version 2** (`src/migrate.mjs`): a `projects` table (`id`, unique `slug`, `name`, `created_at`), `sessions.project_id` and a `default` project that existing sessions join. The `sessions_project` trigger puts a session inserted without a project, including by an older build, in `default`. The steps follow the version 1 style: each checks the schema, is safe to repeat, and runs in one transaction.
+- **Opening a file:** a current file opens with no lock and no DDL, and the version is read again before the store is returned. Otherwise the store takes `BEGIN IMMEDIATE`, reads the version again, refuses a newer one, creates the version 0 tables (`bootstrap`, which now includes `roomsSchema` from `src/rooms.mjs`), then migrates.
+- **Store, API and CLI:** `importTranscript({ ..., project })` takes a slug (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, at most 64 characters, default `default`) and creates the project on first use. Stored bytes keep their project and nothing is created. Summaries carry `project`. `list`, `listSessionsPage`, `GET /api/sessions?project=` and `ledger search --project` filter by it.
+
+Next steps:
+
+1. A human reviews the migration to version 2 (AGENTS.md section 4, step 4); the review of PR #8's migration to version 1 is also still owed.
+2. When PR #37 lands, keep one P1b row on the board (this branch's or #37's) and set it from the PR state.
+3. Not in this card: a project picker in the browser (it imports into `default`), a `project` filter on MCP `session_search`, a project list route, and moving sessions between projects. P1c (message rows) and P1d (delete and retention) build on `projects` and `sessions.project_id`.
+
+## Current checkpoint — P1c message rows (2026-11-17)
+
+Card P1c on `ruslan/p1c-message-rows`, stacked on P1b (PR #42, `ruslan/p1b-projects`). The eval, its results and the Codex review rounds are in the P1c section of [the eval log](evals.md). The storage engine decision (P1a) is still open, so this card stays on `node:sqlite` with no new dependency and no FTS5.
+
+- **Schema version 3** (`src/migrate.mjs`): a `messages` table (`id`, `session_id` as a deferred foreign key with cascade, `seq`, `line`, `role`, `text_json`, `key`; unique per session on `key` and on `seq`). `text_json` is the turn's text as a JSON string literal, because `node:sqlite` loses a NUL and lone surrogates in plain text. The step reads each session's JSON messages once, as bytes, and copies them in order with `l:<line>` keys in one JavaScript pass. It fails and rolls back, with the file unchanged, when a stored value is not an array of messages (the error names the session and says what is wrong) or when the file already has a `messages` table or a `sessions_messages` trigger from elsewhere. The `sessions_messages` trigger gives a session inserted by a build from before schema versions its rows from its JSON.
+- **Keys on import** (`src/store.mjs`): `u:<uuid>` for the first Claude record with a given UUID-shaped `uuid` (compared without case), otherwise `h:` plus 32 hex of `sha256(sessionId \0 line \0 raw line)`. The rows are written before the session in the same transaction.
+- **Readers:** `get`, the line check in `publishGraph` and `getGraphContext` read rows. Each message in `GET /api/sessions/:id` carries `key`. MCP `session_read` output is unchanged.
+- **Kept on purpose:** `sessions.messages` is still written, so builds from before versions keep working on the file. Sessions are read from rows; only the version 3 step and the trigger for older builds read the column. `search_text` still serves search. Session IDs and line citations are unchanged. Migrated sessions keep `l:` keys for good, while fresh imports of the same bytes get `u:` or `h:` keys (pinned by a test).
+- **Independent review of PR #45 (2026-11-18):** five medium findings, handled in the P1c section of the eval log, followed by two Codex rounds on the fixes (three medium and four low, then one medium and two low, all fixed). The upgrade of a synthetic 2,000-session, 400,000-turn ledger went from 6.6 to 9.3 s down to 4.0 to 4.3 s. **Known limits:** above about 480,000 turns the upgrade still takes longer than the 5 s `busy_timeout`, so another process opening the ledger meanwhile can fail with `database is locked` (opening again works). The file also grows about 1.8 times on upgrade, because turn text is now stored three times. `evals/migration/v3-upgrade.mjs` repeats the measurement.
+
+Next steps:
+
+1. A human reviews the migration to version 3 (AGENTS.md section 4, step 4), together with the owed reviews of versions 1 and 2. Five rounds of Codex review are recorded in the eval log; the last found nothing above low.
+2. Merge after PR #42; then retarget this PR to `main`.
+3. Next card (add it to the board when PR #37 lands): `provider:uuid` session IDs. It rebuilds `sessions` (so it can drop `sessions.messages`, after a `VACUUM INTO` backup), links legacy sessions to their UUID sessions, and applies the design's rule for repeated UUIDs (skip identical bytes, refuse different ones). P1a then decides what replaces `search_text` (FTS5 over the decoded `messages.text_json`, using `messages.id` as its rowid, or a degraded `LIKE`). P2 can cite messages by `<sessionId>/<key>` from now on.
+
+## Current checkpoint — P1d delete a session (2026-11-17)
+
+Branch `ruslan/p1d-session-delete`, from `main` 3a17536. This is the first part of card P1d (Delete and retention, defined in PR #37's board). Results and both Codex review rounds are under "P1d — Delete a session" in [the eval log](evals.md).
+
+What changed:
+
+- `src/store.mjs`: `deleteSession(id)` deletes one session row (the whole transcript, title and search text). It is refused with a `ConflictError` (HTTP 409, with the graph count) while any graph cites the session, and refused when the database is in WAL mode. It runs in one `BEGIN IMMEDIATE` transaction with `secure_delete` on for that transaction only. No schema change. `publishGraph` now gives its usual 400 if another connection deleted the session mid-publish.
+- `src/server.mjs`: `DELETE /api/sessions/:id`, exact same Origin required before the lookup (`requireSameOrigin`, also used by `readJson`).
+- `src/cli.mjs`: `npm run ledger -- delete <session-id>`, fixed output only. A response body that is not JSON now gives a fixed message for every command.
+- Browser: a Delete button on the open transcript, behind `window.confirm`.
+- No MCP tool deletes anything, on purpose.
+
+Next steps:
+
+1. **A human review is needed before merge**: this card deletes user data (AGENTS.md section 4.4).
+2. When PR #37 lands, its board rows and this branch's `P1d Delete a session` row sit next to each other: keep both, or fold this row into its P1d row.
+3. The rest of P1d, after P1b's projects: delete a project, and purge by `retention_days`. The design's purge (section 6 of the architecture) also runs FTS `optimize`, `wal_checkpoint(TRUNCATE)`, `VACUUM` and backup deletion; this card runs none of them, so a deleted session's freed pages stay in the file (zeroed) until a `VACUUM`.
+4. P1c (one row per message) must keep `deleteSession` complete: delete the message rows and their FTS rows too, with FTS `secure-delete` as the design sets it, and keep the bytes test in `tests/delete.test.mjs` passing.
+5. Agents with a shell can run `ledger delete`. Only the MCP adapter is closed to them; P1e's token, or a later card, can decide whether the CLI should need a person.
+
+## Current checkpoint — P1e loopback API token (2026-11-17)
+
+ADR-10 is built on `ruslan/p1e-loopback-token`. **It needs a human security review before merge.** At each start the server writes `{ port, token }` (32 random bytes) to `<database>.<port>.token`, one file per port. It does this only after it holds the port and keeps only the digest. The file has mode 0600 on POSIX. On Windows it is created private from the start (owner and only ACL entry: the current user, through PowerShell), and clients refuse a file that others can read or that another account owns. Every route except the static files and `/login` then needs `Authorization: Bearer` or a session cookie, and answers 401 otherwise. The browser signs in through a one-time `/login?code=…` link (60 s, single use), printed at start or by `npm run ledger -- login`. The link sets an HttpOnly, SameSite=Strict cookie for 12 hours. The CLI, the MCP adapter, the handoff benchmark, the demo scripts and the latent evals read the file named by `CONTEXT_LEDGER_DB` and send the token only to the port it names. Tests read their temporary server's file (`tests/ledger-auth.mjs`). Playwright signs pages in through `tests/e2e/fixtures.mjs`. `.token` is now a secret suffix for the latent readers. The threat model, the results, three Codex rounds, the fixes for the independent review's two medium findings (Windows ACL, one token file per port; 2026-11-18) and Codex round 4 of those fixes are in the P1e section of [the eval log](evals.md).
+
+Next steps:
+
+1. Human security review of the PR. The open high finding: browsers send the cookie to every port on 127.0.0.1, so a page served by another local program can take a browser session. The reviewer either accepts this for now (the README warns about it) or asks for card P1f first.
+2. P1f (Backlog): an origin-scoped browser credential, for example a secret kept in page storage and sent as a header, in place of or beside the cookie. It changes ADR-10, so P1's owner decides.
+3. Known limits: same-user programs can read the token file. The folder is trusted: someone who can write to it can still swap or delete the file. A new data folder on Windows is not restricted, only the token file is. The server's default database is relative to its working folder, while clients default to the repository's. The latent runtime on 4320 has no token of its own. The independent review's low findings (L2–L7) are not addressed on this card. CI runs the Node suite only on Linux, so the Windows ACL tests run only locally (Codex round 4, low, open).
+4. After a merge, MCP configs that set only `PORT` keep working when the ledger runs from the repository. A ledger started with another `CONTEXT_LEDGER_DB` needs the same absolute value in the MCP config.
+
+## Current checkpoint — I2 tolerant JSONL parsing (2026-11-17)
+
+Branch `ruslan/i2-tolerant-jsonl`. A transcript line that is not JSON no longer rejects the whole import. The parser skips it, and `POST /api/import` returns `skipped: { count, lines }` (the first ten line numbers) beside the session. The browser shows "Partially imported", with the counts. Messages keep their line numbers in the file, so citations stay true. A file with no readable line is still refused with `Invalid JSONL at line N.`
+
+Next owner: the skip count is not stored, so a reopened session does not show it. Add it with P1's storage work. No schema change was made here.
+
+## Current checkpoint — I1 large-file import (2026-11-17)
+
+Branch `ruslan/i1-file-import`, stacked on I2 (#33). `npm run --silent ledger -- import --provider claude|codex <file.jsonl>` reads the file as a stream and writes the session into `CONTEXT_LEDGER_DB` (or the server's default) with the same ID and messages as a browser import of the same file. It works with or without the server running. Lines over 64 MiB are skipped and counted. More than 64 MiB of message text is refused, because a session is still one row. The browser names the command when a file is too large for it.
+
+Next owner: when P1 stores one row per message, lift the 64 MiB message-text limit.
+
+## Current checkpoint — D3 T3 Code thread importer (2026-11-17)
+
+Branch `ruslan/d3-t3code-importer`, cut from `main`. `npm run ledger -- import-t3 <copy> [--thread <id>] [--list]` imports T3 Code threads from a copy of T3's `statev2.sqlite` that the person makes. It opens the copy read-only, never looks for T3's files, and posts each thread to the running ledger's `/api/import`, so the existing parser and store do the work.
+
+- **Pinned layout.** T3 Code v0.1.10, commit `7d32075e3757ded707914e2450c3e392a9665765`, schema head 96, read from T3's public source only (no T3 install was used or run). The files read, the tables and the rules are in the D3 section of [the eval log](evals.md); the user guide is [docs/integrations/t3code-import.md](integrations/t3code-import.md). Any other migration history, table kind, column type or key is refused.
+- **Mapping.** A thread maps to `claude` or `codex` by the `driver` of the provider threads its runs and attempts used (`claudeAgent`, `codex`). Other agents, mixed agents, unattributed answers, subagent threads and threads without runs (V1 copies) are refused, so the sessions table keeps its two providers. Message n in T3's order is line n.
+- **Tests.** `tests/import-t3.test.mjs` builds the database at test time with `node:sqlite`; nothing `.sqlite` is committed. Codex reviewed twice; both rounds are recorded in the eval log.
+
+Next steps:
+
+1. Someone with T3 Code v0.1.10 checks the importer on a real copy with synthetic threads (eval "Still owed"). If T3 writes a column type or a migration history differently from its source, the importer refuses the copy; fix the pinned values from that copy's schema, not by loosening the check.
+2. For a newer T3 release: read its migrations from 097 on for changes to the six tables, then add its manifest and head as a second pinned layout with its own test database. Do not accept a range of heads.
+3. When PR #28 (D1 guide) merges, change its "Not built yet: an importer" bullet in `docs/integrations/t3code.md` to link to the import guide. The board row for D3 is on both branches; keep this branch's.
+4. A third provider (for Cursor and other T3 agents) needs P1's schema change; until then they are refused.
+
+## Current checkpoint — G7 quoted or inferred nodes (2026-11-17)
+
+Branch `ruslan/g7-quoted-nodes`. When a graph is published, each node is marked quoted or inferred from the transcript lines it cites, with the floor the latent findings already use (`isGrounded` in `src/latent.mjs`). The eval and results are in the G7 section of [the eval log](evals.md).
+
+- **Stored:** the graph payload gains `quotedNodeIds` and `inferredNodeIds` beside the other derived lists (`src/grounding.mjs`, `src/store.mjs`). The packet and its ID do not change, and there is no schema version change.
+- **Graphs from before G7** have no marks, and every reader shows them as unmarked rather than inferred. Publishing the same packet again adds the marks to the existing row; its ID, row and creation time stay.
+- **`context_for`:** an inferred node's citation ends `, inferred`, and the briefing says once what that means. A graph with only quoted nodes reads exactly as before, so its cached prefix does not change.
+- **Browser:** the room view shows "quoted" or "inferred" beside each node's kind (`public/app.js`); the room API puts `grounding` on each node.
+- **MCP paging:** the two lists are paged sections of `graph_read` and `graph_publish`, after the other derived lists, so a large graph's pages stay under the bound.
+
+Next steps:
+
+1. The console (U1, PR #22) reads a `grounding` field on nodes. Once both are merged, point its `nodeMark` at the graph's `quotedNodeIds` and `inferredNodeIds`.
+2. The mark is a floor, like the latent check: a label that only shares one content word with its line is quoted. A stricter check (all content words, or an exact quote field on the node) would be a new card with its own eval.
+
+## Current checkpoint — G9 scoped context with a budget (2026-11-17)
+
+Branch `ruslan/g9-scoped-context`. `context_for` takes an optional `question` (up to 500 characters) and `budget` (50 to 100,000 estimated tokens, only with a question), and `GET /api/graphs/:id/context` takes the same two query parameters. The eval and results are in the G9 section of [the eval log](evals.md).
+
+- `src/scope.mjs` ranks the nodes. Matches come first, by how many of the question's words they hold (label, ID, kind or addressee; four-letter prefixes, as in the latent check), then their one-edge neighbours. The budget keeps the largest prefix of that order whose briefing fits the estimate, so neighbours go first.
+- The scoped graph keeps only edges between shown nodes, links from shown nodes and state lists of shown nodes, and is rendered by the same `contextText`. Its last line says what was matched, shown and left out, without repeating the question.
+- With no question, the briefing is byte for byte what it was.
+- The MCP adapter caches a paged scoped briefing under the graph ID, question and budget, and its continuation note says to repeat both.
+
+Next steps:
+
+1. Measure the benefit on the G10 handoff benchmark: the same graded facts with a scoped briefing and a budget, against the whole briefing.
+2. Matching is by words, so a question that uses other words than the labels finds nothing and says so. Embeddings would be a new card with an ADR, because they need a dependency.
+
+## Current checkpoint — G8 one-command agent setup (2026-11-17)
+
+Branch `ruslan/g8-agent-install`. `npm run ledger -- install` and `uninstall` (`src/install.mjs`, wired in `src/cli.mjs`) register the MCP server with Claude Code and Codex at user scope through their own CLIs, and add or remove a short marked block in `~/.claude/CLAUDE.md` and `$CODEX_HOME/AGENTS.md`. The eval and results are in the G8 section of [the eval log](evals.md).
+
+- Every change is printed; `--dry-run` changes nothing and runs only `mcp get`.
+- Uninstall removes the blocks but not the server registrations: it prints `claude mcp remove --scope user context-ledger` and `codex mcp remove context-ledger` for the person to run. Neither CLI shows a user-scope entry exactly enough to prove that it is the one install made (three Codex review rounds; see the eval log).
+- Install never asks Claude with `mcp get`, which can start project servers; Claude's `add` refuses a duplicate itself. Codex's `add` replaces, so install asks `codex mcp get --json` first. A failed server step leaves the instruction file alone. The CLIs run from the home folder.
+- Files are read as bytes. A UTF-16 BOM, NUL bytes, invalid UTF-8, unmatched markers and an edited block are refused before any CLI call. BOMs, symbolic links and file modes are kept. Install then uninstall gives back a file's bytes, except a final line break the file did not have.
+- The CLI is found on `PATH` by the module itself, because `cmd.exe` gives a missing command the same exit status as a failing one. On Windows a `.cmd` shim runs through `cmd.exe` with every argument quoted; an argument with `"` or `%` is refused.
+- Tests use a fake home and stub CLIs only (`tests/install.test.mjs`). A read-only `--dry-run` against the real CLIs on Windows found `claude.exe` and `codex.cmd`, both already registered.
+
+Next steps:
+
+1. A person runs `install` once against their real agents, on Windows and on macOS or Linux, and checks that `claude mcp list` and `codex mcp list` show the server. Then `uninstall`, and the two printed remove commands. The tests only use stubs.
+2. U3 (the demo video) was waiting for G8 and can start once this is merged.
+
+## Current checkpoint — G11 graph diff between snapshots (2026-11-17)
+
+Branch `ruslan/g11-graph-diff`. `GET /api/graphs/:id/diff?from=:otherId` and the MCP tool `graph_diff` say what changed from an older snapshot of one party's graph to a newer one. The eval and results are in the G11 section of [the eval log](evals.md).
+
+- `src/diff.mjs` compares the canonical packets. It reports nodes added, removed and changed (each changed field with its old and new value), decisions newly superseded, questions answered or opened, ready actions gained or lost, and edges and links added or removed. Both graphs must be version 2 graphs of the same party.
+- `graph_diff` pages a long diff by item, like `graph_read`.
+- A room now carries `newerGraphs`: for each party whose newest graph is not the room's, the newer graph's ID and change counts. The room view says so, lists up to 12 changed labels, and offers a button that fills the form with the newer graph. The person still opens the new room, as before.
+
+Next steps:
+
+1. Party names are self-asserted. A newer graph from another transcript under the same party name is shown, marked unverified and without the form button. Lineage across transcripts needs P1's projects.
+2. The console (U1, #22) could flash only the changed nodes, using the diff instead of its own comparison.
+
+## Current checkpoint — H8 model calls keep to the read deadline (2026-11-18)
+
+Branch `ruslan/h8-model-call-deadline`, from `main`. Each model call in `runtime/latent_pool/vllm_client.py` now keeps to its whole budget, not a timeout per socket read. One absolute deadline covers the call and its folded retry. A timer shuts the call's socket down at the deadline: the plain socket before it connects, and the TLS socket before its handshake. The name lookup is bounded, redirects are not followed, and every step checks the clock. A connect timeout capped by the deadline now returns 504, not 503, and `_Run.call` returns 504 for a reply or a 503 that lands after the read deadline. Codex reviewed it twice; every finding is fixed with a test (docs/evals.md, H8).
+
+Next owner: nothing is open on this card beyond review. Known limits are listed under H8 in docs/evals.md. Addresses are still tried one after another, and an abandoned lookup finishes on its own thread.
+
+## Current checkpoint — D1 T3 Code integration (2026-11-17)
+
+Branch `ruslan/d1-t3code-guide`. [docs/integrations/t3code.md](integrations/t3code.md) explains how T3 Code's Claude and Codex threads get the ledger: T3 runs those CLIs with their own configuration, so the server is registered for them on the environment's machine. Instances with their own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` need it there too. `tests/integrations-t3.test.mjs` keeps the guide's commands and links in step with the code.
+
+The importer half of the card was not built. T3's store is undocumented, and its layout differs between versions (see the D1 eval). It is the new Backlog card D3, blocked on a sample database of a known T3 version.
+
+Next steps:
+
+1. Someone who runs T3 follows the guide and records the result in the D1 eval section, including whether T3's runs write Claude Code and Codex session files that can be imported.
+2. D3, once a sample T3 database exists.
+
 ## Current checkpoint — D2 Capy integration guide (2026-11-17)
 
 Branch `ruslan/d2-capy-guide`. [docs/integrations/capy.md](integrations/capy.md) explains how to add the ledger to Capy as a local (STDIO) MCP server. It works only for threads that run on the computer that runs the ledger, through Capy's desktop app or Dock CLI, because the ledger answers on loopback and Capy runs STDIO servers on the thread's machine. The owner is "Only you", because an Organization server would fail on other members' computers and on cloud machines. `tests/integrations.test.mjs` keeps the guide's key, path, README link and TOML block in step with the code.
