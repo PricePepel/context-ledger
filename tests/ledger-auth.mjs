@@ -2,7 +2,7 @@
 // its temporary database, the way the CLI and the MCP adapter do. The file is per port.
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { privateToOwner, readTokenFile, tokenFileFor } from '../src/token.mjs';
+import { readTokenFile, tokenFileFor } from '../src/token.mjs';
 
 const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
 
@@ -35,9 +35,14 @@ export function restrictToOwner(path) {
   if (process.platform !== 'win32') return;
   const output = execFileSync(join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(restrictScript, 'utf16le').toString('base64')],
-    { env: { ...process.env, TEST_FILE: path }, encoding: 'utf8', windowsHide: true });
+    { env: { ...process.env, TEST_FILE: path }, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   const [sid, alias, sddl] = output.trim().split(/\r?\n/u);
-  if (!privateToOwner(sddl, sid, alias)) throw new Error(`restrictToOwner left ${sddl} for ${sid} (${alias}).`);
+  // Exactly the promised descriptor (P5a review): this user as owner, a protected DACL
+  // and one full-control allow entry for this user, nothing else.
+  const self = `(?:${sid}|${/^[A-Z]{2}$/u.test(alias) ? alias : sid})`;
+  if (!new RegExp(`^O:${self}(?:G:(?:[A-Z]{2}|S-1-[0-9-]+))?D:PA?I?\\(A;;FA;;;${self}\\)$`, 'u').test(sddl ?? '')) {
+    throw new Error(`restrictToOwner left ${sddl} for ${sid} (${alias}).`);
+  }
 }
 
 /** The token of a server started on this database and port. */
