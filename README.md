@@ -48,6 +48,8 @@ Replace `SESSION_ID` with an ID from the search results. The handoff is Markdown
 
 Threads from T3 Code v0.1.10 can be imported from a copy of its database that you make: `npm run --silent ledger -- import-t3 COPY --list`, then without `--list`. Only threads run by Claude Code or Codex are imported. See [Importing T3 Code threads](docs/integrations/t3code-import.md).
 
+To send a hand-off someone can check, create a key once with `npm run --silent ledger -- keygen` (it prints the key fingerprint; give that to the receiver out of band), then sign into a new folder with `npm run --silent ledger -- handoff SESSION_ID --sign FOLDER`. The receiver runs `npm run --silent ledger -- verify FOLDER --fingerprint "FINGERPRINT"`, or checks it with OpenSSL alone. Signing does not redact the transcript text. See [signed hand-offs](docs/signed-handoff.md).
+
 ## Data and scope
 
 The server binds to IPv4 loopback and stores data in `.context-ledger/ledger.sqlite`. Set `PORT` or `CONTEXT_LEDGER_DB` to override those defaults. The database contains transcript text. Back it up or remove it as needed when the app is stopped.
@@ -120,7 +122,7 @@ Agents can open and read rooms (`POST /api/rooms` with `{"graphIds": [A, B]}`, a
 
 ## Connect an agent over MCP
 
-`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it, and reads the ledger's access token for that port from the file next to `CONTEXT_LEDGER_DB` (default: `.context-ledger/ledger.sqlite` in this repository) on each call. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for` (with an optional `question` and token `budget`, it returns only the matching nodes and their neighbours), `room_open` and `room_read`, `graph_list` and `room_list` (find graphs and rooms without being given an ID, newest first), `graph_diff` (what changed between two snapshots of one party's graph; also `GET /api/graphs/NEW/diff?from=OLD`), and the latent tools. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it, and reads the ledger's access token for that port from the file next to `CONTEXT_LEDGER_DB` (default: `.context-ledger/ledger.sqlite` in this repository) on each call. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for` (with an optional `question` and token `budget`, it returns only the matching nodes and their neighbours), `room_open` and `room_read`, `graph_list` and `room_list` (find graphs and rooms without being given an ID, newest first), `graph_diff` (what changed between two snapshots of one party's graph; also `GET /api/graphs/NEW/diff?from=OLD`), and the latent tools. Agents can open and read rooms. The MCP server has no tool to confirm proposals: people do that in the browser, though the ledger does not verify who sent a decision (see Negotiation room).
 
 Every tool result is at most 40,000 characters of escaped text, because agents cut longer results without saying so. Agents cap tokens, so digits and punctuation count as two characters and characters outside ASCII as four: a page of code, JSON or Han script is smaller, at about the same token count as 40,000 characters of English. A longer result comes in pages and says how to get the rest: a JSON result has `more` as its first key (`more.fromItem` for `graph_read` and `room_read`, `more.after` for the lists), and a partial text result starts with a line `[Partial result: ...]` and ends with the same note, which names the arguments to send next (`fromLine`, `fromOffset`, `fromPath`). Only that first line marks a text result partial: data can end a result but never starts one. A result that fits is exactly what it was before paging. `GET /api/graphs` and `GET /api/rooms` back the two lists and take `limit` (1 to 100, default 20), `after` and the filters `sessionId`, `graphId` and `party`. `GET /api/sessions` pages only when it gets `limit` or `after`, so the browser and the CLI still get every match. The ledger file carries a schema version (`PRAGMA user_version`) and upgrades an older file in place; graphs and rooms stored before that list with `createdAt: null`.
 
@@ -148,6 +150,10 @@ args = ["/absolute/path/to/context-ledger/src/mcp.mjs"]
 # Only needed when the ledger runs on another port or database (use an absolute path).
 env = { PORT = "4317" }
 ```
+
+T3 Code runs Claude Code and Codex with their own configuration. Whether its sessions load the servers registered for the CLIs is unverified; [docs/integrations/t3code.md](docs/integrations/t3code.md) gives the steps for Claude and manually configured Codex, and a check from a new thread.
+
+In Capy, add it as a local (STDIO) server for threads that run on your own computer: see [docs/integrations/capy.md](docs/integrations/capy.md).
 
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
 

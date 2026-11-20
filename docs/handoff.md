@@ -260,6 +260,50 @@ Next steps:
 1. Merge with a real code graph from `graphify extract` and check that `graphify query` and `graphify explain` find the decisions. This card merged with a small synthetic code graph.
 2. Decisions that name files or functions could link to the matching code nodes. That needs Graphify's code node IDs and would be a new card.
 
+## Current checkpoint — U1 Console v0, light (2026-11-17)
+
+Branch `ruslan/console-v0`, from `main` 3a17536. Card U1. Read the U1 eval and its results in [the eval log](evals.md), and [the feature map](feature-map.md).
+
+- **What it is:** `npm start`, then `/console/`. One read-only page: an isometric SVG office (one room for Claude Code, one for Codex, one character per party that published today, shown working, waiting or idle), the ledger graph (one column per party, pop-ins, flash lines from the room to each new or changed node, dashed lines for links to another party's nodes, superseded decisions struck through), a one-click evidence panel (cited turns highlighted, hidden characters escaped as in `src/text.mjs`), an activity list and three numbers (hand-offs today, tokens saved as an estimate, superseded decisions).
+- **Data:** only GET routes that already existed. `public/console/source.mjs` polls `GET /api/graphs` every 2 s; graphs are snapshots, so `public/console/model.mjs` diffs each party's newest graph against its previous one to find new and changed nodes. The ledger records no reads, so a "read" line is drawn only from links in a published graph.
+- **Demo:** `/console/?demo` (`&speed=2`, `&autoplay=0`) replays `public/console/demo-recording.json`. `node demo/console-recording.mjs` rebuilds it by running the real store on `demo/leo-orbit.jsonl` and `demo/ali-orbit.jsonl`; a node test fails if the committed file differs. Rebuild it whenever the store, graph validation, the meter or those transcripts change.
+- **Server:** `src/server.mjs` gains only a fixed list of static files under `/console/`. A new console file must be added to that list.
+- **Weight:** 84.5 KB in total with the recording, first contentful paint 56 to 84 ms (Playwright, this laptop). Screenshots and `perf.json` are in `docs/console/`; rerun with `CONSOLE_SHOTS_DIR=docs/console npx playwright test tests/e2e/console.spec.mjs`.
+- **Built by:** Claude Code, with the office module (`office.mjs`, `office.css`) written by a subagent against a fixed interface. Reviewed by Codex (read-only) in three rounds; every finding is fixed or recorded as a limit in the eval log.
+
+Known limits:
+
+- G7 is not built, so every node is one neutral colour. `nodeMark` in `model.mjs` reads a `grounding` or `mark` field of `quoted` or `inferred` when G7 adds one.
+- Superseded decisions come from `supersedes` edges, not from G11's graph diff.
+- The live view starts at the start of today: a party whose newest graph is older is not drawn. More than 6 parties in one room show as "+N" in the office (each still has its graph column).
+- The office mascot is a placeholder until U2.
+
+Next steps:
+
+1. **The 60-second recording (raw material for U3) is for a person to make.** Run `npm start`, open `http://127.0.0.1:4317/console/?demo&autoplay=0` in a 1440×900 window, start a screen recorder, click **Play demo**, wait for "Demo finished" (34 s), then click "The ledger stays on port 4317" to open its proof, and stop at about 60 s.
+2. A human review of the PR. It touches no security, export or signing code, but it does add static routes to the server.
+3. When G7 lands, give the quoted and inferred marks a field name and check the colours in the console.
+
+## Current checkpoint — U3 60-second demo video (2026-11-17)
+
+Branch `ruslan/u3-demo-video`, stacked on U1 (`ruslan/console-v0`). [docs/video/u3-script.md](video/u3-script.md) is the shot list and voice-over, timed to 60 seconds. `node demo/record-console.mjs` records the console part as raw footage into `test-results/u3/console-demo.webm` (about 42 seconds, synthetic Orbit demo, not committed).
+
+Next steps:
+
+1. A person records the terminal shots and the voice-over and cuts the video to the shot list. The install shot uses `npm run ledger -- install` once G8 is merged, or the README's two `mcp add` commands before that.
+2. Swap in Pip for the title card once U2 is merged.
+3. Link the finished video in the U3 eval section, and move the card to Done.
+
+## Current checkpoint — U2 brand and mascot (2026-11-17)
+
+Branch `ruslan/u2-brand-mascot`. [docs/brand/brand.md](brand/brand.md) is the brand guide: the CTM site's colours (Deep Charcoal, Electric Violet, Acid Lime, Paper), with light (console) and dark (site, video) sets in [tokens.css](brand/tokens.css), each pair checked for WCAG AA contrast. It also sets the quoted and inferred mark colours, the type stacks, and Pip, an original mascot in three poses for the console's idle, working and waiting agents. `tests/brand.test.mjs` checks the colours, the contrast and the SVG rules.
+
+Next steps:
+
+1. Someone on the team signs off on Pip's look.
+2. Once U1 (PR #22) is merged, swap the office module's placeholder figure for the three Pip SVGs by state, and use the tokens in the console's CSS.
+3. U3 (the demo video) can use Pip and the dark set.
+
 ## Current checkpoint — H7 Windows deadline flake (2026-11-17)
 
 The runtime job on the Windows runner failed at random on PRs that do not touch `runtime/` (#29–#32). Three deadline tests got 502 "Model server timed out." instead of 504. `_Run.call` (`runtime/latent_pool/pool.py`) now decides before each model call whether the read deadline is the shorter limit. If that call then times out, the read returns 504, whatever the clock reads afterwards. The client raises `ModelTimeout` (`runtime/latent_pool/__init__.py`), which is still a 502 with the same message, so the client's own timeout and every other 502 behave as before. Regression tests are in `runtime/tests/test_deadline_clock.py`. Eval and results: H7 in `docs/evals.md`.
@@ -428,3 +472,74 @@ Next steps:
 Branch `ruslan/h8-model-call-deadline`, from `main`. Each model call in `runtime/latent_pool/vllm_client.py` now keeps to its whole budget, not a timeout per socket read. One absolute deadline covers the call and its folded retry. A timer shuts the call's socket down at the deadline: the plain socket before it connects, and the TLS socket before its handshake. The name lookup is bounded, redirects are not followed, and every step checks the clock. A connect timeout capped by the deadline now returns 504, not 503, and `_Run.call` returns 504 for a reply or a 503 that lands after the read deadline. Codex reviewed it twice; every finding is fixed with a test (docs/evals.md, H8).
 
 Next owner: nothing is open on this card beyond review. Known limits are listed under H8 in docs/evals.md. Addresses are still tried one after another, and an abandoned lookup finishes on its own thread.
+
+## Current checkpoint — D1 T3 Code integration (2026-11-17)
+
+Branch `ruslan/d1-t3code-guide`. [docs/integrations/t3code.md](integrations/t3code.md) explains how T3 Code's Claude and Codex threads get the ledger: T3 runs those CLIs with their own configuration, so the server is registered for them on the environment's machine. Instances with their own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` need it there too. `tests/integrations-t3.test.mjs` keeps the guide's commands and links in step with the code.
+
+The importer half of the card was not built. T3's store is undocumented, and its layout differs between versions (see the D1 eval). It is the new Backlog card D3, blocked on a sample database of a known T3 version.
+
+Next steps:
+
+1. Someone who runs T3 follows the guide and records the result in the D1 eval section, including whether T3's runs write Claude Code and Codex session files that can be imported.
+2. D3, once a sample T3 database exists.
+
+## Current checkpoint — D2 Capy integration guide (2026-11-17)
+
+Branch `ruslan/d2-capy-guide`. [docs/integrations/capy.md](integrations/capy.md) explains how to add the ledger to Capy as a local (STDIO) MCP server. It works only for threads that run on the computer that runs the ledger, through Capy's desktop app or Dock CLI, because the ledger answers on loopback and Capy runs STDIO servers on the thread's machine. The owner is "Only you", because an Organization server would fail on other members' computers and on cloud machines. `tests/integrations.test.mjs` keeps the guide's key, path, README link and TOML block in step with the code.
+
+Next steps:
+
+1. Someone with a Capy organization follows the guide once and records the result in the D2 eval section, including whether a device thread finds `node` on its `PATH`.
+2. If Capy threads should use the ledger from the cloud, that needs a design decision first: the ledger would then hold transcripts on Capy's machines.
+
+## Current checkpoint — P4a signed hand-off (2026-11-17)
+
+First slice of P4, after ADR-9 of the design (`origin/ruslan/p1-design`): `ledger keygen` makes an Ed25519 key beside the ledger database; `ledger handoff <id> --sign <new-folder>` writes `handoff.md`, `public-key.pem`, an RFC 8785 canonical `manifest.json` (file name, size and SHA-256) and the raw signature `manifest.sig`; `ledger verify <folder> [--fingerprint]` checks all of it and exits 0 only on a full match. Code: `src/sign.mjs` and `src/cli.mjs`; tests: `tests/sign.test.mjs`; client guide with the OpenSSL-only recipe: `docs/signed-handoff.md`. Eval and three Codex review rounds: P4a in `docs/evals.md`.
+
+Update 2026-11-18, after an independent security review (no high, three medium, seven low) and a fourth Codex round on the fixes (all in the P4a section of `docs/evals.md`):
+
+- On Windows, `keygen` stages the key inside a folder restricted to the current account and gives the key file a protected access list that grants only that account (`icacls`, run without a shell, by SID). Signing refuses a key whose list allows any other account than the user, SYSTEM and Administrators, a key file that is a link, and one replaced while it is checked. POSIX is unchanged.
+- `handoff --sign` reads the session from the ledger database in process (design ADR-2) and makes no HTTP request, so a process on `PORT` can no longer get content signed. It never creates or migrates the database: an older-schema file is refused with a sentence that says to start the server once. Plain `handoff` and `search` still use the server.
+- Not changed, for the user to decide: `verify` without `--fingerprint` still exits 0 with a stderr warning. The proposal (a required flag, or a distinct exit code with `Unverified signer` on stdout) is in the eval and the PR body.
+
+Next steps:
+
+1. **A human security review before merge** (AGENTS.md section 4). Points to decide: the fingerprint is SHA-256 of the SPKI DER bytes (not of the raw key), for an OpenSSL-only recipe; the private key is unencrypted PKCS#8, 0600 on POSIX and restricted to the account on Windows; the `verify` exit-code proposal above; the seven low findings of the security review, which are left open (among them no owner check of the key file on either system, which Codex round 4 also raised); concurrent writers and NTFS alternate data streams are out of scope (documented).
+2. P4b (Backlog): the secret scanner, the redaction diff, allowlist export from cleared excerpts (ADR-8) and the passphrase-encrypted key. Signing today does not redact anything.
+3. Version 1 bundles hold exactly one content file. A redaction report or other extra file needs manifest version 2.
+
+## Current checkpoint — P4b secret scanner and redaction diff (2026-11-17)
+
+*Superseded on 2026-11-18: P4b was narrowed to key formats; see the next checkpoint. The bearer and password rules described here were removed.*
+
+Branch `ruslan/p4b-secret-scanner`. `src/secrets.mjs` finds text that looks like a credential: cloud, GitHub, model-provider, Slack and Stripe keys, JWTs, private keys, bearer tokens, and secret-looking values under names such as `password` or `api_key`. It redacts each one as `[REDACTED <kind>]`.
+
+`npm run ledger -- redact <session-id> [--json | --text]` reports line, kind, length and a known public prefix, never a value; `--text` prints the redacted hand-off. `ledger handoff`, the store, the browser and MCP are unchanged.
+
+Next owner: P4a can call `redactSession` before signing an export. The scanner is a heuristic. Codex ran four rounds and every finding is fixed, but round 4's fixes are not reviewed again, and a human security review is still owed.
+
+## Current checkpoint — P4b narrowed to key formats (2026-11-18)
+
+PR #47 now detects only well-defined key formats (provider keys, JWTs, PEM private keys, AWS secret access keys). The free-text `bearer-token` and `assigned-secret` rules were removed at the user's choice after seven Codex rounds kept finding gaps; that work is card P4c. A human security review is still required before merge.
+
+## Current checkpoint — P4c free-text secret detection (2026-11-18)
+
+Branch `ruslan/p4c-free-text-secrets`, stacked on P4b (#47). After an `Authorization: Bearer` header, or a secret-like name followed by `:` or `=`, the rest of that line is redacted, unless the whole value is a placeholder. On the corpus this misses nothing and flags 2 of 23 benign keyed lines (8.7%). Codex reviewed it twice; every finding is fixed with a test (docs/evals.md).
+
+Next owner: the budget (zero misses, at most 10% false alarms) and the line-tail approach are proposals. The user approves them before the PR leaves draft.
+
+## Current checkpoint — cycle 15 (teams of many agents, split facts, 2026-11-16)
+
+Branch `ruslan/agent-scale`. Card C15. Read the cycle 15 definition, results and changes from the plan in [the eval log](evals.md). Qwen2.5-3B-Instruct, no training, GSM8K block 4.
+
+- **Scale (part 1).** Tests 1–4 are all established: latent_mas beats random thoughts at 3, 11, 31 and 101 agents. This happens because random thoughts break the model (0.425 at 3 agents, 0 at 101), not because real thoughts help. The latent team never beats one model alone and gets worse as it grows: 0.81 at 3 agents, 0.66 at 101 (single 0.86 on the same 50 questions, 0 / 10, p = 0.002). A vote of N samples gets better instead (0.85 to 0.94).
+- **Cost.** At 3 and 11 agents the latent team matched the text team's accuracy with 58% and 75% fewer forward steps and 2.4 and 3.3 times less time. Time per question then grows fast: 224 s at 101 agents.
+- **Split facts (part 2).** Tests 5–8 are not established. With earlier prompts hidden (sealed), the latent team answers 0 and 1 of 166 questions, the same as the Solver with only the ask. Text notes pass the facts (0.30 and 0.28).
+- **Changes from the plan:** 31 agents ran at batch 4 after batch 8 ran out of GPU memory; 101 agents ran at batch 1 on the first 50 of the 200 questions, agreed with the user on 2026-11-14.
+- **New code:** `runtime/latent_team/scale.py` (the runner for both parts) and, in `team.py`, `chain_roles(N)`, the sealed mode (`hide`), the N-agent text team and grouped sampling for the vote. The three-agent path is unchanged. Run outputs hold GSM8K text and are not committed.
+
+Next steps:
+
+1. A human reviews the sealed mode in `team.py` (`forward(..., hide=...)`, `chain(..., sealed=True)`). The Codex code review and data check are recorded in the eval log.
+2. On this evidence, the latent hand-off between untrained agents does not carry facts, and adding agents costs accuracy. Any further latent work should first show a sealed hand-off above the floor on the split-facts set, for example with a trained hand-off, before more scale runs.

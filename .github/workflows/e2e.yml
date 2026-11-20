@@ -7,9 +7,9 @@ jobs:
     # installs on, not only Linux.
     name: node (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The whole Node suite takes over 20 minutes on the Windows runner (process start-up is
-    # slow there), so the job gets 45.
-    timeout-minutes: 45
+    # The 45-minute runs on Windows were a hang, not slowness: every server start failed
+    # there (the runner's account is spelt "LA" in SDDL) and one test then waited forever.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -22,7 +22,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run -s test:graph
-      - run: node --test tests/*.test.mjs
+      # A test that hangs fails on its own after two minutes instead of holding the job.
+      - run: node --test --test-timeout=120000 tests/*.test.mjs
         shell: bash
       # System packages for Chromium are only needed on Linux.
       - run: npx playwright install --with-deps chromium

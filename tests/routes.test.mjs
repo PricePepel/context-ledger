@@ -398,12 +398,25 @@ test('LATENT_URL and LATENT_ROOT are read on each request, and unexpected errors
     while ((end = buffered.indexOf('\n')) >= 0) {
       const line = buffered.slice(0, end).trim();
       buffered = buffered.slice(end + 1);
-      if (waiting.length) waiting.shift()(line);
+      if (waiting.length) waiting.shift().resolve(line);
       else lines.push(line);
     }
   });
-  const nextLine = () => (lines.length ? Promise.resolve(lines.shift()) : new Promise(resolve => waiting.push(resolve)));
-  const port = Number((await nextLine()).match(/listening at http:\/\/127\.0\.0\.1:(\d+)/)[1]);
+  // P5a: a child that exits (a server that cannot start) fails every wait instead of
+  // leaving it pending, which with the fake runtimes still listening hung the whole file.
+  let exited;
+  child.once('exit', code => {
+    exited = new Error(`The server child exited with code ${code}.`);
+    while (waiting.length) waiting.shift().reject(exited);
+  });
+  const nextLine = () => {
+    if (lines.length) return Promise.resolve(lines.shift());
+    if (exited) return Promise.reject(exited);
+    return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+  };
+  const listening = (await nextLine()).match(/listening at http:\/\/127\.0\.0\.1:(\d+)/u);
+  assert.ok(listening, 'the server prints where it listens');
+  const port = Number(listening[1]);
   assert.match(await nextLine(), /^Sign in to the browser app/u);
   const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
   const send = async message => {

@@ -13,6 +13,13 @@ const staticFiles = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.js', ['app.js', 'text/javascript']],
   ['/styles.css', ['styles.css', 'text/css']],
+  // The console (card U1): a fixed list, so no other path under /console/ is served.
+  ['/console', ['console/index.html', 'text/html']],
+  ['/console/', ['console/index.html', 'text/html']],
+  ...['console.css', 'office.css'].map(name => [`/console/${name}`, [`console/${name}`, 'text/css']]),
+  ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
+    .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
+  ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
 ]);
 
 class HttpError extends Error {

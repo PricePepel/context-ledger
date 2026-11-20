@@ -234,3 +234,5 @@ footer { padding-block: 1rem 1.5rem; color: var(--muted); }
 @media (max-width: 40rem) {
   .choice-made { flex-basis: 100%; }
 }
+
+.console-link { margin-left: 14px; color: var(--accent); font-weight: 600; }

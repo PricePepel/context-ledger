@@ -45,12 +45,15 @@ async function freePort() {
 const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
 async function windowsSecurity(path) {
   const script = "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
-    '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; (Get-Acl -LiteralPath $env:TEST_FILE).Sddl';
+    '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $sid; ' +
+    // P5a: how SDDL spells this user ("LA" for the built-in Administrator on CI runners).
+    "(New-Object System.Security.AccessControl.RawSecurityDescriptor ('O:' + $sid)).GetSddlForm('Owner').Substring(2); " +
+    '(Get-Acl -LiteralPath $env:TEST_FILE).Sddl';
   const { stdout } = await execute(join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
     { env: { ...process.env, TEST_FILE: path } });
-  const [sid, sddl] = stdout.split(/\r?\n/u);
-  return { sid, sddl };
+  const [sid, alias, sddl] = stdout.split(/\r?\n/u);
+  return { sid, alias, sddl };
 }
 // A token file as the server writes it, for a ledger on this port.
 const tokenRecord = (port, token) => JSON.stringify({ port, token }) + '\n';
@@ -673,6 +676,18 @@ test('the Windows check accepts only the current user as owner and as the only a
   }
   assert.equal(privateToOwner(undefined, sid), false);
   assert.equal(privateToOwner(`O:${sid}D:P(A;;FA;;;${sid})`, 'not a sid'), false);
+  // P5a: the built-in Administrator (RID 500, the GitHub Windows runner's account) is
+  // spelt "LA" in SDDL. With that alias the same descriptor is private; without it, with
+  // a malformed alias, or with anyone else in it, it is not.
+  const admin = 'S-1-5-21-1000-2000-3000-500';
+  assert.equal(privateToOwner('O:LAG:S-1-5-21-1000-2000-3000-513D:P(A;;FA;;;LA)', admin, 'LA'), true);
+  assert.equal(privateToOwner(`O:LAD:P(A;;FA;;;${admin})`, admin, 'LA'), true, 'either spelling');
+  assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)', admin), false, 'no alias given');
+  assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)(A;;FA;;;BA)', admin, 'LA'), false, 'Administrators too');
+  assert.equal(privateToOwner('O:BAD:P(A;;FA;;;LA)', admin, 'LA'), false, 'owned by Administrators');
+  for (const alias of ['la', 'LAX', 'S-1-5-32-544', '', null, 7]) {
+    assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)', admin, alias), false, String(alias));
+  }
 });
 
 test('on Windows the token file is private to the current user from its creation, even in a folder that grants everyone full control', { skip: process.platform !== 'win32' && 'POSIX uses the file mode (tested above).' }, async t => {
@@ -688,11 +703,12 @@ test('on Windows the token file is private to the current user from its creation
 
   const database = join(open, 'ledger.sqlite');
   const server = await place.start(database);
-  const { sid, sddl } = await windowsSecurity(tokenFileFor(database, server.port));
+  const { alias, sddl } = await windowsSecurity(tokenFileFor(database, server.port));
   // Owner and only entry are this user; nothing is inherited from the folder. The DACL
   // is "P" alone: a file whose ACL was replaced after creation (icacls, SetNamedSecurityInfo)
   // shows "PAI" instead, so this also pins that the descriptor was set at creation.
-  assert.match(sddl, new RegExp(`^O:${sid}(?:G:[A-Z0-9-]+)?D:P\\(A;;FA;;;${sid}\\)$`, 'u'));
+  // SDDL spells the user as its alias when it has one ("LA" on CI runners, P5a).
+  assert.match(sddl, new RegExp(`^O:${alias}(?:G:[A-Z0-9-]+)?D:P\\(A;;FA;;;${alias}\\)$`, 'u'));
   assert.equal((await cli(['search', 'vela'], { PORT: String(server.port), CONTEXT_LEDGER_DB: database })).stdout, '[]\n');
 });
 
@@ -730,7 +746,7 @@ test('on Windows a token file others can read is refused in fixed words, and not
   const plain = anyPortFile(join(place.directory, 'plain.sqlite'));
   await writeFile(plain, tokenRecord(4317, 'N'.repeat(43)));
   const security = await windowsSecurity(plain);
-  if (!privateToOwner(security.sddl, security.sid)) assert.deepEqual(await readTokenFile(plain), { exposed: true });
+  if (!privateToOwner(security.sddl, security.sid, security.alias)) assert.deepEqual(await readTokenFile(plain), { exposed: true });
   restrictToOwner(plain);
   assert.deepEqual(await readTokenFile(plain), { port: 4317, token: 'N'.repeat(43) });
 });
