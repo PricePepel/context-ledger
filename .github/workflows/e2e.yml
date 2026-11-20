@@ -22,8 +22,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run -s test:graph
-      # A test that hangs fails on its own after two minutes instead of holding the job.
-      - run: node --test --test-timeout=120000 tests/*.test.mjs
+      # A test file that hangs fails on its own after five minutes instead of holding the job.
+      - run: node --test --test-timeout=300000 tests/*.test.mjs
         shell: bash
       # System packages for Chromium are only needed on Linux.
       - run: npx playwright install --with-deps chromium

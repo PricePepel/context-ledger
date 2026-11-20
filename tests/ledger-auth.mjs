@@ -8,14 +8,17 @@ const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
 
 /**
  * For token files a test writes by hand: on Windows, replaces the file's ACL with one
- * entry for the current user (the owner, since the test created it), as clients
- * require; elsewhere the test's mode 0600 is enough.
+ * entry for the current user and makes that user the owner, as clients require;
+ * elsewhere the test's mode 0600 is enough.
  */
 export function restrictToOwner(path) {
   if (process.platform !== 'win32') return;
   const user = execFileSync(join(system32, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' });
   const sid = /"(S-1-[0-9-]+)"\s*$/u.exec(user)[1];
   execFileSync(join(system32, 'icacls.exe'), [path, '/inheritance:r', '/grant:r', `*${sid}:F`], { stdio: 'ignore' });
+  // P5a: a file an elevated administrator creates is owned by the Administrators group
+  // (GitHub's Windows runners run so), and clients refuse a file another account owns.
+  execFileSync(join(system32, 'icacls.exe'), [path, '/setowner', `*${sid}`], { stdio: 'ignore' });
 }
 
 /** The token of a server started on this database and port. */

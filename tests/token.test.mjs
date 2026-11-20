@@ -685,6 +685,7 @@ test('the Windows check accepts only the current user as owner and as the only a
   assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)', admin), false, 'no alias given');
   assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)(A;;FA;;;BA)', admin, 'LA'), false, 'Administrators too');
   assert.equal(privateToOwner('O:BAD:P(A;;FA;;;LA)', admin, 'LA'), false, 'owned by Administrators');
+  assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)', sid), false, 'another account spelt LA');
   for (const alias of ['la', 'LAX', 'S-1-5-32-544', '', null, 7]) {
     assert.equal(privateToOwner('O:LAD:P(A;;FA;;;LA)', admin, alias), false, String(alias));
   }
@@ -742,11 +743,15 @@ test('on Windows a token file others can read is refused in fixed words, and not
   assert.deepEqual(seen, []);
 
   // A file with its folder's inherited ACL is refused too when that ACL names anyone
-  // else (here the temporary folder's SYSTEM and Administrators entries, at least).
-  const plain = anyPortFile(join(place.directory, 'plain.sqlite'));
+  // else: here a folder that hands Everyone read access to new files (P5a review: the
+  // refusal is asserted whatever else the temporary folder grants).
+  const shared = join(place.directory, 'shared');
+  await mkdir(shared);
+  await execute(join(system32, 'icacls.exe'), [shared, '/grant', '*S-1-1-0:(OI)(CI)R']);
+  const plain = anyPortFile(join(shared, 'plain.sqlite'));
   await writeFile(plain, tokenRecord(4317, 'N'.repeat(43)));
-  const security = await windowsSecurity(plain);
-  if (!privateToOwner(security.sddl, security.sid, security.alias)) assert.deepEqual(await readTokenFile(plain), { exposed: true });
+  assert.match((await windowsSecurity(plain)).sddl, /\(A;ID;FR;;;WD\)/u, 'Everyone:R is inherited');
+  assert.deepEqual(await readTokenFile(plain), { exposed: true });
   restrictToOwner(plain);
   assert.deepEqual(await readTokenFile(plain), { port: 4317, token: 'N'.repeat(43) });
 });

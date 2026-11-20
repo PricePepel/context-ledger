@@ -378,11 +378,16 @@ test('LATENT_URL and LATENT_ROOT are read on each request, and unexpected errors
       LATENT_URL: `http://127.0.0.1:${first.server.address().port}` },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
+  // P5a review: one promise for the child's end, so a child already gone (by a code or
+  // a signal) or one that failed to spawn never leaves the teardown waiting.
+  const ended = once(child, 'exit').catch(() => {});
+  let running = true;
+  ended.then(() => { running = false; });
   t.after(async () => {
     try {
-      if (child.exitCode === null) {
+      if (running) {
         child.kill();
-        await once(child, 'exit');
+        await ended;
       }
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -405,10 +410,12 @@ test('LATENT_URL and LATENT_ROOT are read on each request, and unexpected errors
   // P5a: a child that exits (a server that cannot start) fails every wait instead of
   // leaving it pending, which with the fake runtimes still listening hung the whole file.
   let exited;
-  child.once('exit', code => {
-    exited = new Error(`The server child exited with code ${code}.`);
+  const fail = error => {
+    exited = error;
     while (waiting.length) waiting.shift().reject(exited);
-  });
+  };
+  child.once('exit', (code, signal) => fail(new Error(`The server child exited (${signal ?? code}).`)));
+  child.once('error', error => fail(new Error(`The server child failed: ${error.message}`)));
   const nextLine = () => {
     if (lines.length) return Promise.resolve(lines.shift());
     if (exited) return Promise.reject(exited);

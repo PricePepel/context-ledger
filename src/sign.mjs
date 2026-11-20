@@ -246,11 +246,14 @@ const keyAccessHelp = 'Other accounts can read the signing key file. Restrict it
  * flags P, AI and AR, and plain allow (A) and deny (D) entries of six fields. Deny entries
  * are skipped. A null DACL, any other flag or entry type, or an allow entry for any other
  * account (Everyone, Users, another user) gives false, so the check fails closed.
+ * `alias` is how SDDL spells `sid` (see readDacl): the SID itself, or a two-letter
+ * alias such as LA for the built-in Administrator account (card P5a).
  */
-export function daclAllowsOnly(sddl, sid) {
+export function daclAllowsOnly(sddl, sid, alias = sid) {
   const match = /^D:((?:P|AI|AR)*)((?:\([^()]*\))*)$/.exec(sddl);
   if (!match) return false;
-  const allowed = new Set([sid, ...rootLike]);
+  if (alias !== sid && !(typeof alias === 'string' && /^[A-Z]{2}$/.test(alias))) return false;
+  const allowed = new Set([sid, alias, ...rootLike]);
   for (const [, ace] of match[2].matchAll(/\(([^()]*)\)/g)) {
     const fields = ace.split(';');
     if (fields.length !== 6 || (fields[0] !== 'A' && fields[0] !== 'D')) return false;
@@ -280,19 +283,30 @@ async function currentAccountSid() {
   return sid;
 }
 
-// The file's DACL in SDDL form, which does not depend on the display language. icacls
-// /save writes it to a file, so it goes into a new temporary folder that is first
-// restricted to this account.
+// The DACL line of a file icacls /save wrote: the first line names the file, the
+// second holds the DACL.
+async function savedDaclLine(saved) {
+  let text = (await readFile(saved)).toString('utf16le');
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  return text.split(/\r?\n/)[1] ?? '';
+}
+
+// The file's DACL in SDDL form, which does not depend on the display language, and how
+// SDDL spells this account: { dacl, alias }. icacls /save writes to a file, so it goes
+// into a new temporary folder that is first restricted to this account. That folder's
+// own DACL then holds this account alone, so its one entry shows the spelling (LA for
+// the built-in Administrator, which GitHub's Windows runners use; card P5a). Any other
+// shape leaves the SID as the only spelling, so the check fails closed.
 async function readDacl(path, sid) {
   const folder = await mkdtemp(join(tmpdir(), 'ledger-acl-'));
   try {
     await runWindowsTool('icacls.exe', [folder, '/inheritance:r', '/grant:r', '*' + sid + ':(OI)(CI)F']);
+    const own = join(folder, 'own');
+    await runWindowsTool('icacls.exe', [folder, '/save', own]);
+    const alias = /^D:[A-Z]*\(A;OICI;FA;;;([A-Z]{2})\)$/.exec(await savedDaclLine(own))?.[1] ?? sid;
     const saved = join(folder, 'acl');
     await runWindowsTool('icacls.exe', [resolve(path), '/save', saved]);
-    let text = (await readFile(saved)).toString('utf16le');
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    // The first line names the file, the second holds the DACL.
-    return text.split(/\r?\n/)[1] ?? '';
+    return { dacl: await savedDaclLine(saved), alias };
   } finally {
     await rm(folder, { recursive: true, force: true }).catch(() => {});
   }
@@ -304,7 +318,8 @@ async function restrictToCurrentAccount(path, grant) {
   try {
     const sid = await currentAccountSid();
     await runWindowsTool('icacls.exe', [resolve(path), '/inheritance:r', '/grant:r', '*' + sid + ':' + grant]);
-    if (daclAllowsOnly(await readDacl(path, sid), sid)) return;
+    const { dacl, alias } = await readDacl(path, sid);
+    if (daclAllowsOnly(dacl, sid, alias)) return;
   } catch {
     // Reported below with one fixed message.
   }
@@ -322,7 +337,8 @@ async function checkCurrentAccountOnly(path, ino, hooks) {
     const sid = await currentAccountSid();
     await hooks.beforeAclCheck?.(path);
     const before = await lstat(path, { bigint: true });
-    allowsOnly = daclAllowsOnly(await readDacl(path, sid), sid);
+    const { dacl, alias } = await readDacl(path, sid);
+    allowsOnly = daclAllowsOnly(dacl, sid, alias);
     const after = await lstat(path, { bigint: true });
     entry = { file: before.isFile() && after.isFile(), same: before.ino === ino && after.ino === ino };
   } catch {

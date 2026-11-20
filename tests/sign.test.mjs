@@ -741,6 +741,16 @@ function windowsSid() {
   return /"(S-1-[0-9-]+)"\s*$/.exec(output.toString('latin1'))[1];
 }
 
+// How SDDL spells this account ("LA" for the built-in Administrator on CI runners, P5a),
+// read with PowerShell, independently of src/sign.mjs.
+function windowsSpelling() {
+  const script = '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ' +
+    "(New-Object System.Security.AccessControl.RawSecurityDescriptor ('O:' + $sid)).GetSddlForm('Owner').Substring(2)";
+  return execFileSync(system32(join('WindowsPowerShell', 'v1.0', 'powershell.exe')),
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { windowsHide: true, encoding: 'utf8' }).trim();
+}
+
 // The DACL of a file in SDDL form, read independently of src/sign.mjs.
 function savedDacl(t, path) {
   const out = join(tempFolder(t), 'acl');
@@ -764,6 +774,16 @@ test('daclAllowsOnly accepts only this account, SYSTEM and Administrators', () =
     'D:PAI(A;;FA;;' + me + ')', 'D:PAI(XA;;FA;;;' + me + ';(@User.x == 1))', 'D:PAI' + ace(me) + ' ']) {
     assert.equal(daclAllowsOnly(odd, me), false, odd);
   }
+  // P5a: the built-in Administrator (RID 500, GitHub's Windows runner account) is spelt LA.
+  const admin = 'S-1-5-21-1-2-3-500';
+  assert.equal(daclAllowsOnly('D:PAI' + ace('LA'), admin, 'LA'), true);
+  assert.equal(daclAllowsOnly('D:PAI' + ace('LA') + ace(admin), admin, 'LA'), true, 'either spelling');
+  assert.equal(daclAllowsOnly('D:PAI' + ace('LA'), admin), false, 'no alias given');
+  assert.equal(daclAllowsOnly('D:PAI' + ace('LA'), me, me), false, 'another account named LA');
+  assert.equal(daclAllowsOnly('D:PAI' + ace('LA') + ace('WD'), admin, 'LA'), false, 'Everyone too');
+  for (const alias of ['la', 'LAX', 'S-1-1-0', '', null]) {
+    assert.equal(daclAllowsOnly('D:PAI' + ace('LA'), admin, alias), false, String(alias));
+  }
 });
 
 test('keygen restricts the key to this account on Windows, even in a folder others can read', { skip: !onWindows }, async t => {
@@ -777,7 +797,7 @@ test('keygen restricts the key to this account on Windows, even in a folder othe
   const keygen = await run(['keygen'], env);
   assert.equal(keygen.code, 0, keygen.stderr);
   const keyPath = join(data, 'signing-key.pem');
-  assert.equal(savedDacl(t, keyPath), 'D:PAI(A;;FA;;;' + windowsSid() + ')');
+  assert.equal(savedDacl(t, keyPath), 'D:PAI(A;;FA;;;' + windowsSpelling() + ')');
   assert.deepEqual(readdirSync(data), ['signing-key.pem'], 'no staging file is left');
 
   seedLedger(env.CONTEXT_LEDGER_DB);
@@ -815,7 +835,7 @@ test('a signing key file other accounts can read is refused on Windows', { skip:
 
   const accepted = await sign();
   assert.equal(accepted.code, 0, accepted.stderr);
-  assert.equal(savedDacl(t, keyPath), 'D:PAI(A;;FA;;;' + windowsSid() + ')');
+  assert.equal(savedDacl(t, keyPath), 'D:PAI(A;;FA;;;' + windowsSpelling() + ')');
 });
 
 test('handoff --sign reads the ledger database and never contacts PORT', async t => {
@@ -902,7 +922,7 @@ test('keygen on Windows never lets the staging file inherit the data folder\'s l
   const data = join(folder, 'data');
   mkdirSync(data);
   icacls(data, '/grant', '*' + everyone + ':(OI)(CI)R', '*' + users + ':(OI)(CI)R');
-  const sid = windowsSid();
+  const sid = windowsSpelling(); // as SDDL writes this account (P5a)
   const seen = {};
   await generateSigningKey(join(data, 'signing-key.pem'), {
     afterCreate: staging => {
