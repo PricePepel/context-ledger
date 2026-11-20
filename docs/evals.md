@@ -3731,6 +3731,23 @@ An importer would read T3's SQLite store read-only, from a copy the person makes
 
 An importer built on a guessed layout could silently misread threads, which matters for a tool whose point is citing the exact line. A new Backlog card, D3, holds it until a sample database exists.
 
+## D2 — Capy integration guide (defined 2026-11-17)
+
+A guide, `docs/integrations/capy.md`, for adding Context Ledger as an MCP server in a Capy organization. It is written from Capy's public documentation and links the page behind each step.
+
+### What it must say
+
+- First, what leaves the computer: the ledger stays local, but Capy stores thread messages and tool output in its cloud, so whatever a tool returns is copied there and seen by the thread's audience. Start with synthetic data.
+- The ledger answers on loopback only, and Capy runs a STDIO server on the thread's own machine. The server therefore works only for threads on the computer that runs the ledger (desktop app or Dock CLI), not for cloud threads. The guide says so first, and advises against running the ledger on a cloud machine.
+- The exact form values (STDIO, key `context-ledger`, `node` plus the absolute path to `src/mcp.mjs`, `PORT` only when it differs, owner **Only you**, no sign-in), and why the owner is not Organization.
+- How to check the connection, and how to tell the agent to use the tools through Capy's instructions or `AGENTS.md`.
+- What the agent should not trust (everything a tool returns), and who can reach the ledger: any process on that computer, teammates on a shared device, and members who message the thread. The browser check on room decisions does not prove a person clicked.
+- What was not checked: no run in a real Capy organization yet.
+
+### What is tested
+
+`tests/integrations.test.mjs` keeps the guide in step with the code: the key fits Capy's key rule, the path it names exists, the README section it links to exists, the TOML block matches the README's, and every Capy link is an `https://docs.capy.ai/` page.
+
 ### Acceptance
 
 - The four suites pass.
@@ -3796,3 +3813,20 @@ An importer built on a guessed layout could silently misread threads, which matt
   - (medium) This eval's body now matches the board: D1 is the guide, D3 the importer, G8 the installer. The fork comparison is gone.
   - (low) T3's labels for access levels, what a migrated thread's session file may lack, and the README wording.
 - **Still owed:** a person who runs T3 follows the guide for Claude and for a manually configured Codex instance and records the result here.
+
+- Codex reviews the guide read-only against Capy's documentation; findings are fixed or recorded here.
+- A person with a Capy organization follows it once and records the result here.
+
+### D2 review (2026-11-17)
+
+- **Codex, round 1** (of the first guide commit): ten findings, all fixed in the next commit.
+  - (high) The guide implied that transcript text stays on the computer. Capy stores tool output in its cloud. This now comes first, with a synthetic-data start.
+  - (high) "Agents cannot confirm proposals" overstated it. The guide now says the MCP server has no such tool, and that the browser check does not prove a person clicked.
+  - (high) "Only you" was presented as access control. It only decides which threads get the tools; any local process, a shared device and members who message the thread can reach the ledger.
+  - (medium) Missing: automatic offline moves and checkpoints, the Dock device choice, prerequisites and `npm ci`, a real check from a thread (Test only lists tools), split troubleshooting, a copyable `AGENTS.md` note, and the transcript and file-reading tools.
+  - (low) The key rule and the Name, Working directory and Also listens on fields; and the TOML import, now marked untried.
+- **Codex, round 2** (of f156a36): the cloud-storage and "Only you" fixes hold, as do the moves, prerequisites and real-check fixes. Fixed in the next commit:
+  - (medium) The room wording, in the guide and in the README, now says the browser is the intended way and the ledger does not verify who sent a decision.
+  - (medium) Private threads still admit invited people, and a Personal device asks before others message its threads. The guide says to check both.
+  - (low) What `latent_read` returns, a broader **Unavailable** row, the port placeholder, and the `PORT` range.
+- **Still owed:** a person with a Capy organization follows the guide once and records the result here.
