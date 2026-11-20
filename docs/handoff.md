@@ -522,3 +522,9 @@ Next owner: P4a can call `redactSession` before signing an export. The scanner i
 ## Current checkpoint — P4b narrowed to key formats (2026-11-18)
 
 PR #47 now detects only well-defined key formats (provider keys, JWTs, PEM private keys, AWS secret access keys). The free-text `bearer-token` and `assigned-secret` rules were removed at the user's choice after seven Codex rounds kept finding gaps; that work is card P4c. A human security review is still required before merge.
+
+## Current checkpoint — P4c free-text secret detection (2026-11-18)
+
+Branch `ruslan/p4c-free-text-secrets`, stacked on P4b (#47). After an `Authorization: Bearer` header, or a secret-like name followed by `:` or `=`, the rest of that line is redacted, unless the whole value is a placeholder. On the corpus this misses nothing and flags 2 of 23 benign keyed lines (8.7%). Codex reviewed it twice; every finding is fixed with a test (docs/evals.md).
+
+Next owner: the budget (zero misses, at most 10% false alarms) and the line-tail approach are proposals. The user approves them before the PR leaves draft.

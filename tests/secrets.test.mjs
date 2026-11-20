@@ -64,12 +64,9 @@ test('P4b: prose, hashes, UUIDs, placeholders and short or plain values are not 
     'token: xxxxxxxxxxxx',
     'password: changeme',
     'secret = process.env.SECRET',
-    'token = getToken()',
     'max_tokens: 4096',
-    'password: hunter2',
     'Use the risk-assessment-for-the-project-and-team page.',
     'See sk-learn-documentation-for-everyone here.',
-    'apiKey = config.apiKey',
   ];
   for (const text of quiet) assert.deepEqual(kinds(text), [], text);
 });
@@ -193,9 +190,11 @@ test('P4b: ledger redact reports kinds, lines and masked previews, never a value
   assert.equal(report.code, 0, report.stderr);
   assert.equal(report.stdout, [
     'line 1  github-token  40 characters  ghp_…',
-    'line 3  aws-access-key-id  20 characters  AKIA…',
+    // P4c: the line tail after DB_PASSWORD= merges with the AWS key ID on the same line, so
+    // one span covers both and no prefix is shown.
+    'line 3  aws-access-key-id  43 characters  …',
     '2 possible secrets in 2 lines. Values are not shown; use --text for the redacted hand-off.',
-    'Only known key formats are checked (provider API keys, JWTs, private keys, AWS keys); passwords and other free-text values are not.',
+    'Checked: known key formats, and the rest of the same line after an Authorization: Bearer header or a secret-like name followed by : or = (such as password=), unless the whole value is a placeholder. A value that continues onto the next line, and other free-text secrets, are not found.',
     '',
   ].join('\n'));
 
@@ -274,7 +273,8 @@ test('P4b review: long values, long keys and quoted passwords are redacted whole
 test('P4b review: placeholders by shape, and UUIDs and commit hashes under a name, are not flagged', () => {
   assert.deepEqual(kinds('token = 0b7e2a4c-9f1d-4e3b-8a5c-6d2f1e0a9b8c'), []);
   assert.deepEqual(kinds('token = 3f2a9c1e7b4d5a6f8e9c0b1a2d3e4f5a6b7c8d9e'), []);
-  assert.deepEqual(kinds('Authorization: Bearer short1'), [], 'bearer values under eight characters are not flagged');
+  // P4c: a bearer value of any length is redacted to the end of its line.
+  assert.deepEqual(kinds('Authorization: Bearer short1'), ['bearer-token']);
 });
 
 test('P4b review: dense matches and dense unfinished key headers stay fast', () => {
@@ -306,7 +306,7 @@ test('P4b review: the redacted source name, strict escaping, and fixed errors in
     'source name  github-token  40 characters  ghp_…',
     'line 1  stripe-key  32 characters  sk_live_…',
     '2 possible secrets in 2 lines. Values are not shown; use --text for the redacted hand-off.',
-    'Only known key formats are checked (provider API keys, JWTs, private keys, AWS keys); passwords and other free-text values are not.',
+    'Checked: known key formats, and the rest of the same line after an Authorization: Bearer header or a secret-like name followed by : or = (such as password=), unless the whole value is a placeholder. A value that continues onto the next line, and other free-text secrets, are not found.',
     '',
   ].join('\n'));
   const text = await cli(['redact', id, '--text'], port);
@@ -494,7 +494,7 @@ test('P4b review 3: every CLI mode prints exactly the expected output and exits 
   const report = await cli(['redact', id], port);
   assert.equal(report.code, 0);
   assert.equal(report.stderr, '');
-  assert.equal(report.stdout, 'line 1  github-token  40 characters  ghp_…\n1 possible secret in 1 line. Values are not shown; use --text for the redacted hand-off.\nOnly known key formats are checked (provider API keys, JWTs, private keys, AWS keys); passwords and other free-text values are not.\n');
+  assert.equal(report.stdout, 'line 1  github-token  40 characters  ghp_…\n1 possible secret in 1 line. Values are not shown; use --text for the redacted hand-off.\nChecked: known key formats, and the rest of the same line after an Authorization: Bearer header or a secret-like name followed by : or = (such as password=), unless the whole value is a placeholder. A value that continues onto the next line, and other free-text secrets, are not found.\n');
   const json = await cli(['redact', id, '--json'], port);
   assert.equal(json.code, 0);
   assert.equal(json.stderr, '');
@@ -547,8 +547,8 @@ test('P4b review 4: a rejected outer value of the same rule keeps the real one i
   const text = `aws_secret_access_key="x aws_secret_access_key=${fake['aws-secret']}"`;
   assert.equal(redactText(text), 'aws_secret_access_key="x aws_secret_access_key=[REDACTED aws-secret-access-key]"');
   const names = `token=${'token='.repeat(40000)}${fake['github-token']}`;
-  // Narrowed scope: the names are not a finding; the key format at the end is, exactly.
-  assert.deepEqual(findSecrets(names).map(({ start, end }) => [start, end]), [[names.length - fake['github-token'].length, names.length]]);
+  // P4c: the first name's line tail covers the rest of the line, the key format included.
+  assert.deepEqual(findSecrets(names).map(({ start, end }) => [start, end]), [[6, names.length]]);
 });
 
 test('P4b review 4: long runs of spaces inside a key block stay fast', () => {
@@ -592,24 +592,26 @@ test('P4b review 7: an escaped AWS key inside a quoted assignment is redacted wh
   }
 });
 
-test('P4b narrowed: free-text guesses are out of scope, while key formats inside them are still found', () => {
-  // The user narrowed P4b to well-defined key formats on 2026-11-18. A bearer header's value
-  // or a value after a name such as password= is not flagged unless it is itself a key format.
-  for (const text of [
-    'Authorization: Bearer abcdefgh12345',
-    '{"Authorization":"Bearer abcdefgh12345"}',
-    'DB_PASSWORD="synthetic-pw-9x"',
-    'client_secret: Zt4Wq8Lm2Np6Rv0X',
-    'password=abc12345678(note)',
-  ]) assert.deepEqual(kinds(text), [], text);
+test('P4c: after a bearer header or a secret-like name, the rest of the line is redacted', () => {
+  const cases = [
+    ['Authorization: Bearer abcdefgh12345', 'Authorization: Bearer [REDACTED bearer-token]'],
+    ['{"Authorization":"Bearer abcdefgh12345"}', '{"Authorization":"Bearer [REDACTED bearer-token]'],
+    ['DB_PASSWORD="synthetic-pw-9x"', 'DB_PASSWORD="[REDACTED assigned-secret]'],
+    ['client_secret: Zt4Wq8Lm2Np6Rv0X', 'client_secret: [REDACTED assigned-secret]'],
+    ['password=abc12345678(note)', 'password=[REDACTED assigned-secret]'],
+    ['password: hunter2', 'password: [REDACTED assigned-secret]'],
+    ['a\npassword=pw1\nnext line', 'a\npassword=[REDACTED assigned-secret]\nnext line'],
+  ];
+  for (const [text, expected] of cases) assert.equal(redactText(text), expected, text);
+  // Key formats on such a line still give their own kind, with no prefix shown.
   assert.equal(redactText(`Authorization: Bearer ${fake['github-token']}`), 'Authorization: Bearer [REDACTED github-token]');
   assert.equal(redactText(`password=${fake['stripe-key']}`), 'password=[REDACTED stripe-key]');
   assert.equal(redactText(`aws_secret_access_key = ${fake['aws-secret']}`), 'aws_secret_access_key = [REDACTED aws-secret-access-key]');
 });
 
-test('P4b narrowed: a password on its own is not a finding (the report says it is not checked)', () => {
-  // The CLI tests above check the report's scope line word for word.
-  assert.deepEqual(kinds('DB_PASSWORD="synthetic-pw-9x"'), []);
+test('P4c: code under a secret-like name is over-redacted, by design', () => {
+  assert.deepEqual(kinds('token = getToken()'), ['assigned-secret']);
+  assert.deepEqual(kinds('apiKey = config.apiKey'), ['assigned-secret']);
 });
 
 test('P4b narrowed: a prefix is hidden when the labelled match covers only part of the span', () => {

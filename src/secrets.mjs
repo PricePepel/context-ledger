@@ -107,10 +107,111 @@ const simpleRules = [
  */
 const valueRules = [
   { kind: 'aws-secret-access-key', lead: /\baws_secret_access_key\b["']?\s{0,8}[:=]\s{0,8}/giu, cls: /[A-Za-z0-9/+=]/u, accept: value => /^[A-Za-z0-9/+=]{40}$/u.test(value) },
-  // Card P4b, narrowed on 2026-11-18 at the user's choice: free-text guesses (a bearer
-  // header's value, or any value after a name such as password=) are out of scope here.
-  // Seven review rounds showed each fix to them opening a new gap; they move to card P4c.
+  // Free-text values (a bearer header's value, or any value after a name such as
+  // password=) are handled by lineTails below (card P4c), not here.
 ];
+
+// Card P4c: names whose value is treated as a secret.
+const nameKeywords = 'password|passwd|pwd|passphrase|secret|client[ _-]?secret|api[ _-]?key|access[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|token';
+
+/**
+ * Card P4c: free-text leads. After one of these, the rest of the line is the value: the
+ * scanner never guesses where a free-text value ends inside the line, so no fragment of it
+ * can be left visible. The cost, other text on that line being redacted too, is bounded by
+ * the false-alarm budget in docs/evals.md.
+ */
+const freeTextLeads = [
+  // Only spaces and tabs may sit inside a lead, so a lead never runs onto the next line.
+  // The padding after an opening quote is consumed only when the quote is there, so long
+  // runs of spaces before a non-Bearer value do not backtrack.
+  { kind: 'bearer-token', lead: /\bAuthorization["']?[ \t]*:[ \t]*(?:["'][ \t]*)?Bearer[ \t]+/giu },
+  { kind: 'assigned-secret', lead: new RegExp(`\\b(?:[A-Za-z0-9]{1,32}[_.-])?(?:${nameKeywords})\\b["']?[ \\t]*[:=][ \\t]*`, 'giu') },
+];
+
+/**
+ * A value that is only a stand-in for a secret, judged on the whole value (trailing quotes
+ * and closing punctuation removed). Anything more than the stand-in is still a secret.
+ */
+function isPlaceholder(value) {
+  return /^[0-9]+$/u.test(value)
+    || /^(?:x+|\*+|\.+|#+|-+)$/iu.test(value)
+    || /^(?:changeme|change[_-]?me|placeholder|redacted|null|none|nil|undefined|true|false|required|optional)$/iu.test(value)
+    || /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|\([A-Za-z_][A-Za-z0-9_]*\)|[A-Za-z_][A-Za-z0-9_]*)$/u.test(value)
+    || /^%[A-Za-z_][A-Za-z0-9_]*%$/u.test(value)
+    || isAngleStandIn(value)
+    || /^(?:process\.env|import\.meta\.env|os\.environ)\.[A-Za-z_][A-Za-z0-9_]*$/u.test(value)
+    || /^\[REDACTED [a-z-]{1,32}\]$/u.test(value)
+    || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
+    || /^[0-9a-f]{40}$/iu.test(value);
+}
+
+// Whole words that mark an angle-bracket stand-in, such as <your-key-here>.
+const standInWords = new Set(['key', 'token', 'secret', 'password', 'here', 'value']);
+
+/**
+ * An angle-bracket stand-in names what goes there with a whole word, split by spaces,
+ * underscores or hyphens: <your-key-here> is one, <monkey9> is not.
+ */
+function isAngleStandIn(value) {
+  if (!/^<[A-Za-z0-9 _-]{1,48}>$/u.test(value)) return false;
+  return value.slice(1, -1).split(/[ _-]/u).some(word => standInWords.has(word.toLowerCase()));
+}
+
+/** The end of the line that from lies on: the next LF, CR or Unicode line or paragraph separator. */
+function lineEndFrom(text, from) {
+  for (let at = from; at < text.length; at += 1) if (/[\n\r\p{Zl}\p{Zp}]/u.test(text[at])) return at;
+  return text.length;
+}
+
+/**
+ * The value as judged for a placeholder. Inside a quote it runs to the closing quote on the
+ * same line, past backslash-escaped quotes. The quoted part is the whole value only when
+ * nothing but spaces and tabs come before a delimiter (, ; ) ] }) or the line end;
+ * otherwise, as in the shell value "changeme"synthetic9, the rest of the line is judged
+ * and so is never a placeholder. A bare value loses only trailing spaces and a trailing
+ * comma or semicolon. Every scan stops at end, and the trim is a backward scan, so long
+ * runs of spaces cost nothing.
+ */
+function judgedValue(text, start, end, quote) {
+  if (quote) {
+    let close = start;
+    while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
+    if (close >= end) return text.slice(start, end);
+    let after = close + 1;
+    while (after < end && (text[after] === ' ' || text[after] === '\t')) after += 1;
+    if (after < end && !',;)]}'.includes(text[after])) return text.slice(start, end);
+    return text.slice(start, close);
+  }
+  let stop = end;
+  while (stop > start && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
+  return text.slice(start, stop);
+}
+
+/** Card P4c: one span per free-text lead, from the value's start to the end of its line. */
+function lineTails(text) {
+  const found = [];
+  for (const rule of freeTextLeads) {
+    const pattern = new RegExp(rule.lead.source, rule.lead.flags);
+    // Leads come in order, so the line end found for one is reused for later leads on the
+    // same line: rejected leads never rescan the line.
+    let lineEnd = -1;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      let start = match.index + match[0].length;
+      // An opening quote stays visible; the value starts after it. A quote just before
+      // Bearer opens the value too, as in "Authorization": "Bearer ...".
+      let quote = /["'`]/u.test(text[start] ?? '') ? text[start] : (rule.kind === 'bearer-token' ? (match[0].match(/(["'])[ \t]*Bearer/iu)?.[1] ?? '') : '');
+      if (/["'`]/u.test(text[start] ?? '')) start += 1;
+      if (start > lineEnd) lineEnd = lineEndFrom(text, start);
+      const end = lineEnd;
+      const value = judgedValue(text, start, end, quote);
+      if (!value || isPlaceholder(value)) continue;
+      found.push({ kind: rule.kind, start, end, prefix: 0 });
+      // The rest of the line is already covered, so the next lead is looked for after it.
+      pattern.lastIndex = Math.max(pattern.lastIndex, end);
+    }
+  }
+  return found;
+}
 
 /** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty. */
 function jwts(text) {
@@ -233,6 +334,7 @@ function candidates(text) {
       // A rejected value is not skipped: a real secret may sit inside it, after its own name.
     }
   });
+  for (const candidate of lineTails(text)) all.push({ ...candidate, rank: 2 + simpleRules.length + valueRules.length });
   return all;
 }
 
