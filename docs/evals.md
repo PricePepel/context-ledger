@@ -4062,3 +4062,224 @@ P4b was narrowed to key formats with a fixed shape, because seven review rounds 
   - (low) The rendered-output check could miss a short leak. It now compares the exact rendered string.
   - (low) Line preservation was tested for LF and CRLF only. It now covers lone CR, U+2028 and U+2029, each with empty bearer and assignment leads before the separator.
   - Noted, not changed: U+0085 (NEL) is not a line end, so a value before it is redacted along with the text after it on the same physical line. That over-redacts and never leaks.
+
+## Cycle 15 — Teams of many agents, and a split-facts test of the hand-off (defined 2026-11-13, before any run)
+
+Card C15. Every earlier cycle ran a team of three thinking agents (Planner, Critic, Refiner) and a Solver. This cycle asks two questions:
+
+1. What happens to accuracy, time and memory as the team grows to 10 or 100 agents?
+2. Does the latent hand-off carry information when the Solver cannot do without it?
+
+On GSM8K the Solver already reads the whole question, so cycles 12 and 13 could not tell "the thoughts carry nothing" apart from "the Solver did not need them". Part 2 splits the facts between the agents to remove that escape.
+
+A measured design fact matters for both parts. The team shares one key-value memory, and it holds every agent's **prompt** as well as its latent steps. So an unsealed later agent, and the Solver, can read the earlier prompts, the question among them, directly. Part 2 therefore adds a **sealed** team. In it, every earlier agent's prompt is hidden from attention (`team.chain`, `sealed=True`), and only the latent steps and the turn-closing tokens stay visible. Their keys and values were computed while each agent read its own prompt. So even a sealed team with random thought vectors can pass on some of what an agent read, and the no-hand-off floor is the Solver alone.
+
+### Setup
+
+- Model: Qwen2.5-3B-Instruct, bf16. It has 2 key-value heads, so it stores about 36 KB of memory per position against about 384 KB for Phi-3.5-mini, and a 100-agent memory fits on the 16 GB GPU.
+- No training and no tuned setting. Soft thoughts use the defaults (top-k 16, temperature 1.0), m = 40 latent steps per thinking agent, batch 8 (31 and 101 agents ran at smaller batches; see "Changes from the plan" under the results).
+- Team of N thinking agents: the Planner, then Critic and Refiner in alternation (`chain_roles`), then the Solver. N = 3 is the team of every earlier cycle.
+- Text team of N agents: each Critic reads the latest plan, each Refiner reads the latest plan and critique, and the Solver reads the latest plan. Each turn is capped at 256 tokens.
+- Vote of N: N independent single answers sampled at temperature 0.7, and the most common number wins. This spends many calls without any hand-off, which is the fair comparison for a team of N agents.
+- Questions: block 4 of the seed-0 test shuffle (`--count 200 --block 4`, questions 800–999). Cycle 13 used block 4 with Phi-3.5-mini. Nothing in this cycle is tuned on it, and the model is different.
+
+### Part 1, scale (every agent sees the question)
+
+- N = 3, 11, 31 and 101.
+- Systems: single; latent_mas@N; latent_random@N; vote@N; and text_mas@N for N = 3 and 11. The text team grows too fast in tokens for larger N.
+- Reported for each system: accuracy, mean generated tokens, latent vectors, seconds per question, wall time and peak GPU memory.
+
+### Part 2, split facts
+
+- The questions are the block-4 questions with at least two sentences before the last one. A question's facts are those sentences, and its ask is the last sentence. The number excluded is reported.
+- Fact j goes to thinking agent j mod N, and every agent also sees the ask. The Solver sees only the ask.
+- N = 3 and 11.
+- Systems:
+  - single_full: one model with the whole question (the ceiling);
+  - alone: one model with the ask only (the floor);
+  - latent_sealed@N and random_sealed@N;
+  - latent_open@N and random_open@N (unsealed: the facts can also be read from the earlier prompts);
+  - text_mas@N, where only the notes reach the Solver.
+
+### What counts
+
+There are eight primary tests, each an exact McNemar test on the same questions, with Bonferroni correction. A result is "established" only at **p < 0.05 / 8 = 0.00625**; anything else is reported as not established, with its numbers.
+
+| Test | Systems compared | Question it answers |
+|---|---|---|
+| 1–4 | latent_mas@N against latent_random@N, for N = 3, 11, 31 and 101 | Do the thoughts beat random at any team size? |
+| 5–6 | latent_sealed@N against alone, for N = 3 and 11 | Does the sealed latent hand-off carry facts at all? |
+| 7–8 | latent_sealed@N against random_sealed@N, for N = 3 and 11 | Does the content of the thought vectors matter, beyond what any latent step's keys and values pass on? |
+
+Secondary figures, reported but not gated:
+- latent_mas@N against vote@N and against single;
+- text_mas against latent_sealed;
+- the open systems;
+- time and memory against N.
+
+Predictions, written before the run:
+- Tests 1–4 are not established.
+- vote@N is at least as accurate as latent_mas@N for N ≥ 11.
+- Seconds per question grow at least linearly with N for latent_mas.
+- Test 5 is established, because the latent positions carry what their agent read.
+- Tests 7–8 are the open question.
+
+### Acceptance for the code
+
+- CPU unit tests with the tiny model:
+  - chain_roles starts with the Planner and alternates, and chain_roles(3) is the old team;
+  - the default latent_mas is unchanged;
+  - an all-zero hide changes nothing;
+  - sealed hides exactly the prompt columns, and noise written into them does not change the Solver's logits, while unsealed it does;
+  - sealed thoughts still carry what their agent read;
+  - the text team passes the latest plan and critique;
+  - sampling is grouped per question and reproducible by seed, and temperature 0 is greedy;
+  - the split rules and the vote tally behave as described;
+  - both parts of the runner produce every system and comparison.
+- The full runtime suite still passes, and the three-agent path of earlier cycles is unchanged.
+- **Code review (Codex, 66da55f):** no sealed-mode leak and no change to the three-agent path were found. Four findings were fixed, each with a test that fails when the fix is reverted:
+  1. A vote's winner was written back with `:g`, so 1234567 read as 1.23457. The winner is now scored as a number.
+  2. Random thoughts were not seeded per system. Each system now seeds torch from `--seed` and its name.
+  3. The leak test corrupted the hidden prompts only after the whole chain and read only the Solver's first step. It now corrupts them before every later agent and over a multi-step decode, with padded rows; removing `hide` at any of the three places fails it.
+  4. The compatibility test compared the new code with itself. It now compares with the three-agent algorithm written out. A one-off run of the parent commit's `team.py` beside the new one gives identical latent_mas (soft, aligned, random), text_mas, single, working memory and training loss on the tiny model.
+
+### Results (run 2026-11-14 to 2026-11-16)
+
+The raw reports stay outside the repository because they hold GSM8K text. `tools/c15_stats.mjs`, kept with the run outputs, checks that every system answered the same questions in the same order and recomputes the McNemar tests from the per-question answers. The other figures are the runner's own summaries. Codex recomputed every figure from the per-question records (see the data check at the end).
+
+### Changes from the plan, and why
+
+- **31 agents ran at batch 4, not 8.** At batch 8, latent_mas@31 ran for about 7.5 hours and then stopped with a CUDA out-of-memory error. The slowness before the error points to GPU memory spilling into system memory, but the run's filtered log does not show that directly. A short memory probe on 8 questions, whose accuracy was not used, found a peak of 6.75 GiB at batch 4 and 6.32 GiB at batch 2. The three 31-agent systems were rerun at batch 4 on the same 200 questions. latent_mas@31 finished first. The run stopped when its session ended, and latent_random@31 and vote@31 were run separately afterwards. Each system seeds torch from `--seed` and its own name, so a separate run draws the same random thoughts.
+- **101 agents ran on 50 questions at batch 1, not 200 at batch 8.** The probe measured about 181 seconds per question at batch 1 and 341 at batch 2 (4 questions each). The thinking steps run one after another: 101 agents of 40 steps is about 4,000 forward passes before the Solver starts. At that rate, 200 questions would take about 20 hours for latent_mas and latent_random alone. With the user's agreement on 2026-11-14, the 101-agent systems ran on the first 50 of the same 200 questions (`--count 50 --block 16`, shuffle positions 800–849). Their comparisons with other systems use those systems' answers on the same 50 questions.
+- Smaller batches mean less padding. They can change greedy answers slightly through bf16 rounding, but not in any direction that favours one system. They do change seconds per question, so time is compared across N only at the same batch.
+- The setup's "a 100-agent memory fits on the 16 GB GPU" held for one question at a time (6.79 GiB peak at batch 1), not for batch 8.
+
+### Part 1 results, scale
+
+| System | Questions | Batch | Accuracy | Mean tokens | Forward steps | s / question | Peak GiB |
+|---|---|---|---|---|---|---|---|
+| single | 200 | 8 | 0.830 | 301.9 | 301.9 | 2.69 | 6.12 |
+| latent_mas@3 | 200 | 8 | 0.810 | 251.9 | 371.9 | 3.01 | 6.39 |
+| latent_random@3 | 200 | 8 | 0.425 | 247.2 | 367.2 | 3.54 | 6.41 |
+| vote@3 | 200 | 96 rows | 0.850 | 910.1 | 910.1 | 2.14 | 8.92 |
+| text_mas@3 | 200 | 8 | 0.795 | 880.0 | 880.0 | 7.33 | 6.56 |
+| latent_mas@11 | 200 | 8 | 0.780 | 251.9 | 691.9 | 6.45 | 7.13 |
+| latent_random@11 | 200 | 8 | 0.235 | 185.7 | 625.7 | 6.69 | 7.06 |
+| vote@11 | 200 | 96 rows | 0.880 | 3322.6 | 3322.6 | 7.33 | 8.67 |
+| text_mas@11 | 200 | 8 | 0.780 | 2789.3 | 2789.3 | 21.33 | 6.56 |
+| latent_mas@31 | 200 | 4 | 0.775 | 251.3 | 1491.3 | 23.64 | 7.38 |
+| latent_random@31 | 200 | 4 | 0.055 | 157.7 | 1397.7 | 35.69 | 7.40 |
+| vote@31 | 200 | 96 rows | 0.890 | 9375.6 | 9375.6 | 22.20 | 8.82 |
+| latent_mas@101 | 50 | 1 | 0.660 | 247.0 | 4287.0 | 223.83 | 6.79 |
+| latent_random@101 | 50 | 1 | 0.000 | 233.4 | 4273.4 | 193.14 | 6.79 |
+| vote@101 | 50 | 96 rows | 0.940 | 31667.8 | 31667.8 | 39.63 | 8.25 |
+
+The text team hit its 256-token turn cap on 67% (N = 3) and 74% (N = 11) of agent turns. As planned, it did not run at N = 31 or 101.
+
+Accuracy on the 50 questions that every system answered:
+
+| N | single | latent_mas | latent_random | vote | text_mas |
+|---|---|---|---|---|---|
+| 1 | 0.86 | | | | |
+| 3 | | 0.84 | 0.36 | 0.86 | 0.78 |
+| 11 | | 0.72 | 0.20 | 0.90 | 0.74 |
+| 31 | | 0.76 | 0.06 | 0.84 | |
+| 101 | | 0.66 | 0.00 | 0.94 | |
+
+| Test | Comparison | Questions | Only first right / only second right | Exact p | Verdict |
+|---|---|---|---|---|---|
+| 1 | latent_mas@3 vs latent_random@3 | 200 | 81 / 4 | 1.1e-19 | **established** |
+| 2 | latent_mas@11 vs latent_random@11 | 200 | 112 / 3 | 1.2e-29 | **established** |
+| 3 | latent_mas@31 vs latent_random@31 | 200 | 147 / 3 | 7.9e-40 | **established** |
+| 4 | latent_mas@101 vs latent_random@101 | 50 | 33 / 0 | 2.3e-10 | **established** |
+
+Secondary figures (not gated; questions as in the test of the same N):
+
+| Comparison | N = 3 | N = 11 | N = 31 | N = 101 |
+|---|---|---|---|---|
+| latent_mas vs vote | 8 / 16, p = 0.15 | 3 / 23, p = 8.8e-5 | 2 / 25, p = 5.6e-6 | 0 / 14, p = 1.2e-4 |
+| latent_mas vs single | 9 / 13, p = 0.52 | 6 / 16, p = 0.052 | 6 / 17, p = 0.035 | 0 / 10, p = 0.0020 |
+| latent_mas vs text_mas | 15 / 12, p = 0.70 | 15 / 15, p = 1.00 | not run | not run |
+
+Time and memory against N, for latent_mas:
+
+| N | Batch | Forward steps | s / question | ms per forward step | Peak GiB |
+|---|---|---|---|---|---|
+| 3 | 8 | 372 | 3.01 | 8.1 | 6.39 |
+| 11 | 8 | 692 | 6.45 | 9.3 | 7.13 |
+| 31 | 4 | 1491 | 23.64 | 15.9 | 7.38 |
+| 101 | 1 | 4287 | 223.83 | 52.2 | 6.79 |
+
+Forward steps grow by 40 per thinking agent, as designed. At the same batch (N = 3 to 11), seconds per question grew 2.1 times for 3.7 times the agents, which fits the Solver's decoding being a fixed cost (it writes about 252 tokens at both sizes). Each step also gets slower as the shared memory grows, and the smaller batches at N = 31 and 101 add to that, so the later rows cannot separate the two causes.
+
+### Part 2 results, split facts
+
+- 166 of the 200 block-4 questions had at least two fact sentences; 34 were excluded.
+- Every system ran on the same 166 questions in the same order, at batch 8.
+
+| System | Accuracy | Mean tokens | Forward steps | s / question | Peak GiB |
+|---|---|---|---|---|---|
+| single_full (ceiling) | 0.819 | 303.6 | 303.6 | 3.55 | 6.12 |
+| alone (floor) | 0.012 | 119.4 | 119.4 | 2.03 | 6.09 |
+| latent_sealed@3 | 0.000 | 189.6 | 309.6 | 3.79 | 6.25 |
+| random_sealed@3 | 0.000 | 242.9 | 362.9 | 4.23 | 6.25 |
+| latent_open@3 | 0.524 | 270.3 | 390.3 | 3.63 | 6.25 |
+| random_open@3 | 0.175 | 234.4 | 354.4 | 3.64 | 6.25 |
+| text_mas@3 | 0.301 | 897.5 | 897.5 | 7.54 | 6.45 |
+| latent_sealed@11 | 0.006 | 104.0 | 544.0 | 5.56 | 6.58 |
+| random_sealed@11 | 0.000 | 232.1 | 672.1 | 6.39 | 6.64 |
+| latent_open@11 | 0.367 | 241.3 | 681.3 | 5.83 | 6.57 |
+| random_open@11 | 0.102 | 136.1 | 576.1 | 5.60 | 6.64 |
+| text_mas@11 | 0.283 | 2897.3 | 2897.3 | 20.77 | 6.45 |
+
+The text team hit its 256-token turn cap on 68% (N = 3) and 82% (N = 11) of agent turns.
+
+| Test | Comparison | Only first right / only second right | Exact p | Verdict |
+|---|---|---|---|---|
+| 5 | latent_sealed@3 vs alone | 0 / 2 | 0.50 | not established |
+| 6 | latent_sealed@11 vs alone | 1 / 2 | 1.00 | not established |
+| 7 | latent_sealed@3 vs random_sealed@3 | 0 / 0 | 1.00 | not established |
+| 8 | latent_sealed@11 vs random_sealed@11 | 1 / 0 | 1.00 | not established |
+
+Secondary figures (not gated):
+- text_mas against latent_sealed: 50 / 0 at N = 3 and 47 / 1 at N = 11 (both p < 1e-12). Text notes carry facts that the sealed latent hand-off does not.
+- latent_open against random_open: 60 / 2 at N = 3 and 48 / 4 at N = 11 (both p < 1e-9).
+- latent_open against text_mas: 48 / 11 (p = 1.2e-6) at N = 3 and 25 / 11 (p = 0.029) at N = 11.
+- single_full against latent_open: 52 / 3 at N = 3 and 78 / 3 at N = 11. Every team stays well below one model with the whole question.
+
+### Predictions against results
+
+| Prediction | Result |
+|---|---|
+| Tests 1–4 are not established | **Wrong.** All four are established, with the gap widening as N grows. |
+| vote@N is at least as accurate as latent_mas@N for N ≥ 11 | **Held**, and vote is ahead at every N ≥ 11 with p < 0.00625. |
+| Seconds per question grow at least linearly with N | **Partly.** Forward steps grow linearly. Seconds grew less than linearly from 3 to 11 at the same batch, and much faster beyond that, where the batch also changed. |
+| Test 5 is established | **Wrong.** The sealed team is at the floor. |
+| Tests 7–8 are the open question | Not established. Both sealed teams are at the floor, so these tests did not distinguish the sealed systems. |
+
+### Reading
+
+- **Tests 1–4 show that random thoughts break the model, not that real thoughts help.** latent_random falls from 0.425 to 0.055 at 31 agents and 0 at 101, while latent_mas never scores above single and is clearly below it at 101 agents (0 / 10, p = 0.002). Beating random thoughts is therefore weak evidence that the thoughts carry anything useful; these runs show no benefit from them.
+- **The largest latent team is the worst, and the largest vote the best.** On the 50 questions every system answered, latent_mas scored 0.84, 0.72, 0.76 and 0.66 at 3, 11, 31 and 101 agents, and vote 0.86, 0.90, 0.84 and 0.94. Neither trend is steady, but vote is ahead of latent_mas at every N ≥ 11 (p < 0.00625 each). Vote never hands anything between agents: its gain comes from sampling many independent answers.
+- **Against the text team, the latent team is cheaper with no measurable accuracy difference.** At N = 3 and 11 it used 58% and 75% fewer forward steps and 2.4 and 3.3 times less time, at 0.810 against 0.795 and 0.780 against 0.780 (15 / 12, p = 0.70, and 15 / 15, p = 1). No difference was found, which is not the same as showing equal accuracy. The saving comes from not writing text: latent_random takes about the same time and is far less accurate. Vote is more accurate than either team at these sizes, at many times the tokens. It is faster than latent_mas at N = 3 (2.14 against 3.01 s) and 13% slower at N = 11 (7.33 against 6.45 s).
+- **The sealed latent hand-off showed no benefit.** With the earlier prompts hidden, the team answers 0 and 1 of 166 questions, no better than the Solver with only the ask (2 of 166). No hand-off of facts was demonstrated, which does not prove the latent steps hold none. Because both sealed teams are at the floor, tests 7 and 8 did not distinguish the thought content from the keys and values of the latent steps.
+- The open teams can read the facts straight from the earlier prompts in the shared memory. Random vectors disturbing that reading would explain latent_open beating random_open, so this result cannot be told apart from the thoughts carrying the facts. The sealed results make the first more plausible, but these runs do not separate the two.
+- The text team is the only hand-off here that passes facts the Solver could not read for itself. It is also the slowest, at 2–4 times the seconds per question.
+- Scope: one model (Qwen2.5-3B-Instruct), no training, one question block, and 50 questions at 101 agents. Cycle 14's trained thoughts were not tested here.
+
+### Data check (Codex, read-only)
+
+Codex recomputed every figure in these results from the per-question records and the run commands. Question order, the 50-question prefix, the batch sizes, the 40 steps, every McNemar split and all four established primary verdicts matched. It found:
+
+- four seconds-per-question values and one p-value rounded from already-rounded summaries, now taken from the raw values;
+- memory labelled GB where the runner measures GiB;
+- sentences in the reading that claimed more than the data show: equal accuracy with the text team, vote faster at every size, steady trends with N, a cause for tests 1–4, "no usable facts" in the sealed hand-off, and two mechanism claims;
+- a description of `c15_stats.mjs` that overstated what it recomputes.
+
+Each was corrected or narrowed above.
+
+### Suites (2026-11-16, after merging main)
+
+- `npm run -s test:graph` passes; `node --test tests/*.test.mjs` 191 of 192 pass, 1 skipped; `npx playwright test` 13 of 13.
+- Runtime, `python -m unittest discover -s tests -t .`: 211 tests OK in WSL with torch, and 211 OK with 66 skipped on Windows Python 3.13 without torch.
+- The documented command found that `runtime/tests/test_agent_scale.py` imported `test_latent_training` as a top-level module, the problem H1 fixed in the C14 test. It now imports `tests.test_latent_training`.

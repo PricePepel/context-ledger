@@ -528,3 +528,18 @@ PR #47 now detects only well-defined key formats (provider keys, JWTs, PEM priva
 Branch `ruslan/p4c-free-text-secrets`, stacked on P4b (#47). After an `Authorization: Bearer` header, or a secret-like name followed by `:` or `=`, the rest of that line is redacted, unless the whole value is a placeholder. On the corpus this misses nothing and flags 2 of 23 benign keyed lines (8.7%). Codex reviewed it twice; every finding is fixed with a test (docs/evals.md).
 
 Next owner: the budget (zero misses, at most 10% false alarms) and the line-tail approach are proposals. The user approves them before the PR leaves draft.
+
+## Current checkpoint — cycle 15 (teams of many agents, split facts, 2026-11-16)
+
+Branch `ruslan/agent-scale`. Card C15. Read the cycle 15 definition, results and changes from the plan in [the eval log](evals.md). Qwen2.5-3B-Instruct, no training, GSM8K block 4.
+
+- **Scale (part 1).** Tests 1–4 are all established: latent_mas beats random thoughts at 3, 11, 31 and 101 agents. This happens because random thoughts break the model (0.425 at 3 agents, 0 at 101), not because real thoughts help. The latent team never beats one model alone and gets worse as it grows: 0.81 at 3 agents, 0.66 at 101 (single 0.86 on the same 50 questions, 0 / 10, p = 0.002). A vote of N samples gets better instead (0.85 to 0.94).
+- **Cost.** At 3 and 11 agents the latent team matched the text team's accuracy with 58% and 75% fewer forward steps and 2.4 and 3.3 times less time. Time per question then grows fast: 224 s at 101 agents.
+- **Split facts (part 2).** Tests 5–8 are not established. With earlier prompts hidden (sealed), the latent team answers 0 and 1 of 166 questions, the same as the Solver with only the ask. Text notes pass the facts (0.30 and 0.28).
+- **Changes from the plan:** 31 agents ran at batch 4 after batch 8 ran out of GPU memory; 101 agents ran at batch 1 on the first 50 of the 200 questions, agreed with the user on 2026-11-14.
+- **New code:** `runtime/latent_team/scale.py` (the runner for both parts) and, in `team.py`, `chain_roles(N)`, the sealed mode (`hide`), the N-agent text team and grouped sampling for the vote. The three-agent path is unchanged. Run outputs hold GSM8K text and are not committed.
+
+Next steps:
+
+1. A human reviews the sealed mode in `team.py` (`forward(..., hide=...)`, `chain(..., sealed=True)`). The Codex code review and data check are recorded in the eval log.
+2. On this evidence, the latent hand-off between untrained agents does not carry facts, and adding agents costs accuracy. Any further latent work should first show a sealed hand-off above the floor on the split-facts set, for example with a trained hand-off, before more scale runs.
