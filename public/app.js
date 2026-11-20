@@ -14,6 +14,7 @@ const readerHeading = document.querySelector('#reader-heading');
 const readerSource = document.querySelector('#reader-source');
 const readerStatus = document.querySelector('#reader-status');
 const readerMessages = document.querySelector('#reader-messages');
+const readerDelete = document.querySelector('#reader-delete');
 
 let searchRequest;
 let readerRequest;
@@ -35,7 +36,7 @@ function renderRows(container, entries, createRow) {
 async function request(path, options) {
   const response = await fetch(path, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
+  if (!response.ok) throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), { status: response.status });
   return body;
 }
 
@@ -102,6 +103,7 @@ async function openTranscript(id, focusHeading = false) {
   const { signal } = readerRequest;
   selectedId = id;
   renderSelection();
+  readerDelete.hidden = true;
   readerHeading.textContent = 'Opening transcript';
   readerSource.textContent = '';
   readerMessages.replaceChildren();
@@ -114,6 +116,7 @@ async function openTranscript(id, focusHeading = false) {
     readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`;
     renderRows(readerMessages, session.messages, messageRow);
     readerStatus.textContent = '';
+    readerDelete.hidden = false;
     if (focusHeading) readerHeading.focus();
   } catch (error) {
     if (signal.aborted) return;
@@ -124,32 +127,77 @@ async function openTranscript(id, focusHeading = false) {
   }
 }
 
+// Card I2: a partial import says so, with what was kept and which lines were skipped.
+function importNote(session, skipped) {
+  if (!skipped?.count) return `Imported ${session.source}.`;
+  const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+  const which = skipped.lines.length < skipped.count ? `, first ${skipped.lines.join(', ')}` : ` (${skipped.lines.join(', ')})`;
+  return `Partially imported ${session.source}: kept ${plural(session.messageCount, 'message')}, `
+    + `skipped ${plural(skipped.count, 'unreadable line')}${which}. Messages on those lines are missing.`;
+}
+
+// Deleting asks first, with fixed text: transcript text never goes into the dialog.
+readerDelete.addEventListener('click', async () => {
+  const id = selectedId;
+  if (!id || readerDelete.disabled) return;
+  if (!window.confirm('Delete this transcript from the ledger? This cannot be undone.')) return;
+  readerDelete.disabled = true;
+  readerStatus.textContent = 'Deleting transcript…';
+  try {
+    await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    // The person may have opened another transcript while the delete was in flight.
+    if (selectedId === id) {
+      readerRequest?.abort();
+      selectedId = undefined;
+      readerDelete.hidden = true;
+      readerHeading.textContent = 'No transcript selected';
+      readerSource.textContent = '';
+      readerMessages.replaceChildren();
+      readerStatus.textContent = 'Transcript deleted.';
+    }
+    await search();
+  } catch (error) {
+    if (selectedId === id) readerStatus.textContent = `Delete failed. ${error.message}`;
+  } finally {
+    readerDelete.disabled = false;
+  }
+});
+
 importForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const file = transcriptFile.files[0];
   if (!file || importButton.disabled) return;
+  const provider = sourceAgent.value;
+  const tooLarge = () => "Import failed. This import is over the browser's 8 MiB limit; import it with: npm run ledger -- import --provider "
+    + `${provider} <file>`;
   if (file.size >= maxImportBytes) {
-    importStatus.textContent = 'Import failed. Choose a transcript smaller than 8 MiB.';
+    importStatus.textContent = tooLarge();
     return;
   }
-  const provider = sourceAgent.value;
   const readerAtImport = readerRequest;
   importButton.disabled = true;
   importStatus.textContent = 'Importing transcript…';
 
   try {
-    const { session } = await request('/api/import', {
+    const body = JSON.stringify({ provider, source: file.name, transcript: await file.text() });
+    // A file under 8 MiB can still make a larger request once it is quoted as JSON. The
+    // server refuses that before reading it, which the browser sees as a failed fetch.
+    if (new Blob([body]).size > maxImportBytes) {
+      importStatus.textContent = tooLarge();
+      return;
+    }
+    const { session, skipped } = await request('/api/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, source: file.name, transcript: await file.text() }),
+      body,
     });
     if (transcriptFile.files[0] === file) transcriptFile.value = '';
-    importStatus.textContent = `Imported ${session.source}.`;
+    importStatus.textContent = importNote(session, skipped);
     const refresh = search();
     if (readerRequest === readerAtImport) await openTranscript(session.id);
     await refresh;
   } catch (error) {
-    importStatus.textContent = `Import failed. ${error.message}`;
+    importStatus.textContent = error.status === 413 ? tooLarge() : `Import failed. ${error.message}`;
   } finally {
     importButton.disabled = false;
   }
@@ -168,6 +216,7 @@ const roomGraphB = document.querySelector('#room-graph-b');
 const roomStatus = document.querySelector('#room-status');
 const roomView = document.querySelector('#room-view');
 const roomParties = document.querySelector('#room-parties');
+const roomUpdates = document.querySelector('#room-updates');
 const roomProposals = document.querySelector('#room-proposals');
 const roomAgreed = document.querySelector('#room-agreed');
 const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
@@ -204,7 +253,9 @@ function partyColumn(party) {
   list.className = 'party-nodes';
   renderRows(list, party.nodes, node => {
     const item = document.createElement('li');
-    const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    // Card G7: quoted or inferred, from the cited lines; nothing for a graph stored before G7.
+    const detail = [node.kind, node.grounding, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    if (node.grounding) item.dataset.grounding = node.grounding;
     item.append(textElement('span', detail, 'node-kind'), labelElement(node.label));
     return item;
   });
@@ -240,8 +291,73 @@ function proposalRow(proposal, parties) {
   return item;
 }
 
+const changeWords = [['added', 'added'], ['removed', 'removed'], ['changed', 'changed'], ['superseded', 'decision superseded', 'decisions superseded'],
+  ['answered', 'question answered', 'questions answered'], ['opened', 'question opened', 'questions opened'],
+  ['readyGained', 'action now ready', 'actions now ready'], ['readyLost', 'action no longer ready', 'actions no longer ready'],
+  ['edges', 'edge changed', 'edges changed'], ['links', 'link changed', 'links changed']];
+
+function changeSummary(counts) {
+  const parts = changeWords.filter(([key]) => counts[key]).map(([key, one, many = one]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
+  return parts.length ? parts.join(', ') : 'no node, edge or link changes';
+}
+
+/** Card G11: the labels that changed, from the diff of the two snapshots. */
+async function fillUpdate(list, update, generation) {
+  try {
+    const { diff } = await request(`/api/graphs/${update.graphId}/diff?from=${update.fromGraphId}`);
+    if (generation !== roomGeneration) return;
+    // Each node once, with the first thing that happened to it.
+    const seen = new Set();
+    const rows = [
+      ...diff.nodes.added.map(node => ['Added', node]),
+      ...diff.nodes.removed.map(node => ['Removed', node]),
+      ...diff.supersededDecisions.map(node => ['Superseded', node]),
+      ...diff.answeredQuestions.map(node => ['Answered', node]),
+      ...diff.readyActionsGained.map(node => ['Now ready', node]),
+      ...diff.readyActionsLost.map(node => ['No longer ready', node]),
+      ...diff.nodes.changed.map(node => ['Changed', node]),
+    ].filter(([, node]) => !seen.has(node.id) && seen.add(node.id));
+    renderRows(list, rows.slice(0, 12), ([what, node]) => {
+      const item = document.createElement('li');
+      item.append(`${what} ${node.kind}: `, labelElement(node.label));
+      return item;
+    });
+  } catch {
+    if (generation === roomGeneration) list.replaceChildren(textElement('li', 'The changes could not be loaded.', 'room-note'));
+  }
+}
+
+function renderUpdates(room) {
+  const updates = room.newerGraphs ?? [];
+  const generation = roomGeneration;
+  renderRows(roomUpdates, updates, update => {
+    const box = document.createElement('section');
+    box.className = 'room-update';
+    box.setAttribute('aria-label', `Newer graph from ${update.party}`);
+    // Party names are not verified: a graph from another transcript is shown, not offered.
+    const who = update.sameSession ? `${update.party} has published a newer graph`
+      : `A newer graph from another transcript uses the party name ${update.party}, which is not verified`;
+    box.append(textElement('p', `${who} (${update.graphId.slice(0, 12)}…): ${changeSummary(update.counts)}. This room still shows the older one.`));
+    const list = document.createElement('ul');
+    box.append(list);
+    const use = textElement('button', `Use ${update.party}'s newer graph`);
+    use.type = 'button';
+    use.addEventListener('click', () => {
+      // Fill the form with the newer graph and the other party's graph; the person opens the room.
+      const other = room.parties.find(party => party.graphId !== update.fromGraphId);
+      roomGraphA.value = update.graphId;
+      roomGraphB.value = other?.graphId ?? '';
+      roomGraphA.focus();
+    });
+    if (update.sameSession) box.append(use);
+    void fillUpdate(list, update, generation);
+    return box;
+  });
+}
+
 function renderRoom(room) {
   currentRoomId = room.id;
+  renderUpdates(room);
   const parties = room.parties.map(party => party.party);
   renderRows(roomParties, room.parties, partyColumn);
   renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));

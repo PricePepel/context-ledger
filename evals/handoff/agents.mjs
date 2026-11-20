@@ -161,14 +161,15 @@ export function claudeArgs({ model, config, tools }) {
   ];
 }
 
-export function codexArgs({ model, work, last, mcpPath, port, tools }) {
+export function codexArgs({ model, work, last, mcpPath, port, database, tools }) {
   const server = 'mcp_servers.context-ledger';
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '--cd', work,
     '--output-last-message', last,
     '-c', `${server}.command=${JSON.stringify(process.execPath)}`,
     '-c', `${server}.args=[${JSON.stringify(mcpPath)}]`,
-    '-c', `${server}.env={PORT=${JSON.stringify(String(port))}}`,
+    // CONTEXT_LEDGER_DB tells the adapter where the ledger's token file is.
+    '-c', `${server}.env={PORT=${JSON.stringify(String(port))},CONTEXT_LEDGER_DB=${JSON.stringify(String(database))}}`,
     '-c', `${server}.enabled_tools=[${tools.map(name => JSON.stringify(name)).join(',')}]`,
     // Only the listed ledger tools are enabled; approve them so exec never stops to ask.
     '-c', `${server}.default_tools_approval_mode="approve"`,
@@ -197,11 +198,11 @@ export async function ask(options) {
   }
 }
 
-async function askOnce({ agent, cli, model, prompt, tools, work, mcpPath, port, timeoutMs }) {
+async function askOnce({ agent, cli, model, prompt, tools, work, mcpPath, port, database, timeoutMs }) {
   if (agent === 'claude') {
     const config = join(work, 'claude-mcp.json');
     await writeFile(config, JSON.stringify({
-      mcpServers: { 'context-ledger': { command: process.execPath, args: [mcpPath], env: { PORT: String(port) } } },
+      mcpServers: { 'context-ledger': { command: process.execPath, args: [mcpPath], env: { PORT: String(port), CONTEXT_LEDGER_DB: database } } },
     }));
     const result = await run(cli, claudeArgs({ model, config, tools }), { cwd: work, input: prompt, timeoutMs });
     const parsed = parseClaudeStream(result.stdout);
@@ -212,7 +213,7 @@ async function askOnce({ agent, cli, model, prompt, tools, work, mcpPath, port, 
     };
   }
   const last = join(work, `codex-last-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
-  const result = await run(cli, codexArgs({ model, work, last, mcpPath, port, tools }), { cwd: work, input: prompt, timeoutMs });
+  const result = await run(cli, codexArgs({ model, work, last, mcpPath, port, database, tools }), { cwd: work, input: prompt, timeoutMs });
   const parsed = parseCodexEvents(result.stdout);
   const reply = await readFile(last, 'utf8').catch(() => '');
   return {

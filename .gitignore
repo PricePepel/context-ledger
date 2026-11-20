@@ -9,3 +9,4 @@ demo/out/
 __pycache__/
 *.pyc
 *.pt
+signing-key.pem*

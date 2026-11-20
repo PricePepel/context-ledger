@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { diffCounts, diffGraphs } from './diff.mjs';
 import { InputError } from './errors.mjs';
+import { nodeGrounding } from './grounding.mjs';
 
 const hashPattern = /^[a-f0-9]{64}$/u;
 const choices = new Set(['confirm', 'reject']);
@@ -12,8 +14,8 @@ const digest = (...parts) => createHash('sha256').update(parts.join('\0')).diges
  * reject; a proposal is agreed only when both confirm. Agents can open and read a
  * room, but choices are recorded by people (see the decisions route in server.mjs).
  */
-export function mountRooms(database, readGraph) {
-  database.exec(`
+/** The version 0 room tables; openStore creates them under the migration lock. */
+export const roomsSchema = `
     CREATE TABLE IF NOT EXISTS rooms (
       id TEXT PRIMARY KEY,
       graph_a TEXT NOT NULL REFERENCES graphs(id),
@@ -27,7 +29,9 @@ export function mountRooms(database, readGraph) {
       choice TEXT NOT NULL CHECK (choice IN ('confirm', 'reject')),
       PRIMARY KEY (room_id, proposal_id, party)
     ) STRICT;
-  `);
+  `;
+
+export function mountRooms(database, readGraph) {
   const insertRoom = database.prepare('INSERT INTO rooms (id, graph_a, graph_b) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING');
   const selectRoom = database.prepare('SELECT graph_a AS a, graph_b AS b FROM rooms WHERE id = ?');
   const selectChoices = database.prepare('SELECT proposal_id AS proposalId, party, choice FROM room_choices WHERE room_id = ?');
@@ -37,6 +41,32 @@ export function mountRooms(database, readGraph) {
   `);
   let selectCursor;
   let selectRooms;
+  // Prepared on first use: the party column comes from a migration that runs after mounting.
+  let selectSameSession;
+  let selectOtherSession;
+
+  /**
+   * Card G11: the newest graph of the same party, when it is not this one, and what
+   * changed. Party names are self-asserted, so a graph from another transcript under the
+   * same name is marked sameSession: false; only the room's person can tell if it is theirs.
+   */
+  // The same session and other sessions are looked up apart, so a graph from another
+  // transcript cannot hide the room's own party's newer graph (G11 review round 2).
+  function newerGraphs(graph) {
+    selectSameSession ??= database.prepare('SELECT id FROM graphs WHERE party = ? AND session_id = ? ORDER BY rowid DESC LIMIT 1');
+    selectOtherSession ??= database.prepare(`SELECT id FROM graphs WHERE party = ? AND session_id <> ?
+      AND rowid > (SELECT rowid FROM graphs WHERE id = ?) ORDER BY rowid DESC LIMIT 1`);
+    const { party, sessionId } = graph.packet;
+    const candidates = [selectSameSession.get(party, sessionId)?.id, selectOtherSession.get(party, sessionId, graph.id)?.id];
+    return candidates.flatMap(newest => {
+      if (!newest || newest === graph.id) return [];
+      const newer = readGraph(newest);
+      if (newer?.packet.version !== 2) return [];
+      // Both snapshots are loaded here, so the diff reads nothing again.
+      const { any, ...counts } = diffCounts(diffGraphs(graph, newer));
+      return [{ party, graphId: newest, fromGraphId: graph.id, sameSession: newer.packet.sessionId === sessionId, changed: any, counts }];
+    });
+  }
 
   function endpoint(graph, nodeId) {
     const node = graph.packet.nodes.find(candidate => candidate.id === nodeId);
@@ -83,12 +113,13 @@ export function mountRooms(database, readGraph) {
         party: graph.packet.party,
         graphId: graph.id,
         sessionId: graph.packet.sessionId,
-        nodes: graph.packet.nodes,
+        nodes: graph.packet.nodes.map(node => ({ ...node, grounding: nodeGrounding(graph, node.id) })),
         readyActionIds: graph.readyActionIds,
         currentDecisionIds: graph.currentDecisionIds,
         openQuestionIds: graph.openQuestionIds,
       })),
       proposals,
+      newerGraphs: graphs.flatMap(newerGraphs),
       agreedProposalIds: proposals.filter(proposal => proposal.state === 'agreed').map(proposal => proposal.id),
     };
   }
@@ -128,8 +159,7 @@ export function mountRooms(database, readGraph) {
 
     /**
      * Rooms, newest first, for one graph (either side) and/or one party (either party).
-     * Rows name the two parties only: no proposals or choices. Prepared on first use,
-     * because created_at comes from the schema migration that runs after mountRooms.
+     * Rows name the two parties only: no proposals or choices. Prepared on first use.
      */
     listRooms({ graphId = null, party = null, limit, after }) {
       selectCursor ??= database.prepare('SELECT rowid FROM rooms WHERE id = ?');

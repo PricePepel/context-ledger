@@ -1,6 +1,7 @@
 // The tools in the order tools/list shows them, and tools/call with its result-size backstop.
 import { maxResultCharacters, resultSize } from '../paging.mjs';
 import { RpcError, ToolError, isObject, text } from './common.mjs';
+import { graphDiff } from './diff.mjs';
 import { contextFor, graphList, graphPublish, graphRead, graphSchema } from './graphs.mjs';
 import { latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { roomList, roomOpen, roomRead } from './rooms.mjs';
@@ -21,6 +22,7 @@ export const tools = new Map([
   latentTeam,
   graphList,
   roomList,
+  graphDiff,
 ]);
 
 export const toolList = [...tools].map(([name, { description, inputSchema }]) => ({ name, description, inputSchema }));

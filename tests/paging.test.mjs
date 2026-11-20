@@ -69,6 +69,8 @@ function bigGraph(id, party, sessionId) {
   return {
     id, packet: { version: 2, sessionId, party, nodes, edges, links },
     readyActionIds: nodes.slice(50).map(node => node.id), currentDecisionIds: [], openQuestionIds: [],
+    // Card G7: one mark per node, paged like the other ID lists.
+    quotedNodeIds: nodes.slice(0, 70).map(node => node.id), inferredNodeIds: nodes.slice(70).map(node => node.id),
   };
 }
 
@@ -122,7 +124,8 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
     id: hex(index), type: 'matches', from: endpoint(index < 100 ? ali : leo, index % 100), to: endpoint(index < 100 ? leo : ali, index % 100),
     choices: { ali: index % 3 ? 'confirm' : null, leo: 'confirm' }, state: index % 3 ? 'agreed' : 'proposed',
   }));
-  const party = graph => ({ party: graph.packet.party, graphId: graph.id, sessionId: graph.packet.sessionId, nodes: graph.packet.nodes,
+  const party = graph => ({ party: graph.packet.party, graphId: graph.id, sessionId: graph.packet.sessionId,
+    nodes: graph.packet.nodes.map((node, index) => ({ ...node, grounding: index < 70 ? 'quoted' : 'inferred' })),
     readyActionIds: graph.readyActionIds, currentDecisionIds: [], openQuestionIds: [] });
   const room = { id: 'e'.repeat(64), parties: [party(ali), party(leo)], proposals,
     agreedProposalIds: proposals.filter(proposal => proposal.state === 'agreed').map(proposal => proposal.id) };
@@ -136,13 +139,16 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.ok(graphPages.pages.length >= 8, `${graphPages.pages.length} graph pages`);
   assert.deepEqual(mergePages('graph', graphPages.pages), leo);
   const [firstGraph] = graphPages.pages;
-  assert.equal(firstGraph.page.totalItems, 100 + 300 + 100 + 50);
+  assert.equal(firstGraph.page.totalItems, 100 + 300 + 100 + 50 + 100);
   // Derived state first, so a paged graph_publish result carries it on its first page.
   assert.deepEqual(firstGraph.page.sections, { readyActionIds: [1, 50], currentDecisionIds: null, openQuestionIds: null,
-    'packet.nodes': [51, 150], 'packet.edges': [151, 450], 'packet.links': [451, 550] });
+    'packet.nodes': [51, 150], 'packet.edges': [151, 450], 'packet.links': [451, 550],
+    // Card G7: the marks come last, so adding them to an older graph renumbers nothing.
+    quotedNodeIds: [551, 620], inferredNodeIds: [621, 650] });
+  assert.ok(graphPages.pages.slice(0, -2).every(page => page.graph.quotedNodeIds === undefined), 'not repeated in the head');
   assert.equal(firstGraph.graph.packet.party, 'leo', 'the head repeats on every page');
   assert.equal(graphPages.pages.at(-1).graph.packet.sessionId, leo.packet.sessionId);
-  assert.match(firstGraph.more.note, new RegExp(`^Items ${firstGraph.more.fromItem} to 550 remain\\. Call graph_read again with this graphId and fromItem ${firstGraph.more.fromItem}\\.$`));
+  assert.match(firstGraph.more.note, new RegExp(`^Items ${firstGraph.more.fromItem} to 650 remain\\. Call graph_read again with this graphId and fromItem ${firstGraph.more.fromItem}\\.$`));
 
   const published = await client.call(100, 'graph_publish', { packet: { version: 2 } });
   const publishPage = JSON.parse(pageText(published));
@@ -156,10 +162,10 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.deepEqual(publishPage.graph.currentDecisionIds, []);
   assert.deepEqual(publishPage.graph.openQuestionIds, []);
 
-  const past = JSON.parse(pageText(await client.call(101, 'graph_read', { graphId: leo.id, fromItem: 551 })));
+  const past = JSON.parse(pageText(await client.call(101, 'graph_read', { graphId: leo.id, fromItem: 651 })));
   assert.equal(past.more, undefined);
-  assert.equal(past.page.note, 'No items at or after 551; there are 550.');
-  assert.equal(past.page.toItem, 550);
+  assert.equal(past.page.note, 'No items at or after 651; there are 650.');
+  assert.equal(past.page.toItem, 650);
 
   const roomPages = await walkJson(client, 200, 'room_read', { roomId: room.id });
   assert.deepEqual(mergePages('room', roomPages.pages), room);
@@ -560,6 +566,8 @@ test('review round 3: required arguments are those of 19f6522, and every new pag
     session_search: [], session_read: ['sessionId'], graph_schema: [], graph_publish: ['packet'], graph_read: ['graphId'],
     context_for: ['graphId'], room_open: ['graphIds'], room_read: ['roomId'], latent_read: ['paths', 'question'],
     latent_transfer: ['sender', 'receiver', 'question'], latent_team: ['question'], graph_list: [], room_list: [],
+    // Card G11: a new tool, so its required arguments are new too.
+    graph_diff: ['graphId', 'fromGraphId'],
   });
 });
 

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { findSecrets, maskedPreview, redactSession, redactText } from '../src/secrets.mjs';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 
 // Card P4b. Every fake credential is put together here from fragments, so no committed
 // file holds a whole string in a real credential format (secret-scanning push protection
@@ -134,6 +135,10 @@ test('P4b: a 1 MiB transcript and a 1 MiB run of word characters scan in under a
   }
 });
 
+// P1e: each test ledger's database and token, by port, so the CLI and the tests can use them.
+const ledgers = new Map();
+const authFor = origin => ledgers.get(new URL(origin).port)?.auth ?? {};
+
 async function startServer(t) {
   const directory = await mkdtemp(join(tmpdir(), 'ledger-p4b-'));
   const server = spawn(process.execPath, ['src/server.mjs'], { env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(directory, 'ledger.sqlite') }, stdio: ['ignore', 'pipe', 'inherit'] });
@@ -149,13 +154,19 @@ async function startServer(t) {
   for await (const chunk of server.stdout) {
     output += chunk;
     const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/u);
-    if (match) return { origin: match[1], port: match[2] };
+    if (match) {
+      const database = join(directory, 'ledger.sqlite');
+      ledgers.set(match[2], { database, auth: bearer(await ledgerToken(database, Number(match[2]))) });
+      return { origin: match[1], port: match[2] };
+    }
   }
   throw new Error('The server did not start.');
 }
 
 function cli(args, port) {
-  const child = spawn(process.execPath, ['src/cli.mjs', ...args], { env: { ...process.env, PORT: port }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const database = ledgers.get(String(port))?.database;
+  const env = { ...process.env, PORT: port, ...(database ? { CONTEXT_LEDGER_DB: database } : {}) };
+  const child = spawn(process.execPath, ['src/cli.mjs', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
@@ -172,7 +183,7 @@ test('P4b: ledger redact reports kinds, lines and masked previews, never a value
     line('user', `And the DB_PASSWORD="synthetic-pw-9x" plus ${fake['aws-access-key-id']}.`),
   ].join('\n');
   const imported = await (await fetch(`${origin}/api/import`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+    method: 'POST', headers: { ...authFor(origin), 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source: 'vega.jsonl', transcript }),
   })).json();
   const id = imported.session.id;
@@ -285,7 +296,7 @@ test('P4b review: the redacted source name, strict escaping, and fixed errors in
   const source = `${fake['github-token']}.jsonl`;
   const transcript = JSON.stringify({ type: 'user', message: { role: 'user', content: `odd${zwj}${rlo}${bell}${separator} text and ${fake['stripe-key']}` } });
   const imported = await (await fetch(`${origin}/api/import`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+    method: 'POST', headers: { ...authFor(origin), 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source, transcript }),
   })).json();
   const id = imported.session.id;
@@ -414,7 +425,7 @@ test('P4b review 2: the full report, JSON and redacted text are exact, with tabs
   const { origin, port } = await startServer(t);
   const transcript = JSON.stringify({ type: 'user', message: { role: 'user', content: `tab\there ${fake['github-token']}` } });
   const imported = await (await fetch(`${origin}/api/import`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+    method: 'POST', headers: { ...authFor(origin), 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source: 'tabs.jsonl', transcript }),
   })).json();
   const id = imported.session.id;
@@ -476,7 +487,7 @@ test('P4b review 3: every CLI mode prints exactly the expected output and exits 
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'done' } }),
   ].join('\n');
   const imported = await (await fetch(`${origin}/api/import`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+    method: 'POST', headers: { ...authFor(origin), 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source: 'exact.jsonl', transcript }),
   })).json();
   const id = imported.session.id;
