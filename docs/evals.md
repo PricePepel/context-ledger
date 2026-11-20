@@ -4284,6 +4284,27 @@ Each was corrected or narrowed above.
 - Runtime, `python -m unittest discover -s tests -t .`: 211 tests OK in WSL with torch, and 211 OK with 66 skipped on Windows Python 3.13 without torch.
 - The documented command found that `runtime/tests/test_agent_scale.py` imported `test_latent_training` as a top-level module, the problem H1 fixed in the C14 test. It now imports `tests.test_latent_training`.
 
+## P5b — Install passes the database path (defined 2026-11-20, before the code)
+
+G8's `ledger install` passes a `PORT` other than 4317 to each agent's MCP server, but not `CONTEXT_LEDGER_DB`. Since P1e the MCP adapter finds the ledger's token in the file next to that database, so a ledger started on a custom database is unreachable from the agents: every tool call says there is no token. Synthetic data only: the G8 sandbox (fake home, stub CLIs).
+
+| Eval | Expected |
+| --- | --- |
+| Passed on | With `CONTEXT_LEDGER_DB` set, install adds `CONTEXT_LEDGER_DB=<absolute path>` to both registrations in the place each CLI parses (Claude `-e` before `--scope`, Codex `--env`), beside `PORT` when that is set too. A relative path is resolved against the folder `ledger install` runs in, since the agents start the MCP server elsewhere. |
+| Default unchanged | Unset or empty, nothing is added: the registrations are byte for byte the G8 ones. |
+| Refused | `:memory:` (the server refuses it) and a value with a line break or other control character are refused before any CLI runs, with a fixed sentence. |
+| Dry run | `--dry-run` prints the same commands with the path, escaped. |
+| End to end | The MCP adapter started with the environment the stub recorded reaches a real server on a custom database and port: `session_search` answers instead of saying there is no token. |
+
+**Results — P5b (2026-11-20, Windows):** every row passes. Code in `src/install.mjs`, tests in `tests/install.test.mjs`. Suites: graph 9/9; node 487 pass, 10 skipped; Playwright 27/27; runtime 239 OK, 66 skipped.
+
+- **Codex review, round 1** (of 91dde35): no misplaced argument, no unescaped output, no symlink or `/private` mismatch, unset and empty unchanged. Fixed, each with a test:
+  - (medium) On Windows a database path with `%` or `"` is refused when the CLI is a `.cmd` shim, but the dry run said it would register the server. The dry run now asks the same check (`refusedByCmd`) and prints the same refusal; the install stops before the instruction step, as it did.
+  - (low) Uninstall read `CONTEXT_LEDGER_DB` and stopped on a bad value although it registers nothing. It no longer reads it.
+  - (low) A server registered by an earlier install keeps its settings, so the README now says to remove it and install again after changing `PORT` or `CONTEXT_LEDGER_DB`.
+  - Accepted: (low) the tests use stub CLIs, so they cannot prove that the real Claude Code keeps both `-e` values and Codex both `--env` values. No test runs the real CLIs (the G8 incident); the stubs follow each CLI's documented options, and a person checks a real install.
+- **Codex review, round 2** (of 508acae): the three fixes hold. (low) The manual setup in the README, where the Windows refusal sends people, did not show `CONTEXT_LEDGER_DB`: both examples now do.
+
 ## P5a — Node suites on three systems (defined 2026-11-17, before the change)
 
 The product is meant to install on Windows, macOS and Linux, but CI ran the Node suites and browser evals on Linux only (the Python checks already run on Linux and Windows).

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { startMcp } from './mcp-client.mjs';
 import { agentTargets, blockLines, endMarker, findCommand, homeOf, mcpPath, runAgent, setupAgents, startMarker, withBlock, withoutBlock } from '../src/install.mjs';
 
 // Card G8. Every test uses a fake home folder and stub agent CLIs, so the real Claude
@@ -347,6 +349,125 @@ test('a PORT other than 4317 is passed to both servers in a place each CLI parse
     box.env.PORT = port;
     assert.equal(box.ledger('install').status, 1, port);
   }
+});
+
+test('P5b: CONTEXT_LEDGER_DB is passed to both servers as an absolute path, beside PORT', t => {
+  const box = sandbox(t);
+  // Relative to the folder install runs in; the agents start the adapter elsewhere.
+  const database = join(box.root, 'data dir!x', 'custom.sqlite');
+  box.env.CONTEXT_LEDGER_DB = database;
+  const dry = box.ledger('install', '--dry-run');
+  assert.equal(dry.status, 0, dry.stdout);
+  // The path holds no control character, so it is printed as it is, once per agent.
+  assert.equal(dry.stdout.split(`CONTEXT_LEDGER_DB=${database}`).length, 3, dry.stdout);
+  assert.deepEqual(box.writes(), [], 'a dry run calls no add');
+  box.env.PORT = '4400';
+  const result = box.ledger('install');
+  assert.equal(result.status, 0, result.stdout);
+  assert.deepEqual(box.writes(), [
+    ['claude', 'mcp', 'add', '-e', 'PORT=4400', '-e', `CONTEXT_LEDGER_DB=${database}`, '--scope', 'user', 'context-ledger', '--', 'node', mcpPath],
+    ['codex', 'mcp', 'add', 'context-ledger', '--env', 'PORT=4400', '--env', `CONTEXT_LEDGER_DB=${database}`, '--', 'node', mcpPath],
+  ]);
+  assert.deepEqual(box.servers('claude').user['context-ledger'], ours({ PORT: '4400', CONTEXT_LEDGER_DB: database }));
+  assert.deepEqual(box.servers('codex').global['context-ledger'], ours({ PORT: '4400', CONTEXT_LEDGER_DB: database }));
+});
+
+test('P5b: a relative CONTEXT_LEDGER_DB is resolved where install runs; empty adds nothing; bad values are refused', t => {
+  const box = sandbox(t);
+  box.env.CONTEXT_LEDGER_DB = join('data', 'relative.sqlite');
+  const run = spawnSync(process.execPath, [cli, 'install', '--agent', 'codex'], { env: box.env, encoding: 'utf8', cwd: box.root });
+  assert.equal(run.status, 0, run.stdout);
+  assert.deepEqual(box.writes().at(-1), ['codex', 'mcp', 'add', 'context-ledger', '--env', `CONTEXT_LEDGER_DB=${join(realpathSync(box.root), 'data', 'relative.sqlite')}`, '--', 'node', mcpPath]);
+
+  const empty = sandbox(t);
+  empty.env.CONTEXT_LEDGER_DB = '';
+  assert.equal(empty.ledger('install').status, 0);
+  assert.deepEqual(empty.writes(), [
+    ['claude', 'mcp', 'add', '--scope', 'user', 'context-ledger', '--', 'node', mcpPath],
+    ['codex', 'mcp', 'add', 'context-ledger', '--', 'node', mcpPath],
+  ]);
+
+  for (const value of [':memory:', `a${nl}b.sqlite`, `a${String.fromCodePoint(0x1b)}[31m.sqlite`]) {
+    const refused = sandbox(t);
+    refused.env.CONTEXT_LEDGER_DB = value;
+    const result = refused.ledger('install');
+    assert.equal(result.status, 1, value);
+    assert.match(result.stderr + result.stdout, /Invalid CONTEXT_LEDGER_DB: give the path of the database file\./u);
+    assert.ok(!(result.stderr + result.stdout).includes(String.fromCodePoint(0x1b)), 'nothing raw is printed');
+    assert.deepEqual(refused.calls(), [], 'no CLI runs');
+    assert.equal(existsSync(refused.files.claude), false);
+  }
+});
+
+test('P5b review: a database path cmd.exe cannot take is refused alike by the dry run and the install', { skip: !windows && 'Only Windows runs the CLIs through cmd.exe.' }, t => {
+  for (const name of ['100%.sqlite', 'say"hi.sqlite']) {
+    const box = sandbox(t);
+    box.env.CONTEXT_LEDGER_DB = join(box.root, name);
+    for (const args of [['install', '--dry-run'], ['install']]) {
+      const result = box.ledger(...args);
+      assert.equal(result.status, 1, `${name} ${args}: ${result.stdout}`);
+      assert.equal(result.stdout.match(/a path holds " or %, which cmd\.exe cannot be given safely/gu)?.length, 2, result.stdout);
+      assert.doesNotMatch(result.stdout, /would run|ran /u);
+    }
+    assert.deepEqual(box.writes(), [], 'no add ran');
+    assert.equal(existsSync(box.files.claude), false, 'the instruction step stops with the server step');
+  }
+});
+
+test('P5b review: uninstall does not read CONTEXT_LEDGER_DB, so a bad value cannot stop it', t => {
+  const box = sandbox(t);
+  assert.equal(box.ledger('install').status, 0);
+  box.env.CONTEXT_LEDGER_DB = ':memory:';
+  const result = box.ledger('uninstall');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(existsSync(box.files.claude), false);
+  assert.equal(existsSync(box.files.codex), false);
+});
+
+test('P5b: the adapter started as registered reaches a ledger on a custom database and port', async t => {
+  const box = sandbox(t);
+  // Its own folder, removed by the one cleanup that first stops the server and adapters
+  // (Windows cannot remove an open database).
+  const data = mkdtempSync(join(tmpdir(), 'ledger p5b '));
+  const database = join(data, 'custom', 'ledger.sqlite');
+  const server = spawn(process.execPath, [join(repo, 'src', 'server.mjs')], {
+    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: database }, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const clients = [];
+  t.after(async () => {
+    await Promise.all(clients.map(client => client.close()));
+    if (server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await once(server, 'exit');
+    }
+    rmSync(data, { recursive: true, force: true });
+  });
+  let output = '';
+  const port = await new Promise((resolve, reject) => {
+    server.stdout.setEncoding('utf8');
+    server.stdout.on('data', chunk => {
+      output += chunk;
+      const match = /listening at http:\/\/127\.0\.0\.1:(\d+)/u.exec(output);
+      if (match) resolve(match[1]);
+    });
+    server.once('exit', code => reject(new Error(`The server exited (${code}) before listening: ${output}`)));
+  });
+  box.env.PORT = port;
+  box.env.CONTEXT_LEDGER_DB = database;
+  assert.equal(box.ledger('install', '--agent', 'codex').status, 0);
+  const registered = box.servers('codex').global['context-ledger'];
+  assert.deepEqual(registered.env, { PORT: port, CONTEXT_LEDGER_DB: database });
+  // The registered environment alone (no repository default) finds the token.
+  const client = startMcp(Number(port), registered.env);
+  clients.push(client);
+  await client.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+  const result = await client.call(2, 'session_search', { query: 'vela' });
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  // Without the database path, as G8 registered it, the same call finds no token.
+  const before = startMcp(Number(port), { PORT: port });
+  clients.push(before);
+  await before.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+  assert.equal((await before.call(2, 'session_search', { query: 'vela' })).isError, true);
 });
 
 test('CODEX_HOME moves the Codex instruction file', t => {
