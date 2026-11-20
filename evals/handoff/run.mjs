@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { readTokenFile, tokenFileFor } from '../../src/token.mjs';
 import { ask, claudeArgs, codexArgs, interruptAll, toolName } from './agents.mjs';
 import { beatLines, facts, handoffQuestion, party, referenceGraph, transcript } from './fixtures.mjs';
 import { keywordGrader } from './grade-keyword.mjs';
@@ -95,7 +96,7 @@ async function startLedger(database) {
     for await (const chunk of child.stdout) {
       output += chunk;
       const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/u);
-      if (match) return { origin: match[1], port: Number(match[2]), stop };
+      if (match) return { origin: match[1], port: Number(match[2]), database, token: (await readTokenFile(tokenFileFor(database, Number(match[2]))))?.token, stop };
     }
   } finally {
     clearTimeout(timer);
@@ -103,9 +104,9 @@ async function startLedger(database) {
   throw new Error('The ledger did not start within 15 seconds.');
 }
 
-async function api(origin, path, body) {
+async function api({ origin, token }, path, body) {
   const response = await fetch(origin + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${data.error ?? ''}`);
@@ -122,7 +123,7 @@ function plan(options) {
   const work = '<temporary folder>';
   const args = options.agent === 'claude'
     ? claudeArgs({ model: options.model, config: join(work, 'claude-mcp.json'), tools: benchmarkTools })
-    : codexArgs({ model: options.model, work, last: join(work, 'codex-last.txt'), mcpPath, port: '<ledger port>', tools: benchmarkTools });
+    : codexArgs({ model: options.model, work, last: join(work, 'codex-last.txt'), mcpPath, port: '<ledger port>', database: '<ledger database>', tools: benchmarkTools });
   return {
     agent: options.agent,
     model: options.model,
@@ -159,15 +160,15 @@ export async function main(argv = process.argv.slice(2)) {
   let ledger;
   try {
     ledger = await startLedger(join(work, 'ledger.sqlite'));
-    const { session } = await api(ledger.origin, '/api/import', { provider: party.provider, source: party.source, transcript });
-    const { graph } = await api(ledger.origin, '/api/graphs', referenceGraph(session.id));
+    const { session } = await api(ledger, '/api/import', { provider: party.provider, source: party.source, transcript });
+    const { graph } = await api(ledger, '/api/graphs', referenceGraph(session.id));
     const ids = { session: session.id, graph: graph.id };
     console.log(`ledger ${ledger.origin}, ${options.agent} ${options.model}, ${options.runs} run(s) per arm, timeout ${options.timeoutS} s`);
     for (let index = 0; index < options.runs; index += 1) {
       for (const [position, arm] of armOrder(index).entries()) {
         const result = await ask({
           agent: options.agent, cli: cliFor(options.agent, options.fakeCli), model: options.model,
-          prompt: handoffPrompt(arm, ids), tools: benchmarkTools, work, mcpPath, port: ledger.port, timeoutMs: options.timeoutS * 1000,
+          prompt: handoffPrompt(arm, ids), tools: benchmarkTools, work, mcpPath, port: ledger.port, database: ledger.database, timeoutMs: options.timeoutS * 1000,
         });
         const allowed = toolName(armTool[arm]);
         const other = toolName(armTool[arm === 'transcript' ? 'graph' : 'transcript']);

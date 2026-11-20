@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
+import { tokenFileFor } from '../src/token.mjs';
+import { restrictToOwner } from './ledger-auth.mjs';
 
 const execute = promisify(execFile);
 const graphId = 'a'.repeat(64);
@@ -43,8 +45,12 @@ test('graph CLI publishes raw JSON to its local origin and reads the response as
   });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
+  // P1e: a publish goes only where the token file says the ledger is.
+  const tokenFile = tokenFileFor(join(directory, 'ledger.sqlite'), port);
+  await writeFile(tokenFile, JSON.stringify({ port, token: 'G'.repeat(43) }) + '\n', { mode: 0o600 });
+  restrictToOwner(tokenFile);
   const cli = (...args) => execute(process.execPath, ['src/cli.mjs', 'graph', ...args], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_DB: join(directory, 'ledger.sqlite') },
   });
 
   const published = await cli('publish', packetPath);
@@ -105,7 +111,7 @@ test('graph and search JSON escape terminal controls and bidi characters lossles
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const env = { ...process.env, PORT: String(server.address().port) };
+  const env = { ...process.env, PORT: String(server.address().port), CONTEXT_LEDGER_DB: join(tmpdir(), 'context-ledger-no-ledger', 'none.sqlite') };
 
   const outputs = [
     [await execute(process.execPath, ['src/cli.mjs', 'graph', 'read', graphId], { env }), graph],

@@ -457,3 +457,44 @@ test('merged contract: secret paths are refused up front, templates and unassign
   await assert.rejects(read({ paths: [`src/a${String.fromCodePoint(0x1c89)}.js`] }, runtime), /File not found/);
   assert.equal(runtime.requests.length, 0);
 });
+
+test('G7 review: numbers and code names stand alone, and labels in other scripts need a match', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  assert.equal(isGrounded('Use port 4317', 'Port 4317.5 is reserved'), false);
+  assert.equal(isGrounded('Use port 4317', 'Port 4317. Done.'), true);
+  assert.equal(isGrounded('RETRY_LIMIT is 0.5', 'waits 0.5 s'), false, 'RETRY_LIMIT is not on the line');
+  assert.equal(isGrounded('Use retryCount', 'Reset retryCounter'), false);
+  assert.equal(isGrounded('Use retryCount', 'this.retryCount = 3'), true);
+  assert.equal(isGrounded('端口固定', 'The ledger stays on port 4317'), false);
+  assert.equal(isGrounded('端口固定', '端口保持不变'), true);
+  assert.equal(isGrounded('It is used', 'anything'), true, 'nothing to compare still keeps a latent finding');
+});
+
+test('G7 review round 2: other-script pairs need a non-ASCII letter, and boundaries are Unicode-aware', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const arabicFive = String.fromCodePoint(0x0665);
+  assert.equal(isGrounded('café', 'The cache is disabled'), false);
+  assert.equal(isGrounded('café', 'The café opens at nine'), true);
+  assert.equal(isGrounded('Use retryCount', 'reset retryCounté'), false);
+  assert.equal(isGrounded('Use port 4317', `port 4317${arabicFive}`), false);
+  assert.equal(isGrounded('Use port 4317', 'port 4317.'), true);
+  assert.equal(isGrounded('Use retryCount', 'this.retryCount = 3'), true);
+});
+
+test('G7 review round 3: label tokens are whole in any script, and combining marks count', async () => {
+  const { isGrounded } = await import('../src/latent.mjs');
+  const cp = (...points) => String.fromCodePoint(...points);
+  const arabicFive = cp(0x0665);
+  const acute = cp(0x0301);
+  const ki = cp(0x0915, 0x0940);
+  const ka = cp(0x0915, 0x093e);
+  assert.equal(isGrounded(`Use port 4317${arabicFive}`, 'port 4317'), false);
+  assert.equal(isGrounded(`Use port 4317${arabicFive}`, `port 4317${arabicFive}`), true);
+  assert.equal(isGrounded('Use retryCounté', 'reset retryCount'), false);
+  assert.equal(isGrounded('Use retryCount', `reset retryCount${acute}`), false);
+  assert.equal(isGrounded(ki, ka), false);
+  assert.equal(isGrounded(ki, `${ki} ${ka}`), true);
+  // ASCII behaves as before.
+  assert.equal(isGrounded('RETRY_LIMIT is 3', 'export const RETRY_LIMIT = 3;'), true);
+  assert.equal(isGrounded('Uses $retry_limit', 'let $retry_limit = 1'), true);
+});

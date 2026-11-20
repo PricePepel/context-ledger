@@ -7,7 +7,6 @@ on the clock's resolution.
 """
 
 import io
-import itertools
 import socket
 import time
 import unittest
@@ -33,7 +32,7 @@ def run_with(client, seconds_left):
 
 class CappedTimeoutTest(unittest.TestCase):
     def call(self, run, opener):
-        with mock.patch("latent_pool.vllm_client.urllib.request.urlopen", opener):
+        with mock.patch("latent_pool.vllm_client._open", opener):
             with self.assertRaises(ApiError) as caught:
                 run.call("reader", "user", 16)
         return caught.exception
@@ -79,13 +78,17 @@ class CappedTimeoutTest(unittest.TestCase):
         run = run_with(VllmClient("http://127.0.0.1:9", "m", timeout=30), 5)
         calls = []
 
+        now = [0.0]
+
         def slow_refusal(request, *args, **kwargs):
             calls.append(request)
+            now[0] = 6.0  # 6 s pass during the refusal
             body = io.BytesIO(b"system role not supported")
             raise urllib.error.HTTPError(request.full_url, 400, "bad", {}, body)
 
-        clock = itertools.chain([0.0], itertools.repeat(6.0))  # 6 s pass during the refusal
-        with mock.patch("latent_pool.vllm_client.time.perf_counter", lambda: next(clock)):
+        # H8: the client reads its clock at several steps, so the clock moves when the
+        # refusal arrives instead of after a fixed number of reads.
+        with mock.patch("latent_pool.vllm_client.time.perf_counter", lambda: now[0]):
             error = self.call(run, slow_refusal)
         self.assertEqual(len(calls), 1)
         self.assertGreater(run.remaining(), 0)
