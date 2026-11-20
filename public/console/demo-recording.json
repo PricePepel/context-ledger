@@ -1,0 +1,990 @@
+{
+ "about": "Synthetic demo for the CTM console: Leo works in Claude Code, Ali in Codex. Made by node demo/console-recording.mjs from demo/leo-orbit.jsonl and demo/ali-orbit.jsonl with the real store; every name and plan is made up.",
+ "durationMs": 34000,
+ "sessions": {
+  "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a": {
+   "id": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+   "provider": "claude",
+   "source": "leo-orbit.jsonl",
+   "title": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+   "messageCount": 56,
+   "project": "default",
+   "messages": [
+    {
+     "role": "user",
+     "text": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+     "line": 1,
+     "key": "h:e94d48b33f27c0e65e730f07ed95dbe8"
+    },
+    {
+     "role": "assistant",
+     "text": "Understood. The goal is the Orbit demo live by 19:00 on Saturday. I will keep a list of decisions as we go.",
+     "line": 2,
+     "key": "h:ddd54503d8c2e2e5164894effbb66a0a"
+    },
+    {
+     "role": "user",
+     "text": "Run the ledger on port 4400 for the demo.",
+     "line": 3,
+     "key": "h:1d8c6d5c110304902a5065efc8e10fab"
+    },
+    {
+     "role": "assistant",
+     "text": "Decision recorded: the ledger runs on port 4400 for the demo.",
+     "line": 4,
+     "key": "h:21419622326c3dd804bdc3b0b8ab5988"
+    },
+    {
+     "role": "user",
+     "text": "The slide title font looks heavy on the projector. Can we try something lighter?",
+     "line": 5,
+     "key": "h:abf5d754c79016579e95d4e81cc47045"
+    },
+    {
+     "role": "assistant",
+     "text": "Switched the deck to a lighter weight and bumped the line height. The title now fits on one line at 1280 pixels wide, and the speaker notes are unchanged.",
+     "line": 6,
+     "key": "h:767ca5019fb4876827b612c1e3b9770e"
+    },
+    {
+     "role": "user",
+     "text": "The room test flaked again on the second run. Look at it before we change anything else.",
+     "line": 7,
+     "key": "h:8d5786e28cdba22791ade1db54c67122"
+    },
+    {
+     "role": "assistant",
+     "text": "The flake came from a test that reused the database file between runs. Each run now gets its own temporary folder and the test passed ten times in a row.",
+     "line": 8,
+     "key": "h:347a667e0f697846b1e22210e1cbd7b8"
+    },
+    {
+     "role": "user",
+     "text": "Remind me what the savings meter actually counts.",
+     "line": 9,
+     "key": "h:abee3f05011f6f821cf5d64f4119c46c"
+    },
+    {
+     "role": "assistant",
+     "text": "It counts UTF-16 code units divided by four for both the full handoff and the graph context, and it labels the numbers as estimates because tokenizers differ by vendor.",
+     "line": 10,
+     "key": "h:6c61abf9ee2955762cb60e4401a7996f"
+    },
+    {
+     "role": "user",
+     "text": "Plan to record the demo video on Sunday morning.",
+     "line": 11,
+     "key": "h:35299a976df3020e7113a8899097a4fe"
+    },
+    {
+     "role": "assistant",
+     "text": "Added an action: record the demo video on Sunday morning.",
+     "line": 12,
+     "key": "h:701874c9877fe20e873444c81f4b6027"
+    },
+    {
+     "role": "user",
+     "text": "Is the browser view readable on a small screen?",
+     "line": 13,
+     "key": "h:d7237d70f5bc13d2799bb6923360f14e"
+    },
+    {
+     "role": "assistant",
+     "text": "At 375 pixels the room view stacks the two parties vertically and every button stays reachable. The proposal list scrolls inside its card.",
+     "line": 14,
+     "key": "h:b4b36e858738e3f490fce5380d7783fa"
+    },
+    {
+     "role": "user",
+     "text": "Lunch is at 13:00, I will be away for forty minutes.",
+     "line": 15,
+     "key": "h:5799ece6f67247ff99fd9bb72079bf5a"
+    },
+    {
+     "role": "assistant",
+     "text": "Noted. I will keep going on the README section while you are away and will not push anything.",
+     "line": 16,
+     "key": "h:cddd9490b31fd332923ee1148ccf1397"
+    },
+    {
+     "role": "user",
+     "text": "Can you tidy the README intro? It reads like a spec.",
+     "line": 17,
+     "key": "h:ff8013194db0450f488d1af06bb69e23"
+    },
+    {
+     "role": "assistant",
+     "text": "Rewrote the intro as two short paragraphs: what the ledger does and how two agents use it. The command reference moved below.",
+     "line": 18,
+     "key": "h:f837b3844c84a8fded50301962346c43"
+    },
+    {
+     "role": "user",
+     "text": "Why does the context put actions last?",
+     "line": 19,
+     "key": "h:559a224a365444136844c7726000ed3b"
+    },
+    {
+     "role": "assistant",
+     "text": "Stable sections go first so the prefix stays byte-identical across revisions and providers can cache it. Statuses change often, so actions, blockers and questions come last.",
+     "line": 20,
+     "key": "h:9764d37cc31b911556d07927ed206a92"
+    },
+    {
+     "role": "user",
+     "text": "I can pair with Ali on the MCP adapter, that is my offer to him.",
+     "line": 21,
+     "key": "h:ab93bf7e16f8f1a0e945d89183fd1f78"
+    },
+    {
+     "role": "assistant",
+     "text": "Noted your offer to Ali: you will pair with him on the MCP adapter.",
+     "line": 22,
+     "key": "h:997b74d0a8c3671aadbd894d1601ae49"
+    },
+    {
+     "role": "user",
+     "text": "The CI run on Linux took eleven minutes. Is that normal?",
+     "line": 23,
+     "key": "h:aad9f97a72305c3b2286a9b728cdbcb5"
+    },
+    {
+     "role": "assistant",
+     "text": "Most of it is the Playwright browser download. Caching the browser folder would save around six minutes, which is worth doing after the demo.",
+     "line": 24,
+     "key": "h:a58b7a64985872009132dc2e8a20cf28"
+    },
+    {
+     "role": "user",
+     "text": "Check the escaping of labels with odd Unicode.",
+     "line": 25,
+     "key": "h:ce77a2b35ec0052c410f4cd6672f1b39"
+    },
+    {
+     "role": "assistant",
+     "text": "Labels with line separators, bidi controls or control characters are escaped onto one line. I added a test with a right-to-left override and it renders as an escape.",
+     "line": 26,
+     "key": "h:d2c5b3b7366fe844f6ed481ac2472809"
+    },
+    {
+     "role": "user",
+     "text": "Port 4400 clashes with Ali's Grafana. Change of plan: the ledger stays on port 4317.",
+     "line": 27,
+     "key": "h:61c9cb1d0cc7d990dc9562e566cf0968"
+    },
+    {
+     "role": "assistant",
+     "text": "Decision updated: the ledger stays on port 4317. This supersedes the earlier choice of port 4400.",
+     "line": 28,
+     "key": "h:819d19acf82775bb654d401be4ba48cb"
+    },
+    {
+     "role": "user",
+     "text": "What happens if both of us publish the same packet twice?",
+     "line": 29,
+     "key": "h:0bfb7f1d505e627afc97602e161691cf"
+    },
+    {
+     "role": "assistant",
+     "text": "An exact repeat returns the same graph ID, so nothing is duplicated. A changed packet gets a new ID and needs a new room.",
+     "line": 30,
+     "key": "h:8534ea5b6f9aeb5420fe120ebb1d4f2f"
+    },
+    {
+     "role": "user",
+     "text": "The colour of the reject button is too close to the confirm button.",
+     "line": 31,
+     "key": "h:1c8eda87135ec6a81b094bc767ce2726"
+    },
+    {
+     "role": "assistant",
+     "text": "Reject now uses the outline style and confirm the filled style. Both pass the contrast check in light and dark mode.",
+     "line": 32,
+     "key": "h:a44357f20a2e92bea693eaef96771054"
+    },
+    {
+     "role": "user",
+     "text": "Do we need to mention the latent pool in the demo?",
+     "line": 33,
+     "key": "h:20e6def8b72709c3c59bc50485049e34"
+    },
+    {
+     "role": "assistant",
+     "text": "Only as a closing slide. The two-agent room is the main story and the latent pool needs the GPU box, which may not be on stage.",
+     "line": 34,
+     "key": "h:0f234566ba4bf6b622aca896cabfdb20"
+    },
+    {
+     "role": "user",
+     "text": "Stage Wi-Fi was flaky at the last event. Everything must run on the local laptop, not over stage Wi-Fi.",
+     "line": 35,
+     "key": "h:187551e142fccbe0bc1e7f3ab57ae732"
+    },
+    {
+     "role": "assistant",
+     "text": "Constraint recorded: everything runs on the local laptop and nothing depends on stage Wi-Fi.",
+     "line": 36,
+     "key": "h:142ed4f321588ea540c96d91c0b3c517"
+    },
+    {
+     "role": "user",
+     "text": "The judges get five minutes per team.",
+     "line": 37,
+     "key": "h:cbb6f783dcedc284647f258929b903e0"
+    },
+    {
+     "role": "assistant",
+     "text": "Then the live part should take three minutes at most, with a recorded fallback ready if the network or a CLI misbehaves.",
+     "line": 38,
+     "key": "h:50e4c8ff7e5d03811db838ad21bd2057"
+    },
+    {
+     "role": "user",
+     "text": "Can the room survive a page reload?",
+     "line": 39,
+     "key": "h:ccf7a522fa585aff144658c4a13e04b7"
+    },
+    {
+     "role": "assistant",
+     "text": "Yes. The address bar keeps the room ID after the hash sign, so a reload reopens the same room with the same choices.",
+     "line": 40,
+     "key": "h:e3c174174af72a8eee0c047a9a0b0b33"
+    },
+    {
+     "role": "user",
+     "text": "Ali said he cannot work on Sunday. Move the recording to Saturday at 17:00.",
+     "line": 41,
+     "key": "h:0a2d4aa392c15b90dea5ef787c1f8c75"
+    },
+    {
+     "role": "assistant",
+     "text": "Moved the action: record the demo video on Saturday at 17:00, two hours before the deadline. The Sunday plan is dropped.",
+     "line": 42,
+     "key": "h:a055f2b0c533c5d2000872a21235632d"
+    },
+    {
+     "role": "user",
+     "text": "Write down the risks for the demo.",
+     "line": 43,
+     "key": "h:9c33da55bc61627406833130dec0d9c7"
+    },
+    {
+     "role": "assistant",
+     "text": "Main risks: a CLI asking for login on stage, the tunnel dropping between laptops, and a model taking longer than expected. Each has a fallback in the run sheet.",
+     "line": 44,
+     "key": "h:872dc223d1be9d97c13f77c4c5d82e5e"
+    },
+    {
+     "role": "user",
+     "text": "How long does a publish take?",
+     "line": 45,
+     "key": "h:6313455c044b2f7427d7b1a4b0c9dad3"
+    },
+    {
+     "role": "assistant",
+     "text": "Under twenty milliseconds on this laptop for a graph with a dozen nodes. Validation and hashing dominate, and the database write is small.",
+     "line": 46,
+     "key": "h:f727f969c8852b281e97c21691dadda1"
+    },
+    {
+     "role": "user",
+     "text": "The slide title font looks heavy on the projector. Can we try something lighter?",
+     "line": 47,
+     "key": "h:513c35c29c65775714520e07f4b6f987"
+    },
+    {
+     "role": "assistant",
+     "text": "Switched the deck to a lighter weight and bumped the line height. The title now fits on one line at 1280 pixels wide, and the speaker notes are unchanged.",
+     "line": 48,
+     "key": "h:5a1351f2f09ead0b6233203d726e8fd6"
+    },
+    {
+     "role": "user",
+     "text": "Is the browser view readable on a small screen?",
+     "line": 49,
+     "key": "h:d22829d8a87139c9606996c920a19f5b"
+    },
+    {
+     "role": "assistant",
+     "text": "At 375 pixels the room view stacks the two parties vertically and every button stays reachable. The proposal list scrolls inside its card.",
+     "line": 50,
+     "key": "h:8f80ff34cfa8cb9168d22457fbc30e09"
+    },
+    {
+     "role": "user",
+     "text": "One thing I still need from Ali: who owns the GPU box?",
+     "line": 51,
+     "key": "h:d167c9868d7d638fbb1db17ec0f4fc3c"
+    },
+    {
+     "role": "assistant",
+     "text": "Open question for Ali: who owns the GPU box? I will leave it open until he answers.",
+     "line": 52,
+     "key": "h:5cae0eef3088cd687499d7edddd7f385"
+    },
+    {
+     "role": "user",
+     "text": "Why does the context put actions last?",
+     "line": 53,
+     "key": "h:4c58c3d1b279ff4a3c68497816e155d2"
+    },
+    {
+     "role": "assistant",
+     "text": "Stable sections go first so the prefix stays byte-identical across revisions and providers can cache it. Statuses change often, so actions, blockers and questions come last.",
+     "line": 54,
+     "key": "h:3e7f4a4ada13efa188c8a77a4338d5cd"
+    },
+    {
+     "role": "user",
+     "text": "What happens if both of us publish the same packet twice?",
+     "line": 55,
+     "key": "h:f1ae2708e32aacee6cc2bfab4bef122a"
+    },
+    {
+     "role": "assistant",
+     "text": "An exact repeat returns the same graph ID, so nothing is duplicated. A changed packet gets a new ID and needs a new room.",
+     "line": 56,
+     "key": "h:233d6ba05980f0de7f8ecb93fe008420"
+    }
+   ]
+  },
+  "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969": {
+   "id": "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969",
+   "provider": "codex",
+   "source": "ali-orbit.jsonl",
+   "title": "I can offer two evenings of GPU time on the box for the benchmark.",
+   "messageCount": 8,
+   "project": "default",
+   "messages": [
+    {
+     "role": "user",
+     "text": "I can offer two evenings of GPU time on the box for the benchmark.",
+     "line": 1,
+     "key": "h:e1894a3549d4c3543c71be5eaa343a24"
+    },
+    {
+     "role": "assistant",
+     "text": "Noted: you offer two evenings of GPU time for the benchmark.",
+     "line": 2,
+     "key": "h:13224bb820281a4555aab93ab40e0af8"
+    },
+    {
+     "role": "user",
+     "text": "I cannot work on Sunday at all.",
+     "line": 3,
+     "key": "h:adfea1ab4934440990d67bc29d2a4f6b"
+    },
+    {
+     "role": "assistant",
+     "text": "Constraint noted: no work on Sunday.",
+     "line": 4,
+     "key": "h:b0c10ebaca4ba154e67be13f1d6f10c1"
+    },
+    {
+     "role": "user",
+     "text": "Which port does Leo's ledger use? I need it for the Codex config.",
+     "line": 5,
+     "key": "h:cdf0f4eef74a5a0d09ae85745f055e75"
+    },
+    {
+     "role": "assistant",
+     "text": "That is an open question for Leo: which port does the ledger use?",
+     "line": 6,
+     "key": "h:3075fb6ab08abf5f671d7afbcd4f0614"
+    },
+    {
+     "role": "user",
+     "text": "I will benchmark the Orbit handoff once the MCP adapter works.",
+     "line": 7,
+     "key": "h:de74342056348b54e1505e39537f07e1"
+    },
+    {
+     "role": "assistant",
+     "text": "Pending action: benchmark the Orbit handoff after the MCP adapter works.",
+     "line": 8,
+     "key": "h:e6d946e37378c655b5caa318ac7f115f"
+    }
+   ]
+  }
+ },
+ "events": [
+  {
+   "atMs": 2000,
+   "summary": {
+    "id": "baea43c77cf4f01de6ddd2e36fecc3e7713960e56f287f5e84c08d535a1451a2",
+    "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+    "sessionTitle": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+    "party": "leo",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 2,
+    "edges": 0,
+    "links": 0
+   },
+   "graph": {
+    "id": "baea43c77cf4f01de6ddd2e36fecc3e7713960e56f287f5e84c08d535a1451a2",
+    "packet": {
+     "edges": [],
+     "nodes": [
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "orbit-live",
+       "kind": "goal",
+       "label": "Orbit demo live by 19:00 on Saturday"
+      },
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "port-4400",
+       "kind": "decision",
+       "label": "The ledger runs on port 4400"
+      }
+     ],
+     "party": "leo",
+     "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+     "version": 2
+    },
+    "readyActionIds": [],
+    "currentDecisionIds": [
+     "port-4400"
+    ],
+    "openQuestionIds": [],
+    "quotedNodeIds": [
+     "orbit-live",
+     "port-4400"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 7256,
+    "handoffTokens": 1814,
+    "graphCharacters": 511,
+    "graphTokens": 128,
+    "savedTokens": 1686,
+    "savedShare": 0.929
+   }
+  },
+  {
+   "atMs": 7000,
+   "summary": {
+    "id": "d530d0e57746c996703e7d736a4dfaa06cc73f35446b196645f4eb23f6aabb5e",
+    "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+    "sessionTitle": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+    "party": "leo",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 4,
+    "edges": 1,
+    "links": 0
+   },
+   "graph": {
+    "id": "d530d0e57746c996703e7d736a4dfaa06cc73f35446b196645f4eb23f6aabb5e",
+    "packet": {
+     "edges": [
+      {
+       "from": "record-video",
+       "to": "orbit-live",
+       "type": "advances"
+      }
+     ],
+     "nodes": [
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "orbit-live",
+       "kind": "goal",
+       "label": "Orbit demo live by 19:00 on Saturday"
+      },
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "port-4400",
+       "kind": "decision",
+       "label": "The ledger runs on port 4400"
+      },
+      {
+       "evidenceLines": [
+        21,
+        22
+       ],
+       "id": "mcp-pairing",
+       "kind": "offer",
+       "label": "Pair with Ali on the MCP adapter"
+      },
+      {
+       "evidenceLines": [
+        11,
+        12
+       ],
+       "id": "record-video",
+       "kind": "action",
+       "label": "Record the demo video on Sunday morning",
+       "status": "pending"
+      }
+     ],
+     "party": "leo",
+     "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+     "version": 2
+    },
+    "readyActionIds": [
+     "record-video"
+    ],
+    "currentDecisionIds": [
+     "port-4400"
+    ],
+    "openQuestionIds": [],
+    "quotedNodeIds": [
+     "orbit-live",
+     "port-4400",
+     "mcp-pairing",
+     "record-video"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 7256,
+    "handoffTokens": 1814,
+    "graphCharacters": 719,
+    "graphTokens": 180,
+    "savedTokens": 1634,
+    "savedShare": 0.901
+   }
+  },
+  {
+   "atMs": 11000,
+   "summary": {
+    "id": "9af91607e1ca8f1b0af1f9000da6f428c117f190e99fb9bfd4c3f84b854e272a",
+    "sessionId": "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969",
+    "sessionTitle": "I can offer two evenings of GPU time on the box for the benchmark.",
+    "party": "ali",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 2,
+    "edges": 0,
+    "links": 0
+   },
+   "graph": {
+    "id": "9af91607e1ca8f1b0af1f9000da6f428c117f190e99fb9bfd4c3f84b854e272a",
+    "packet": {
+     "edges": [],
+     "nodes": [
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "no-sunday",
+       "kind": "constraint",
+       "label": "No work on Sunday"
+      },
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "gpu-time",
+       "kind": "offer",
+       "label": "Two evenings of GPU time for the benchmark"
+      }
+     ],
+     "party": "ali",
+     "sessionId": "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969",
+     "version": 2
+    },
+    "readyActionIds": [],
+    "currentDecisionIds": [],
+    "openQuestionIds": [],
+    "quotedNodeIds": [
+     "no-sunday",
+     "gpu-time"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 930,
+    "handoffTokens": 233,
+    "graphCharacters": 501,
+    "graphTokens": 126,
+    "savedTokens": 107,
+    "savedShare": 0.459
+   }
+  },
+  {
+   "atMs": 15000,
+   "summary": {
+    "id": "278c7e13b17184f580aa6aecb5a4086a98b533d41d951fdfaa752c5be6ea10a7",
+    "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+    "sessionTitle": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+    "party": "leo",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 6,
+    "edges": 3,
+    "links": 0
+   },
+   "graph": {
+    "id": "278c7e13b17184f580aa6aecb5a4086a98b533d41d951fdfaa752c5be6ea10a7",
+    "packet": {
+     "edges": [
+      {
+       "from": "record-video",
+       "to": "orbit-live",
+       "type": "advances"
+      },
+      {
+       "from": "local-only",
+       "to": "record-video",
+       "type": "constrains"
+      },
+      {
+       "from": "port-4317",
+       "to": "port-4400",
+       "type": "supersedes"
+      }
+     ],
+     "nodes": [
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "orbit-live",
+       "kind": "goal",
+       "label": "Orbit demo live by 19:00 on Saturday"
+      },
+      {
+       "evidenceLines": [
+        35,
+        36
+       ],
+       "id": "local-only",
+       "kind": "constraint",
+       "label": "Everything runs on the local laptop, not over stage Wi-Fi"
+      },
+      {
+       "evidenceLines": [
+        27,
+        28
+       ],
+       "id": "port-4317",
+       "kind": "decision",
+       "label": "The ledger stays on port 4317"
+      },
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "port-4400",
+       "kind": "decision",
+       "label": "The ledger runs on port 4400"
+      },
+      {
+       "evidenceLines": [
+        21,
+        22
+       ],
+       "id": "mcp-pairing",
+       "kind": "offer",
+       "label": "Pair with Ali on the MCP adapter"
+      },
+      {
+       "evidenceLines": [
+        11,
+        12
+       ],
+       "id": "record-video",
+       "kind": "action",
+       "label": "Record the demo video on Sunday morning",
+       "status": "pending"
+      }
+     ],
+     "party": "leo",
+     "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+     "version": 2
+    },
+    "readyActionIds": [
+     "record-video"
+    ],
+    "currentDecisionIds": [
+     "port-4317"
+    ],
+    "openQuestionIds": [],
+    "quotedNodeIds": [
+     "orbit-live",
+     "local-only",
+     "port-4317",
+     "port-4400",
+     "mcp-pairing",
+     "record-video"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 7256,
+    "handoffTokens": 1814,
+    "graphCharacters": 939,
+    "graphTokens": 235,
+    "savedTokens": 1579,
+    "savedShare": 0.87
+   }
+  },
+  {
+   "atMs": 20000,
+   "summary": {
+    "id": "e6e7b03c24660084cf3b0ff858a2011aa3043be70407a1f2b1789ee72c2c4175",
+    "sessionId": "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969",
+    "sessionTitle": "I can offer two evenings of GPU time on the box for the benchmark.",
+    "party": "ali",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 4,
+    "edges": 0,
+    "links": 2
+   },
+   "graph": {
+    "id": "e6e7b03c24660084cf3b0ff858a2011aa3043be70407a1f2b1789ee72c2c4175",
+    "packet": {
+     "edges": [],
+     "links": [
+      {
+       "from": "benchmark",
+       "graph": "278c7e13b17184f580aa6aecb5a4086a98b533d41d951fdfaa752c5be6ea10a7",
+       "to": "mcp-pairing",
+       "type": "matches"
+      },
+      {
+       "from": "gpu-time",
+       "graph": "278c7e13b17184f580aa6aecb5a4086a98b533d41d951fdfaa752c5be6ea10a7",
+       "to": "orbit-live",
+       "type": "matches"
+      }
+     ],
+     "nodes": [
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "no-sunday",
+       "kind": "constraint",
+       "label": "No work on Sunday"
+      },
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "gpu-time",
+       "kind": "offer",
+       "label": "Two evenings of GPU time for the benchmark"
+      },
+      {
+       "evidenceLines": [
+        7,
+        8
+       ],
+       "id": "benchmark",
+       "kind": "action",
+       "label": "Benchmark the Orbit handoff after the MCP adapter works",
+       "status": "pending"
+      },
+      {
+       "evidenceLines": [
+        5,
+        6
+       ],
+       "id": "which-port",
+       "kind": "question",
+       "label": "Which port does the ledger use?",
+       "status": "open",
+       "to": "leo"
+      }
+     ],
+     "party": "ali",
+     "sessionId": "2e5bf8a1c38d65bc260d6d618bac3e05876f02324c6b74e31514b623b2c36969",
+     "version": 2
+    },
+    "readyActionIds": [
+     "benchmark"
+    ],
+    "currentDecisionIds": [],
+    "openQuestionIds": [
+     "which-port"
+    ],
+    "quotedNodeIds": [
+     "no-sunday",
+     "gpu-time",
+     "benchmark",
+     "which-port"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 930,
+    "handoffTokens": 233,
+    "graphCharacters": 855,
+    "graphTokens": 214,
+    "savedTokens": 19,
+    "savedShare": 0.082
+   }
+  },
+  {
+   "atMs": 26000,
+   "summary": {
+    "id": "157d5a336ed492abcc1e355b7e6807e23e7a1103ee9299e538391b2f597a4b40",
+    "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+    "sessionTitle": "We are demoing Orbit at the hackathon. The goal: the Orbit demo is live by 19:00 on Saturday.",
+    "party": "leo",
+    "version": 2,
+    "createdAt": null,
+    "nodes": 7,
+    "edges": 3,
+    "links": 1
+   },
+   "graph": {
+    "id": "157d5a336ed492abcc1e355b7e6807e23e7a1103ee9299e538391b2f597a4b40",
+    "packet": {
+     "edges": [
+      {
+       "from": "record-video",
+       "to": "orbit-live",
+       "type": "advances"
+      },
+      {
+       "from": "local-only",
+       "to": "record-video",
+       "type": "constrains"
+      },
+      {
+       "from": "port-4317",
+       "to": "port-4400",
+       "type": "supersedes"
+      }
+     ],
+     "links": [
+      {
+       "from": "port-4317",
+       "graph": "e6e7b03c24660084cf3b0ff858a2011aa3043be70407a1f2b1789ee72c2c4175",
+       "to": "which-port",
+       "type": "answers"
+      }
+     ],
+     "nodes": [
+      {
+       "evidenceLines": [
+        1,
+        2
+       ],
+       "id": "orbit-live",
+       "kind": "goal",
+       "label": "Orbit demo live by 19:00 on Saturday"
+      },
+      {
+       "evidenceLines": [
+        35,
+        36
+       ],
+       "id": "local-only",
+       "kind": "constraint",
+       "label": "Everything runs on the local laptop, not over stage Wi-Fi"
+      },
+      {
+       "evidenceLines": [
+        27,
+        28
+       ],
+       "id": "port-4317",
+       "kind": "decision",
+       "label": "The ledger stays on port 4317"
+      },
+      {
+       "evidenceLines": [
+        3,
+        4
+       ],
+       "id": "port-4400",
+       "kind": "decision",
+       "label": "The ledger runs on port 4400"
+      },
+      {
+       "evidenceLines": [
+        21,
+        22
+       ],
+       "id": "mcp-pairing",
+       "kind": "offer",
+       "label": "Pair with Ali on the MCP adapter"
+      },
+      {
+       "evidenceLines": [
+        41,
+        42
+       ],
+       "id": "record-video",
+       "kind": "action",
+       "label": "Record the demo video on Saturday at 17:00",
+       "status": "pending"
+      },
+      {
+       "evidenceLines": [
+        51,
+        52
+       ],
+       "id": "gpu-owner",
+       "kind": "question",
+       "label": "Who owns the GPU box?",
+       "status": "open",
+       "to": "ali"
+      }
+     ],
+     "party": "leo",
+     "sessionId": "81c09658b44b9afe2523ce0b5ad6efc036de5a4d40db9802315754ca80fe691a",
+     "version": 2
+    },
+    "readyActionIds": [
+     "record-video"
+    ],
+    "currentDecisionIds": [
+     "port-4317"
+    ],
+    "openQuestionIds": [
+     "gpu-owner"
+    ],
+    "quotedNodeIds": [
+     "orbit-live",
+     "local-only",
+     "port-4317",
+     "port-4400",
+     "mcp-pairing",
+     "record-video",
+     "gpu-owner"
+    ],
+    "inferredNodeIds": []
+   },
+   "meter": {
+    "method": "estimate: ceil(UTF-16 code units / 4)",
+    "handoffCharacters": 7256,
+    "handoffTokens": 1814,
+    "graphCharacters": 1148,
+    "graphTokens": 287,
+    "savedTokens": 1527,
+    "savedShare": 0.842
+   }
+  }
+ ]
+}

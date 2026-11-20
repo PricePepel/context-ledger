@@ -260,6 +260,30 @@ Next steps:
 1. Merge with a real code graph from `graphify extract` and check that `graphify query` and `graphify explain` find the decisions. This card merged with a small synthetic code graph.
 2. Decisions that name files or functions could link to the matching code nodes. That needs Graphify's code node IDs and would be a new card.
 
+## Current checkpoint — U1 Console v0, light (2026-11-17)
+
+Branch `ruslan/console-v0`, from `main` 3a17536. Card U1. Read the U1 eval and its results in [the eval log](evals.md), and [the feature map](feature-map.md).
+
+- **What it is:** `npm start`, then `/console/`. One read-only page: an isometric SVG office (one room for Claude Code, one for Codex, one character per party that published today, shown working, waiting or idle), the ledger graph (one column per party, pop-ins, flash lines from the room to each new or changed node, dashed lines for links to another party's nodes, superseded decisions struck through), a one-click evidence panel (cited turns highlighted, hidden characters escaped as in `src/text.mjs`), an activity list and three numbers (hand-offs today, tokens saved as an estimate, superseded decisions).
+- **Data:** only GET routes that already existed. `public/console/source.mjs` polls `GET /api/graphs` every 2 s; graphs are snapshots, so `public/console/model.mjs` diffs each party's newest graph against its previous one to find new and changed nodes. The ledger records no reads, so a "read" line is drawn only from links in a published graph.
+- **Demo:** `/console/?demo` (`&speed=2`, `&autoplay=0`) replays `public/console/demo-recording.json`. `node demo/console-recording.mjs` rebuilds it by running the real store on `demo/leo-orbit.jsonl` and `demo/ali-orbit.jsonl`; a node test fails if the committed file differs. Rebuild it whenever the store, graph validation, the meter or those transcripts change.
+- **Server:** `src/server.mjs` gains only a fixed list of static files under `/console/`. A new console file must be added to that list.
+- **Weight:** 84.5 KB in total with the recording, first contentful paint 56 to 84 ms (Playwright, this laptop). Screenshots and `perf.json` are in `docs/console/`; rerun with `CONSOLE_SHOTS_DIR=docs/console npx playwright test tests/e2e/console.spec.mjs`.
+- **Built by:** Claude Code, with the office module (`office.mjs`, `office.css`) written by a subagent against a fixed interface. Reviewed by Codex (read-only) in three rounds; every finding is fixed or recorded as a limit in the eval log.
+
+Known limits:
+
+- G7 is not built, so every node is one neutral colour. `nodeMark` in `model.mjs` reads a `grounding` or `mark` field of `quoted` or `inferred` when G7 adds one.
+- Superseded decisions come from `supersedes` edges, not from G11's graph diff.
+- The live view starts at the start of today: a party whose newest graph is older is not drawn. More than 6 parties in one room show as "+N" in the office (each still has its graph column).
+- The office mascot is a placeholder until U2.
+
+Next steps:
+
+1. **The 60-second recording (raw material for U3) is for a person to make.** Run `npm start`, open `http://127.0.0.1:4317/console/?demo&autoplay=0` in a 1440×900 window, start a screen recorder, click **Play demo**, wait for "Demo finished" (34 s), then click "The ledger stays on port 4317" to open its proof, and stop at about 60 s.
+2. A human review of the PR. It touches no security, export or signing code, but it does add static routes to the server.
+3. When G7 lands, give the quoted and inferred marks a field name and check the colours in the console.
+
 ## Current checkpoint — H7 Windows deadline flake (2026-11-17)
 
 The runtime job on the Windows runner failed at random on PRs that do not touch `runtime/` (#29–#32). Three deadline tests got 502 "Model server timed out." instead of 504. `_Run.call` (`runtime/latent_pool/pool.py`) now decides before each model call whether the read deadline is the shorter limit. If that call then times out, the read returns 504, whatever the clock reads afterwards. The client raises `ModelTimeout` (`runtime/latent_pool/__init__.py`), which is still a 502 with the same message, so the client's own timeout and every other 502 behave as before. Regression tests are in `runtime/tests/test_deadline_clock.py`. Eval and results: H7 in `docs/evals.md`.
