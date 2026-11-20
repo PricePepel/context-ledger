@@ -492,3 +492,19 @@ Next steps:
 
 1. Someone with a Capy organization follows the guide once and records the result in the D2 eval section, including whether a device thread finds `node` on its `PATH`.
 2. If Capy threads should use the ledger from the cloud, that needs a design decision first: the ledger would then hold transcripts on Capy's machines.
+
+## Current checkpoint — P4a signed hand-off (2026-11-17)
+
+First slice of P4, after ADR-9 of the design (`origin/ruslan/p1-design`): `ledger keygen` makes an Ed25519 key beside the ledger database; `ledger handoff <id> --sign <new-folder>` writes `handoff.md`, `public-key.pem`, an RFC 8785 canonical `manifest.json` (file name, size and SHA-256) and the raw signature `manifest.sig`; `ledger verify <folder> [--fingerprint]` checks all of it and exits 0 only on a full match. Code: `src/sign.mjs` and `src/cli.mjs`; tests: `tests/sign.test.mjs`; client guide with the OpenSSL-only recipe: `docs/signed-handoff.md`. Eval and three Codex review rounds: P4a in `docs/evals.md`.
+
+Update 2026-11-18, after an independent security review (no high, three medium, seven low) and a fourth Codex round on the fixes (all in the P4a section of `docs/evals.md`):
+
+- On Windows, `keygen` stages the key inside a folder restricted to the current account and gives the key file a protected access list that grants only that account (`icacls`, run without a shell, by SID). Signing refuses a key whose list allows any other account than the user, SYSTEM and Administrators, a key file that is a link, and one replaced while it is checked. POSIX is unchanged.
+- `handoff --sign` reads the session from the ledger database in process (design ADR-2) and makes no HTTP request, so a process on `PORT` can no longer get content signed. It never creates or migrates the database: an older-schema file is refused with a sentence that says to start the server once. Plain `handoff` and `search` still use the server.
+- Not changed, for the user to decide: `verify` without `--fingerprint` still exits 0 with a stderr warning. The proposal (a required flag, or a distinct exit code with `Unverified signer` on stdout) is in the eval and the PR body.
+
+Next steps:
+
+1. **A human security review before merge** (AGENTS.md section 4). Points to decide: the fingerprint is SHA-256 of the SPKI DER bytes (not of the raw key), for an OpenSSL-only recipe; the private key is unencrypted PKCS#8, 0600 on POSIX and restricted to the account on Windows; the `verify` exit-code proposal above; the seven low findings of the security review, which are left open (among them no owner check of the key file on either system, which Codex round 4 also raised); concurrent writers and NTFS alternate data streams are out of scope (documented).
+2. P4b (Backlog): the secret scanner, the redaction diff, allowlist export from cleared excerpts (ADR-8) and the passphrase-encrypted key. Signing today does not redact anything.
+3. Version 1 bundles hold exactly one content file. A redaction report or other extra file needs manifest version 2.

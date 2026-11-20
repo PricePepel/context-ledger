@@ -27,6 +27,12 @@ export function inlineText(text) {
   return visibleText(text).replace(/[\n\t]/g, escapeCodeUnits);
 }
 
+// A strict single-line variant for file names and paths in terminal messages: every
+// control, format (ZWNJ and ZWJ included) and line or paragraph separator is escaped.
+export function terminalLabel(text) {
+  return String(text).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeCodeUnits);
+}
+
 // JSON.stringify leaves DEL, C1 controls, bidi/format characters and U+2028/9 raw.
 // Escaping them keeps the output valid, lossless JSON that cannot drive a terminal.
 export function terminalJson(value) {

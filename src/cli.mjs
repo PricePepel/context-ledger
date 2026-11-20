@@ -1,14 +1,20 @@
 import { createHash } from 'node:crypto';
-import { constants, open } from 'node:fs/promises';
+import { constants, lstat, open } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { handoffMarkdown } from './handoff.mjs';
 import { setupAgents } from './install.mjs';
-import { terminalJson, terminalLine } from './text.mjs';
+import {
+  buildBundle, generateSigningKey, ledgerDatabasePath, loadSigningKey, normalizeFingerprint, signingKeyPath,
+  verifyBundle, writeBundle,
+} from './sign.mjs';
+import { terminalJson, terminalLabel, terminalLine } from './text.mjs';
 import { clientToken } from './token.mjs';
 
 const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--project <slug>] [query]\n' +
   '       npm run ledger -- import --provider claude|codex <file.jsonl>\n' +
-  '       npm run ledger -- handoff <session-id>\n' +
+  '       npm run ledger -- handoff <session-id> [--sign <new-folder>]\n' +
+  '       npm run ledger -- keygen\n' +
+  '       npm run ledger -- verify <folder> [--fingerprint <fingerprint>]\n' +
   '       npm run ledger -- delete <session-id>\n' +
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
@@ -18,14 +24,27 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- install|uninstall [--agent claude|codex] [--dry-run]';
 const maxGraphPacketBytes = 8 * 1024 * 1024;
 
+// parseArgs errors quote the user's argument, so they are replaced by the usage text.
+function options(args, spec) {
+  try {
+    return parseArgs({ args, options: spec, allowPositionals: true, strict: true });
+  } catch {
+    throw new Error(usage);
+  }
+}
+
 function command(argv) {
   const [action, ...args] = argv;
+  if (action === 'keygen' && args.length === 0) return { action };
+  if (action === 'verify') {
+    const { values, positionals } = options(args, { fingerprint: { type: 'string' } });
+    if (positionals.length === 1) {
+      const fingerprint = values.fingerprint === undefined ? undefined : normalizeFingerprint(values.fingerprint);
+      return { action, dir: positionals[0], fingerprint };
+    }
+  }
   if (action === 'search') {
-    const { values, positionals } = parseArgs({
-      args,
-      options: { provider: { type: 'string' }, project: { type: 'string', multiple: true } },
-      allowPositionals: true,
-    });
+    const { values, positionals } = options(args, { provider: { type: 'string' }, project: { type: 'string', multiple: true } });
     if (values.provider && !['claude', 'codex'].includes(values.provider)) {
       throw new Error('Provider must be claude or codex.');
     }
@@ -54,8 +73,11 @@ function command(argv) {
     return { action, provider: values.provider, filePath: positionals[0] };
   }
   if (action === 'login' && args.length === 0) return { action, path: '/api/login', login: true };
-  if (action === 'handoff' && args.length === 1 && /^[a-f0-9]{64}$/.test(args[0])) {
-    return { action, path: '/api/sessions/' + args[0] };
+  if (action === 'handoff') {
+    const { values, positionals } = options(args, { sign: { type: 'string' } });
+    if (positionals.length === 1 && /^[a-f0-9]{64}$/.test(positionals[0]) && values.sign !== '') {
+      return { action, path: '/api/sessions/' + positionals[0], sessionId: positionals[0], signDir: values.sign };
+    }
   }
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
@@ -274,14 +296,110 @@ async function importT3(args) {
   }
 }
 
+async function verifyCommand(dir, fingerprint) {
+  const { problems, files, createdAt, session, fingerprint: signer } = await verifyBundle(dir, { fingerprint });
+  if (problems.length > 0) {
+    for (const problem of problems) console.error(problem);
+    throw new Error('Verification failed.');
+  }
+  const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
+  console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
+    '\nKey fingerprint: ' + signer);
+  if (fingerprint === undefined) {
+    console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
+      'and run verify again with --fingerprint.');
+  }
+}
+
+// Read one session straight from the ledger database, in this process (design ADR-2: one
+// core behind CLI, HTTP and MCP). Signing never asks whatever answers on PORT for the
+// content it signs.
+async function readLedgerSession(databasePath, sessionId) {
+  try {
+    await lstat(databasePath);
+  } catch (error) {
+    // Never create an empty database just to find no session in it.
+    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
+    throw new Error('Cannot open the ledger database.');
+  }
+  // Loaded only here: node:sqlite prints an experimental warning when it loads.
+  const { DatabaseSync } = await import('node:sqlite');
+  const { schemaVersion } = await import('./migrate.mjs');
+  // openStore creates missing tables and migrates an older file. Signing must not change
+  // the ledger, so read the schema version first with a connection that cannot write or
+  // create a file (a dangling symlink stays dangling), and open the store only when the
+  // file is already at the current version.
+  let version;
+  try {
+    const probe = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      version = probe.prepare('PRAGMA user_version').get().user_version;
+    } finally {
+      probe.close();
+    }
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  if (version > schemaVersion) {
+    throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+      'Use that version or another CONTEXT_LEDGER_DB.');
+  }
+  if (version < schemaVersion) {
+    throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+      'to upgrade it, then sign again.');
+  }
+  const { openStore } = await import('./store.mjs');
+  let store;
+  try {
+    store = openStore(databasePath);
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  try {
+    let session;
+    try {
+      session = store.get(sessionId);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+    if (session?.id !== sessionId) throw new Error('Session not found.');
+    return session;
+  } finally {
+    store.close();
+  }
+}
+
+async function signCommand(sessionId, signDir) {
+  // Load the key first, so a missing key fails before anything is read or written.
+  const privateKey = await loadSigningKey(signingKeyPath());
+  const session = await readLedgerSession(ledgerDatabasePath(), sessionId);
+  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(session) + '\n', privateKey });
+  await writeBundle(signDir, bundle);
+  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, login, sessionId, provider, filePath, raw } = command(argv);
+  const { action, path, packetPath, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
+  // Card P4a: keys, signing and checking work on local files; signing reads the session
+  // from the ledger database in this process, never from whatever answers on PORT.
+  if (action === 'keygen') {
+    console.log(await generateSigningKey(signingKeyPath()));
+    return;
+  }
+  if (action === 'verify') {
+    await verifyCommand(dir, fingerprint);
+    return;
+  }
+  if (action === 'handoff' && signDir !== undefined) {
+    await signCommand(sessionId, signDir);
+    return;
+  }
   const port = ledgerPort();
   const origin = `http://127.0.0.1:${port}`;
   // The token goes only to the port its file names. Without it the request still goes
