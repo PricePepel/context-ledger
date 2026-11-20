@@ -3,11 +3,12 @@ import { constants, lstat, open } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { handoffMarkdown } from './handoff.mjs';
 import { setupAgents } from './install.mjs';
+import { redactSession } from './secrets.mjs';
 import {
   buildBundle, generateSigningKey, ledgerDatabasePath, loadSigningKey, normalizeFingerprint, signingKeyPath,
   verifyBundle, writeBundle,
 } from './sign.mjs';
-import { terminalJson, terminalLabel, terminalLine } from './text.mjs';
+import { inlineText, terminalJson, terminalLabel, terminalLine } from './text.mjs';
 import { clientToken } from './token.mjs';
 
 const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--project <slug>] [query]\n' +
@@ -15,6 +16,7 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- handoff <session-id> [--sign <new-folder>]\n' +
   '       npm run ledger -- keygen\n' +
   '       npm run ledger -- verify <folder> [--fingerprint <fingerprint>]\n' +
+  '       npm run ledger -- redact <session-id> [--json | --text]\n' +
   '       npm run ledger -- delete <session-id>\n' +
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
@@ -73,6 +75,11 @@ function command(argv) {
     return { action, provider: values.provider, filePath: positionals[0] };
   }
   if (action === 'login' && args.length === 0) return { action, path: '/api/login', login: true };
+  // Card P4b: report what in a session looks like a secret, without showing any value.
+  if (action === 'redact' && args.length >= 1 && args.length <= 2 && /^[a-f0-9]{64}$/.test(args[0])) {
+    const format = args[1] === undefined ? 'report' : args[1] === '--json' ? 'json' : args[1] === '--text' ? 'text' : null;
+    if (format) return { action, format, id: args[0], path: '/api/sessions/' + args[0] };
+  }
   if (action === 'handoff') {
     const { values, positionals } = options(args, { sign: { type: 'string' } });
     if (positionals.length === 1 && /^[a-f0-9]{64}$/.test(positionals[0]) && values.sign !== '') {
@@ -378,12 +385,45 @@ async function signCommand(sessionId, signDir) {
   console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
 }
 
+// The hand-off renderer keeps ZWNJ, ZWJ and tabs; the redaction view escapes every format
+// character and tab too, so nothing in it can be hidden or misaligned.
+const strict = text => text.replace(/[\p{Cf}\t]/gu, character => Array.from({ length: character.length },
+  (_, index) => `\\u${character.charCodeAt(index).toString(16).padStart(4, '0')}`).join(''));
+
+/** A session as the server returns it, checked before anything is scanned or printed. */
+function sessionShape(data, id) {
+  const session = data?.session;
+  // Provider and role are printed as they are, so only the values the store writes pass.
+  const ok = session && typeof session === 'object' && session.id === id && typeof session.source === 'string'
+    && (session.provider === 'claude' || session.provider === 'codex') && Array.isArray(session.messages)
+    && session.messages.every(message => message && typeof message.text === 'string'
+      && ['user', 'assistant', 'agent'].includes(message.role)
+      && (message.role !== 'agent' || (typeof message.author === 'string' && typeof message.recipient === 'string'))
+      && Number.isSafeInteger(message.line) && message.line >= 1);
+  if (!ok) throw new Error('Context Ledger returned an unexpected session response.');
+  return session;
+}
+
+/** Card P4b: the redaction report, the findings as JSON, or the redacted hand-off. */
+function redactionOutput(session, format) {
+  const { session: redacted, findings } = redactSession(session);
+  if (format === 'text') return strict(handoffMarkdown(redacted));
+  const lines = new Set(findings.map(finding => finding.line ?? 'source')).size;
+  if (format === 'json') return terminalJson({ sessionId: session.id, count: findings.length, lines, findings });
+  const rows = findings.map(finding => `${finding.line === null ? 'source name' : `line ${finding.line}`}  ${finding.kind}  ${finding.length} characters  ${strict(inlineText(finding.preview))}`);
+  const total = findings.length
+    ? `${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${lines} ${lines === 1 ? 'line' : 'lines'}. Values are not shown; use --text for the redacted hand-off.`
+    : 'No known key formats found.';
+  // P4b was narrowed to key formats: say so, so a clean report is not read as "no secrets".
+  return [...rows, total, 'Only known key formats are checked (provider API keys, JWTs, private keys, AWS keys); passwords and other free-text values are not.'].join('\n');
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint } = command(argv);
+  const { action, path, packetPath, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
   // Card P4a: keys, signing and checking work on local files; signing reads the session
@@ -460,6 +500,17 @@ async function main() {
       }
     }
     throw new Error(`Context Ledger returned HTTP ${response.status}.`);
+  }
+  if (action === 'redact') {
+    let session;
+    try {
+      session = sessionShape(await response.json(), id);
+    } catch {
+      // The parser's message can quote response bytes, so it is never shown.
+      throw new Error('Context Ledger returned an unexpected session response.');
+    }
+    console.log(redactionOutput(session, format));
+    return;
   }
   // A JSON parse error quotes the body, which is the server's text: never print it.
   let data;

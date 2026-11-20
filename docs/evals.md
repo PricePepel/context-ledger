@@ -3894,3 +3894,122 @@ First slice of P4, following ADR-9 of the design (`origin/ruslan/p1-design`, `do
   - (low) The SDDL parser accepted unknown entry types for the current account and unknown flags. It now allows only the flags P, AI and AR and only six-field A and D entries. Test added.
   - (low) The tools are found through `SystemRoot` from the environment. Not changed: whoever sets the signing process's environment can already run code in it (for example through `NODE_OPTIONS`), so the environment is trusted as it is elsewhere in the CLI.
 - **Suites (Windows, this branch, 2026-11-18 after round 4):** node 227/231 (4 skipped: the three POSIX-only P4a tests and one existing skip), against 191/192 on `main`; the 39 P4a tests are 36 pass and 3 POSIX skips (the four Windows-only tests run here and skip on Linux). Graph check 9/9. Playwright 13/13 (through the shared lock). Python runtime 198 run, 50 skipped, OK. The POSIX tests (key mode, symlink and FIFO swaps, `link/..`, the dangling database symlink) run in CI on Ubuntu.
+
+## P4b — Secret scanner and redaction diff (defined 2026-11-17, before implementation)
+
+Transcripts often hold credentials: keys pasted into a prompt, tokens in tool output an agent repeated, a private key it printed. Before a hand-off or export leaves the machine, the person should see what in it looks like a secret. P4b adds the scanner and a report. It does not change `ledger handoff` or the signed export (P4a), which can use the scanner later.
+
+All fixtures are synthetic. The fake credentials are put together at test time from fragments, so no committed file holds a string in a real credential format that secret-scanning push protection would flag.
+
+### What is tested and the expected result
+
+- **Formats found:** `findSecrets(text)` finds and labels:
+  - an AWS access key ID, and an AWS secret key next to its name;
+  - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`);
+  - Anthropic (`sk-ant-`) and OpenAI (`sk-`, `sk-proj-`) keys;
+  - Slack tokens (`xox?-`);
+  - Stripe live and test secret keys;
+  - JSON Web Tokens;
+  - PEM private key blocks;
+  - bearer tokens in an `Authorization` header;
+  - a secret-looking value assigned to a name such as `password`, `api_key`, `secret` or `token`.
+
+  Each finding has its kind and its start and end in the text.
+- **Not over-eager:**
+  - Ordinary prose, hex commit hashes, UUIDs, the word "password" without a value, placeholders (`<your-key>`, `xxxx`, `${TOKEN}`, `changeme`) and short values are not flagged.
+  - Overlapping matches are reported once, by the most specific kind.
+- **Deliberate limits** (made explicit after review round 1):
+  - A JWT needs a header and a payload that both start `eyJ`. Its signature may be empty (an unsecured token).
+  - A bearer value needs at least eight characters.
+  - Under a secret-like name, a UUID, a 40-character git commit hash or a value of digits only is not flagged. Other hex values are flagged.
+  - A bearer token is found in a bare `Authorization: Bearer` header and in its JSON or quoted forms.
+- **Whole values:** a short pattern finds where a value starts, and a forward scan finds where it ends. That end is the rest of its character class; or a quoted value's closing quote (or the line break, which a backslash never escapes); or a JWT's third segment; or, for a private key, its END line. A key's span covers the BEGIN line, any PEM header lines with the blank line after them, and its base64 lines. An unfinished key ends at the first line that cannot belong to it, so it never takes in prose or a later key. No tail is ever left behind, however long the value.
+- **Overlaps:** overlapping matches merge into one span labelled with the most specific kind. Its prefix is shown only when that kind's match begins the span.
+- **Redaction:** `redactText(text)` replaces each finding with `[REDACTED <kind>]` and leaves everything else byte for byte. `redactSession(session)` does that for the source name and every message, keeps line numbers, and lists findings by line and kind; a finding in the source name has line `null` and is reported as "source name".
+- **The report never shows a secret:** `npm run ledger -- redact <session-id>` prints, for each finding:
+  - its line number and kind;
+  - its length;
+  - a masked preview that keeps at most the known prefix, such as `ghp_…`, and never any other character of the value.
+
+  It ends with the count and exits 0. With `--json` it prints the same as escaped JSON. With `--text` it prints the redacted hand-off with every format character escaped, ZWNJ and ZWJ included. All output goes through the terminal escaping in `src/text.mjs`. Errors are fixed sentences, including when the server sends something that is not a session.
+- **No surprises in the other tools:** `ledger handoff`, the browser, MCP and the store are unchanged.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` passes, with the cases above in `tests/secrets.test.mjs`, including a CLI run against a server on a temporary database.
+- No new dependency. Scanning a 1 MiB synthetic transcript takes under a second.
+
+### P4b results (2026-11-17)
+
+- `tests/secrets.test.mjs` has 38 tests. Fake credentials are assembled at run time. Running the scanner over every committed file finds no provider-format credential; it finds no provider-format credential. Its generic hits:
+  - in `tests/secrets.test.mjs`, 23 secret-looking values under names such as `password` and 6 generic `Authorization: Bearer` examples, all synthetic;
+  - in existing tests, 4 synthetic fixtures (a test bearer header in `runtime/tests/test_team_service.py`, and three test secrets assigned to a `secret` constant in `tests/list-api.test.mjs` and `tests/paging.test.mjs`);
+  - 3 lines of code, which the scanner over-redacts by design: a helper call under a `token` name in `runtime/latent_team/chat_turns.py`, and two special-token strings under `eos_token` and `pad_token` in `runtime/tests/test_latent_training.py`.
+- **Codex, round 1** (of 742b071): three high, four medium and three low findings, all fixed with tests:
+  - (high) Overlapping matches kept only one span, so part of an enclosing bearer value could stay visible. Overlaps now merge into one span, and the prefix is hidden unless the labelled match begins it.
+  - (high) Length caps could leave the tail of a long value: private keys over 16 KiB, long bearer values, quoted passwords with spaces. Values are now extended by a linear scan to their real end.
+  - (high) `--text` printed the source name unredacted. It is scanned and redacted, and reported as "source name".
+  - (medium) Anthropic keys with a letter-only tail and unsecured JWTs were missed; the bearer minimum was unstated. Fixed, and the deliberate limits are now in the eval.
+  - (medium) A `my_` prefix hid real secrets, and UUIDs and commit hashes under a name were flagged. Placeholders are now judged by shape, and those two identifiers are excluded.
+  - (medium) Overlap handling was quadratic in the number of matches. It is now one sorted sweep, and unfinished key headers reuse one search for their END line. The tests cover 50,000 matches and 30,000 unfinished headers.
+  - (medium) An unreadable server reply could put its bytes on stderr. The redact path checks the reply's shape and prints a fixed sentence.
+  - (low) `--text` kept ZWNJ and ZWJ. It now escapes every format character.
+  - (low) `constructor` was accepted as a format. The format is now checked exactly.
+  - (low) The tests now cover every GitHub, OpenAI and Stripe variant with exact spans and previews, plus full CLI output.
+- **Codex, round 2** (of 8b45c18): four high, six medium and two low findings, fixed with tests. The capped patterns are replaced by start patterns plus forward scanners:
+  - (high) A quoted value starting with a space or a bracket was never read. The opening quote is now found on its own, and the value is read from inside it to its end.
+  - (high) A JWT with a long header or payload was missed. JWTs are now walked segment by segment.
+  - (high) An unfinished encrypted key left its body after the blank line under `Proc-Type`/`DEK-Info`. That blank line now belongs to the key.
+  - (high) JSON-style `Authorization` headers were missed. Quoted and JSON forms are now found.
+  - (medium) An unfinished key could take in prose and a later key. Keys are now walked line by line and stop at the first line that cannot belong to them.
+  - (medium) Extending matches was quadratic on nested candidates. Each pattern now resumes after the whole value it found.
+  - (medium) A bearer value that began with a GitHub token showed that token's prefix. A prefix is now shown only when the labelled match covers the whole span.
+  - (medium) Values starting `env-` or `env.` were skipped. Only complete environment references are skipped now, and the digits-only rule is stated in the eval.
+  - (medium) Odd provider or role values could reach `--text`. The reply must now be for the session asked for, with provider and role values the store writes.
+  - (medium) A quoted value ending in a backslash could cross a line break. A backslash no longer escapes a line break, for both LF and CRLF.
+  - (low) `--text` kept raw tabs. Tabs are now escaped.
+  - (low) The tests now require one exact finding and preview for every variant, and compare the full JSON and redacted text.
+- **Codex, round 3** (of bb04ac8): four high and two low findings, fixed with tests:
+  - (high) A JSON `Authorization` value with an escaped slash was redacted only up to the backslash. Values that can sit in a JSON or quoted string are now read with backslash escapes, stopping at an escaped quote or a line break.
+  - (high) A rejected quoted value hid a real key nested inside it, after its own name. A rejected value is no longer skipped; a cached run end keeps nested names in one run from rescanning it. Only a complete `[REDACTED <kind>]` marker counts as a placeholder.
+  - (high) Trailing spaces or tabs on a private key's lines stopped the scan before its body. Lines are judged without trailing horizontal white space.
+  - (high) An AWS secret followed by a full stop or colon failed its length check. The AWS rule now has its own character class.
+  - (low) The scaling test only checked time. It now checks the exact span at each size and a run of 40,000 nested names.
+  - (low) The exact-finding tests now check spans, and every CLI mode is compared in full, with its exit status.
+- **Codex, round 4** (of e54f244): two high, two medium and two low findings, fixed with tests:
+  - (high) Spaces or tabs after a private key's BEGIN marker left the body visible. The scan now allows them.
+  - (high) An AWS secret written with JSON escapes (a slash as `\/` or its `\u` form) was not found. Values are now checked with their escapes decoded, and redacted at their original offsets.
+  - (medium) Escape handling could run past a value: through an escaped line break in a JSON bearer value, or an escaped comma in a bare assignment. Escapes now count only inside a string, and an escape that decodes to a character outside the value's class ends it.
+  - (medium) Trimming a key line's trailing padding used an unanchored pattern, which is slow on long runs of spaces. It now walks back from the line end. The span ends with the END marker, so padding after it is kept.
+  - (low) The nested-name tests could pass with the old skipping. A rejected outer AWS value now keeps the real one inside it, and the 40,000-name case pins its exact span.
+  - (low) The exact-output CLI test now also requires an empty stderr.
+- **Codex, round 5** (of the round 4 fixes, run by the coordinating session): two high and two low findings, fixed with tests:
+  - (high) A whole header in quotes, as in curl's `-H "Authorization: Bearer …"`, was not treated as a string, so an escaped slash stopped the value early. A quote just before the header now counts too.
+  - (high) Bare values were checked after decoding escapes, so a short password with a backslash fell under the length limit. A bare value is now checked as written; only values in a string are decoded.
+  - (low) Padding after a BEGIN marker was taken even when prose followed on the same line. It is now taken only when a line break follows.
+  - (low) The fixture audit now names the 17 secret-looking values under names in the test file, beside the generic bearer examples.
+- **Codex, round 6** (of cfbc2fd): one high and two low findings, fixed with tests:
+  - (high) The round 5 quote check applied to every rule, so a quoted field name such as `"password": …` made a bare value count as a string, leaving part or all of it visible. Only the bearer rule now reads a whole quoted header, and only when the quote opens the header rather than the field name.
+  - (low) Padding after a BEGIN marker at the end of the text was still taken. It is now taken only before an LF or CRLF line break.
+  - (low) The fixture audit now covers every committed file, as listed above. Exclusions added here for code (calls, snake_case names, special tokens) were removed again after round 7.
+- **Codex, round 7** (of 53c9156): two high and one medium finding, all regressions from round 6, fixed with tests:
+  - (high) The exclusion for values followed by `(` hid real bearer and password values, and left the tail of a token visible. It is removed.
+  - (high) Limiting the quoted-header check to bearer values dropped escaped AWS keys inside a quoted assignment. The check is general again, and precise: a value is inside a string when a quote opens the whole assignment or header, not when it only wraps the field name.
+  - (medium) The snake_case and special-token exclusions hid quoted passwords. Both are removed. Missing a secret is worse than redacting a function name, so code under a secret-like name is over-redacted by design.
+- **Not reviewed again:** the fixes after round 7. Each round found new edge cases: this is a heuristic scanner over free text, not a guarantee. The PR asks for a human security review before merge (AGENTS.md section 4.4), and the report tells people that values are not shown, not that every secret was found.
+
+### P4b narrowed to key formats (2026-11-18)
+
+Seven Codex rounds kept finding new gaps in the free-text rules, each fix opening another. On 2026-11-18 the user chose to narrow P4b to well-defined key formats.
+
+- **Kept:** provider key formats (Anthropic, OpenAI, GitHub, AWS access key IDs, Slack, Stripe), JWTs, PEM private-key blocks, and the AWS secret access key, which has a fixed 40-character shape under its own name.
+- **Removed:** the `bearer-token` rule (the value of an `Authorization: Bearer` header) and the `assigned-secret` rule (any value after a name such as `password`, `api_key` or `token`), with their helpers. A key format inside such a value is still found: `Authorization: Bearer <a GitHub token>` is redacted as `github-token`.
+- **What this means for users:** a password or a bearer value that is not in a known key format is no longer flagged. The redaction report says what it looks for, and free-text detection is card P4c.
+- **Tests:** tests that covered only the removed rules were dropped, and table rows and assertions about them were removed. The CLI test now expects two findings. A new test pins the scope: free-text values are not flagged, and key formats inside them still are. `tests/secrets.test.mjs` passes 31/31.
+- The spec bullets above that describe bearer and assigned values, and review rounds 1 to 7, describe the scanner before it was narrowed.
+- **Codex review of the narrowed scanner:** no high findings. One medium and three low, fixed:
+  - (medium) "No secrets found" could be read as a clean transcript. The report now says "No known key formats found" and always adds a line saying passwords and other free-text values are not checked.
+  - (low) Two branches served only the removed rules (the `unquoted` fallback and the bearer quote check). They are removed.
+  - (low) The test that a prefix is hidden when the labelled match covers only part of a span was lost with the bearer cases. It is restored with an AWS access key ID inside an AWS secret access key.
+  - (low) The older handoff checkpoint still listed bearer and password detection. It is marked superseded.
+  - The realistic-looking password literal in the tests is replaced with an obviously synthetic one.
