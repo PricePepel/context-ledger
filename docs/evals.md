@@ -4303,4 +4303,5 @@ G8's `ledger install` passes a `PORT` other than 4317 to each agent's MCP server
   - (low) Uninstall read `CONTEXT_LEDGER_DB` and stopped on a bad value although it registers nothing. It no longer reads it.
   - (low) A server registered by an earlier install keeps its settings, so the README now says to remove it and install again after changing `PORT` or `CONTEXT_LEDGER_DB`.
   - Accepted: (low) the tests use stub CLIs, so they cannot prove that the real Claude Code keeps both `-e` values and Codex both `--env` values. No test runs the real CLIs (the G8 incident); the stubs follow each CLI's documented options, and a person checks a real install.
+- **Codex review, round 2** (of 508acae): the three fixes hold. (low) The manual setup in the README, where the Windows refusal sends people, did not show `CONTEXT_LEDGER_DB`: both examples now do.
 

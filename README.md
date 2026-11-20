@@ -141,6 +141,8 @@ To set it up by hand instead, for Claude Code:
 claude mcp add context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs
 ```
 
+For a ledger on another port or database, add the same settings the server uses, with an absolute database path: `claude mcp add -e PORT=4400 -e CONTEXT_LEDGER_DB=/absolute/path/to/ledger.sqlite --scope user context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs`.
+
 Codex, in `~/.codex/config.toml`:
 
 ```toml
@@ -148,7 +150,7 @@ Codex, in `~/.codex/config.toml`:
 command = "node"
 args = ["/absolute/path/to/context-ledger/src/mcp.mjs"]
 # Only needed when the ledger runs on another port or database (use an absolute path).
-env = { PORT = "4317" }
+env = { PORT = "4317", CONTEXT_LEDGER_DB = "/absolute/path/to/ledger.sqlite" }
 ```
 
 T3 Code runs Claude Code and Codex with their own configuration. Whether its sessions load the servers registered for the CLIs is unverified; [docs/integrations/t3code.md](docs/integrations/t3code.md) gives the steps for Claude and manually configured Codex, and a check from a new thread.
