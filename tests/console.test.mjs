@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { buildRecording, recordingText } from '../demo/console-recording.mjs';
 import { createModel, evidenceTurns, nodeMark, partyKey, visibleText } from '../public/console/model.mjs';
 import { visibleText as serverVisibleText } from '../src/text.mjs';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 
 // Card U1: the console's demo recording, its state model and how the server serves it.
 // Synthetic data only: the recording is built from the committed Orbit demo transcripts.
@@ -147,9 +148,9 @@ test('console files stay light and never parse transcript text as HTML', async (
   assert.ok(total < 300 * 1024, `console files are ${total} bytes`);
 });
 
-function raw(port, { method = 'GET', path }) {
+function raw(port, { method = 'GET', path, headers = {} }) {
   return new Promise((resolve, reject) => {
-    const request = httpRequest({ host: '127.0.0.1', port, method, path, headers: { Host: `127.0.0.1:${port}` }, agent: false }, response => {
+    const request = httpRequest({ host: '127.0.0.1', port, method, path, headers: { Host: `127.0.0.1:${port}`, ...headers }, agent: false }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString('utf8') }));
@@ -194,7 +195,10 @@ test('the server serves exactly the console files, read-only, with the usual hea
     assert.equal((await raw(port, { method: 'POST', path })).status, 404, `POST ${path}`);
   }
   assert.equal((await raw(port, { path: '/console' })).status, 200);
+  // P1e: only the listed files are open; any other path needs the token, and then is 404.
+  const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
   for (const path of ['/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
-    assert.equal((await raw(port, { path })).status, 404, path);
+    assert.equal((await raw(port, { path })).status, 401, path);
+    assert.equal((await raw(port, { path, headers: auth })).status, 404, path);
   }
 });

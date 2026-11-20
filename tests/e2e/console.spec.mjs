@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+// P1e: the fixtures send the access token and sign the page in.
+import { expect, test } from './fixtures.mjs';
 
 // Card U1: the console. The demo replays the bundled synthetic recording; the live
 // check publishes its own synthetic graph. Screenshots and the weight and paint

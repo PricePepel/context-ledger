@@ -14,6 +14,7 @@ import { valueGrader } from '../evals/handoff/grade-values.mjs';
 import { gradeReply } from '../evals/handoff/reply.mjs';
 import { armOrder } from '../evals/handoff/run.mjs';
 import { summarize } from '../evals/handoff/spend.mjs';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
 
 // Card G10: the handoff benchmark's offline parts. All data is synthetic.
@@ -33,14 +34,14 @@ async function startServer(database) {
   for await (const chunk of child.stdout) {
     output += chunk;
     const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/u);
-    if (match) return { origin: match[1], port: Number(match[2]), stop: async () => { child.kill(); await once(child, 'exit'); } };
+    if (match) return { origin: match[1], port: Number(match[2]), database, headers: bearer(await ledgerToken(database, Number(match[2]))), stop: async () => { child.kill(); await once(child, 'exit'); } };
   }
   throw new Error('Server exited before listening: ' + output);
 }
 
-async function post(origin, path, body) {
+async function post({ origin, headers }, path, body) {
   const response = await fetch(origin + path, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...headers }, body: JSON.stringify(body),
   });
   assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
   return response.json();
@@ -100,9 +101,9 @@ test('session_read pages the long transcript, and the late facts appear only aft
     }
   });
   server = await startServer(join(directory, 'ledger.sqlite'));
-  const { session } = await post(server.origin, '/api/import', { provider: party.provider, source: party.source, transcript });
-  const { graph } = await post(server.origin, '/api/graphs', referenceGraph(session.id));
-  client = startMcp(server.port);
+  const { session } = await post(server, '/api/import', { provider: party.provider, source: party.source, transcript });
+  const { graph } = await post(server, '/api/graphs', referenceGraph(session.id));
+  client = startMcp(server.port, { CONTEXT_LEDGER_DB: server.database });
   await client.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
 
   // Follow the real tool's continuation notes to the end.
