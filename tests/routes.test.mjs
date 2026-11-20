@@ -19,7 +19,7 @@ import { bearer, ledgerToken } from './ledger-auth.mjs';
 const fixtureRoot = fileURLToPath(new URL('../evals/latent/fixture', import.meta.url));
 const securityHeaders = {
   'cache-control': 'no-store',
-  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
 };

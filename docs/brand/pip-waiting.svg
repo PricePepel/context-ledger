@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Pip, the CTM mascot, waiting for an answer">
+  <!-- Waiting: eyes up at a question bubble, the citation tag held low, the spark dimmed. -->
+  <ellipse cx="60" cy="110" rx="30" ry="4.5" fill="#18181c" opacity="0.12"/>
+  <path d="M44 34h34l16 16v38a16 16 0 0 1-16 16H42a16 16 0 0 1-16-16V52a18 18 0 0 1 18-18z" fill="#723bfa"/>
+  <path d="M78 34v12a4 4 0 0 0 4 4h12z" fill="#9e7bff"/>
+  <path d="M38 86h44M38 94h30" stroke="#9e7bff" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M58 11c1.1 6.8 3.2 8.9 9.6 10-6.4 1.1-8.5 3.2-9.6 10-1.1-6.8-3.2-8.9-9.6-10 6.4-1.1 8.5-3.2 9.6-10z" fill="#b9f500" opacity="0.7"/>
+  <ellipse cx="47" cy="61" rx="5" ry="6.5" fill="#18181c"/>
+  <ellipse cx="71" cy="61" rx="5" ry="6.5" fill="#18181c"/>
+  <circle cx="48.4" cy="57.4" r="1.8" fill="#ffffff"/>
+  <circle cx="72.4" cy="57.4" r="1.8" fill="#ffffff"/>
+  <circle cx="59" cy="72" r="2.6" fill="#18181c"/>
+  <ellipse cx="45" cy="106" rx="7" ry="3.6" fill="#5b2bd4"/>
+  <ellipse cx="75" cy="106" rx="7" ry="3.6" fill="#5b2bd4"/>
+  <path d="M30 88l-6 6" stroke="#5b2bd4" stroke-width="5" stroke-linecap="round"/>
+  <rect x="8" y="92" width="16" height="12" rx="2.5" fill="#f4f3f7" stroke="#18181c" stroke-width="1.6"/>
+  <path d="M11.5 96.5h9M11.5 100h6" stroke="#723bfa" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M92 30h20a6 6 0 0 1 6 6v12a6 6 0 0 1-6 6h-12l-6 6v-6h-2a6 6 0 0 1-6-6V36a6 6 0 0 1 6-6z" fill="#ffffff" stroke="#18181c" stroke-width="1.6"/>
+  <path d="M98.5 37.5a3.6 3.6 0 1 1 5.2 3.2c-1.2.7-1.7 1.4-1.7 2.8" fill="none" stroke="#8a4f00" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="102" cy="48.2" r="1.5" fill="#8a4f00"/>
+</svg>

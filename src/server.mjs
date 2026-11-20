@@ -17,9 +17,15 @@ const staticFiles = new Map([
   ['/console', ['console/index.html', 'text/html']],
   ['/console/', ['console/index.html', 'text/html']],
   ...['console.css', 'office.css'].map(name => [`/console/${name}`, [`console/${name}`, 'text/css']]),
-  ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
+  // Card U4: the brand tokens have one source, docs/brand/tokens.css (card U2).
+  ['/console/tokens.css', ['../docs/brand/tokens.css', 'text/css']],
+  // Card U4b: the header logo and favicon, the CTM mark from ctm-ai.uz.
+  ['/console/logo.svg', ['../docs/brand/ctm-logo.svg', 'image/svg+xml']],
+  ...['console.mjs', 'office.mjs', 'office-furniture.mjs', 'sprites.mjs', 'agent-marks.mjs', 'ctm-band.mjs', 'panels.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
+  // Card U6: the console's three OFL fonts, local so no request leaves the loopback host.
+  ...['jersey-15', 'inter-tight', 'silkscreen'].map(name => [`/console/fonts/${name}.woff2`, [`../docs/brand/fonts/${name}.woff2`, 'font/woff2']]),
 ]);
 
 class HttpError extends Error {
@@ -164,7 +170,7 @@ const routes = [
   ...[...staticFiles].map(([path, [file, contentType]]) => ({
     method: 'GET', path, handler: async ({ response }) => {
       const bytes = await readFile(new URL(`../public/${file}`, import.meta.url));
-      response.writeHead(200, { 'Content-Type': `${contentType}; charset=utf-8` });
+      response.writeHead(200, { 'Content-Type': contentType.startsWith('font/') ? contentType : `${contentType}; charset=utf-8` });
       response.end(bytes);
       return sent;
     },
@@ -303,7 +309,7 @@ function matchRoute(route, pathname) {
 
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');
 

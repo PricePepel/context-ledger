@@ -8,7 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildRecording, recordingText } from '../demo/console-recording.mjs';
-import { createModel, evidenceTurns, nodeMark, partyKey, visibleText } from '../public/console/model.mjs';
+import { createModel, evidenceTurns, nodeMark, partyKey, turnSpeaker, visibleText } from '../public/console/model.mjs';
+import { ROLES, accessoryPixels, roleOf, spriteKey, spritePixels } from '../public/console/sprites.mjs';
+import { DESKS, LOUNGE, WORK_AREA, besideDesk, loungeSpot, seatAt } from '../public/console/office-furniture.mjs';
+import { spotFor } from '../public/console/office.mjs';
 import { visibleText as serverVisibleText } from '../src/text.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -96,7 +99,7 @@ test('agents are working right after a publish, waiting on an unanswered questio
   assert.deepEqual(full.model.agents(0).map(agent => agent.provider).sort(), ['claude', 'codex']);
 });
 
-test('the graph view marks superseded decisions and answered questions, and reads the G7 mark only if present', () => {
+test('the graph view marks superseded decisions and answered questions, and reads the G7 mark from the graph\'s lists', () => {
   const { model } = play(recording.events);
   const { columns, edges } = model.graph();
   assert.deepEqual(columns.map(column => column.label), ['leo', 'ali']);
@@ -105,11 +108,120 @@ test('the graph view marks superseded decisions and answered questions, and read
   assert.equal(nodes.get('party:leo/port-4317').superseded, false);
   assert.equal(nodes.get('party:ali/which-port').answered, true);
   assert.equal(nodes.get('party:leo/gpu-owner').answered, false);
-  assert.ok([...nodes.values()].every(node => node.mark === null));
+  // The rebuilt recording carries G7 marks: every demo node cites its own words.
+  assert.ok([...nodes.values()].every(node => node.mark === 'quoted'));
   assert.ok(edges.some(edge => edge.link && edge.from === 'party:ali/benchmark' && edge.to === 'party:leo/mcp-pairing'));
-  assert.equal(nodeMark({ grounding: 'quoted' }), 'quoted');
-  assert.equal(nodeMark({ mark: 'inferred' }), 'inferred');
-  assert.equal(nodeMark({ mark: 'constructor' }), null);
+  const graph = { quotedNodeIds: ['a'], inferredNodeIds: ['b'] };
+  assert.equal(nodeMark(graph, 'a'), 'quoted');
+  assert.equal(nodeMark(graph, 'b'), 'inferred');
+  assert.equal(nodeMark(graph, 'c'), null);
+  // A graph published before G7 has no lists: unmarked, never inferred. A mark on the
+  // node itself is not the ledger's and is ignored.
+  assert.equal(nodeMark({}, 'a'), null);
+  assert.equal(nodeMark({ quotedNodeIds: null }, 'constructor'), null);
+});
+
+test('card U4: a graph published before G7 shows its nodes unmarked', () => {
+  const model = createModel();
+  const graph = { id: 'g-old', packet: { version: 2, sessionId: 's1', party: 'old', nodes: [{ id: 'n', kind: 'decision', label: 'Old', evidenceLines: [1], grounding: 'inferred' }], edges: [] } };
+  model.apply({ summary: { id: 'g-old' }, graph, provider: 'codex', at: Date.now() });
+  assert.equal(model.graph().columns[0].nodes[0].mark, null);
+});
+
+test('card U4: an I3 agent turn says who sent it to whom, with its paths escaped on one line', () => {
+  assert.equal(turnSpeaker({ role: 'agent', author: '/root/worker', recipient: '/root' }), 'Agent /root/worker to /root');
+  const odd = turnSpeaker({ role: 'agent', author: `/root${String.fromCodePoint(0x202e)}x`, recipient: '/a\n/b' });
+  assert.equal(odd, 'Agent /root\\u202ex to /a\\u000a/b');
+  assert.equal(turnSpeaker({ role: 'agent' }), 'Agent unknown to unknown');
+  assert.equal(turnSpeaker({ role: 'user' }), 'Person');
+  assert.equal(turnSpeaker({ role: 'assistant' }), 'Agent');
+});
+
+test('card U4: each source has its pixel sprite on the 16 x 20 grid, and others get the bot', () => {
+  assert.equal(spriteKey('claude'), 'claude');
+  assert.equal(spriteKey('codex'), 'codex');
+  for (const other of ['aider', 'constructor', '__proto__', undefined]) assert.equal(spriteKey(other), 'bot');
+  for (const key of ['claude', 'codex', 'bot']) {
+    const pixels = spritePixels(key);
+    assert.ok(pixels.length > 5, key);
+    for (const [x, y, width, height, fill] of pixels) {
+      assert.ok(x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 16 && y + height <= 20, `${key} ${x},${y}`);
+      assert.match(fill, /^#[0-9a-f]{6}$/iu);
+    }
+  }
+  assert.notDeepEqual(spritePixels('claude'), spritePixels('codex'));
+});
+
+const inside = ([x, y], [left, top, right, bottom], half = 16) => x - half >= left && x + half <= right && y <= bottom && y - 40 >= top;
+
+test('card U4b: a working agent sits behind its own desk, one desk per seat', () => {
+  const seats = Array.from({ length: DESKS }, (_, i) => seatAt(i));
+  assert.equal(new Set(seats.map(String)).size, DESKS);
+  assert.deepEqual(seats, [[52, 114], [140, 114], [228, 114], [52, 220], [140, 220], [228, 220]]);
+  // The desk top starts 14 units above the feet, so the desk hides the legs and the face shows.
+  for (const seat of seats) assert.ok(inside(seat, WORK_AREA), String(seat));
+  assert.deepEqual(spotFor('working', 4, 0), seatAt(4));
+});
+
+test('card U4b: a waiting agent stands beside its desk, clear of the next desk and inside the work area', () => {
+  for (let i = 0; i < DESKS; i += 1) {
+    const [x, y] = besideDesk(i);
+    const [seatX, seatY] = seatAt(i);
+    assert.equal(y, seatY + 11);
+    // Desks are 56 wide on an 88-unit pitch: a 32-wide sprite at +46 clears this desk and the next.
+    assert.ok(x - 16 >= seatX + 28 - 2 && x + 16 <= seatX + 88 - 28 + 2, `desk ${i}`);
+    assert.ok(inside([x, y], WORK_AREA), `desk ${i}`);
+  }
+  assert.deepEqual(spotFor('waiting', 2, 0), besideDesk(2));
+});
+
+test('card U4b: idle agents stand in the lounge, each on their own spot', () => {
+  const spots = Array.from({ length: DESKS }, (_, j) => loungeSpot(j));
+  assert.equal(new Set(spots.map(String)).size, DESKS);
+  for (const spot of spots) assert.ok(inside(spot, LOUNGE), String(spot));
+  assert.deepEqual(spotFor('idle', 5, 1), loungeSpot(1));
+});
+
+test('card U4b: role words pick an accessory, and an unknown label gets none', () => {
+  const cases = { 'planner': 'planner', 'code-review': 'reviewer', 'qa-tests': 'tester', 'refactor': 'builder', 'docs': 'writer', 'triage': 'scout', 'Leo': '', '': '', 'constructor': '', '__proto__': '',
+    // Whole words only (review of U4b): provider names and words that merely contain a role word.
+    'codex': '', 'claude-code': '', 'inspector': '', 'docker': '', 'prefix': '', 'device': '', 'Codex reviewer': 'reviewer' };
+  for (const [label, role] of Object.entries(cases)) assert.equal(roleOf(label), role, label);
+  assert.equal(roleOf(undefined), '');
+  for (const provider of ['claude', 'codex', 'bot']) {
+    assert.deepEqual(accessoryPixels(provider, ''), []);
+    assert.deepEqual(accessoryPixels(provider, 'constructor'), []);
+    for (const role of ROLES) {
+      const pixels = accessoryPixels(provider, role);
+      assert.ok(pixels.length > 0, `${provider} ${role}`);
+      // A hat may rise above the 16 x 20 grid; nothing reaches further than the room allows.
+      for (const [x, y, width, height, fill] of pixels) {
+        assert.ok(x >= -2 && y >= -4 && x + width <= 18 && y + height <= 20 && width > 0 && height > 0, `${provider} ${role} ${x},${y}`);
+        assert.match(fill, /^#[0-9a-f]{6}$/iu);
+      }
+    }
+  }
+});
+
+test('card U4: every brand variable the console uses is defined in docs/brand/tokens.css', async () => {
+  const tokens = await readFile(new URL('../docs/brand/tokens.css', import.meta.url), 'utf8');
+  const defined = new Set([...tokens.matchAll(/(--ctm-[\w-]+)\s*:/gu)].map(match => match[1]));
+  for (const name of ['console.css', 'office.css']) {
+    const css = await readFile(new URL(name, consoleDir), 'utf8');
+    const used = [...css.matchAll(/var\((--ctm-[\w-]+)\)/gu)].map(match => match[1]);
+    assert.ok(used.length > 10, name);
+    for (const variable of used) assert.ok(defined.has(variable), `${name} uses ${variable}, which tokens.css does not define`);
+  }
+  // Every custom property the console CSS reads is defined in the console CSS or the tokens:
+  // an undefined one silently draws nothing (the desk legs lost their stroke this way).
+  const allCss = tokens + (await Promise.all(['console.css', 'office.css'].map(name => readFile(new URL(name, consoleDir), 'utf8')))).join('');
+  const declared = new Set([...allCss.matchAll(/(--[\w-]+)\s*:/gu)].map(match => match[1]));
+  for (const [, variable] of allCss.matchAll(/var\((--[\w-]+)\)/gu)) assert.ok(declared.has(variable), `${variable} is used but never defined`);
+  // Colours come from the tokens; the only literals left are the two sprite colours of the office rooms.
+  const console = await readFile(new URL('console.css', consoleDir), 'utf8');
+  assert.deepEqual(console.match(/#[0-9a-f]{3,8}\b/giu), null);
+  const office = await readFile(new URL('office.css', consoleDir), 'utf8');
+  assert.deepEqual(office.match(/#[0-9a-f]{3,8}\b/giu), ['#d77757', '#9a4615']);
 });
 
 test('evidence shows each cited turn with the turns around it, in order', () => {
@@ -181,6 +293,26 @@ test('the server serves exactly the console files, read-only, with the usual hea
     if (port) break;
   }
 
+  // Card U4b: the CTM logo is served from docs/brand, and the page may load it.
+  const logo = await raw(port, { path: '/console/logo.svg' });
+  assert.equal(logo.status, 200);
+  assert.equal(logo.headers['content-type'], 'image/svg+xml; charset=utf-8');
+  assert.equal(logo.body, await readFile(new URL('../docs/brand/ctm-logo.svg', import.meta.url), 'utf8'));
+  assert.match(logo.headers['content-security-policy'], /img-src 'self'/u);
+  // Card U6: the three fonts come from docs/brand/fonts, and the CSP lets the page use them.
+  for (const name of ['jersey-15', 'inter-tight', 'silkscreen']) {
+    const font = await raw(port, { path: `/console/fonts/${name}.woff2` });
+    assert.equal(font.status, 200, name);
+    assert.equal(font.headers['content-type'], 'font/woff2', name);
+    assert.match(font.headers['content-security-policy'], /font-src 'self'/u);
+  }
+
+  // Card U4: the brand tokens are served from their one source, docs/brand/tokens.css.
+  const tokens = await raw(port, { path: '/console/tokens.css' });
+  assert.equal(tokens.status, 200);
+  assert.equal(tokens.headers['content-type'], 'text/css; charset=utf-8');
+  assert.equal(tokens.body, await readFile(new URL('../docs/brand/tokens.css', import.meta.url), 'utf8'));
+
   const files = await readdir(consoleDir);
   const types = { '.html': 'text/html', '.css': 'text/css', '.mjs': 'text/javascript', '.json': 'application/json' };
   for (const name of files) {
@@ -197,8 +329,50 @@ test('the server serves exactly the console files, read-only, with the usual hea
   assert.equal((await raw(port, { path: '/console' })).status, 200);
   // P1e: only the listed files are open; any other path needs the token, and then is 404.
   const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
-  for (const path of ['/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
+  for (const path of ['/console/fonts/OFL-silkscreen.txt', '/console/fonts/', '/console/pip.svg', '/console/brand.md', '/console/../docs/brand/tokens.css', '/docs/brand/tokens.css', '/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
     assert.equal((await raw(port, { path })).status, 401, path);
     assert.equal((await raw(port, { path, headers: auth })).status, 404, path);
   }
+});
+
+test('card U6: every Mark bot has its official mark and brand colour, on the grid and with room for role props', async () => {
+  const { MARKS } = await import('../public/console/agent-marks.mjs');
+  const { spriteMark } = await import('../public/console/sprites.mjs');
+  const { bandCrew, BAND_W } = await import('../public/console/ctm-band.mjs');
+  assert.deepEqual(Object.keys(MARKS), ['cursor', 'opencode', 'gemini', 'copilot', 'windsurf', 'kimi', 'deepseek', 'qwen', 'mistral', 'cline', 'warp', 'zed', 'minimax', 'ollama']);
+  for (const [key, mark] of Object.entries(MARKS)) {
+    assert.equal(spriteKey(key), key);
+    assert.match(mark.hex, /^#[0-9A-F]{6}$/u, key);
+    assert.match(mark.source, /^https:\/\//u, key);
+    assert.ok(mark.paths.length > 0 && mark.paths.every(d => /^[MLHVCSQTAZmlhvcsqtaz0-9.,\s-]+$/u.test(d)), `${key} path data`);
+    for (const [x, y, width, height, fill] of spritePixels(key)) {
+      assert.ok(x >= 0 && y >= 0 && x + width <= 16 && y + height <= 20, `${key} ${x},${y}`);
+      assert.match(fill, /^#[0-9a-f]{6}$/iu);
+    }
+    const face = spriteMark(key);
+    assert.ok(face.x >= 3 && face.y >= 1 && face.x + 24 * face.scale <= 13 && face.y + 24 * face.scale <= 11, `${key} mark stays on the screen`);
+    for (const role of ROLES) assert.ok(accessoryPixels(key, role).length > 0, `${key} ${role}`);
+  }
+  assert.equal(spriteMark('claude'), null);
+  assert.equal(spriteMark('codex'), null);
+  assert.equal(spriteMark('aider'), null);
+
+  const crew = bandCrew();
+  assert.equal(crew.length, 6 + Object.keys(MARKS).length);
+  for (const member of crew) assert.ok(member.x - 8 * member.scale >= 0 && member.x + 8 * member.scale <= BAND_W, `${member.provider} on the band`);
+  const spots = crew.map(member => Math.round(member.x));
+  assert.equal(new Set(spots).size, spots.length, 'no two crew members stand in one spot');
+});
+
+test('card U6: the console fonts are local OFL files, and the CSS asks for no other host', async () => {
+  for (const name of ['jersey-15', 'inter-tight', 'silkscreen']) {
+    const bytes = await readFile(new URL(`../docs/brand/fonts/${name}.woff2`, import.meta.url));
+    assert.equal(bytes.subarray(0, 4).toString('latin1'), 'wOF2', name);
+  }
+  for (const name of ['OFL-jersey15.txt', 'OFL-intertight.txt', 'OFL-silkscreen.txt']) {
+    assert.match(await readFile(new URL(`../docs/brand/fonts/${name}`, import.meta.url), 'utf8'), /SIL Open Font License/u, name);
+  }
+  const css = await readFile(new URL('console.css', consoleDir), 'utf8');
+  for (const url of css.matchAll(/url\("([^"]+)"\)/gu)) assert.match(url[1], /^\/console\/fonts\/[a-z0-9-]+\.woff2$/u);
+  assert.doesNotMatch(await readFile(new URL('index.html', consoleDir), 'utf8'), /https?:\/\//u);
 });

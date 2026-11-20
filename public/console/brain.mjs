@@ -36,14 +36,18 @@ export function createBrain(container, { onSelect }) {
       button = el('button', 'node');
       button.type = 'button';
       button.dataset.key = node.key;
-      button.append(el('span', 'node-kind'), el('span', 'node-label'), el('span', 'node-meta'));
+      const head = el('span', 'node-kind');
+      head.append(el('span', 'node-kind-name'), el('span', 'node-mark'));
+      button.append(head, el('span', 'node-label'), el('span', 'node-meta'));
       button.addEventListener('click', () => onSelect(node.key));
       // Drop the animation class when it ends, so a later redraw does not replay it.
       button.addEventListener('animationend', () => button.classList.remove('pop', 'pulse'));
       buttons.set(node.key, button);
     }
     const [kind, label, meta] = button.children;
-    kind.textContent = node.kind;
+    // Card G7 mark, as a word beside the kind, so it never relies on colour alone.
+    kind.children[0].textContent = node.kind;
+    kind.children[1].textContent = node.mark ? ` · ${node.mark}` : '';
     label.textContent = clip(node.label, 90);
     meta.textContent = nodeMeta(node);
     // An animation still running (pop or pulse) survives a redraw; animationend drops it.
@@ -54,7 +58,7 @@ export function createBrain(container, { onSelect }) {
     button.dataset.mark = node.mark ?? 'none';
     button.setAttribute('aria-pressed', String(node.key === selected));
     const state = nodeMeta(node);
-    button.setAttribute('aria-label', `${node.kind}: ${clip(node.label, 200)}${state ? ` (${state})` : ''}. Show evidence.`);
+    button.setAttribute('aria-label', `${node.kind}${node.mark ? `, ${node.mark}` : ''}: ${clip(node.label, 200)}${state ? ` (${state})` : ''}. Show evidence.`);
     return button;
   }
 
