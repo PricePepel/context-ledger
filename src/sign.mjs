@@ -285,30 +285,32 @@ async function currentAccountSid() {
 
 /**
  * The DACL in what icacls /save wrote for one file: exactly one record, a line with the
- * file's name (compared without case, as Windows does) and a line with its DACL. Any
+ * file's name exactly as it was asked for and a line with its DACL. Any
  * other shape (another name, extra records) gives '', which no check accepts (P5a review).
  */
 export function parseSavedAcl(text, name) {
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const lines = body.split(/\r?\n/);
   while (lines.length && lines.at(-1) === '') lines.pop();
-  if (lines.length !== 2 || lines[0].toLowerCase() !== name.toLowerCase()) return '';
+  if (lines.length !== 2 || lines[0] !== name) return '';
   return lines[1];
 }
 
 // How SDDL spells this account: its SID, or a two-letter alias such as LA for the
 // built-in Administrator, which GitHub's Windows runners use (card P5a). PowerShell
 // builds a descriptor in memory that holds only this SID as owner and prints its SDDL,
-// so nothing on disk is read. The SID goes in an environment variable. Output of any
-// other shape leaves the SID as the only spelling, so the check fails closed.
+// so nothing on disk is read. The SID goes in an environment variable. A failure (for
+// example PowerShell in Constrained Language mode) or output of any other shape leaves
+// the SID as the only spelling, so the check fails closed but still works for every
+// account that SDDL writes as its SID.
 const spellingScript = "$ErrorActionPreference = 'Stop'; " +
   "(New-Object System.Security.AccessControl.RawSecurityDescriptor ('O:' + $env:CONTEXT_LEDGER_SID)).GetSddlForm('Owner')";
 function accountSpelling(sid) {
   const tool = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(spellingScript, 'utf16le').toString('base64')];
-  return new Promise((done, fail) => {
+  return new Promise(done => {
     execFile(tool, args, { encoding: 'latin1', windowsHide: true, timeout: 30000, env: { ...process.env, CONTEXT_LEDGER_SID: sid } }, (error, stdout) => {
-      if (error) return fail(error);
+      if (error) return done(sid);
       const spelt = /^O:([A-Z]{2}|S-1-\d+(?:-\d+)+)\s*$/.exec(stdout)?.[1];
       done(spelt && (spelt === sid || /^[A-Z]{2}$/.test(spelt)) ? spelt : sid);
     });

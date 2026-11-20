@@ -1006,9 +1006,9 @@ test('P5a review: an icacls /save record is read only when it is one record for 
   const crlf = String.fromCharCode(13, 10);
   const dacl = 'D:PAI(A;;FA;;;S-1-5-21-1-2-3-1001)';
   assert.equal(parseSavedAcl(bom + 'signing-key.pem' + crlf + dacl + crlf, 'signing-key.pem'), dacl);
-  assert.equal(parseSavedAcl('Signing-Key.PEM' + crlf + dacl + crlf, 'signing-key.pem'), dacl, 'Windows names ignore case');
   for (const text of [
     'other.pem' + crlf + dacl + crlf, // another file's record
+    'Signing-Key.PEM' + crlf + dacl + crlf, // the name exactly as asked for, not case-folded
     'signing-key.pem' + crlf + dacl + crlf + 'other.pem' + crlf + 'D:PAI(A;;FA;;;WD)' + crlf, // extra records
     'signing-key.pem' + crlf, // no DACL line
     dacl + crlf, // no name line
