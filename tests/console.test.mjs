@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildRecording, recordingText } from '../demo/console-recording.mjs';
-import { createModel, evidenceTurns, nodeMark, partyKey, visibleText } from '../public/console/model.mjs';
+import { createModel, evidenceTurns, nodeMark, partyKey, turnSpeaker, visibleText } from '../public/console/model.mjs';
+import { spriteKey, spritePixels } from '../public/console/sprites.mjs';
 import { visibleText as serverVisibleText } from '../src/text.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -96,7 +97,7 @@ test('agents are working right after a publish, waiting on an unanswered questio
   assert.deepEqual(full.model.agents(0).map(agent => agent.provider).sort(), ['claude', 'codex']);
 });
 
-test('the graph view marks superseded decisions and answered questions, and reads the G7 mark only if present', () => {
+test('the graph view marks superseded decisions and answered questions, and reads the G7 mark from the graph\'s lists', () => {
   const { model } = play(recording.events);
   const { columns, edges } = model.graph();
   assert.deepEqual(columns.map(column => column.label), ['leo', 'ali']);
@@ -105,11 +106,69 @@ test('the graph view marks superseded decisions and answered questions, and read
   assert.equal(nodes.get('party:leo/port-4317').superseded, false);
   assert.equal(nodes.get('party:ali/which-port').answered, true);
   assert.equal(nodes.get('party:leo/gpu-owner').answered, false);
-  assert.ok([...nodes.values()].every(node => node.mark === null));
+  // The rebuilt recording carries G7 marks: every demo node cites its own words.
+  assert.ok([...nodes.values()].every(node => node.mark === 'quoted'));
   assert.ok(edges.some(edge => edge.link && edge.from === 'party:ali/benchmark' && edge.to === 'party:leo/mcp-pairing'));
-  assert.equal(nodeMark({ grounding: 'quoted' }), 'quoted');
-  assert.equal(nodeMark({ mark: 'inferred' }), 'inferred');
-  assert.equal(nodeMark({ mark: 'constructor' }), null);
+  const graph = { quotedNodeIds: ['a'], inferredNodeIds: ['b'] };
+  assert.equal(nodeMark(graph, 'a'), 'quoted');
+  assert.equal(nodeMark(graph, 'b'), 'inferred');
+  assert.equal(nodeMark(graph, 'c'), null);
+  // A graph published before G7 has no lists: unmarked, never inferred. A mark on the
+  // node itself is not the ledger's and is ignored.
+  assert.equal(nodeMark({}, 'a'), null);
+  assert.equal(nodeMark({ quotedNodeIds: null }, 'constructor'), null);
+});
+
+test('card U4: a graph published before G7 shows its nodes unmarked', () => {
+  const model = createModel();
+  const graph = { id: 'g-old', packet: { version: 2, sessionId: 's1', party: 'old', nodes: [{ id: 'n', kind: 'decision', label: 'Old', evidenceLines: [1], grounding: 'inferred' }], edges: [] } };
+  model.apply({ summary: { id: 'g-old' }, graph, provider: 'codex', at: Date.now() });
+  assert.equal(model.graph().columns[0].nodes[0].mark, null);
+});
+
+test('card U4: an I3 agent turn says who sent it to whom, with its paths escaped on one line', () => {
+  assert.equal(turnSpeaker({ role: 'agent', author: '/root/worker', recipient: '/root' }), 'Agent /root/worker to /root');
+  const odd = turnSpeaker({ role: 'agent', author: `/root${String.fromCodePoint(0x202e)}x`, recipient: '/a\n/b' });
+  assert.equal(odd, 'Agent /root\\u202ex to /a\\u000a/b');
+  assert.equal(turnSpeaker({ role: 'agent' }), 'Agent unknown to unknown');
+  assert.equal(turnSpeaker({ role: 'user' }), 'Person');
+  assert.equal(turnSpeaker({ role: 'assistant' }), 'Agent');
+});
+
+test('card U4: each source has its pixel sprite on the 16 x 20 grid, and others get the bot', () => {
+  assert.equal(spriteKey('claude'), 'claude');
+  assert.equal(spriteKey('codex'), 'codex');
+  for (const other of ['gemini', 'constructor', '__proto__', undefined]) assert.equal(spriteKey(other), 'bot');
+  for (const key of ['claude', 'codex', 'bot']) {
+    const pixels = spritePixels(key);
+    assert.ok(pixels.length > 5, key);
+    for (const [x, y, width, height, fill] of pixels) {
+      assert.ok(x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 16 && y + height <= 20, `${key} ${x},${y}`);
+      assert.match(fill, /^#[0-9a-f]{6}$/iu);
+    }
+  }
+  assert.notDeepEqual(spritePixels('claude'), spritePixels('codex'));
+});
+
+test('card U4: every brand variable the console uses is defined in docs/brand/tokens.css', async () => {
+  const tokens = await readFile(new URL('../docs/brand/tokens.css', import.meta.url), 'utf8');
+  const defined = new Set([...tokens.matchAll(/(--ctm-[\w-]+)\s*:/gu)].map(match => match[1]));
+  for (const name of ['console.css', 'office.css']) {
+    const css = await readFile(new URL(name, consoleDir), 'utf8');
+    const used = [...css.matchAll(/var\((--ctm-[\w-]+)\)/gu)].map(match => match[1]);
+    assert.ok(used.length > 10, name);
+    for (const variable of used) assert.ok(defined.has(variable), `${name} uses ${variable}, which tokens.css does not define`);
+  }
+  // Every custom property the console CSS reads is defined in the console CSS or the tokens:
+  // an undefined one silently draws nothing (the desk legs lost their stroke this way).
+  const allCss = tokens + (await Promise.all(['console.css', 'office.css'].map(name => readFile(new URL(name, consoleDir), 'utf8')))).join('');
+  const declared = new Set([...allCss.matchAll(/(--[\w-]+)\s*:/gu)].map(match => match[1]));
+  for (const [, variable] of allCss.matchAll(/var\((--[\w-]+)\)/gu)) assert.ok(declared.has(variable), `${variable} is used but never defined`);
+  // Colours come from the tokens; the only literals left are the two sprite colours of the office rooms.
+  const console = await readFile(new URL('console.css', consoleDir), 'utf8');
+  assert.deepEqual(console.match(/#[0-9a-f]{3,8}\b/giu), null);
+  const office = await readFile(new URL('office.css', consoleDir), 'utf8');
+  assert.deepEqual(office.match(/#[0-9a-f]{3,8}\b/giu), ['#d77757', '#9a4615']);
 });
 
 test('evidence shows each cited turn with the turns around it, in order', () => {
@@ -181,6 +240,12 @@ test('the server serves exactly the console files, read-only, with the usual hea
     if (port) break;
   }
 
+  // Card U4: the brand tokens are served from their one source, docs/brand/tokens.css.
+  const tokens = await raw(port, { path: '/console/tokens.css' });
+  assert.equal(tokens.status, 200);
+  assert.equal(tokens.headers['content-type'], 'text/css; charset=utf-8');
+  assert.equal(tokens.body, await readFile(new URL('../docs/brand/tokens.css', import.meta.url), 'utf8'));
+
   const files = await readdir(consoleDir);
   const types = { '.html': 'text/html', '.css': 'text/css', '.mjs': 'text/javascript', '.json': 'application/json' };
   for (const name of files) {
@@ -197,7 +262,7 @@ test('the server serves exactly the console files, read-only, with the usual hea
   assert.equal((await raw(port, { path: '/console' })).status, 200);
   // P1e: only the listed files are open; any other path needs the token, and then is 404.
   const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
-  for (const path of ['/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
+  for (const path of ['/console/brand.md', '/console/../docs/brand/tokens.css', '/docs/brand/tokens.css', '/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
     assert.equal((await raw(port, { path })).status, 401, path);
     assert.equal((await raw(port, { path, headers: auth })).status, 404, path);
   }

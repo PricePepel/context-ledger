@@ -3668,3 +3668,131 @@ Terms used below. A **party** is the `party` of a version 2 graph (the session I
   - (medium) The new flash assertion sampled the opacity once and could catch the fade-in. It now waits up to 2 s for an opacity above 0.5. The console spec then passed three runs in a row.
   - Accepted: an answer still closes a question reused with the same ID, words, recipient and cited lines from another transcript (that is the same question as far as the graph can tell). The pop kept after a meter reply and the proof following a transcript switch have no browser test.
 - **Suites (Windows):** `npm run -s test:graph` 9/9; node 214/215 (one skipped), was 191/192 on `main`; Python runtime 192 run, 50 skipped, OK; Playwright 17/17 (4 new).
+## G7 — Quoted or inferred nodes (defined 2026-11-17, before the code)
+
+When an agent publishes a graph, each node is marked **quoted** or **inferred**. Quoted means the transcript lines the node cites hold what its label claims, by the same floor the latent findings use (`isGrounded` in `src/latent.mjs`): every number and quoted literal in the label appears in the cited lines, at least one code name does when the label has any, and otherwise at least one content word does. Inferred means they do not, so a reader should open the cited lines before trusting the node. A label with nothing to compare (only short or common words) is inferred too: a node needs positive evidence to be quoted. It is a floor, not proof that a label is true.
+
+### What is tested (synthetic transcripts only)
+
+- **Publish:** a graph with a node whose label repeats its cited line ("Use port 4317", citing "the ledger stays on port 4317") and a node whose label adds a number the line does not hold ("Retry 5 times", citing "retry a few times") is stored with `quotedNodeIds` naming the first and `inferredNodeIds` naming the second, in the graph's canonical node order. Both v1 and v2 graphs are marked.
+- **Cited text:** only the cited lines count. A label whose facts are on another line of the same transcript is inferred.
+- **Graphs from before G7:** a stored graph without marks gets them when the same packet is published again; its ID and creation time do not change. A graph that is never republished stays unmarked, and every reader treats it as unmarked rather than as inferred.
+- **`context_for`:** an inferred node's line ends its citation with `, inferred`, and the briefing then says once what inferred means, in its last section so that the stable prefix does not move. A graph with only quoted nodes reads byte for byte as it did before G7.
+- **Browser:** the room view shows "quoted" or "inferred" next to each node's kind, as text, and nothing for an unmarked node. A Playwright check covers a room with one node of each.
+- **Read API:** `GET /api/graphs/:id` and `graph_read` return the two lists with the graph; the room API puts the mark on each node.
+
+### Acceptance
+
+- The four suites pass (`npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and the Python runtime checks).
+- No new runtime dependency and no schema version change.
+- Codex reviews the change read-only; findings are fixed with tests or recorded here.
+
+### G7 results (2026-11-17)
+
+- **Built:** `src/grounding.mjs` marks each node at publish time with `isGrounded` from `src/latent.mjs`. A node is quoted only with positive evidence. The payload gains `quotedNodeIds` and `inferredNodeIds`; the packet and graph ID do not change. Graphs stored before G7 get their marks when the same packet is published again (`ON CONFLICT DO UPDATE` only when the stored payload has none; ID, row, `created_at` and `party` unchanged). `context_for` ends an inferred node's citation with `, inferred` and explains the mark once, in the state section. The room API puts `grounding` on each node, and the room view shows it beside the kind. MCP paging pages the two lists after the links.
+- **Tests:** `tests/grounding.test.mjs` (11), three new `isGrounded` cases in `tests/latent.test.mjs`, the room spec (one new test, three new assertions), and the graph paging test with marks.
+- **Codex review, round 1** (of 983b8a4). Five findings, all fixed in e9d625f:
+  - (medium) The mark lists were paged before the nodes, so a backfill renumbered items under a client part way through reading. They are paged last now.
+  - (medium) The floor was too loose: `4317` matched `4317.5`, `retryCount` matched `retryCounter`, and an all-Han label passed on unrelated English. Numbers and code names must now stand alone, other scripts match by letter pairs, and a label with nothing to compare is inferred.
+  - (medium) The legend sat above the stable sections, so the first inferred action moved the cached prefix. It is in the state section now, and a test checks the prefix.
+  - (low) The all-quoted test only checked that "inferred" was absent. It now compares the whole briefing with main's output byte for byte.
+  - (low) There was no browser test for unmarked nodes, and the room paging fixture had no marks. Both are added.
+- **Round 2** (of e9d625f): all five fixes hold. Three more findings, fixed in 6137a8c: `café` passed on the `ca` of `cache` (a letter pair must now hold a non-ASCII letter); number and name boundaries ignored accented letters and Arabic-Indic digits; and the legend overstated what "inferred" means.
+- **Round 3** (of 6137a8c): those fixes hold, and Codex found nothing looser than `main` for ASCII labels, in either G7 or the latent check. Two more Unicode cases were fixed in the next commit: a Unicode suffix on the label's own token (`4317٥`, `retryCounté`), and combining marks (a name followed by U+0301, and Devanagari vowel signs). A new test also caught a regression from round 2, which the same commit fixes: a cited `$retry_limit` had stopped matching `retry_limit`.
+  - Accepted, not changed: the header line "Labels are quoted data from the source" stays, even when some nodes are inferred. Changing it when the first inferred node appears would move the cached prefix (round 1, third finding). Changing it for every briefing would break the byte-for-byte promise for all-quoted graphs. The state section's legend says what inferred means.
+- **Suites (Windows):** `npm run -s test:graph` 9/9; node 204/205 (one skipped), was 191/192 on `main`; Playwright 14/14 (one new); Python runtime 192 run, 50 skipped, OK.
+## U2 — Brand and mascot (defined 2026-11-17)
+
+A brand guide for the console (U1), the video (U3) and other pages, built on the CTM site's existing brand: `docs/brand/brand.md`, `docs/brand/tokens.css`, and an original mascot, Pip, in three poses (`pip.svg`, `pip-working.svg`, `pip-waiting.svg`) that match the console's agent states.
+
+### What must hold
+
+- The brand colours are the CTM site's own (Deep Charcoal, Electric Violet, Acid Lime, Paper); no second palette.
+- Every text and background pair in the light (console) and dark (site) sets passes WCAG AA, 4.5:1. That includes the quoted and inferred marks on their fills and white text on the primary. White on lime is kept out, as the site's rule says.
+- No state is told by colour alone: each mark and agent state also has a word or a pose.
+- Pip is original. It takes Capy's warmth as a reference only, with no copied assets or look.
+- Pip's SVGs can be inlined under the console's content security policy as they are: small, named with aria-label (no IDs to clash), presentation attributes only, no scripts, styles, outside resources or fonts, and only the palette, White and two documented illustration colours.
+
+### What is tested
+
+`tests/brand.test.mjs` checks the site's colours (Soft Violet included), contrast for every pair the guide names in both sets, that the dark set sets every one of those variables itself, that the ratios the guide prints are the computed ones, the SVG rules above with an allowlist of elements, attributes and colours, and that the guide's file links exist. It does not check the CTM site's stylesheet itself, or how Pip looks. The poses were also rendered with Playwright on Paper and on Charcoal and checked by eye.
+
+### Acceptance
+
+- The four suites pass.
+- A read-only review by Codex of the guide, the tokens and the SVGs; findings fixed or recorded here.
+- A person on the team signs off on Pip's look before the console and video use it.
+
+### U2 review (2026-11-17)
+
+- **Codex, round 1** (of the first U2 commit): one high finding, four medium, five low. All are fixed in the next commit:
+  - (high) The guide said the console could serve the SVGs as they are. Its policy has no `img-src`, so the guide now says to inline them, as U1's office module builds its figures, and what image files would need.
+  - (medium) The dark set inherited the light badge fills (1.6:1). It now sets dark fills and every text, fill and button variable itself.
+  - (medium) The dark strong violet failed on Charcoal (3.1:1). Links, link hover, button fill, button hover and button text now have their own pairs.
+  - (medium) Inlined Pips shared the title ID `t`. Each file now names itself with `aria-label` and has no IDs.
+  - (medium) At small sizes the pose is lost. Every state now also shows its word, and the lime spark is marked as decoration.
+  - (low) The waiting pose now keeps the tag, and the working pose is described as reading it.
+  - (low) The off-palette cheek colour is gone, and the illustration shades are listed and tested.
+  - (low) Savings claims now point to BENCHMARKS.md instead of naming two figures.
+  - (low) The test is stricter: exact pose names, printed ratios, and an element and attribute allowlist.
+  - (low) Codex saw low resemblance to Capy's capybara, but a plausible one to Tinky Winky (purple round body, pale belly, head ornament, carried item). Pip is now an index card with a folded corner and ruled lines, which ties it to the ledger and drops the round body and belly. The guide says to avoid both. The human sign-off stays, with a side-by-side check.
+- **Codex, round 2** (of 9bc136c): the CSP, dark-set, ID, small-size, tag, cheek and wording fixes hold, all 19 printed ratios are correct, and Codex saw no close resemblance between the redrawn Pip and Tinky Winky or Capy. Fixed in the next commit: (medium) the SVG test now checks every fill and stroke value and the root's required attributes; (medium) the ratio test checks each table cell against its own pair and the three lime figures one by one; (low) the colour list names White and the two extra illustration colours; (low) the round 1 count is four medium findings, not five.
+- **Still owed:** a person on the team signs off on Pip's look.
+## U4 — Console polish (defined 2026-11-18, before implementation)
+
+Source: issue #48 and Ali's choices (2026-11-18): the vendor pixel sprites instead of Pip, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34). The console stays read-only and CSP-safe. Synthetic data only: the demo recording from the Orbit transcripts.
+
+| Eval | Expected |
+| --- | --- |
+| Brand tokens | The console loads `docs/brand/tokens.css` (one source, served at `/console/tokens.css`), and `console.css` and `office.css` take their colours and type from `--ctm-*` variables. The only colour literals left are the Claude room's two sprite colours in `office.css`. A node test checks that every `var(--ctm-…)` the console uses is defined in `tokens.css`. |
+| Vendor sprites | Each agent in the office is a pixel sprite on a 16 × 20 grid of SVG `rect`s: Clawd for Claude Code, the purple pet for Codex, and a neutral bot for any other provider. The sprite is chosen by the party's provider. No image file and no style attribute. |
+| Poses | Working: the sprite sits at a laptop. Waiting: a "?" bubble over it. Idle: dimmed. The state is also text under the name and in the `aria-label`, so it never relies on colour or shape alone. |
+| Quoted and inferred | A node is quoted when its graph's `quotedNodeIds` names it and inferred when `inferredNodeIds` does; the console reads the lists from `GET /api/graphs/:id`. A graph without the lists leaves its nodes unmarked (neutral), never inferred. The word "quoted" or "inferred" shows beside the kind, so the mark is text as well as colour. In the demo, the rebuilt recording carries the lists (every demo node is quoted). A live e2e test publishes one quoted and one inferred node and checks both. |
+| Codex agent turns | In the evidence pane, an I3 agent turn is labelled "Agent /root/worker to /root", with control and format characters in the paths shown as escapes, the same rule as the library view. |
+| Unchanged | Read-only (every request a GET), the U1 screenshots, the 375 px phone layout with no sideways scroll, and the 300 KB page budget all still hold. |
+| Screenshots | The console spec saves the finished demo and the evidence pane with the new look into `docs/console/`. |
+| Trademark note | The sprites are vendor trademarks drawn for a local build; the PR says so and says to swap them for the neutral bot before anything public. |
+
+### U4 results (2026-11-18, macOS)
+
+- **Brand tokens: pass.** `/console/tokens.css` serves `docs/brand/tokens.css` byte for byte; nearby paths are 404. A node test checks that every `--ctm-*` variable the console uses is in `tokens.css`, that every `var()` in the console CSS is defined somewhere, and that the only colour literals left are the Claude room's two sprite colours.
+- **Vendor sprites and poses: pass.** Unit test: each sprite stays on the 16 × 20 grid, and unknown sources (including `constructor` and `__proto__`) get the bot. E2E: one Claude and one Codex sprite in the finished demo, made of `rect`s, with no style attribute.
+- **Quoted and inferred: pass.** The demo's 11 nodes are all quoted. The live e2e test publishes "Use port 4317" (quoted) and "Retry 5 times" (inferred) and checks the mark, the word and the `aria-label`. A unit test checks that a graph without the lists stays unmarked.
+- **Codex agent turns: pass.** The live e2e test cites an I3 `agent_message` and sees "Agent /root/worker to /root". A unit test checks that a bidi override and a newline in a path are escaped.
+- **Unchanged: pass.** The page is read-only, renders at 375 px, and stays under 300 KB. Screenshots 01 to 06 and `perf.json` are in [docs/console/](console/).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only; Codex CLI was not installed on this machine). One medium, one eval gap and two low findings, all fixed:
+  - (medium) The desk legs used `--office-dark`, which the token change had removed, so they drew nothing. They are fixed, and a new test fails on any undefined `var()`; it fails on the old CSS.
+  - (eval gap) The first wording promised both marks in the demo. The eval now says the live test covers inferred, which is the honest case: the demo transcripts cite their own words.
+  - (low) The laptop hid the sprite's face. It sits lower now.
+  - (low) A JSDoc comment was in the wrong place after the move. It is fixed.
+- **Suites (macOS, Node 26):** node 248/249. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, which fails the same way on `ruslan/console-v0`. Playwright 21/21. `npm run -s test:graph` passes.
+
+## P3 — Reviewer UI prototype (defined 2026-11-18, before implementation)
+
+Source: issue #48. A person can approve, edit or reject a node beside its evidence. It is a prototype: Ruslan decides what each action means (who may approve, whether an edit makes a new version, what a reject keeps), so nothing here writes to the ledger. It is shown only in the console's demo mode (`/console/?demo`), on the synthetic recording.
+
+Terms: a **review** is one person's decision on one node of one graph snapshot, keyed by graph ID and node ID. A new publish of the party is a new graph ID and so starts unreviewed. That is the simplest reading, and it is Ruslan's to change.
+
+| Eval | Expected |
+| --- | --- |
+| Demo only | In demo mode the evidence panel shows a Review block once a node is open: **Approve**, **Edit**, **Reject**, and a line saying the decision stays in this browser and is a prototype. In live mode there is no Review block and no review code runs. |
+| Approve and reject | Approve or Reject marks the node: the word "approved" or "rejected" in the node's meta and its `aria-label`, plus a class for the colour. The panel says what was decided, with an **Undo** button that clears it. A rejected node keeps its label, struck through. |
+| Edit | Edit opens a text box holding the current label. Save keeps the new text (trimmed, 1 to 300 characters, no control or format characters) as the node's shown label, with "edited" in its meta. The evidence panel shows the original label too. Cancel or an empty save changes nothing. The new label is set with `textContent`. |
+| Browser only | Reviews are kept in `localStorage` under one key, and the page still sends only GET requests. A stored value that is not valid JSON, has the wrong shape, or names an unknown decision is ignored, not thrown. If `localStorage` throws (private mode), reviewing still works for the session. |
+| Survives a replay and a reload | Reviews stay after **Replay demo** and after a page reload, because the recording's graph IDs do not change. |
+| Keyboard | Every review control is a button reachable by Tab. After a decision, focus stays in the Review block. |
+| Tests | Node tests for the store (save, undo, edit rules, bad stored data, a throwing storage). A Playwright test approves, edits and rejects three demo nodes, reloads, sees all three, undoes one, checks that live mode has no Review block, and saves a screenshot. |
+
+### P3 results (2026-11-18, macOS)
+
+- **Demo only: pass.** In demo mode the Review block appears once a node is open. Live mode has no Review block and never fetches `review.mjs`, because the demo loads it with a dynamic import.
+- **Approve and reject: pass.** The decision shows in the node's meta, its `aria-label` and its class. A rejected label is struck through. Undo clears the decision.
+- **Edit: pass.** An empty save is refused with a message. `Pair with Ali <b>tonight</b>` is kept and shown as text, with no `b` element created. The evidence heading keeps the original label.
+- **Browser only: pass.** Every request is a GET. Bad stored data, a throwing storage and `null` storage are covered by the node tests, and the e2e test covers invalid JSON in `localStorage`.
+- **Survives a replay and a reload: pass.** **Keyboard: pass.** Approve, Reject and Save move focus to Undo; Undo and Cancel move it to Edit.
+- Screenshot: [docs/console/07-review.png](console/07-review.png).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only). One medium and two low findings, all fixed with tests:
+  - (medium) After a republish under a new graph ID with the node unchanged, the panel kept the old graph ID. It still said "approved", and a new decision was saved to the old snapshot. The panel now follows every republish. A Playwright test approves Leo's goal mid-demo and sees the review start fresh after his next publish; the test fails on the old code.
+  - (low) An open edit form lost its text when the same node was picked again. Showing the same snapshot again is now a no-op, and there is a test for it.
+  - (low) Live mode loaded `review.mjs` although none of it ran. It is now imported only in demo mode, and the live test checks that no request for it is made.
+- **Suites (macOS, Node 26):** node 253/254 (the one failure is the same `tests/mcp.test.mjs` test that fails on `ruslan/console-v0`); Playwright 26/26; `npm run -s test:graph` passes.

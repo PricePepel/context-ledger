@@ -2,6 +2,8 @@
 // character per active agent party. CSP-safe: every node is built with
 // createElementNS, text goes through textContent, and positions use SVG
 // attributes or CSSOM (never a style attribute).
+import { spriteKey, spritePixels } from './sprites.mjs';
+
 const NS = 'http://www.w3.org/2000/svg';
 
 export const providers = ['claude', 'codex'];
@@ -74,26 +76,27 @@ function buildRoom(parent, provider) {
   return { provider, name, g, floor, count, more, moreText, people };
 }
 
-function buildAgent() {
-  const g = el('g', { class: 'office-agent', role: 'img' });
+// One grid cell of a sprite in SVG units: the 16 x 20 grid stands 40 units tall.
+const PX = 2;
+
+function buildAgent(provider) {
+  const g = el('g', { class: 'office-agent', role: 'img', 'data-sprite': spriteKey(provider) });
   const size = el('g', { transform: 'scale(1.25)' }, g);
   el('circle', { class: 'oa-ring', cx: 0, cy: -22, r: 24 }, size);
   const body = el('g', { class: 'oa-body' }, size);
   el('ellipse', { class: 'oa-shadow', cx: 0, cy: 0, rx: 13, ry: 3.5 }, body);
   const fig = el('g', { class: 'oa-fig' }, body);
-  el('path', { class: 'oa-leg', d: 'M-5.5 -6v5.5M5.5 -6v5.5' }, fig);
-  el('rect', { class: 'oa-coat', x: -9.5, y: -25, width: 19, height: 21, rx: 7.5 }, fig);
-  el('rect', { class: 'oa-page', x: -4, y: -20, width: 8, height: 10, rx: 1.2 }, fig);
-  el('path', { class: 'oa-page-line', d: 'M-2 -17h4M-2 -14.5h4M-2 -12h2.5' }, fig);
-  el('circle', { class: 'oa-head', cx: 0, cy: -32, r: 8 }, fig);
-  el('path', { class: 'oa-eye', d: 'M-3 -32.5v1.5M3 -32.5v1.5' }, fig);
-  el('ellipse', { class: 'oa-glow', cx: 0, cy: -29, rx: 9, ry: 6 }, fig);
+  const sprite = el('g', { class: 'oa-sprite', transform: `translate(${-8 * PX} ${-19 * PX})`, 'shape-rendering': 'crispEdges' }, fig);
+  for (const [x, y, width, height, fill] of spritePixels(provider)) {
+    el('rect', { x: x * PX, y: y * PX, width: width * PX, height: height * PX, fill }, sprite);
+  }
   const desk = el('g', { class: 'oa-desk' }, body);
-  el('rect', { class: 'oa-halo', x: -10, y: -23, width: 20, height: 15, rx: 4 }, desk);
-  el('rect', { class: 'oa-laptop', x: -7.5, y: -20, width: 15, height: 10.5, rx: 1.5 }, desk);
-  el('circle', { class: 'oa-logo', cx: 0, cy: -14.8, r: 1.5 }, desk);
-  el('rect', { class: 'oa-desk-top', x: -17, y: -10, width: 34, height: 3.5, rx: 1 }, desk);
-  el('path', { class: 'oa-desk-leg', d: 'M-14 -6.5V0M14 -6.5V0' }, desk);
+  // Low enough that the laptop covers the sprite's body, never its face.
+  el('rect', { class: 'oa-halo', x: -10, y: -16, width: 20, height: 12, rx: 4 }, desk);
+  el('rect', { class: 'oa-laptop', x: -7.5, y: -14, width: 15, height: 8.5, rx: 1.5 }, desk);
+  el('circle', { class: 'oa-logo', cx: 0, cy: -9.8, r: 1.5 }, desk);
+  el('rect', { class: 'oa-desk-top', x: -17, y: -5.5, width: 34, height: 3, rx: 1 }, desk);
+  el('path', { class: 'oa-desk-leg', d: 'M-14 -2.5V2M14 -2.5V2' }, desk);
   const bubble = el('g', { class: 'oa-bubble' }, body);
   el('rect', { x: 6, y: -60, width: 17, height: 15, rx: 6 }, bubble);
   el('path', { d: 'M9.5 -45.5l-3 5.5 7.5-5.5z' }, bubble);
@@ -182,7 +185,7 @@ export function createOffice(svg) {
         }
         const [x, y] = spots[j];
         if (!item) {
-          item = buildAgent();
+          item = buildAgent(p);
           item.provider = p;
           item.g.classList.add('is-new');
           item.enter = setTimeout(() => item.g.classList.remove('is-new'), 700);

@@ -27,6 +27,23 @@ let evidence;
 const office = createOffice($('#office'));
 const brain = createBrain($('#brain'), { onSelect: select });
 
+// Card P3: the reviewer prototype runs in demo mode only, on the synthetic recording.
+// startDemo loads it, so live mode never fetches or runs the review code.
+let reviewPanel = null;
+let attachReviews = view => view;
+
+/** The graph to draw, with each node's review attached in demo mode. */
+const graphView = () => attachReviews(model.graph());
+
+async function startReviews() {
+  const { createReviewPanel, createReviews, withReviews } = await import('./review.mjs');
+  let storage = null;
+  try { storage = window.localStorage; } catch { /* blocked: reviews last for this session */ }
+  const reviews = createReviews(storage);
+  attachReviews = view => withReviews(view, reviews);
+  reviewPanel = createReviewPanel($('#review'), { reviews, onChange: () => brain.render(graphView()) });
+}
+
 function partyName(key) {
   return model.graph().columns.find(column => column.key === key)?.label ?? key;
 }
@@ -85,7 +102,7 @@ function onGraph(event, { initial }) {
   const moved = model.apply(event);
   const pop = initial ? new Set() : new Set(moved.added);
   const changed = initial ? new Set() : new Set(moved.changed);
-  brain.render(model.graph(), { pop, changed });
+  brain.render(graphView(), { pop, changed });
   renderOffice();
   renderNumbers();
   reconcileSelection(new Set(moved.changed));
@@ -120,6 +137,7 @@ async function select(key) {
   selectedSession = found.entry.sessionId;
   brain.select(key);
   if (matchMedia('(max-width: 900px)').matches) $('#evidence').scrollIntoView({ block: 'start' });
+  reviewPanel?.show(found);
   await evidence.show(found);
 }
 
@@ -129,25 +147,31 @@ function reconcileSelection(changed) {
   const found = model.node(selectedKey);
   if (!found) {
     selectedKey = null;
+    reviewPanel?.clear();
     evidence.clear('That node is no longer in the current graph of its agent.');
-  } else if (changed.has(selectedKey) || found.entry.sessionId !== selectedSession) {
-    // The node changed, or its agent now publishes from another transcript.
-    selectedSession = found.entry.sessionId;
-    brain.select(selectedKey);
-    evidence.show(found);
+  } else {
+    // A republish is a new snapshot, even with the node unchanged: the review follows it.
+    reviewPanel?.show(found);
+    if (changed.has(selectedKey) || found.entry.sessionId !== selectedSession) {
+      // The node changed, or its agent now publishes from another transcript.
+      selectedSession = found.entry.sessionId;
+      brain.select(selectedKey);
+      evidence.show(found);
+    }
   }
 }
 
 /** Redraw after something other than a publish (a meter or a linked graph arrived). */
 function refresh() {
-  brain.render(model.graph());
+  brain.render(graphView());
   renderOffice();
   renderNumbers();
 }
 
 function resetView() {
   model = createModel({ workingMs: workingMs / (demo ? speed : 1) });
-  brain.render(model.graph());
+  brain.render(graphView());
+  reviewPanel?.clear();
   activity.replaceChildren();
   selectedKey = null;
   evidence?.clear();
@@ -159,6 +183,7 @@ async function startDemo() {
   $('#mode').textContent = 'Demo';
   document.body.classList.add('is-demo');
   status.textContent = 'Loading the demo…';
+  await startReviews();
   const recording = await (await fetch('/console/demo-recording.json')).json();
   let clock;
   const play = () => {

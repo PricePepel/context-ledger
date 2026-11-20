@@ -1,18 +1,22 @@
 /* CTM Console office. Theme via the custom properties on .office-svg. */
+/* Card U4: brand tokens for the floor and text; each room keeps its sprite's colour. */
 .office-svg {
-  --office-ink: #1f2328; --office-muted: #57606a; --office-paper: #fff; --office-chip: #1f2328;
-  --office-edge: #d6d2c8; --office-edge-side: #c6c1b5; --office-grid: rgba(31, 35, 40, 0.07);
-  --office-skin: #f6dcc3; --office-dark: #3b4048; --office-laptop: #3b4048; --office-desk: #a4825f;
-  --claude-accent: #d9773b; --claude-ink: #9a4615; --claude-floor: #faf5ee; --claude-wall: #f1e6d9;
-  --codex-accent: #1f8fa3; --codex-ink: #0f6474; --codex-floor: #f1f7f8; --codex-wall: #dcebee;
+  --office-ink: var(--ctm-text); --office-muted: var(--ctm-text-2); --office-paper: var(--ctm-surface);
+  --office-chip: var(--ctm-charcoal); --office-edge: var(--ctm-line);
+  --office-edge-side: color-mix(in srgb, var(--ctm-line) 80%, var(--ctm-text-2));
+  --office-grid: color-mix(in srgb, var(--ctm-text) 7%, transparent);
+  --office-laptop: var(--ctm-charcoal); --office-desk: color-mix(in srgb, var(--ctm-text-2) 55%, var(--ctm-surface));
+  --claude-accent: #d77757; --claude-ink: #9a4615;
+  --codex-accent: var(--ctm-violet); --codex-ink: var(--ctm-link-hover);
   display: block; width: 100%; height: auto; overflow: visible;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--ctm-font-sans);
 }
-.office-room-claude { --accent: var(--claude-accent); --accent-ink: var(--claude-ink); --floor: var(--claude-floor); --wall: var(--claude-wall); }
-.office-room-codex { --accent: var(--codex-accent); --accent-ink: var(--codex-ink); --floor: var(--codex-floor); --wall: var(--codex-wall); }
+.office-room-claude { --accent: var(--claude-accent); --accent-ink: var(--claude-ink); }
+.office-room-codex { --accent: var(--codex-accent); --accent-ink: var(--codex-ink); }
+.office-room { --floor: var(--ctm-surface); --wall: color-mix(in srgb, var(--accent) 12%, var(--ctm-paper)); }
 
 .office-wall { fill: var(--wall); }
-.office-trim, .office-dot, .oa-coat, .oa-logo { fill: var(--accent); }
+.office-trim, .office-dot, .oa-logo { fill: var(--accent); }
 .office-floor { fill: var(--floor); }
 .office-edge { fill: var(--office-edge); }
 .office-edge-side { fill: var(--office-edge-side); }
@@ -25,13 +29,8 @@
 .office-more rect { fill: var(--office-chip); }
 .office-more text { fill: var(--office-paper); font-size: 11px; font-weight: 650; }
 
-.oa-shadow { fill: rgba(31, 35, 40, 0.12); }
-.oa-leg, .oa-desk-leg { stroke: var(--office-dark); stroke-width: 3; stroke-linecap: round; }
-.oa-page { fill: var(--office-paper); }
-.oa-page-line { stroke: var(--accent-ink); }
-.oa-head { fill: var(--office-skin); stroke: var(--accent-ink); }
-.oa-eye { stroke: var(--office-ink); stroke-width: 1.6; stroke-linecap: round; }
-.oa-glow { fill: var(--accent); opacity: 0; }
+.oa-shadow { fill: color-mix(in srgb, var(--ctm-text) 12%, transparent); }
+.oa-desk-leg { stroke: var(--office-laptop); stroke-width: 3; stroke-linecap: round; }
 .oa-halo { fill: var(--accent); opacity: 0.25; }
 .oa-laptop { fill: var(--office-laptop); }
 .oa-desk-top { fill: var(--office-desk); }
@@ -42,7 +41,6 @@
 .oa-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; opacity: 0; }
 
 .office-agent:not(.state-working) .oa-desk, .office-agent:not(.state-waiting) .oa-bubble { display: none; }
-.state-working .oa-glow { opacity: 0.18; }
 .state-working .oa-state, .state-waiting .oa-state { fill: var(--accent-ink); font-weight: 650; }
 .state-waiting .oa-state { font-style: italic; }
 .state-idle .oa-body { opacity: 0.45; }
@@ -69,4 +67,4 @@
 @keyframes oa-enter { from { opacity: 0; transform: translateY(8px); } }
 @keyframes oa-ring { from { transform: scale(0.6); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
 
-/* The console is light only for v0; a dark theme belongs with the brand card (U2). */
+
