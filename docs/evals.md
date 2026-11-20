@@ -3706,6 +3706,31 @@ A brand guide for the console (U1), the video (U3) and other pages, built on the
 
 `tests/brand.test.mjs` checks the site's colours (Soft Violet included), contrast for every pair the guide names in both sets, that the dark set sets every one of those variables itself, that the ratios the guide prints are the computed ones, the SVG rules above with an allowlist of elements, attributes and colours, and that the guide's file links exist. It does not check the CTM site's stylesheet itself, or how Pip looks. The poses were also rendered with Playwright on Paper and on Charcoal and checked by eye.
 
+## D1 — T3 Code integration (defined 2026-11-17)
+
+D1 is the guide for using the ledger from T3 Code. The importer for T3's thread store, first part of this card, moved to D3, and `ledger install` belongs to G8.
+
+### The guide (built)
+
+`docs/integrations/t3code.md`, written from T3's public documentation, with the page behind each step linked:
+
+- T3 runs Claude Code and Codex with their own configuration. So the server is registered for those CLIs, as in the README, on the machine of the environment whose threads use it, because the ledger answers on loopback. Whether T3 sessions load it is unverified, and a check from a new thread ends the steps.
+- T3 instances with their own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` need the server registered in that folder. A Codex shadow home shares the main home's configuration.
+- Other providers, and T3's own outside-agents MCP endpoint, are out of scope; the guide says which direction that endpoint goes.
+- What was not checked, since we have not run T3.
+
+`tests/integrations-t3.test.mjs` checks the guide against this repository only. Every full registration command uses the server name `context-ledger` and runs `node` with `src/mcp.mjs`. The README sections it links to exist, every T3 link points at the T3 repository, and the guide marks what is unverified. It does not check T3 itself: a live run with Claude and Codex providers is still owed, ideally with a synthetic imported transcript, `session_read` and a cited `graph_publish`.
+
+### The importer (not built; blocked)
+
+An importer would read T3's SQLite store read-only, from a copy the person makes. We did not build it, for three reasons:
+
+- T3's V2 store (`statev2.sqlite`) is event-sourced, and its tables are not documented.
+- The only layout T3 documents is the recovery query for the V1 database (`state.sqlite`). V2 keeps an event log with derived tables whose layout is not documented.
+- We have no test database made from synthetic threads on a pinned T3 release, and the ledger's store takes only Claude Code and Codex transcripts (a third provider is a schema change, after P1).
+
+An importer built on a guessed layout could silently misread threads, which matters for a tool whose point is citing the exact line. A new Backlog card, D3, holds it until a sample database exists.
+
 ### Acceptance
 
 - The four suites pass.
@@ -3750,3 +3775,24 @@ A brand guide for the console (U1), the video (U3) and other pages, built on the
   - (low) Codex saw low resemblance to Capy's capybara, but a plausible one to Tinky Winky (purple round body, pale belly, head ornament, carried item). Pip is now an index card with a folded corner and ruled lines, which ties it to the ledger and drops the round body and belly. The guide says to avoid both. The human sign-off stays, with a side-by-side check.
 - **Codex, round 2** (of 9bc136c): the CSP, dark-set, ID, small-size, tag, cheek and wording fixes hold, all 19 printed ratios are correct, and Codex saw no close resemblance between the redrawn Pip and Tinky Winky or Capy. Fixed in the next commit: (medium) the SVG test now checks every fill and stroke value and the root's required attributes; (medium) the ratio test checks each table cell against its own pair and the three lime figures one by one; (low) the colour list names White and the two extra illustration colours; (low) the round 1 count is four medium findings, not five.
 - **Still owed:** a person on the team signs off on Pip's look.
+
+- Codex reviews the guide read-only against T3's documentation; findings are fixed or recorded here.
+- A person who runs T3 follows the guide once and records the result here.
+
+### D1 review (2026-11-17)
+
+- **Codex, round 1** (of the first guide commit): one high finding, six medium, three low, all addressed in the next commit.
+  - (high) The guide presented MCP discovery in T3's sessions as guaranteed. It is now labelled unverified, the steps are scoped to Claude and manually configured Codex, and a per-provider check from a new thread is the last step. The README says the same.
+  - (medium) The manual setup now comes first, and `ledger install` is noted as coming with G8.
+  - (medium) The outside-agents section now names Copy MCP URL, OAuth and the access levels, and says a graph needs an imported transcript first.
+  - (medium) The store section sticks to what T3 documents: the default path and `--base-dir`, the V1 recovery query, and the V2 design without documented tables. The fork comparison is dropped.
+  - (medium) Permission modes are described as provider-dependent approval, and the ledger's own boundary is stated.
+  - (medium) This eval now says what the test checks and what is still owed.
+  - (low) Prerequisites, `PORT`, shell labels and PowerShell forms are added. The claim about every provider taking MCP servers is removed. The session-file paths are leads to check.
+  - D3 stays deferred, as the review advised. Its row now says to pin one T3 release, build a test database from synthetic threads, and consider T3's thread-reading MCP tool as a source.
+- **Codex, round 2** (of fc58cf1): the high finding is fixed, and the setup, provider, storage and permission fixes hold. Fixed in the next commit:
+  - (medium) How to use your own Codex login (Configure manually), with the check run per instance and on the tool result itself.
+  - (medium) Where to open the ledger on a remote host (on it, or through a port forward; WSL).
+  - (medium) This eval's body now matches the board: D1 is the guide, D3 the importer, G8 the installer. The fork comparison is gone.
+  - (low) T3's labels for access levels, what a migrated thread's session file may lack, and the README wording.
+- **Still owed:** a person who runs T3 follows the guide for Claude and for a manually configured Codex instance and records the result here.
