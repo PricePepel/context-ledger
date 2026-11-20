@@ -17,3 +17,10 @@ class ApiError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+class ModelTimeout(ApiError):
+    """The model server did not answer within the call's timeout (a 502)."""
+
+    def __init__(self):
+        super().__init__(502, "Model server timed out.")

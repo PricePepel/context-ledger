@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { readTokenFile, tokenFileFor } from '../src/token.mjs';
 import { gradeHandoff, handoffQuestion, makeParties } from './fixtures.mjs';
 import { aliPublish, leoPublish } from './prompts.mjs';
 
@@ -117,7 +118,12 @@ function winQuote(argument) {
   return '"' + argument.replace(/"/g, '""').replace(/%/g, '"%"') + '"';
 }
 
+// The ledger's access token, read from the file next to its database once it listens.
+let token;
+let ledgerDatabase;
+
 async function startLedger(database) {
+  ledgerDatabase = database;
   const child = spawn(process.execPath, [join(root, 'src', 'server.mjs')], {
     env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_DB: database },
     stdio: ['ignore', 'pipe', 'inherit'],
@@ -133,7 +139,10 @@ async function startLedger(database) {
   try {
     for await (const chunk of child.stdout) {
       output += chunk;
-      if (/listening at/u.test(output)) return { stop };
+      if (/listening at/u.test(output)) {
+        token = (await readTokenFile(tokenFileFor(database, port)))?.token;
+        return { stop };
+      }
     }
   } finally {
     clearTimeout(timer);
@@ -142,8 +151,9 @@ async function startLedger(database) {
 }
 
 async function api(path, body) {
-  const init = body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify(body),
+  const auth = { Authorization: `Bearer ${token}` };
+  const init = body === undefined ? { headers: auth } : {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin, ...auth }, body: JSON.stringify(body),
   };
   const response = await fetch(origin + path, init);
   const data = await response.json().catch(() => ({}));
@@ -156,7 +166,7 @@ const tool = name => `mcp__context-ledger__${name}`;
 async function askClaude(prompt, tools, work) {
   const config = join(work, 'claude-mcp.json');
   await writeFile(config, JSON.stringify({
-    mcpServers: { 'context-ledger': { command: process.execPath, args: [mcpPath], env: { PORT: String(port) } } },
+    mcpServers: { 'context-ledger': { command: process.execPath, args: [mcpPath], env: { PORT: String(port), CONTEXT_LEDGER_DB: ledgerDatabase } } },
   }));
   const result = await run('claude', [
     '-p', '--output-format', 'json', '--model', options['claude-model'],
@@ -194,7 +204,7 @@ async function askCodex(prompt, tools, work) {
     '--output-last-message', last,
     '-c', `${server}.command=${JSON.stringify(process.execPath)}`,
     '-c', `${server}.args=[${JSON.stringify(mcpPath)}]`,
-    '-c', `${server}.env={PORT=${JSON.stringify(String(port))}}`,
+    '-c', `${server}.env={PORT=${JSON.stringify(String(port))},CONTEXT_LEDGER_DB=${JSON.stringify(ledgerDatabase)}}`,
     '-c', `${server}.enabled_tools=[${tools.map(name => JSON.stringify(name)).join(',')}]`,
     // Only the listed ledger tools are enabled; approve them so exec never stops to ask.
     '-c', `${server}.default_tools_approval_mode="approve"`,
