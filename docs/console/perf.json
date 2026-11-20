@@ -1,0 +1,22 @@
+{
+  "measuredAt": "2026-11-17T23:41:52.551Z",
+  "how": "Playwright Chromium against the loopback server, demo mode, cache off (the server sends no-store). Bytes are response bodies, uncompressed.",
+  "totalBytes": 86561,
+  "totalKiB": 84.5,
+  "files": {
+    "/console/": 2628,
+    "/console/console.css": 7432,
+    "/console/office.css": 4504,
+    "/console/console.mjs": 8302,
+    "/console/brain.mjs": 6460,
+    "/console/evidence.mjs": 2911,
+    "/console/model.mjs": 11076,
+    "/console/source.mjs": 8884,
+    "/console/office.mjs": 10081,
+    "/console/demo-recording.json": 24283
+  },
+  "firstPaintMs": 84,
+  "firstContentfulPaintMs": 84,
+  "domContentLoadedMs": 62,
+  "loadMs": 62
+}

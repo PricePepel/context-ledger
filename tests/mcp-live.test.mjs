@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { visibleText } from '../src/text.mjs';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
 import { mergePages, resultSize, walkJson } from './merge-pages.mjs';
 
@@ -19,7 +20,7 @@ async function startServer(database) {
     output += chunk;
     const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/);
     if (match) {
-      return { origin: match[1], port: Number(match[2]), stop: async () => { child.kill(); await once(child, 'exit'); } };
+      return { origin: match[1], port: Number(match[2]), headers: bearer(await ledgerToken(database, Number(match[2]))), mcpEnv: { CONTEXT_LEDGER_DB: database }, stop: async () => { child.kill(); await once(child, 'exit'); } };
     }
   }
   throw new Error('Server exited before listening: ' + output);
@@ -50,13 +51,13 @@ test('an agent publishes and reads back a v2 graph through MCP against the real 
   ].map(record => JSON.stringify(record)).join('\n');
   const imported = await fetch(server.origin + '/api/import', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: server.origin },
+    headers: { 'Content-Type': 'application/json', Origin: server.origin, ...server.headers },
     body: JSON.stringify({ provider: 'claude', source: 'vega.jsonl', transcript }),
   });
   assert.equal(imported.status, 200);
   const { session } = await imported.json();
 
-  client = startMcp(server.port);
+  client = startMcp(server.port, server.mcpEnv);
   const { result: initialized } = await client.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
   assert.equal(initialized.protocolVersion, '2025-06-18');
   client.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
@@ -98,7 +99,7 @@ test('an agent publishes and reads back a v2 graph through MCP against the real 
   // Integration: a second party links to the first, then context and rooms over MCP.
   const aliImport = await fetch(server.origin + '/api/import', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: server.origin },
+    headers: { 'Content-Type': 'application/json', Origin: server.origin, ...server.headers },
     body: JSON.stringify({
       provider: 'claude', source: 'vega-ali.jsonl',
       transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: 'Ali can review the Vega demo outline.' } }),
@@ -151,14 +152,14 @@ test('cycle 10: large graphs and rooms page over MCP and merge back to the store
   const importSession = async (source, content) => {
     const response = await fetch(server.origin + '/api/import', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: server.origin },
+      headers: { 'Content-Type': 'application/json', Origin: server.origin, ...server.headers },
       body: JSON.stringify({ provider: 'claude', source, transcript: JSON.stringify({ type: 'user', message: { role: 'user', content } }) }),
     });
     return (await response.json()).session;
   };
   const leoSession = await importSession('leo-big.jsonl', 'Leo lists the synthetic Lyra goals.');
   const aliSession = await importSession('ali-big.jsonl', 'Ali offers help with the synthetic Lyra goals.');
-  client = startMcp(server.port);
+  client = startMcp(server.port, server.mcpEnv);
 
   // Labels of 488 UTF-16 units, mostly tag characters (12 characters each once escaped).
   const label = index => `Item ${index} ` + String.fromCodePoint(0xe0041).repeat(240);
@@ -175,7 +176,7 @@ test('cycle 10: large graphs and rooms page over MCP and merge back to the store
   assert.equal(Object.keys(firstPage)[0], 'more');
   assert.match(firstPage.more.note, /Call graph_read with graph\.id and fromItem \d+ to read the rest of the stored graph\.$/);
   const leoId = firstPage.graph.id;
-  const stored = await (await fetch(`${server.origin}/api/graphs/${leoId}`)).json();
+  const stored = await (await fetch(`${server.origin}/api/graphs/${leoId}`, { headers: server.headers })).json();
   const graphPages = await walkJson(client, 10, 'graph_read', { graphId: leoId });
   assert.ok(graphPages.pages.length > 5);
   assert.deepEqual(mergePages('graph', graphPages.pages), stored.graph);
@@ -192,7 +193,7 @@ test('cycle 10: large graphs and rooms page over MCP and merge back to the store
   assert.match(opened.more.note, /Choices and states are as of this call\.$/);
   const roomId = opened.room.id;
   const roomPages = await walkJson(client, 200, 'room_read', { roomId });
-  const storedRoom = await (await fetch(`${server.origin}/api/rooms/${roomId}`)).json();
+  const storedRoom = await (await fetch(`${server.origin}/api/rooms/${roomId}`, { headers: server.headers })).json();
   assert.equal(storedRoom.room.proposals.length, 100);
   assert.deepEqual(mergePages('room', roomPages.pages), storedRoom.room);
 
@@ -219,6 +220,6 @@ test('cycle 10: large graphs and rooms page over MCP and merge back to the store
     assert.ok(id < 540);
   }
   assert.ok(shown.length > 1);
-  const context = await (await fetch(`${server.origin}/api/graphs/${leoId}/context`)).json();
+  const context = await (await fetch(`${server.origin}/api/graphs/${leoId}/context`, { headers: server.headers })).json();
   assert.equal(shown.join('\n'), visibleText(context.context.text));
 });

@@ -386,9 +386,14 @@ class _Run:
                                       schema_name=role, timeout=left)
         except ApiError as error:
             timed_out_on_deadline = capped and isinstance(error, ModelTimeout)
-            if error.status == 502 and (timed_out_on_deadline or self.remaining() <= 0):
+            # H8: a 503 that comes back after the deadline is the deadline too.
+            if error.status in (502, 503) and (timed_out_on_deadline or self.remaining() <= 0):
                 raise ApiError(504, DEADLINE) from None
             raise
+        # H8: the client keeps to the duration it was given; a reply that still lands
+        # after the read's own deadline (a delayed hand-off, say) is not used.
+        if self.remaining() <= 0:
+            raise ApiError(504, DEADLINE)
         with self._lock:
             self.calls.append({
                 "role": role,

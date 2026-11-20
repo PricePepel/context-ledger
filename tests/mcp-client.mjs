@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A minimal stdio MCP client for tests: one JSON-RPC message per line in each direction.
-export function startMcp(port) {
+// Pass the test server's CONTEXT_LEDGER_DB so the adapter finds its token file; without
+// it the adapter looks at a path that does not exist, never at a real ledger's token.
+export function startMcp(port, env = {}) {
   const child = spawn(process.execPath, ['src/mcp.mjs'], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_DB: join(tmpdir(), 'context-ledger-no-ledger', 'none.sqlite'), ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const messages = [];

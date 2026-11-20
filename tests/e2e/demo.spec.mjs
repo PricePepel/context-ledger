@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures.mjs';
 import { aliReference, leoReference } from '../../demo/reference-graphs.mjs';
 
 // The stage flow with the committed demo files: each person imports their own
