@@ -551,3 +551,11 @@ PR #57, branch `claude/p5b-install-db`. `ledger install` passes `CONTEXT_LEDGER_
 - Dry run and install refuse alike a path cmd.exe cannot take (`%`, `"`) on Windows; uninstall ignores the value.
 - **Next owner:** a person checks one real install with a custom database against Claude Code and Codex (the tests use stub CLIs). Users who ran install before this card must remove the old registration and install again; the README says how.
 
+## Current checkpoint — P5a Node suites on three systems (2026-11-20)
+
+PR #38, branch `ruslan/p5a-cross-os-ci`. The Node suites, the graph suite and the browser evals run on `ubuntu-latest`, `windows-latest` and `macos-latest`, one job each. Read the P5a section of [the eval log](evals.md).
+
+- **Why Windows hung.** GitHub's Windows runners run as `runneradmin`, the built-in Administrator (RID 500). SDDL spells that SID `LA`, so the P1e token check (`privateToOwner` in `src/token.mjs`) and the P4a key check (`daclAllowsOnly` in `src/sign.mjs`) refused every file they had just made private, every server start failed, and one routes test then waited forever on a child that had exited. A one-off diagnostic job confirmed the spelling (`O:LA…D:P(A;;FA;;;LA)`).
+- **Fix.** Both checks ask PowerShell how SDDL spells the current account (from a descriptor built in memory from the SID; the key check falls back to the SID if PowerShell refuses) and accept that spelling like the SID. The test helper `restrictToOwner` writes one owner-only descriptor, since an elevated administrator's new files carry explicit default entries and belong to Administrators. Waits on server children fail when the child exits, the test MCP client waits 45 s for the slow first call, and CI runs `node --test` with a five-minute limit per file.
+- **Review:** five Codex rounds, each finding fixed or recorded in the P5a section of the eval log.
+- **Next owner:** nothing open on this card. If a new Windows-only failure shows up in CI and not locally, suspect the runner account first: it is an elevated administrator, unlike most developer machines.

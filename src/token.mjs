@@ -61,6 +61,7 @@ const windows = process.platform === 'win32';
 const powershell = () => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const runTool = promisify(execFile);
 const sidPattern = /^S-1-[0-9]+(?:-[0-9]+)+$/u;
+const aliasPattern = /^[A-Z]{2}$/u;
 const pathVariable = 'CONTEXT_LEDGER_PRIVATE_FILE';
 // Exit codes of the write script: the path already names something (nothing was created,
 // so nothing is removed), or a later step failed (the new file was emptied through its
@@ -69,7 +70,13 @@ const createCollision = 3;
 const writeFailed = 4;
 // Exit code of the read script for a handle that is not a small regular file.
 const notATokenFile = 5;
-const powershellLines = lines => ["$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'", ...lines].join('\n');
+// SDDL writes some SIDs as two-letter aliases: the built-in Administrator account (RID
+// 500, which GitHub's Windows runners use) is "LA", not its S-1-5-21-... form. So each
+// script also prints how SDDL spells the current user, from a descriptor that holds only
+// that SID as owner, and the check accepts either spelling (card P5a).
+const powershellLines = lines => ["$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'",
+  "function ownAlias($value) { (New-Object System.Security.AccessControl.RawSecurityDescriptor ('O:' + $value)).GetSddlForm([System.Security.AccessControl.AccessControlSections]::Owner).Substring(2) }",
+  ...lines].join('\n');
 const writeScript = powershellLines([
   '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
   '$security = New-Object System.Security.AccessControl.FileSecurity',
@@ -86,7 +93,7 @@ const writeScript = powershellLines([
   '  $record = [System.Text.Encoding]::UTF8.GetBytes([Console]::In.ReadLine() + "`n")',
   '  $stream.Write($record, 0, $record.Length)',
   '  $stream.Flush()',
-  "  [Console]::Out.Write($sid.Value + \"`n\" + $found.GetSecurityDescriptorSddlForm('Owner, Group, Access') + \"`n\")",
+  "  [Console]::Out.Write($sid.Value + \"`n\" + (ownAlias $sid.Value) + \"`n\" + $found.GetSecurityDescriptorSddlForm('Owner, Group, Access') + \"`n\")",
   '} catch {',
   '  $stream.SetLength(0)',
   `  exit ${writeFailed}`,
@@ -110,7 +117,7 @@ const readScript = powershellLines([
   '    $deadline = [DateTime]::UtcNow.AddSeconds(10)',
   '    while ((Test-Path -LiteralPath $env:CONTEXT_LEDGER_TEST_READ_MARKER) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }',
   '  }',
-  '  [Console]::Out.Write($sid + "`n" + $sddl + "`n" + [System.Convert]::ToBase64String($buffer, 0, $count) + "`n")',
+  '  [Console]::Out.Write($sid + "`n" + (ownAlias $sid) + "`n" + $sddl + "`n" + [System.Convert]::ToBase64String($buffer, 0, $count) + "`n")',
   '} finally { $stream.Dispose() }',
 ]);
 const powershellArguments = script => ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
@@ -120,21 +127,25 @@ const powershellOptions = path => ({ env: { ...process.env, [pathVariable]: path
  * True when an SDDL security descriptor (owner, optional group, DACL) has this SID as
  * owner and a DACL whose every allow entry is for this SID. Deny entries are harmless.
  * Another owner (who may always change the DACL), a NULL DACL (anyone), a conditional
- * or object entry, or text in any other shape is false.
+ * or object entry, or text in any other shape is false. `alias` is how SDDL spells this
+ * SID (ownAlias above): the SID itself, or a two-letter alias that names the same account.
  */
-export function privateToOwner(sddl, sid) {
+export function privateToOwner(sddl, sid, alias = sid) {
   if (typeof sddl !== 'string' || typeof sid !== 'string' || !sidPattern.test(sid)) return false;
+  if (alias !== sid && !(typeof alias === 'string' && aliasPattern.test(alias))) return false;
+  const self = new Set([sid, alias]);
   const parts = /^O:([A-Z]{2}|S-1-[0-9-]+)(?:G:(?:[A-Z]{2}|S-1-[0-9-]+))?D:[A-Z]*((?:\([^()]*\))*)(?:S:.*)?$/u.exec(sddl.trim());
-  if (!parts || parts[1] !== sid) return false;
+  if (!parts || !self.has(parts[1])) return false;
   const entries = [...parts[2].matchAll(/\(([^()]*)\)/gu)].map(entry => entry[1].split(';'));
-  return entries.every(fields => fields[0] === 'D' || (fields[0] === 'A' && fields.length === 6 && fields[5] === sid));
+  return entries.every(fields => fields[0] === 'D' || (fields[0] === 'A' && fields.length === 6 && self.has(fields[5])));
 }
 
-/** The lines the scripts print: { sid, sddl, bytes }, or undefined. */
+/** The lines the scripts print: { sid, alias, sddl, bytes }, or undefined. */
 function described(output) {
-  const [sid, sddl, base64] = String(output).split(/\r?\n/u);
+  const [sid, alias, sddl, base64] = String(output).split(/\r?\n/u);
   if (!sid || !sddl || !sidPattern.test(sid)) return undefined;
-  return { sid, sddl, bytes: base64 === undefined ? undefined : Buffer.from(base64, 'base64') };
+  if (alias !== sid && !aliasPattern.test(alias ?? '')) return undefined;
+  return { sid, alias, sddl, bytes: base64 === undefined ? undefined : Buffer.from(base64, 'base64') };
 }
 
 /** Windows: creates the token file private from the start and writes the record through the checked handle. */
@@ -146,7 +157,7 @@ function writePrivateFileSync(path, line) {
     throw new Error('The token file could not be written privately.');
   }
   const found = described(output);
-  if (!found || !privateToOwner(found.sddl, found.sid)) throw new Error(failedWrite(path, line));
+  if (!found || !privateToOwner(found.sddl, found.sid, found.alias)) throw new Error(failedWrite(path, line));
 }
 
 // Fixed sentences for a Windows write that failed after the record was written: they
@@ -203,7 +214,7 @@ export function emptyIfOwnRecord(path, line) {
   return result;
 }
 
-/** Windows: { sid, sddl, bytes } of a file, all read through one handle. */
+/** Windows: { sid, alias, sddl, bytes } of a file, all read through one handle. */
 async function readPrivateFile(path) {
   const { stdout } = await runTool(powershell(), powershellArguments(readScript), powershellOptions(path));
   const found = described(stdout);
@@ -315,7 +326,7 @@ export async function readTokenFile(path) {
     if (windows) {
       // One open, in PowerShell: type, size, owner, ACL and content all come from it.
       const found = await readPrivateFile(path);
-      if (!privateToOwner(found.sddl, found.sid)) return { exposed: true };
+      if (!privateToOwner(found.sddl, found.sid, found.alias)) return { exposed: true };
       bytes = found.bytes;
     } else {
       file = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
