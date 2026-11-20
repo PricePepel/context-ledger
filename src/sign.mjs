@@ -246,11 +246,14 @@ const keyAccessHelp = 'Other accounts can read the signing key file. Restrict it
  * flags P, AI and AR, and plain allow (A) and deny (D) entries of six fields. Deny entries
  * are skipped. A null DACL, any other flag or entry type, or an allow entry for any other
  * account (Everyone, Users, another user) gives false, so the check fails closed.
+ * `alias` is how SDDL spells `sid` (see accountSpelling): the SID itself, or a two-letter
+ * alias such as LA for the built-in Administrator account (card P5a).
  */
-export function daclAllowsOnly(sddl, sid) {
+export function daclAllowsOnly(sddl, sid, alias = sid) {
   const match = /^D:((?:P|AI|AR)*)((?:\([^()]*\))*)$/.exec(sddl);
   if (!match) return false;
-  const allowed = new Set([sid, ...rootLike]);
+  if (alias !== sid && !(typeof alias === 'string' && /^[A-Z]{2}$/.test(alias))) return false;
+  const allowed = new Set([sid, alias, ...rootLike]);
   for (const [, ace] of match[2].matchAll(/\(([^()]*)\)/g)) {
     const fields = ace.split(';');
     if (fields.length !== 6 || (fields[0] !== 'A' && fields[0] !== 'D')) return false;
@@ -280,19 +283,51 @@ async function currentAccountSid() {
   return sid;
 }
 
-// The file's DACL in SDDL form, which does not depend on the display language. icacls
-// /save writes it to a file, so it goes into a new temporary folder that is first
-// restricted to this account.
+/**
+ * The DACL in what icacls /save wrote for one file: exactly one record, a line with the
+ * file's name exactly as it was asked for and a line with its DACL. Any
+ * other shape (another name, extra records) gives '', which no check accepts (P5a review).
+ */
+export function parseSavedAcl(text, name) {
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const lines = body.split(/\r?\n/);
+  while (lines.length && lines.at(-1) === '') lines.pop();
+  if (lines.length !== 2 || lines[0] !== name) return '';
+  return lines[1];
+}
+
+// How SDDL spells this account: its SID, or a two-letter alias such as LA for the
+// built-in Administrator, which GitHub's Windows runners use (card P5a). PowerShell
+// builds a descriptor in memory that holds only this SID as owner and prints its SDDL,
+// so nothing on disk is read. The SID goes in an environment variable. A failure (for
+// example PowerShell in Constrained Language mode) or output of any other shape leaves
+// the SID as the only spelling, so the check fails closed but still works for every
+// account that SDDL writes as its SID.
+const spellingScript = "$ErrorActionPreference = 'Stop'; " +
+  "(New-Object System.Security.AccessControl.RawSecurityDescriptor ('O:' + $env:CONTEXT_LEDGER_SID)).GetSddlForm('Owner')";
+function accountSpelling(sid) {
+  const tool = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(spellingScript, 'utf16le').toString('base64')];
+  return new Promise(done => {
+    execFile(tool, args, { encoding: 'latin1', windowsHide: true, timeout: 30000, env: { ...process.env, CONTEXT_LEDGER_SID: sid } }, (error, stdout) => {
+      if (error) return done(sid);
+      const spelt = /^O:([A-Z]{2}|S-1-\d+(?:-\d+)+)\s*$/.exec(stdout)?.[1];
+      done(spelt && (spelt === sid || /^[A-Z]{2}$/.test(spelt)) ? spelt : sid);
+    });
+  });
+}
+
+// The file's DACL in SDDL form, which does not depend on the display language, and how
+// SDDL spells this account: { dacl, alias }. icacls /save writes to a file, so it goes
+// into a new temporary folder that is first restricted to this account.
 async function readDacl(path, sid) {
+  const alias = await accountSpelling(sid);
   const folder = await mkdtemp(join(tmpdir(), 'ledger-acl-'));
   try {
     await runWindowsTool('icacls.exe', [folder, '/inheritance:r', '/grant:r', '*' + sid + ':(OI)(CI)F']);
     const saved = join(folder, 'acl');
     await runWindowsTool('icacls.exe', [resolve(path), '/save', saved]);
-    let text = (await readFile(saved)).toString('utf16le');
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    // The first line names the file, the second holds the DACL.
-    return text.split(/\r?\n/)[1] ?? '';
+    return { dacl: parseSavedAcl((await readFile(saved)).toString('utf16le'), basename(resolve(path))), alias };
   } finally {
     await rm(folder, { recursive: true, force: true }).catch(() => {});
   }
@@ -304,7 +339,8 @@ async function restrictToCurrentAccount(path, grant) {
   try {
     const sid = await currentAccountSid();
     await runWindowsTool('icacls.exe', [resolve(path), '/inheritance:r', '/grant:r', '*' + sid + ':' + grant]);
-    if (daclAllowsOnly(await readDacl(path, sid), sid)) return;
+    const { dacl, alias } = await readDacl(path, sid);
+    if (daclAllowsOnly(dacl, sid, alias)) return;
   } catch {
     // Reported below with one fixed message.
   }
@@ -322,7 +358,8 @@ async function checkCurrentAccountOnly(path, ino, hooks) {
     const sid = await currentAccountSid();
     await hooks.beforeAclCheck?.(path);
     const before = await lstat(path, { bigint: true });
-    allowsOnly = daclAllowsOnly(await readDacl(path, sid), sid);
+    const { dacl, alias } = await readDacl(path, sid);
+    allowsOnly = daclAllowsOnly(dacl, sid, alias);
     const after = await lstat(path, { bigint: true });
     entry = { file: before.isFile() && after.isFile(), same: before.ino === ino && after.ino === ino };
   } catch {

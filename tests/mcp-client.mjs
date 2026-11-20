@@ -60,7 +60,10 @@ export function startMcp(port, env = {}) {
     send(message) {
       child.stdin.write(JSON.stringify(message) + '\n');
     },
-    waitFor(match, timeout = 5000) {
+    // P5a: 45 s, since on the Windows runner the first call (adapter start, then a
+    // PowerShell token read with a 30 s limit) can take over 5 s. A test that waits on
+    // purpose passes its own.
+    waitFor(match, timeout = 45_000) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Timed out waiting for an MCP message.')), timeout);
         waiters.push({ match, resolve: value => { clearTimeout(timer); resolve(value); } });
