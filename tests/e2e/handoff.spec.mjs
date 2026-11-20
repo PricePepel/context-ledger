@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.mjs';
 
 const execute = promisify(execFile);
 const run = (baseURL, ...args) => execute(process.execPath, ['src/cli.mjs', ...args], {
-  env: { ...process.env, PORT: new URL(baseURL).port },
+  env: { ...process.env, PORT: new URL(baseURL).port, CONTEXT_LEDGER_DB: process.env.CONTEXT_LEDGER_E2E_DB },
 });
 
 test('exports the same cited session the browser can find', async ({ page, request, baseURL }) => {

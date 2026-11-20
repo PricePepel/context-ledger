@@ -2,12 +2,12 @@ import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures.mjs';
 
 const execute = promisify(execFile);
 
 const runGraph = (baseURL, ...args) => execute(process.execPath, ['src/cli.mjs', 'graph', ...args], {
-  env: { ...process.env, PORT: new URL(baseURL).port },
+  env: { ...process.env, PORT: new URL(baseURL).port, CONTEXT_LEDGER_DB: process.env.CONTEXT_LEDGER_E2E_DB },
 });
 
 async function importSession(request, baseURL) {

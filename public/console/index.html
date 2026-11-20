@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTM Console</title>
+  <link rel="stylesheet" href="/console/console.css">
+  <link rel="stylesheet" href="/console/office.css">
+  <script type="module" src="/console/console.mjs"></script>
+</head>
+<body>
+  <header class="bar">
+    <span class="brand" aria-hidden="true">CTM</span>
+    <h1>Console</h1>
+    <span id="mode" class="mode">Live</span>
+    <p id="status" class="status" role="status">Connecting to the ledger…</p>
+    <button id="replay" class="replay" type="button" hidden>Replay demo</button>
+    <a class="bar-link" href="/">Library</a>
+  </header>
+
+  <main class="console">
+    <section class="part office" aria-labelledby="office-heading">
+      <h2 id="office-heading">Agents</h2>
+      <svg id="office" aria-labelledby="office-heading"></svg>
+    </section>
+
+    <section class="part brain" aria-labelledby="brain-heading">
+      <h2 id="brain-heading">What they put in the ledger</h2>
+      <p class="hint">Click any node to see the line that proves it.</p>
+      <div id="brain" class="brain-box"></div>
+    </section>
+
+    <aside id="evidence" class="part evidence" aria-labelledby="evidence-heading">
+      <p class="eyebrow">Evidence</p>
+      <h2 id="evidence-heading" aria-live="polite">Pick a node</h2>
+      <p id="evidence-meta" class="evidence-meta"></p>
+      <p id="evidence-status" class="evidence-status" role="status">The cited transcript turn opens here, with the cited lines highlighted.</p>
+      <ol id="evidence-turns" class="turns" aria-label="Cited transcript turns"></ol>
+      <h3 class="activity-heading">Activity</h3>
+      <ol id="activity" class="activity" aria-label="Activity" aria-live="polite"></ol>
+    </aside>
+
+    <section class="part numbers" aria-label="Numbers">
+      <div class="tile">
+        <p class="tile-value" id="n-handoffs">0</p>
+        <p class="tile-label">Hand-offs today</p>
+        <p class="tile-note">graphs published today</p>
+      </div>
+      <div class="tile">
+        <p class="tile-value" id="n-tokens">0</p>
+        <p class="tile-label">Tokens saved (estimate)</p>
+        <p class="tile-note" id="n-tokens-note">transcript vs graph briefing, characters ÷ 4</p>
+      </div>
+      <div class="tile">
+        <p class="tile-value" id="n-superseded">0</p>
+        <p class="tile-label">Superseded decisions</p>
+        <p class="tile-note">replaced by a later decision</p>
+      </div>
+    </section>
+  </main>
+
+  <svg id="flash-layer" class="flash-layer" aria-hidden="true"></svg>
+</body>
+</html>

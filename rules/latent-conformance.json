@@ -2,6 +2,10 @@
   "about": "Cases that both languages must decide the same way. tests/latent-rules.test.mjs runs them against src/latent.mjs and evals/latent/grade.mjs; runtime/tests/test_rule_conformance.py runs them against runtime/latent_pool and runtime/tests/grade.py. Invisible characters are written as JSON escapes. Expected values are today's behaviour (cycle 10), except where the two languages disagreed before H4; those cases carry a note.",
   "secretPaths": [
     { "path": ".env", "secret": true },
+    { "path": ".context-ledger/ledger.sqlite.token", "secret": true, "note": "P1e: the ledger's access token file before it was per port" },
+    { "path": ".context-ledger/ledger.sqlite.4317.token", "secret": true, "note": "P1e: the ledger's access token file for port 4317" },
+    { "path": "data/LEDGER.SQLITE.TOKEN", "secret": true, "note": "suffix case is folded" },
+    { "path": "docs/token.md", "secret": false, "note": "only the .token suffix is secret" },
     { "path": ".ENV", "secret": true, "note": "case is folded" },
     { "path": "a/.env", "secret": true },
     { "path": ".env.local", "secret": true },

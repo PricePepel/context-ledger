@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
 
 const root = fileURLToPath(new URL('../evals/latent/fixture', import.meta.url));
@@ -17,7 +18,8 @@ async function startLedger(env) {
   for await (const chunk of child.stdout) {
     output += chunk;
     const match = output.match(/listening at (http:\/\/127\.0\.0\.1:(\d+))/);
-    if (match) return { origin: match[1], port: Number(match[2]), stop: async () => { child.kill(); await once(child, 'exit'); } };
+    if (match) return { origin: match[1], port: Number(match[2]), headers: bearer(await ledgerToken(env.CONTEXT_LEDGER_DB, Number(match[2]))),
+      mcpEnv: { CONTEXT_LEDGER_DB: env.CONTEXT_LEDGER_DB }, stop: async () => { child.kill(); await once(child, 'exit'); } };
   }
   throw new Error('Ledger exited before listening: ' + output);
 }
@@ -63,12 +65,12 @@ test('the ledger proxies latent reads, validates slices and falls back to text o
 
   const body = { paths: ['src/config.js', 'src/payments.js'], question: 'How are failed charges retried?' };
   const foreign = await fetch(ledger.origin + '/api/latent/read', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://foreign.example' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://foreign.example', ...ledger.headers }, body: JSON.stringify(body),
   });
   assert.equal(foreign.status, 403);
   assert.equal(seen.length, 0);
 
-  client = startMcp(ledger.port);
+  client = startMcp(ledger.port, ledger.mcpEnv);
   const result = await client.call(1, 'latent_read', body);
   assert.equal(result.isError, undefined, result.content[0].text);
   assert.match(result.content[0].text, /^Model answer \(unchecked prose; trust the findings, read cited lines before acting\): A failed charge is retried 3 times/mu);
@@ -84,7 +86,7 @@ test('the ledger proxies latent reads, validates slices and falls back to text o
 
   // Runtime down: the same tool returns numbered file text for the closed model to read.
   downLedger = await startLedger({ ...env, CONTEXT_LEDGER_DB: join(directory, 'b.sqlite'), LATENT_URL: 'http://127.0.0.1:9' });
-  client = startMcp(downLedger.port);
+  client = startMcp(downLedger.port, downLedger.mcpEnv);
   const fallback = await client.call(3, 'latent_read', { paths: ['src/notify.js'], question: 'When is an SMS sent?' });
   assert.equal(fallback.isError, undefined);
   assert.match(fallback.content[0].text, /not running\. Read the numbered files below\./u);
@@ -124,7 +126,7 @@ test('latent_transfer over MCP: the ledger forwards, flattens the answer, and fa
   });
   ledger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'a.sqlite'), LATENT_ROOT: root,
     LATENT_URL: `http://127.0.0.1:${runtime.address().port}` });
-  client = startMcp(ledger.port);
+  client = startMcp(ledger.port, ledger.mcpEnv);
   const pair = { sender: 'Qwen/Qwen2.5-0.5B-Instruct', receiver: 'HuggingFaceTB/SmolLM2-360M-Instruct' };
 
   const result = await client.call(1, 'latent_transfer', { ...pair, paths: ['src/notify.js'], question: 'When is an SMS sent?' });
@@ -169,7 +171,7 @@ test('latent_team over MCP: one flattened unverified answer, and a clear message
     }
   });
   ledger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'a.sqlite'), LATENT_URL: `http://127.0.0.1:${runtime.address().port}` });
-  client = startMcp(ledger.port);
+  client = startMcp(ledger.port, ledger.mcpEnv);
   const result = await client.call(1, 'latent_team', { question: 'Janet has 16 eggs...', latentSteps: 40 });
   assert.equal(result.isError, undefined, result.content[0].text);
   assert.equal(result.content[0].text,
@@ -179,7 +181,7 @@ test('latent_team over MCP: one flattened unverified answer, and a clear message
   await client.close();
 
   downLedger = await startLedger({ CONTEXT_LEDGER_DB: join(directory, 'b.sqlite'), LATENT_URL: 'http://127.0.0.1:9' });
-  client = startMcp(downLedger.port);
+  client = startMcp(downLedger.port, downLedger.mcpEnv);
   const down = await client.call(2, 'latent_team', { question: 'q' });
   assert.equal(down.isError, undefined);
   assert.match(down.content[0].text, /not running\. Answer the question yourself\./u);
