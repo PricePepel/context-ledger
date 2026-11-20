@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { handoffMarkdown } from '../src/handoff.mjs';
 import {
-  canonicalJson, daclAllowsOnly, generateSigningKey, keyFingerprint, loadSigningKey, normalizeFingerprint, verifyBundle,
+  canonicalJson, daclAllowsOnly, generateSigningKey, keyFingerprint, loadSigningKey, normalizeFingerprint, parseSavedAcl, verifyBundle,
   writeBundle,
 } from '../src/sign.mjs';
 import { openStore } from '../src/store.mjs';
@@ -999,4 +999,21 @@ test('handoff --sign does not create the target of a dangling database symlink',
   assert.equal(result.code, 1);
   assert.match(result.stderr, /^Cannot open the ledger database\.$/m);
   assert.ok(!existsSync(target));
+});
+
+test('P5a review: an icacls /save record is read only when it is one record for the expected file', () => {
+  const bom = String.fromCharCode(0xfeff);
+  const crlf = String.fromCharCode(13, 10);
+  const dacl = 'D:PAI(A;;FA;;;S-1-5-21-1-2-3-1001)';
+  assert.equal(parseSavedAcl(bom + 'signing-key.pem' + crlf + dacl + crlf, 'signing-key.pem'), dacl);
+  assert.equal(parseSavedAcl('Signing-Key.PEM' + crlf + dacl + crlf, 'signing-key.pem'), dacl, 'Windows names ignore case');
+  for (const text of [
+    'other.pem' + crlf + dacl + crlf, // another file's record
+    'signing-key.pem' + crlf + dacl + crlf + 'other.pem' + crlf + 'D:PAI(A;;FA;;;WD)' + crlf, // extra records
+    'signing-key.pem' + crlf, // no DACL line
+    dacl + crlf, // no name line
+    '',
+  ]) {
+    assert.equal(parseSavedAcl(text, 'signing-key.pem'), '', JSON.stringify(text));
+  }
 });
