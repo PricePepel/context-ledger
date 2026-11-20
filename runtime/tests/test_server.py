@@ -413,13 +413,27 @@ class SystemRoleRefusedTest(unittest.TestCase):
     def test_the_retry_gets_only_the_rest_of_the_call_budget(self):
         # Codex review of 104c41e: the retry used to get the full timeout again, so a
         # slow refusal could hold a pool slot past the request deadline.
-        from latent_pool import ApiError
-        from latent_pool.vllm_client import VllmClient
-        client = VllmClient(self.scripted([(0.3, 400, self.REFUSAL), (0.3, 200, self.OK)]), MODEL, timeout=10)
-        with self.assertRaises(ApiError) as caught:
-            client.chat("system", "ROLE: reader\nq", 8, timeout=0.45)
-        self.assertEqual(caught.exception.status, 502)
+        from unittest import mock
+        from latent_pool import ModelTimeout
+        import latent_pool.vllm_client as vllm_client
+        # H8: the budget covers the whole call, so the refusal lands well inside it
+        # (0.1 of 0.45 s) and the retry, which needs 0.4 s, cannot fit in what is left.
+        client = vllm_client.VllmClient(self.scripted([(0.1, 400, self.REFUSAL), (0.4, 200, self.OK)]), MODEL, timeout=10)
+        attempts = []
+        real_open = vllm_client._open
+
+        def recording_open(request, timeout, watch):
+            attempts.append((json.loads(request.data)["messages"], timeout))
+            return real_open(request, timeout=timeout, watch=watch)
+
+        with mock.patch.object(vllm_client, "_open", recording_open):
+            with self.assertRaises(ModelTimeout):
+                client.chat("system", "ROLE: reader\nq", 8, timeout=0.45)
         self.assertTrue(client.fold_system)
+        # Review of H8: the retry really ran, folded, with less time than the first try.
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual([message["role"] for message in attempts[1][0]], ["user"])
+        self.assertLess(attempts[1][1], attempts[0][1])
 
     def test_the_receipt_time_covers_the_refused_attempt(self):
         from latent_pool.vllm_client import VllmClient

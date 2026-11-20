@@ -1,0 +1,72 @@
+/* CTM Console office. Theme via the custom properties on .office-svg. */
+.office-svg {
+  --office-ink: #1f2328; --office-muted: #57606a; --office-paper: #fff; --office-chip: #1f2328;
+  --office-edge: #d6d2c8; --office-edge-side: #c6c1b5; --office-grid: rgba(31, 35, 40, 0.07);
+  --office-skin: #f6dcc3; --office-dark: #3b4048; --office-laptop: #3b4048; --office-desk: #a4825f;
+  --claude-accent: #d9773b; --claude-ink: #9a4615; --claude-floor: #faf5ee; --claude-wall: #f1e6d9;
+  --codex-accent: #1f8fa3; --codex-ink: #0f6474; --codex-floor: #f1f7f8; --codex-wall: #dcebee;
+  display: block; width: 100%; height: auto; overflow: visible;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.office-room-claude { --accent: var(--claude-accent); --accent-ink: var(--claude-ink); --floor: var(--claude-floor); --wall: var(--claude-wall); }
+.office-room-codex { --accent: var(--codex-accent); --accent-ink: var(--codex-ink); --floor: var(--codex-floor); --wall: var(--codex-wall); }
+
+.office-wall { fill: var(--wall); }
+.office-trim, .office-dot, .oa-coat, .oa-logo { fill: var(--accent); }
+.office-floor { fill: var(--floor); }
+.office-edge { fill: var(--office-edge); }
+.office-edge-side { fill: var(--office-edge-side); }
+.office-grid { fill: none; stroke: var(--office-grid); }
+.office-room-name { fill: var(--office-ink); font-size: 13px; font-weight: 650; }
+.office-room-count { fill: var(--office-muted); font-size: 11px; }
+.office-empty { fill: var(--office-muted); font-size: 12px; font-style: italic; opacity: 0.75; }
+.office-room.has-agents .office-empty, .office-more { display: none; }
+.office-more.is-shown { display: inline; }
+.office-more rect { fill: var(--office-chip); }
+.office-more text { fill: var(--office-paper); font-size: 11px; font-weight: 650; }
+
+.oa-shadow { fill: rgba(31, 35, 40, 0.12); }
+.oa-leg, .oa-desk-leg { stroke: var(--office-dark); stroke-width: 3; stroke-linecap: round; }
+.oa-page { fill: var(--office-paper); }
+.oa-page-line { stroke: var(--accent-ink); }
+.oa-head { fill: var(--office-skin); stroke: var(--accent-ink); }
+.oa-eye { stroke: var(--office-ink); stroke-width: 1.6; stroke-linecap: round; }
+.oa-glow { fill: var(--accent); opacity: 0; }
+.oa-halo { fill: var(--accent); opacity: 0.25; }
+.oa-laptop { fill: var(--office-laptop); }
+.oa-desk-top { fill: var(--office-desk); }
+.oa-bubble rect, .oa-bubble path { fill: var(--office-paper); stroke: var(--accent-ink); stroke-width: 1.2; }
+.oa-q { fill: var(--accent-ink); font-size: 12px; font-weight: 800; }
+.oa-name { fill: var(--office-ink); font-size: 10px; font-weight: 650; }
+.oa-state { fill: var(--office-muted); font-size: 8.5px; }
+.oa-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; opacity: 0; }
+
+.office-agent:not(.state-working) .oa-desk, .office-agent:not(.state-waiting) .oa-bubble { display: none; }
+.state-working .oa-glow { opacity: 0.18; }
+.state-working .oa-state, .state-waiting .oa-state { fill: var(--accent-ink); font-weight: 650; }
+.state-waiting .oa-state { font-style: italic; }
+.state-idle .oa-body { opacity: 0.45; }
+.state-idle .oa-name { fill: var(--office-muted); }
+.office-agent.is-pulse .oa-ring { opacity: 0.9; }
+.office-more.is-pulse rect { stroke: var(--office-muted); stroke-width: 3; }
+
+.office-svg.is-narrow .office-room-name { font-size: 15px; }
+.office-svg.is-narrow .office-room-count, .office-svg.is-narrow .oa-name { font-size: 12px; }
+.office-svg.is-narrow .oa-state { font-size: 10px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .office-agent { transition: transform 0.45s ease; }
+  .oa-fig, .oa-bubble, .oa-ring { transform-box: fill-box; }
+  .state-working .oa-fig { animation: oa-bob 0.7s ease-in-out infinite alternate; }
+  .state-working .oa-halo { animation: oa-flicker 1.8s ease-in-out infinite; }
+  .state-waiting .oa-bubble { transform-origin: 20% 100%; animation: oa-ask 1.6s ease-in-out infinite; }
+  .office-agent.is-new .oa-body { animation: oa-enter 0.45s ease-out both; }
+  .office-agent.is-pulse .oa-ring { transform-origin: center; animation: oa-ring 1.2s ease-out both; }
+}
+@keyframes oa-bob { to { transform: translateY(-1.6px); } }
+@keyframes oa-flicker { 50% { opacity: 0.5; } }
+@keyframes oa-ask { 50% { transform: scale(1.14); } }
+@keyframes oa-enter { from { opacity: 0; transform: translateY(8px); } }
+@keyframes oa-ring { from { transform: scale(0.6); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
+
+/* The console is light only for v0; a dark theme belongs with the brand card (U2). */

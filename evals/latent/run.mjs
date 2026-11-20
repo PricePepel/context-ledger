@@ -4,6 +4,8 @@
 // or evals/latent/fixture-library for the fresh set.
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
+import { inlineText } from '../../src/text.mjs';
+import { tokenForUrl } from '../../src/token.mjs';
 import { gradeSlice, summarize } from './grade.mjs';
 
 const { values } = parseArgs({
@@ -12,19 +14,23 @@ const { values } = parseArgs({
 const sets = { questions: './questions.json', heldout: './heldout.json', fresh: './fresh.json' };
 if (!sets[values.set]) throw new Error('--set must be questions, heldout or fresh.');
 const ledger = process.env.LEDGER ?? 'http://127.0.0.1:4317';
+// The ledger's access token, from the file next to CONTEXT_LEDGER_DB (the repository's
+// .context-ledger/ledger.sqlite by default). It is sent only when LEDGER is plain http
+// on 127.0.0.1 or localhost at the port the file names, never to another host.
+const token = await tokenForUrl(ledger);
 const set = JSON.parse(await readFile(new URL(sets[values.set], import.meta.url), 'utf8'));
 const repeat = Math.max(1, Number(values.repeat) || 1);
 
 async function ask(question) {
   const response = await fetch(`${ledger}/api/latent/read`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: ledger },
+    headers: { 'Content-Type': 'application/json', Origin: ledger, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ paths: set.paths, question: question.question, budgetTokens: 400, workers: 3 }),
     signal: AbortSignal.timeout(300_000),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(`${question.id}: HTTP ${response.status} ${data.error}`);
-  if (data.mode !== 'latent') throw new Error(`${question.id}: runtime unavailable (${data.reason})`);
+  if (!response.ok) throw new Error(`${question.id}: HTTP ${response.status} ${inlineText(String(data.error)).slice(0, 200)}`);
+  if (data.mode !== 'latent') throw new Error(`${question.id}: runtime unavailable (${inlineText(String(data.reason)).slice(0, 200)})`);
   return data;
 }
 

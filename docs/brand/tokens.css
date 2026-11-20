@@ -1,0 +1,62 @@
+/* CTM brand tokens (card U2). The brand colours are the CTM site's
+ * (src/styles/tokens.css in the CTM repository): Deep Charcoal, Electric Violet, Acid
+ * Lime and Paper, with Soft Violet for violet text on Charcoal. The light set is for the
+ * console and other local pages; the dark set matches the site. Every pair named in
+ * docs/brand/brand.md passes WCAG AA (4.5:1); tests/brand.test.mjs checks them. */
+:root {
+  /* Brand */
+  --ctm-charcoal: #18181c;
+  --ctm-violet: #723bfa;
+  --ctm-violet-soft: #9e7bff;
+  --ctm-lime: #b9f500;      /* fills and decoration only, never under white text */
+  --ctm-paper: #f4f3f7;
+
+  /* Light set (console) */
+  --ctm-bg: #f4f3f7;
+  --ctm-surface: #ffffff;
+  --ctm-text: #18181c;
+  --ctm-text-2: #56535e;
+  --ctm-line: #dcd9e3;
+  --ctm-link: #723bfa;
+  --ctm-link-hover: #5b2bd4;
+  --ctm-button-fill: #723bfa;
+  --ctm-button-fill-hover: #5b2bd4;
+  --ctm-button-text: #ffffff;
+
+  /* Node marks (card G7): text on its own fill, always with the word */
+  --ctm-quoted: #1b6e46;
+  --ctm-quoted-fill: #e3f4ea;
+  --ctm-inferred: #8a4f00;
+  --ctm-inferred-fill: #fbeed9;
+
+  /* Agent states in the console office: always with the word and Pip's pose */
+  --ctm-working: #723bfa;
+  --ctm-waiting: #8a4f00;
+  --ctm-idle: #56535e;
+
+  /* Type: Inter Tight where installed, as on the site; the console loads no web fonts. */
+  --ctm-font-sans: "Inter Tight", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ctm-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Dark set (site, video). Every variable the light set has for text, fills and
+ * buttons is set again here, so nothing light is inherited by mistake. */
+.ctm-dark {
+  --ctm-bg: #18181c;
+  --ctm-surface: #222228;
+  --ctm-text: #f4f3f7;
+  --ctm-text-2: #b7b4c0;
+  --ctm-line: #34343c;
+  --ctm-link: #9e7bff;
+  --ctm-link-hover: #b9a2ff;
+  --ctm-button-fill: #9e7bff;
+  --ctm-button-fill-hover: #b9a2ff;
+  --ctm-button-text: #18181c;
+  --ctm-quoted: #7ccf8f;
+  --ctm-quoted-fill: #1d3a2a;
+  --ctm-inferred: #f2b049;
+  --ctm-inferred-fill: #3d2c12;
+  --ctm-working: #9e7bff;
+  --ctm-waiting: #f2b049;
+  --ctm-idle: #b7b4c0;
+}

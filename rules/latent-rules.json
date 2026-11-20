@@ -5,7 +5,7 @@
     "dirs": [".git", ".ssh", ".aws", ".gnupg", ".docker", ".kube"],
     "names": [".npmrc", ".pypirc", ".netrc", ".pgpass", ".git-credentials", "credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"],
     "prefixes": [".env", "id_rsa", "id_ed25519"],
-    "suffixes": [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"],
+    "suffixes": [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".token"],
     "templates": [".env.example", ".env.sample", ".env.template"]
   },
   "quoteWhitespace": {

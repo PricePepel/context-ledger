@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures.mjs';
 import { aliPacket, importParty, leoPacket, publish } from './party-fixtures.mjs';
 
 const execute = promisify(execFile);
@@ -16,7 +16,7 @@ test('two parties publish linked v2 graphs through the API and CLI', async ({ re
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(packet), 'utf8');
   const { stdout } = await execute(process.execPath, ['src/cli.mjs', 'graph', 'publish', file], {
-    env: { ...process.env, PORT: new URL(baseURL).port },
+    env: { ...process.env, PORT: new URL(baseURL).port, CONTEXT_LEDGER_DB: process.env.CONTEXT_LEDGER_E2E_DB },
   });
   const { graph: leo } = JSON.parse(stdout);
   expect(leo.readyActionIds).toEqual(['record-demo']);

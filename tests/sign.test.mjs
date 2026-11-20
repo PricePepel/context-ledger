@@ -640,7 +640,8 @@ test('terminal messages escape joiners in names and never quote parser or respon
   t.after(() => new Promise(resolve => server.close(resolve)));
   const broken = await run(['handoff', sessionId], { PORT: String(server.address().port) });
   assert.equal(broken.code, 1);
-  assert.equal(broken.stderr, 'Context Ledger returned a response that is not JSON.\n');
+  // The sentence main's CLI uses for any reply that is not JSON (P1d).
+  assert.equal(broken.stderr, 'Context Ledger returned an unexpected response.\n');
 });
 
 // --- Codex review, round 2 -------------------------------------------------------------
