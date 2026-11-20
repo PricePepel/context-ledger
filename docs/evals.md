@@ -4283,3 +4283,16 @@ Each was corrected or narrowed above.
 - `npm run -s test:graph` passes; `node --test tests/*.test.mjs` 191 of 192 pass, 1 skipped; `npx playwright test` 13 of 13.
 - Runtime, `python -m unittest discover -s tests -t .`: 211 tests OK in WSL with torch, and 211 OK with 66 skipped on Windows Python 3.13 without torch.
 - The documented command found that `runtime/tests/test_agent_scale.py` imported `test_latent_training` as a top-level module, the problem H1 fixed in the C14 test. It now imports `tests.test_latent_training`.
+
+## P5b — Install passes the database path (defined 2026-11-20, before the code)
+
+G8's `ledger install` passes a `PORT` other than 4317 to each agent's MCP server, but not `CONTEXT_LEDGER_DB`. Since P1e the MCP adapter finds the ledger's token in the file next to that database, so a ledger started on a custom database is unreachable from the agents: every tool call says there is no token. Synthetic data only: the G8 sandbox (fake home, stub CLIs).
+
+| Eval | Expected |
+| --- | --- |
+| Passed on | With `CONTEXT_LEDGER_DB` set, install adds `CONTEXT_LEDGER_DB=<absolute path>` to both registrations in the place each CLI parses (Claude `-e` before `--scope`, Codex `--env`), beside `PORT` when that is set too. A relative path is resolved against the folder `ledger install` runs in, since the agents start the MCP server elsewhere. |
+| Default unchanged | Unset or empty, nothing is added: the registrations are byte for byte the G8 ones. |
+| Refused | `:memory:` (the server refuses it) and a value with a line break or other control character are refused before any CLI runs, with a fixed sentence. |
+| Dry run | `--dry-run` prints the same commands with the path, escaped. |
+| End to end | The MCP adapter started with the environment the stub recorded reaches a real server on a custom database and port: `session_search` answers instead of saying there is no token. |
+
