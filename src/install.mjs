@@ -66,14 +66,15 @@ function databaseFor(env) {
 }
 
 /** The two agents, with their CLI, instruction file and MCP commands. */
-export function agentTargets(env = process.env) {
+export function agentTargets(env = process.env, mode = 'install') {
   const home = homeOf(env);
   const port = env.PORT && env.PORT !== defaultPort ? env.PORT : undefined;
   if (port !== undefined && (!/^[1-9]\d{0,4}$/u.test(port) || Number(port) > 65535)) throw new InstallError('Invalid PORT.');
   // Card P5b: the MCP adapter finds the ledger's token next to its database (P1e), so a
   // custom database goes to both servers too, as an absolute path: the agents start the
   // adapter in another folder.
-  const database = databaseFor(env);
+  // Uninstall registers nothing, so it does not read the value (P5b review).
+  const database = mode === 'install' ? databaseFor(env) : undefined;
   const pairs = [...(port ? [`PORT=${port}`] : []), ...(database ? [`CONTEXT_LEDGER_DB=${database}`] : [])];
   const server = ['node', mcpPath];
   return {
@@ -95,6 +96,7 @@ export function agentTargets(env = process.env) {
     },
     codex: {
       key: 'codex',
+      env,
       name: 'Codex',
       envName: 'CONTEXT_LEDGER_CODEX_BIN',
       bin: env.CONTEXT_LEDGER_CODEX_BIN || 'codex',
@@ -144,6 +146,19 @@ function isExecutableFile(path, windows) {
   }
 }
 
+const throughCmd = (path, platform) => platform === 'win32' && /\.(?:cmd|bat)$/iu.test(path);
+const unsafeForCmd = (path, args) => [path, ...args].some(arg => /["%\r\n]/u.test(arg));
+
+/**
+ * True when runAgent would refuse these arguments: the CLI is a Windows .cmd or .bat
+ * shim and an argument holds a quote, a percent sign or a line break. A dry run uses it
+ * to report the same refusal as the real run (P5b review: a database path with %).
+ */
+export function refusedByCmd(bin, args, { platform = process.platform, env = process.env } = {}) {
+  const path = findCommand(bin, { platform, env });
+  return Boolean(path) && throughCmd(path, platform) && unsafeForCmd(path, args);
+}
+
 /**
  * Run an agent CLI from the home folder, so no project's MCP configuration applies. On
  * Windows the CLIs are usually .cmd shims, which only cmd.exe can run: each argument is
@@ -157,8 +172,8 @@ export function runAgent(bin, args, { platform = process.platform, env = process
   if (!path) return { missing: true };
   const options = { encoding: 'utf8', env, cwd, timeout: commandTimeoutMs, windowsHide: true };
   let result;
-  if (platform === 'win32' && /\.(?:cmd|bat)$/iu.test(path)) {
-    if ([path, ...args].some(arg => /["%\r\n]/u.test(arg))) return { unsafe: true };
+  if (throughCmd(path, platform)) {
+    if (unsafeForCmd(path, args)) return { unsafe: true };
     const line = [path, ...args].map(arg => `"${arg}"`).join(' ');
     // /s takes the outer quotes off and leaves the line as written.
     result = spawnSync(env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { ...options, windowsVerbatimArguments: true });
@@ -388,6 +403,7 @@ function applyInstructions(plan) {
 }
 
 const failure = result => (result.unsafe ? 'a path holds " or %' : result.detail || `exit status ${result.status}`);
+const unsafeLine = 'a path holds " or %, which cmd.exe cannot be given safely; register the server by hand (see README).';
 const missingLine = (target, what) => `${shown(target.bin)} was not found, so the server was not ${what}. Install the CLI or set its path in ${target.envName}.`;
 
 /** The MCP server step of install. stop: the instruction file is left as it is. */
@@ -399,16 +415,19 @@ function installServer(target, dryRun, run) {
     }
     const state = probeCodex(target, run);
     if (state.missing) return { ok: false, line: missingLine(target, 'registered') };
-    if (state.unsafe) return { ok: false, stop: true, line: 'a path holds " or %, which cmd.exe cannot be given safely; register the server by hand (see README).' };
+    if (state.unsafe) return { ok: false, stop: true, line: unsafeLine };
     if (state.failed) return { ok: false, stop: true, line: `${command(target.get)} failed (${state.detail}).` };
     if (state.present) return { ok: true, line: `${serverName} is already registered; left as it is.` };
+    if (dryRun && refusedByCmd(target.bin, target.add, { env: target.env })) return { ok: false, stop: true, line: unsafeLine };
     if (dryRun) return { ok: true, line: `would run ${command(target.add)}` };
   } else if (dryRun) {
     if (!findCommand(target.bin, { env: target.env })) return { ok: false, line: missingLine(target, 'registered') };
+    if (refusedByCmd(target.bin, target.add, { env: target.env })) return { ok: false, stop: true, line: unsafeLine };
     return { ok: true, line: `would run ${command(target.add)} (Claude Code refuses it when the name is already registered at user scope)` };
   }
   const result = run(target.bin, target.add);
   if (result.missing) return { ok: false, line: missingLine(target, 'registered') };
+  if (result.unsafe) return { ok: false, stop: true, line: unsafeLine };
   if (result.status === 0) return { ok: true, line: `ran ${command(target.add)}` };
   if (target.exists?.test(result.output ?? '')) return { ok: true, line: `${serverName} is already registered; left as it is.` };
   return { ok: false, stop: true, line: `${command(target.add)} failed (${failure(result)}).` };
@@ -461,7 +480,7 @@ function setupOne(target, mode, dryRun, run) {
  * report, one section per agent. `run` replaces runAgent in tests.
  */
 export function setupAgents({ mode, agents = ['claude', 'codex'], dryRun = false, env = process.env, run }) {
-  const targets = agentTargets(env);
+  const targets = agentTargets(env, mode);
   // A relative CODEX_HOME means the same folder to Codex as to the instruction step.
   const childEnv = env.CODEX_HOME ? { ...env, CODEX_HOME: resolve(env.CODEX_HOME) } : env;
   const runner = run ?? ((bin, args) => runAgent(bin, args, { env: childEnv }));

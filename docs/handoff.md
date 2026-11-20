@@ -543,3 +543,11 @@ Next steps:
 
 1. A human reviews the sealed mode in `team.py` (`forward(..., hide=...)`, `chain(..., sealed=True)`). The Codex code review and data check are recorded in the eval log.
 2. On this evidence, the latent hand-off between untrained agents does not carry facts, and adding agents costs accuracy. Any further latent work should first show a sealed hand-off above the floor on the split-facts set, for example with a trained hand-off, before more scale runs.
+
+## Current checkpoint — P5b install passes the database path (2026-11-20)
+
+PR #57, branch `claude/p5b-install-db`. `ledger install` passes `CONTEXT_LEDGER_DB` (absolute) to both agents' MCP servers beside `PORT`, so agents find the P1e token of a ledger on a custom database. Read the P5b section of [the eval log](evals.md).
+
+- Dry run and install refuse alike a path cmd.exe cannot take (`%`, `"`) on Windows; uninstall ignores the value.
+- **Next owner:** a person checks one real install with a custom database against Claude Code and Codex (the tests use stub CLIs). Users who ran install before this card must remove the old registration and install again; the README says how.
+

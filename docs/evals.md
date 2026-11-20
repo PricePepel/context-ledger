@@ -4296,3 +4296,11 @@ G8's `ledger install` passes a `PORT` other than 4317 to each agent's MCP server
 | Dry run | `--dry-run` prints the same commands with the path, escaped. |
 | End to end | The MCP adapter started with the environment the stub recorded reaches a real server on a custom database and port: `session_search` answers instead of saying there is no token. |
 
+**Results — P5b (2026-11-20, Windows):** every row passes. Code in `src/install.mjs`, tests in `tests/install.test.mjs`. Suites: graph 9/9; node 487 pass, 10 skipped; Playwright 27/27; runtime 239 OK, 66 skipped.
+
+- **Codex review, round 1** (of 91dde35): no misplaced argument, no unescaped output, no symlink or `/private` mismatch, unset and empty unchanged. Fixed, each with a test:
+  - (medium) On Windows a database path with `%` or `"` is refused when the CLI is a `.cmd` shim, but the dry run said it would register the server. The dry run now asks the same check (`refusedByCmd`) and prints the same refusal; the install stops before the instruction step, as it did.
+  - (low) Uninstall read `CONTEXT_LEDGER_DB` and stopped on a bad value although it registers nothing. It no longer reads it.
+  - (low) A server registered by an earlier install keeps its settings, so the README now says to remove it and install again after changing `PORT` or `CONTEXT_LEDGER_DB`.
+  - Accepted: (low) the tests use stub CLIs, so they cannot prove that the real Claude Code keeps both `-e` values and Codex both `--env` values. No test runs the real CLIs (the G8 incident); the stubs follow each CLI's documented options, and a person checks a real install.
+

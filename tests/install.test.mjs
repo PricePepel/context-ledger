@@ -399,6 +399,31 @@ test('P5b: a relative CONTEXT_LEDGER_DB is resolved where install runs; empty ad
   }
 });
 
+test('P5b review: a database path cmd.exe cannot take is refused alike by the dry run and the install', { skip: !windows && 'Only Windows runs the CLIs through cmd.exe.' }, t => {
+  for (const name of ['100%.sqlite', 'say"hi.sqlite']) {
+    const box = sandbox(t);
+    box.env.CONTEXT_LEDGER_DB = join(box.root, name);
+    for (const args of [['install', '--dry-run'], ['install']]) {
+      const result = box.ledger(...args);
+      assert.equal(result.status, 1, `${name} ${args}: ${result.stdout}`);
+      assert.equal(result.stdout.match(/a path holds " or %, which cmd\.exe cannot be given safely/gu)?.length, 2, result.stdout);
+      assert.doesNotMatch(result.stdout, /would run|ran /u);
+    }
+    assert.deepEqual(box.writes(), [], 'no add ran');
+    assert.equal(existsSync(box.files.claude), false, 'the instruction step stops with the server step');
+  }
+});
+
+test('P5b review: uninstall does not read CONTEXT_LEDGER_DB, so a bad value cannot stop it', t => {
+  const box = sandbox(t);
+  assert.equal(box.ledger('install').status, 0);
+  box.env.CONTEXT_LEDGER_DB = ':memory:';
+  const result = box.ledger('uninstall');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(existsSync(box.files.claude), false);
+  assert.equal(existsSync(box.files.codex), false);
+});
+
 test('P5b: the adapter started as registered reaches a ledger on a custom database and port', async t => {
   const box = sandbox(t);
   // Its own folder, removed by the one cleanup that first stops the server and adapters
