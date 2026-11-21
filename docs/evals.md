@@ -4411,3 +4411,13 @@ The user's answers of 2026-11-21: prepare the package for npm but do not publish
 **Codex review, round 4** (of d36346a): `dir/pkg.tgz` and the reader fix hold. (medium) npm reads `pkg@1.2.3-foo.tgz` as a local tarball, and (medium) `./~/pkg.tgz` under the home folder; (low) `pkg@x` is a range to npm, and `pkg@1.2.3+build` an exact version. Now no spec ending in a tarball suffix is a registry name (so `@scope/foo.tgz` is refused too), no spec with `~` is written, a tag is lowercase with two or more characters, and an exact version may carry `+build`; each case has an assertion. The rule stays narrow on purpose: a spec it cannot be sure of is refused with the advice to install globally, never rewritten.
 - **CI on Windows** then failed the tarball test: the runner's temporary folder is `C:UsersRUNNER~1…`, and the rule refused every `~`. Only `~` as a whole path part (`~/x`, `./~/x`, `file:~/x`) is refused now; inside a name, as in a Windows short name, it is kept (unit assertion).
 
+## P5e — Launch docs (defined 2026-11-21, before the docs)
+
+| Eval | Expected |
+| --- | --- |
+| Install | The README opens with an Install section: the one-line `npx` start from the GitHub repository, which works today, the same with the npm name once the user publishes it, and a global install. The package name `@pricepepel/context-ledger` and the command `context-ledger` are both named, with why they differ. |
+| First run | It says what `start` prints (the address and a one-time sign-in link), where the data lives (`~/.context-ledger`, `USERPROFILE` on Windows) and how to import a first transcript from the browser or the command line. |
+| Agents | It shows `context-ledger install` (and `--dry-run`), what it registers through `npx` and from a global install, and that agents need the ledger running. |
+| Upgrade and remove | It says how to upgrade (re-run with a newer version; a database is upgraded in place, an older build refuses a newer one), how to remove the agents' blocks (`uninstall`) and the data folder. |
+| Not in this release | It lists what this release leaves out: the license key and paid tier (ADR-13), hosted sync, hash-chained review events and edits (P3), automatic transcript discovery. |
+| Accurate | Every command in the section runs as written: a node test runs each `context-ledger` command the section shows (through the bin, against a temporary home) and checks that the commands it does not run (`npx`, `npm install`) name the right package and bin. |
