@@ -3,7 +3,7 @@
 //
 // Several graphs go into one file (a bundle), because graphify merge-graphs gives each
 // input file its own ID prefix: links between graphs only survive inside one file.
-import { canonicalPacket } from './graph.mjs';
+import { canonicalPacket, nodeArtifacts, nodeLines } from './graph.mjs';
 import { InputError } from './errors.mjs';
 
 // A node is named by its graph's immutable ID and its own ID, so two snapshots of one
@@ -43,7 +43,9 @@ export function nodeLinkBundle(graphs, sessionOf) {
         file_type: fileType(node.kind),
         // The transcript's file name and the cited lines in it: ledger evidence, not a code path.
         source_file: sourceFile,
-        source_location: node.evidenceLines.map(line => `L${line}`).join(', '),
+        // P2b: a version 3 node's resolved lines, then its artifacts.
+        source_location: [...nodeLines(graph, node).map(line => `L${line}`),
+          ...nodeArtifacts(graph, node).map(artifact => `${artifact.kind} ${artifact.repo}@${artifact.ref}`)].join(', '),
         kind: node.kind,
         ...(node.status ? { status: node.status } : {}),
         ...(node.to ? { to: node.to } : {}),

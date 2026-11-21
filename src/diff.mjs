@@ -1,8 +1,9 @@
-// Card G11: what changed between two snapshots of one party's graph. Both are version
-// 2 graphs, so their canonical order is meaningful and the diff follows it.
+// Card G11: what changed between two snapshots of one party's graph. Both are party
+// graphs (version 2 or 3), so their canonical order is meaningful and the diff follows it.
 import { canonicalPacket, compareBy } from './graph.mjs';
 
-const nodeFields = ['kind', 'label', 'status', 'to', 'evidenceLines'];
+// P2b: a version 3 node's citations are its evidence; a field absent on both sides is equal.
+const nodeFields = ['kind', 'label', 'status', 'to', 'evidenceLines', 'evidence'];
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const brief = node => ({ id: node.id, kind: node.kind, label: node.label });
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { diffCounts, diffGraphs } from './diff.mjs';
 import { InputError } from './errors.mjs';
+import { isPartyGraph } from './graph.mjs';
 import { nodeGrounding } from './grounding.mjs';
 
 const hashPattern = /^[a-f0-9]{64}$/u;
@@ -65,7 +66,7 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
     return candidates.flatMap(newest => {
       if (!newest || newest === graph.id) return [];
       const newer = readGraph(newest);
-      if (newer?.packet.version !== 2) return [];
+      if (!isPartyGraph(newer?.packet)) return [];
       // Both snapshots are loaded here, so the diff reads nothing again.
       const { any, ...counts } = diffCounts(diffGraphs(graph, newer));
       return [{ party, graphId: newest, fromGraphId: graph.id, sameSession: newer.packet.sessionId === sessionId, changed: any, counts }];
@@ -146,7 +147,7 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
       if (graphIds[0] === graphIds[1]) throw new InputError('A room needs two different graphs.');
       const graphs = graphIds.map(readGraph);
       if (graphs.some(graph => !graph)) throw new InputError('Room graph not found.');
-      if (graphs.some(graph => graph.packet.version !== 2)) throw new InputError('A room needs version 2 graphs.');
+      if (graphs.some(graph => !isPartyGraph(graph.packet))) throw new InputError('A room needs version 2 or 3 graphs.');
       const [a, b] = graphs.map(graph => graph.packet);
       if (a.party === b.party) throw new InputError('A room needs graphs from two different parties.');
       if (a.sessionId === b.sessionId) throw new InputError('A room needs graphs from two different sessions.');
