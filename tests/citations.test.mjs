@@ -284,3 +284,33 @@ test('P2b review: ledger artifact list pages with --limit and --after', async t 
     assert.equal((await cli(['artifact', 'list', ...args], ledger)).code, 1, args.join(' '));
   }
 });
+
+test('P2b review round 2: an answer edge to a changed question is not drawn, and artifact citations are not session-scoped', () => {
+  const store = openStore(':memory:');
+  const first = store.importTranscript({ provider: 'claude', source: 'a.jsonl', transcript: claude([['user', 'Leo: port 4317.']]), project: 'orbit' });
+  const second = store.importTranscript({ provider: 'claude', source: 'b.jsonl', transcript: claude([['user', 'Leo: port 4400 instead.']]), project: 'orbit' });
+  const docs = store.registerArtifact({ project: 'orbit', kind: 'pr', repo: 'orbit-labs/adapter', ref: '58' });
+  // The same artifact-only node from two sessions is unchanged.
+  const byArtifact = sessionId => store.publishGraph(packet(sessionId, [{ id: 'docs', kind: 'goal', label: 'Docs', evidence: [{ artifact: docs.id }] }]));
+  const a = byArtifact(first.id);
+  const b = byArtifact(second.id);
+  assert.deepEqual(store.diffGraphs(b.id, a.id).nodes.changed, []);
+
+  const model = createModel();
+  const question = sessionId => ({ id: sessionId.slice(0, 8) + 'q'.repeat(56), packet: { version: 3, sessionId, party: 'ali',
+    nodes: [{ id: 'which-port', kind: 'question', status: 'open', to: 'leo', label: 'Which port?', evidence: [{ message: key(1) }] }], edges: [] } });
+  const asked = question(first.id);
+  model.apply({ graph: asked, provider: 'claude', at: 1 });
+  model.apply({ graph: { id: 'l'.repeat(64), packet: { version: 2, sessionId: 'f'.repeat(64), party: 'leo', nodes: [{ id: 'port', kind: 'decision', label: 'Port 4317', evidenceLines: [1] }],
+    edges: [], links: [{ from: 'port', graph: asked.id, to: 'which-port', type: 'answers' }] } }, provider: 'codex', at: 2 });
+  const answers = () => model.graph().edges.filter(edge => edge.type === 'answers');
+  assert.equal(answers().length, 1, 'drawn while the question is the one answered');
+  model.apply({ graph: question(second.id), provider: 'claude', at: 3 });
+  assert.deepEqual(answers(), [], 'not drawn to the changed question');
+  // An artifact-only republish in another session flashes nothing.
+  const artifactOnly = sessionId => ({ id: sessionId.slice(0, 8) + 'd'.repeat(56), packet: { version: 3, sessionId, party: 'bea',
+    nodes: [{ id: 'docs', kind: 'goal', label: 'Docs', evidence: [{ artifact: docs.id }] }], edges: [] } });
+  model.apply({ graph: artifactOnly(first.id), provider: 'claude', at: 4 });
+  assert.deepEqual(model.apply({ graph: artifactOnly(second.id), provider: 'claude', at: 5 }).changed, []);
+  store.close();
+});

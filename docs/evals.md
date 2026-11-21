@@ -4377,3 +4377,5 @@ ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file 
 - (low) The export flattened artifacts into `source_location` text, where a file path may hold `, ` or `@`: nodes also carry `ledger_artifacts` records.
 - (low) `ledger artifact list` could read only the first 20 rows: it takes `--limit` and `--after`.
 
+**Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
+

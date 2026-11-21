@@ -53,17 +53,31 @@ export function createModel({ workingMs = 60_000 } = {}) {
     return party ? { party, id: link.to } : null;
   };
 
-  // The same evidence: the same citations in the same session (P2b review: a key such as
-  // l:1, or a line number, names another turn in another session).
-  const sameCitations = (graphA, nodeA, graphB, nodeB) => graphA.packet.sessionId === graphB.packet.sessionId
-    && JSON.stringify(nodeA.evidenceLines ?? nodeA.evidence) === JSON.stringify(nodeB.evidenceLines ?? nodeB.evidence);
+  // A node's citations with the session that lines and message keys belong to (P2b
+  // review: l:1, a reused record UUID or a line number names another turn in another
+  // session). Artifacts belong to the project, so they stay as they are.
+  const scopedCitations = (graph, node) => {
+    const session = graph.packet.sessionId;
+    if (node.evidenceLines) return [session, node.evidenceLines];
+    return (node.evidence ?? []).map(citation => (citation.message !== undefined ? { message: `${session}/${citation.message}` } : citation));
+  };
+  const sameCitations = (graphA, nodeA, graphB, nodeB) => JSON.stringify(scopedCitations(graphA, nodeA)) === JSON.stringify(scopedCitations(graphB, nodeB));
 
   // Everything a person sees or checks on a node: a change to any of it is a change.
-  // Card P2b: a version 3 node cites `evidence` (message keys or artifacts) instead.
-  const nodeText = node => JSON.stringify([node.kind, node.label, node.status ?? null, node.to ?? null, node.evidenceLines ?? node.evidence]);
+  const nodeText = (graph, node) => JSON.stringify([node.kind, node.label, node.status ?? null, node.to ?? null, scopedCitations(graph, node)]);
   function nodeLabels(graph) {
-    // The session too: the same lines or keys in another session cite other turns (P2b review).
-    return new Map(graph.packet.nodes.map(node => [node.id, graph.packet.sessionId + nodeText(node)]));
+    return new Map(graph.packet.nodes.map(node => [node.id, nodeText(graph, node)]));
+  }
+
+  // An answers link still answers the current question only when that question is the
+  // one it was published against: same label, recipient and citations.
+  function answerHolds(link) {
+    const target = link.type === 'answers' && linkTarget(link);
+    const asked = target && snapshots.get(link.graph)?.packet.nodes.find(node => node.id === link.to);
+    const currentGraph = target && parties.get(target.party)?.graph;
+    const current = asked && currentGraph?.packet.nodes.find(node => node.id === link.to);
+    return Boolean(current && current.label === asked.label && (current.to ?? null) === (asked.to ?? null)
+      && sameCitations(currentGraph, current, snapshots.get(link.graph), asked));
   }
 
   /** Open questions of a party's current graph that no current graph answers. */
@@ -149,13 +163,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
       const answered = new Set();
       for (const { graph } of parties.values()) {
         for (const link of graph.packet.links ?? []) {
-          const target = link.type === 'answers' && linkTarget(link);
-          const asked = target && snapshots.get(link.graph)?.packet.nodes.find(node => node.id === link.to);
-          const current = asked && parties.get(target.party)?.graph.packet.nodes.find(node => node.id === link.to);
-          if (current && current.label === asked.label && (current.to ?? null) === (asked.to ?? null)
-            && sameCitations(parties.get(target.party).graph, current, snapshots.get(link.graph), asked)) {
-            answered.add(nodeKey(target.party, target.id));
-          }
+          if (answerHolds(link)) answered.add(nodeKey(linkTarget(link).party, link.to));
         }
       }
       return answered;
@@ -205,7 +213,10 @@ export function createModel({ workingMs = 60_000 } = {}) {
         }
         for (const link of entry.graph.packet.links ?? []) {
           const target = linkTarget(link);
-          if (target) edges.push({ from: nodeKey(entry.key, link.from), to: nodeKey(target.party, target.id), type: link.type, link: true });
+          // P2b review: an answer to a question that has since changed is not drawn to it.
+          if (target && (link.type !== 'answers' || answerHolds(link))) {
+            edges.push({ from: nodeKey(entry.key, link.from), to: nodeKey(target.party, target.id), type: link.type, link: true });
+          }
         }
       }
       return { columns, edges };

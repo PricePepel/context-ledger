@@ -5,6 +5,15 @@ import { canonicalPacket, compareBy } from './graph.mjs';
 // P2b: a version 3 node's citations are its evidence; a field absent on both sides is equal.
 const nodeFields = ['kind', 'label', 'status', 'to', 'evidenceLines', 'evidence'];
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// P2b review: lines and message keys name turns of their own session, so they compare with
+// it; artifacts belong to the project and compare as they are.
+function scoped(packet, node, field) {
+  const value = node[field];
+  if (value === undefined) return undefined;
+  if (field === 'evidenceLines') return [packet.sessionId, value];
+  if (field === 'evidence') return value.map(citation => (citation.message !== undefined ? { message: `${packet.sessionId}/${citation.message}` } : citation));
+  return value;
+}
 const brief = node => ({ id: node.id, kind: node.kind, label: node.label });
 
 /** IDs in one list and not the other, kept in the order of `list`. */
@@ -44,10 +53,7 @@ export function diffGraphs(older, newer) {
     if (!old) continue;
     const changes = {};
     for (const field of nodeFields) {
-      // P2b review: lines and keys name turns of their own session, so the same citation
-      // from another session is a change.
-      const moved = (field === 'evidenceLines' || field === 'evidence') && a.sessionId !== b.sessionId && (old[field] ?? node[field]) !== undefined;
-      if (moved || !same(old[field], node[field])) changes[field] = { from: old[field] ?? null, to: node[field] ?? null };
+      if (!same(scoped(a, old, field), scoped(b, node, field))) changes[field] = { from: old[field] ?? null, to: node[field] ?? null };
     }
     if (Object.keys(changes).length) changed.push({ ...brief(node), changes });
   }
