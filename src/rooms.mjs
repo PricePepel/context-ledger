@@ -54,10 +54,11 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
   // transcript cannot hide the room's own party's newer graph (G11 review round 2).
   function newerGraphs(graph) {
     selectSameSession ??= database.prepare('SELECT id FROM graphs WHERE party = ? AND session_id = ? ORDER BY rowid DESC LIMIT 1');
-    // P2a: only graphs of sessions in the same project as this one.
+    // P2a: only graphs of sessions in the same project as this one (= never matches a
+    // missing project).
     selectOtherSession ??= database.prepare(`SELECT g.id FROM graphs g JOIN sessions s ON s.id = g.session_id
       WHERE g.party = ? AND g.session_id <> ?
-        AND s.project_id IS (SELECT project_id FROM sessions WHERE id = ?)
+        AND s.project_id = (SELECT project_id FROM sessions WHERE id = ?)
         AND g.rowid > (SELECT rowid FROM graphs WHERE id = ?) ORDER BY g.rowid DESC LIMIT 1`);
     const { party, sessionId } = graph.packet;
     const candidates = [selectSameSession.get(party, sessionId)?.id, selectOtherSession.get(party, sessionId, sessionId, graph.id)?.id];
@@ -76,9 +77,17 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
     return { party: graph.packet.party, graphId: graph.id, nodeId, kind: node.kind, label: node.label };
   }
 
+  // P2a: one project for both graphs, or null (a room opened across projects, or with a
+  // graph whose project is missing, before rooms were project-scoped).
+  const roomProject = row => {
+    const [a, b] = [graphProject(row.a), graphProject(row.b)];
+    return a !== null && a === b ? a : null;
+  };
+
   function view(id) {
     const row = selectRoom.get(id);
     if (!row) return;
+    const project = roomProject(row);
     const graphs = [readGraph(row.a), readGraph(row.b)].sort((x, y) => (x.packet.party < y.packet.party ? -1 : 1));
     const parties = graphs.map(graph => graph.packet.party);
 
@@ -122,7 +131,8 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
         openQuestionIds: graph.openQuestionIds,
       })),
       proposals,
-      newerGraphs: graphs.flatMap(newerGraphs),
+      // A room across projects points at no newer graph in either (P2a review).
+      newerGraphs: project === null ? [] : graphs.flatMap(newerGraphs),
       agreedProposalIds: proposals.filter(proposal => proposal.state === 'agreed').map(proposal => proposal.id),
     };
   }
@@ -141,7 +151,8 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
       if (a.party === b.party) throw new InputError('A room needs graphs from two different parties.');
       if (a.sessionId === b.sessionId) throw new InputError('A room needs graphs from two different sessions.');
       // Card P2a (ADR-7a): rooms are project-scoped, like links.
-      if (graphProject(graphIds[0]) !== graphProject(graphIds[1])) throw new InputError('A room needs two graphs from the same project.');
+      const projects = graphIds.map(graphProject);
+      if (projects[0] === null || projects[0] !== projects[1]) throw new InputError('A room needs two graphs from the same project.');
 
       const [first, second] = [...graphIds].sort();
       const id = digest('room', first, second);
@@ -154,6 +165,10 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
     decide(id, input) {
       const room = view(id);
       if (!room) return;
+      // A room opened across projects before P2a stays readable but takes no choices.
+      if (roomProject(selectRoom.get(id)) === null) {
+        throw new InputError('This room joins graphs from two projects, so it takes no choices; open a room within one project.');
+      }
       const { proposalId, party, choice } = input ?? {};
       if (!room.proposals.some(proposal => proposal.id === proposalId)) throw new InputError('Unknown proposal in this room.');
       if (!room.parties.some(entry => entry.party === party)) throw new InputError('Only a party in this room can decide.');
@@ -174,7 +189,7 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
         SELECT r.id, r.created_at AS createdAt,
           a.id AS graphA, a.party AS partyA, a.session_id AS sessionA,
           b.id AS graphB, b.party AS partyB, b.session_id AS sessionB,
-          CASE WHEN sa.project_id IS sb.project_id THEN pa.slug END AS project
+          CASE WHEN sa.project_id = sb.project_id THEN pa.slug END AS project
         FROM rooms r JOIN graphs a ON a.id = r.graph_a JOIN graphs b ON b.id = r.graph_b
           LEFT JOIN sessions sa ON sa.id = a.session_id LEFT JOIN projects pa ON pa.id = sa.project_id
           LEFT JOIN sessions sb ON sb.id = b.session_id LEFT JOIN projects pb ON pb.id = sb.project_id

@@ -585,8 +585,9 @@ export function openStore(path) {
       const messages = readMessages(sessionId);
       const sourceLines = messages.map(message => message.line);
       // P2a: a link must stay in the project of the session this graph cites.
+      // A session or graph without a resolved project matches nothing (P2a review).
       const project = getSummary.get(sessionId).project ?? null;
-      const options = { lookupGraph: id => readGraph(id), sameProject: id => graphProject(id) === project };
+      const options = { lookupGraph: id => readGraph(id), sameProject: id => project !== null && graphProject(id) === project };
       validateGraph(packet, sourceLines, options);
       // Derive from the canonical form so derived ID lists follow its order.
       const ordered = canonicalPacket(packet);
