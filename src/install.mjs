@@ -76,15 +76,18 @@ function databaseFor(env) {
 // - a local path (file:, ./, ../, /, \ or a drive letter, or a relative path ending .tgz),
 //   made absolute, since the agent starts in another folder.
 // Anything else, git+ssh: and every URL (which can carry credentials) among them, is refused.
-// A version is an exact semver or a plain tag (latest, next): npm reads name@bundle.tgz or
-// name@.next as a local path, so such a spec is not a registry name here (P5c review).
-const registrySpec = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|[A-Za-z][A-Za-z0-9-]*))?$/u;
+// A version is an exact semver (with an optional prerelease and +build) or a lowercase tag
+// of two or more characters (latest, next): npm reads name@bundle.tgz or name@.next as a
+// local path and name@x as a range, so such a spec is not a registry name here, and no
+// spec ending in a tarball suffix is one (P5c review rounds 3 and 4).
+const registrySpec = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[a-z][a-z0-9-]+))?$/u;
+const tarSuffix = /\.(?:tgz|tar\.gz|tar)$/iu;
 const hostedSpec = /^(?:(?:github|gitlab|bitbucket|gist):)?[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9._/-]+)?$/u;
 const localSpec = /^(?:file:(?!\/\/)|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/u;
 // As npm reads it: a bare name ending .tgz with no slash is a file; dir/pkg.tgz is a GitHub
 // shorthand, and a local file in a folder is written ./dir/pkg.tgz (P5c review).
 const tarballName = /^[^@/\\:~]+\.t(?:ar\.)?gz$/u;
-const safePath = /^[A-Za-z0-9@/\\._:~+-]{1,500}$/u;
+const safePath = /^[A-Za-z0-9@/\\._:+-]{1,500}$/u;
 export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (only a registry name, a host shorthand such as github:owner/repo, or a local path without spaces can). ' +
   'Install the package with npm install --global and run context-ledger install again.';
 
@@ -96,13 +99,14 @@ export function writableSpec(spec, cwd) {
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(spec)?.[1];
   if (scheme && !['github', 'gitlab', 'bitbucket', 'gist'].includes(scheme) && !(scheme === 'file' && !spec.startsWith('file://'))
     && !/^[A-Za-z]:[\\/]/u.test(spec)) return undefined;
-  // ~ is the home folder to npm, which this process cannot be sure to see the same way.
-  if (spec.startsWith('~') || spec.startsWith('file:~')) return undefined;
+  // ~ is the home folder to npm wherever it stands in a path (./~/x too), which this
+  // process cannot be sure to see the same way, so no spec with one is written.
+  if (spec.includes('~')) return undefined;
   if (localSpec.test(spec) || tarballName.test(spec)) {
     const path = resolve(cwd, spec.startsWith('file:') ? spec.slice('file:'.length) : spec);
     return safePath.test(path) ? path : undefined;
   }
-  if (registrySpec.test(spec) || hostedSpec.test(spec)) return spec;
+  if ((registrySpec.test(spec) && !tarSuffix.test(spec)) || hostedSpec.test(spec)) return spec;
   return undefined;
 }
 
