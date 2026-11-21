@@ -66,21 +66,33 @@ function databaseFor(env) {
   return resolve(value);
 }
 
-// A package spec npm hands a bin it runs through npx (npm_config_package): one line of
-// visible characters. Anything else falls back to this package's own name and version.
-const specPattern = /^[^\p{C}\s"%]{1,500}$/u;
+// The package spec npm hands a bin it runs through npx (npm_config_package) goes into the
+// agents' configs and, on Windows, a cmd /c line the agent hands to cmd.exe later, so only
+// characters no shell treats specially are written: letters, digits and @ / \ . _ : # ~ + -
+// (no space, quote, % ! ^ & | < > ( ) , ; =). A URL is refused, since it can carry
+// credentials; a local path is made absolute, since the agent starts in another folder.
+const specPattern = /^[A-Za-z0-9@/\\._:#~+-]{1,500}$/u;
+const localSpec = /^(?:\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])|\.t(?:ar\.)?gz$/u;
+export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (it is a URL, or holds a space or a shell character). ' +
+  'Install the package with npm install --global and run context-ledger install again.';
 
 /**
  * Card P5c: the command an agent runs for the MCP adapter. From a checkout or a global
  * install, node and this file, as before. Run through npx (npm says exec, and the file
- * sits in npm's _npx cache, which npm may clear), npx with the spec it was run from, or
- * this name and version; on Windows through cmd /c, since the agents cannot start the
- * npx.cmd shim themselves.
+ * sits in npm's _npx cache, which npm may clear), npx with the spec it was run from, or,
+ * when npm names none, this package's name and version; on Windows through cmd /c, since
+ * the agents cannot start the npx.cmd shim themselves. An unsafe spec is an InstallError.
  */
-export function mcpServerCommand(env = process.env, { file = mcpPath, platform = process.platform } = {}) {
+export function mcpServerCommand(env = process.env, { file = mcpPath, platform = process.platform, cwd = process.cwd() } = {}) {
   if (env.npm_command !== 'exec' || !/[\\/]_npx[\\/]/u.test(file)) return ['node', file];
-  const named = env.npm_config_package;
-  const spec = typeof named === 'string' && specPattern.test(named) ? named : `${packageJson.name}@${packageJson.version}`;
+  let spec = env.npm_config_package;
+  if (spec === undefined || spec === '') {
+    spec = `${packageJson.name}@${packageJson.version}`;
+  } else {
+    if (typeof spec !== 'string' || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(spec)) throw new InstallError(unsafeSpecLine);
+    if (localSpec.test(spec)) spec = resolve(cwd, spec);
+    if (!specPattern.test(spec)) throw new InstallError(unsafeSpecLine);
+  }
   const npx = ['npx', '-y', '--package', spec, Object.keys(packageJson.bin)[0], 'mcp'];
   return platform === 'win32' ? ['cmd', '/c', ...npx] : npx;
 }
