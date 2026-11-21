@@ -165,3 +165,29 @@ test('on a phone the parts stack with no sideways scroll', async ({ page }) => {
   await expect(page.locator('.flash-line')).toHaveCount(0);
   if (process.env.CONSOLE_SHOTS_DIR) await page.screenshot({ path: `${shotsDir}/05-phone.png`, fullPage: true });
 });
+
+test('P2b review: a version 3 node that cites only an artifact shows it in the evidence panel, as text', async ({ page, request, baseURL }) => {
+  const writes = watchRequests(page);
+  await page.goto('/console/');
+  await expect(page.locator('#status')).toContainText('Live: watching the ledger');
+  const marker = `console-artifact-${Date.now()}`;
+  const imported = await request.post('/api/import', { headers: { origin: baseURL },
+    data: { provider: 'claude', source: `${marker}.jsonl`, transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: `Write the ${marker} doc.` } }) } });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  const { session } = await imported.json();
+  const registered = await request.post('/api/artifacts', { headers: { origin: baseURL },
+    data: { kind: 'file', repo: 'orbit-labs/adapter', ref: `docs/<b>${marker}</b>.md` } });
+  expect(registered.ok(), await registered.text()).toBe(true);
+  const { artifact } = await registered.json();
+  const party = `art-${Date.now().toString(36)}`;
+  const published = await request.post('/api/graphs', { headers: { origin: baseURL },
+    data: { version: 3, sessionId: session.id, party, nodes: [{ id: 'doc', kind: 'goal', label: `Doc for ${marker}`, evidence: [{ artifact: artifact.id }] }], edges: [] } });
+  expect(published.ok(), await published.text()).toBe(true);
+  const node = page.locator('.node', { hasText: marker });
+  await expect(node).toBeVisible({ timeout: 3500 });
+  await node.click();
+  await expect(page.locator('#evidence-meta .evidence-artifact')).toHaveText(`cites file orbit-labs/adapter@docs/<b>${marker}</b>.md`);
+  await expect(page.locator('#evidence-status')).toHaveText('This node cites artifacts only, listed above; no transcript line.');
+  expect(await page.locator('#evidence b').count()).toBe(0);
+  expect(writes()).toEqual([]);
+});

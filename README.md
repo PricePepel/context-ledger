@@ -110,6 +110,23 @@ Order carries no meaning in v2. The ledger stores the canonical order (nodes by 
 
 Party names are self-asserted. The ledger only requires that a linked graph names another party and comes from a different imported transcript. It does not verify who a person is.
 
+## Version 3: citations by message key or artifact
+
+A version 3 packet is version 2 with `evidence` in place of `evidenceLines`. Each citation is either a message of the packet's session by its stable key (`session_read` shows it beside each line, for example `u:…` or `h:…`) or an artifact registered in the session's project:
+
+```json
+{ "id": "port", "kind": "decision", "label": "Port 4317", "evidence": [{ "message": "u:00000001-aaaa-4bbb-8ccc-000000000001" }, { "artifact": "ARTIFACT_ID" }] }
+```
+
+An artifact is a commit, a pull request or a file in a repository, and only a person registers it:
+
+```sh
+npm run --silent ledger -- artifact add commit orbit-labs/adapter 4317abc --project orbit
+npm run --silent ledger -- artifact list --project orbit
+```
+
+(`POST /api/artifacts` and `GET /api/artifacts?project=` do the same.) The stored graph adds `citations`: for each node, the transcript lines its keys resolve to and the artifacts it cites, which `context_for`, the export and the console show. Versions 1 and 2 stay valid, and version 2 and 3 graphs link to each other and meet in rooms. See the [v3 schema](schemas/semantic-graph-v3.schema.json).
+
 ## Graph context and the savings meter
 
 A graph belongs to the project of the session it cites. A link must point at a graph in the same project, and a room needs two graphs from one project.

@@ -19,22 +19,24 @@ function rememberBriefing(key, context) {
 }
 
 export const graphSchema = ['graph_schema', {
-  description: 'Return the JSON Schema for Context Ledger semantic graph packets. Version 2 adds parties, offers, questions and cross-graph links.',
+  description: 'Return the JSON Schema for Context Ledger semantic graph packets. Version 2 adds parties, offers, questions and cross-graph links; ' +
+    'version 3 cites message keys or artifacts.',
   inputSchema: {
     type: 'object',
-    properties: { version: { type: 'integer', enum: [1, 2], default: 2, description: 'Packet schema version.' } },
+    properties: { version: { type: 'integer', enum: [1, 2, 3], default: 3, description: 'Packet schema version.' } },
     additionalProperties: false,
   },
   async run(args) {
     checkArguments(args, ['version']);
-    const version = args.version ?? 2;
-    if (version !== 1 && version !== 2) throw new ToolError('version must be 1 or 2.');
+    // Card P2b: version 3 is the default, so agents cite stable message keys.
+    const version = args.version ?? 3;
+    if (version !== 1 && version !== 2 && version !== 3) throw new ToolError('version must be 1, 2 or 3.');
     return jsonResult(graphSchemas[version]);
   },
 }];
 
 export const graphPublish = ['graph_publish', {
-  description: 'Publish a semantic graph packet for an imported session. Each node must cite stored transcript lines in evidenceLines. ' +
+  description: 'Publish a semantic graph packet for an imported session. Each node cites session_read keys (v3) or lines in evidenceLines (v1, v2). ' +
     'Returns the graph ID, the stored packet and the derived ready actions and open items.',
   inputSchema: {
     type: 'object',

@@ -4354,3 +4354,30 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 **Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
 
 **Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.
+
+## P2b — Message-key and artifact citations (defined 2026-11-21, before the code)
+
+ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file line numbers; P1c gave every stored message a stable key. Synthetic transcripts and made-up repositories only (`orbit-labs/adapter`).
+
+| Eval | Expected |
+| --- | --- |
+| Version 3 packet | `schemas/semantic-graph-v3.schema.json` is version 2 with `evidence` in place of `evidenceLines`: 1 to 100 unique citations, each exactly `{ "message": "<key>" }` (a `u:`, `h:` or `l:` key) or `{ "artifact": "<64 hex>" }`. Parties, questions, edges and links are as in version 2. Versions 1 and 2 publish and read exactly as before. |
+| Citations resolve | Every message key must be a stored message of the packet's session, and every artifact must be registered in that session's project; otherwise a 400 with a fixed sentence that names no key or ID. Order is not identity: citations are sorted in the canonical packet, so a reordered packet gets the same graph ID. |
+| Derived citations | The stored graph keeps the packet as sent (canonical) and adds `citations`: for each node, the transcript lines its message keys resolve to and the artifacts it cites (`kind`, `repo`, `ref`). G7 grounding, `context_for`, the G11 diff, the G12 export and the console's evidence panel read lines from there, so a version 3 graph shows the same turns as the version 2 graph with the same lines. |
+| Rooms and links | Version 2 and version 3 graphs link to each other and meet in rooms; every party-graph rule (other party, other session, same project, no superseded target) applies to both. |
+| Artifacts | Schema version 4 adds an `artifacts` table: per project, kind `commit`, `pr` or `file`, a repository path such as `orbit-labs/adapter`, and a ref (a hex commit of 7 to 64 characters, a pull request number, or a relative file path with no `.` or `..` part). The ID is SHA-256 of the project, kind, repository and ref, so registering twice returns the same row. `POST /api/artifacts` (token and local Origin) and `ledger artifact add <kind> <repo> <ref> [--project <slug>]` register one; `GET /api/artifacts?project=` and `ledger artifact list` list them, newest first, with paging. Nothing registers an artifact by itself. A version 3 file is upgraded in place, and a newer file is refused untouched. |
+| MCP | `graph_schema` offers versions 1, 2 and 3, with 3 as the default; `session_read` shows each turn's key beside its line, so an agent can cite it; `graph_publish` says that version 3 cites message keys or artifacts. No MCP tool registers an artifact. The pinned tool list keeps its fourteen tools. |
+
+**Results — P2b (2026-11-21, Windows):** every row passes. Code in `src/artifacts.mjs`, `src/graph.mjs`, `src/store.mjs`, `src/migrate.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/mcp/*` and the readers; tests in `tests/citations.test.mjs` and the console spec.
+
+**Codex review, round 1** (of 4861b83): no cross-session or cross-project resolution at publish, no canonicalization hole, and migration, auth, Origin and escaping hold. Fixed, each with a test:
+
+- (medium) The console dropped artifact citations, and its panel took the raw packet node, which a version 3 node gives no `evidenceLines`. The model now passes lines and artifacts to the panel, which lists each artifact as text and says when a node cites artifacts only (Playwright).
+- (medium) The diff and the console compared citations without their session, so `l:1`, a reused record UUID or a line number in another session looked unchanged, and an answer link carried over to a question whose cited turn changed. Citations from another session are now a change in both (node test with one key in two sessions, for version 2 lines and version 3 keys).
+- (low) The export flattened artifacts into `source_location` text, where a file path may hold `, ` or `@`: nodes also carry `ledger_artifacts` records.
+- (low) `ledger artifact list` could read only the first 20 rows: it takes `--limit` and `--after`.
+
+**Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
+
+**Codex review, round 3** (of a7bf589): both round-2 fixes hold. (low) An answer published after its question had changed still flashed a read line to the changed question: such a link now reads nothing (node test).
+

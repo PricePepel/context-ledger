@@ -6,19 +6,27 @@ import { ToolError, assertProjectRows, briefingText, checkArguments, fromOffsetA
 import { ledger, listPage, olderLedger } from './ledger.mjs';
 import { listResult, listShape, notesSize, partialPage } from './pages.mjs';
 
+// The message keys P1c writes: a record UUID, a line hash, or a migrated line number.
+const messageKey = /^(?:u:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|h:[0-9a-f]{32}|l:[1-9][0-9]{0,15})$/u;
+
 /** One session_read page: whole turns, or one part of a turn too long for a page. */
 function sessionPage(session, remaining, fromLine, fromOffset) {
   const header = handoffMarkdown({ ...session, messages: [] });
   if (!remaining.length) return briefingText(`${header}\n\n[No turns at or after line ${fromLine}.]`);
   // A turn's Markdown is what handoffMarkdown appends for it; escaping is per character,
   // so the escaped page is the escaped header plus the escaped turns.
+  // Card P2b: each heading also names the turn's stable key, which a version 3 graph cites.
+  // Only a key of the shape the ledger writes is shown; anything else is left out.
+  const keyOf = message => (typeof message.key === 'string' && messageKey.test(message.key) ? ` · key ${message.key}` : '');
   const turnMarkdown = (message, part) => {
     const shown = part ? { ...message, text: message.text.slice(part.start, part.end) } : message;
+    const plainHeading = `\n\n## ${message.role} · line ${message.line}`;
     const turn = handoffMarkdown({ ...session, messages: [shown] }).slice(header.length);
-    if (!part) return turn;
-    const heading = `\n\n## ${message.role} · line ${message.line}`;
+    const heading = turn.startsWith(plainHeading) ? plainHeading + keyOf(message) : plainHeading;
+    const keyed = heading + turn.slice(plainHeading.length);
+    if (!part) return turn.startsWith(plainHeading) ? keyed : turn;
     return `${heading}\n[Part of the turn at line ${message.line}: characters ${part.start}–${part.end} of ${message.text.length}.]` +
-      turn.slice(heading.length);
+      keyed.slice(heading.length);
   };
   const [first] = remaining;
   const firstPart = fromOffset > 0 ? { start: fromOffset, end: first.text.length } : undefined;
