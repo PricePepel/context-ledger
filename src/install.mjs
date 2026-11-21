@@ -18,6 +18,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import packageJson from '../package.json' with { type: 'json' };
 import { inlineText } from './text.mjs';
 
 export const serverName = 'context-ledger';
@@ -65,6 +66,71 @@ function databaseFor(env) {
   return resolve(value);
 }
 
+// The package spec npm hands a bin it runs through npx (npm_config_package) goes into the
+// agents' configs: on POSIX as one argument of the command, on Windows inside the cmd /c
+// line the agent hands to cmd.exe. Only three kinds are written (P5c review), each in a
+// grammar with no space, quote or character cmd.exe treats specially (% ! ^ & | < > ( ) , ; =):
+// - a registry package: name or @scope/name, with an optional @version or @tag;
+// - a hosted shorthand: github:, gitlab:, bitbucket: or gist: owner/repo, or a bare
+//   owner/repo, with an optional #ref;
+// - a local path (file:, ./, ../, /, \ or a drive letter, or a relative path ending .tgz),
+//   made absolute, since the agent starts in another folder.
+// Anything else, git+ssh: and every URL (which can carry credentials) among them, is refused.
+// A version is an exact semver (with an optional prerelease and +build) or a lowercase tag
+// of two or more characters (latest, next): npm reads name@bundle.tgz or name@.next as a
+// local path and name@x as a range, so such a spec is not a registry name here, and no
+// spec ending in a tarball suffix is one (P5c review rounds 3 and 4).
+const registrySpec = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[a-z][a-z0-9-]+))?$/u;
+const tarSuffix = /\.(?:tgz|tar\.gz|tar)$/iu;
+const hostedSpec = /^(?:(?:github|gitlab|bitbucket|gist):)?[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9._/-]+)?$/u;
+const localSpec = /^(?:file:(?!\/\/)|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/u;
+// As npm reads it: a bare name ending .tgz with no slash is a file; dir/pkg.tgz is a GitHub
+// shorthand, and a local file in a folder is written ./dir/pkg.tgz (P5c review).
+const tarballName = /^[^@/\\:~]+\.t(?:ar\.)?gz$/u;
+const safePath = /^[A-Za-z0-9@/\\._:~+-]{1,500}$/u;
+export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (only a registry name, a host shorthand such as github:owner/repo, or a local path without spaces can). ' +
+  'Install the package with npm install --global and run context-ledger install again.';
+
+/** The spec as written to the agents' configs, or undefined when it cannot be written safely. */
+export function writableSpec(spec, cwd) {
+  if (typeof spec !== 'string' || spec.length > 500) return undefined;
+  // A scheme first (a URL, git+ssh:, npm: and the like) is refused before anything else
+  // can read it as a path: only the host shorthands, file: and a drive letter pass.
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(spec)?.[1];
+  if (scheme && !['github', 'gitlab', 'bitbucket', 'gist'].includes(scheme) && !(scheme === 'file' && !spec.startsWith('file://'))
+    && !/^[A-Za-z]:[\\/]/u.test(spec)) return undefined;
+  // ~ as a whole path part is the home folder to npm (~/x, ./~/x, file:~/x), which this
+  // process cannot be sure to see the same way, so such a spec is not written. Inside a
+  // name it is an ordinary character: Windows short names such as RUNNER~1 hold one.
+  if (/(?:^|[\\/:])~(?:[\\/]|$)/u.test(spec)) return undefined;
+  if (localSpec.test(spec) || tarballName.test(spec)) {
+    const path = resolve(cwd, spec.startsWith('file:') ? spec.slice('file:'.length) : spec);
+    return safePath.test(path) ? path : undefined;
+  }
+  if ((registrySpec.test(spec) && !tarSuffix.test(spec)) || hostedSpec.test(spec)) return spec;
+  return undefined;
+}
+
+/**
+ * Card P5c: the command an agent runs for the MCP adapter. From a checkout or a global
+ * install, node and this file, as before. Run through npx (npm says exec, and the file
+ * sits in npm's _npx cache, which npm may clear), npx with the spec it was run from, or,
+ * when npm names none, this package's name and version; on Windows through cmd /c, since
+ * the agents cannot start the npx.cmd shim themselves. An unsafe spec is an InstallError.
+ */
+export function mcpServerCommand(env = process.env, { file = mcpPath, platform = process.platform, cwd = process.cwd() } = {}) {
+  if (env.npm_command !== 'exec' || !/[\\/]_npx[\\/]/u.test(file)) return ['node', file];
+  let spec = env.npm_config_package;
+  if (spec === undefined || spec === '') {
+    spec = `${packageJson.name}@${packageJson.version}`;
+  } else {
+    spec = writableSpec(spec, cwd);
+    if (spec === undefined) throw new InstallError(unsafeSpecLine);
+  }
+  const npx = ['npx', '-y', '--package', spec, Object.keys(packageJson.bin)[0], 'mcp'];
+  return platform === 'win32' ? ['cmd', '/c', ...npx] : npx;
+}
+
 /** The two agents, with their CLI, instruction file and MCP commands. */
 export function agentTargets(env = process.env, mode = 'install') {
   const home = homeOf(env);
@@ -76,7 +142,7 @@ export function agentTargets(env = process.env, mode = 'install') {
   // Uninstall registers nothing, so it does not read the value (P5b review).
   const database = mode === 'install' ? databaseFor(env) : undefined;
   const pairs = [...(port ? [`PORT=${port}`] : []), ...(database ? [`CONTEXT_LEDGER_DB=${database}`] : [])];
-  const server = ['node', mcpPath];
+  const server = mcpServerCommand(env);
   return {
     claude: {
       key: 'claude',

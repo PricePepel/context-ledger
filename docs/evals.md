@@ -4381,3 +4381,33 @@ ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file 
 
 **Codex review, round 3** (of a7bf589): both round-2 fixes hold. (low) An answer published after its question had changed still flashed a read line to the changed question: such a link now reads nothing (node test).
 
+## P5c — `npx` entry point (defined 2026-11-21, before the code)
+
+The user's answers of 2026-11-21: prepare the package for npm but do not publish it; default the database to a per-user folder under the bin; when `install` runs through `npx`, register `npx`; the bin is `context-ledger`. Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| Publishable package | `package.json` has no `private`, a `bin` named `context-ledger`, a `files` allowlist (`bin/`, `src/`, `public/`, `schemas/`, `rules/latent-rules.json`, README, LICENSE), the MIT `license`, the `repository` and `engines` (Node 22.14 or newer). `npm pack --dry-run` lists no test, fixture, `demo/` script or transcript, doc, runtime, `.sqlite`, `.env`, key or token file, and nothing outside the allowlist. The console's bundled synthetic recording (`public/console/demo-recording.json`) is included, because the console's demo mode loads it. No new runtime dependency. Nobody runs `npm publish` in this card. |
+| One bin | `context-ledger start` runs the server, `context-ledger mcp` the stdio MCP adapter, and every other argument list runs the `ledger` CLI exactly as `npm run ledger --` does (same output, exit status and escaping). With no arguments it prints the usage. |
+| Per-user database | Under the bin, an unset `CONTEXT_LEDGER_DB` becomes `.context-ledger/ledger.sqlite` in the home folder (`USERPROFILE` on Windows, `HOME` elsewhere), for the server, the CLI and the MCP adapter alike, so they find one token file whatever folder each starts in. A set value is kept. `npm start` and `npm run ledger` from a checkout keep today's defaults. |
+| Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. A local tarball path is made absolute. A spec that is a URL (it can carry credentials) or holds a space or a shell character is refused before any CLI runs. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. The registered command, run as an agent would, answers MCP. |
+| Works from a tarball | In an empty folder, `npm pack` then `npx -y --package <tarball> context-ledger …` starts the ledger, imports a synthetic transcript, publishes a graph and reads it back; a node test does this on each system. |
+
+**Codex review, round 1** (of f279d69): the server, CLI and adapter share one database and token path under the bin, and the CLI dispatch is unchanged. Fixed, each with a test in `tests/npx-entry.test.mjs`:
+
+- (high) On Windows the spec went into a `cmd /c` line that the agent later hands to cmd.exe, and the filter let shell characters through. (high) A URL spec with credentials would be copied into both agents' configs. Specs are now limited to letters, digits and `@ / \ . _ : # ~ + -`; URLs and anything else are refused before any CLI runs (ADR-15c).
+- (medium) A local tarball spec was replayed from the agent's folder, and a path with a space fell back silently to a registry version that does not exist before publication. A local path is now made absolute, and an unusable one is refused, not replaced. The tarball test now runs `install --dry-run` through npx and starts the registered command as an agent would: it answers `session_search`.
+- (medium) The tests' server start and MCP replies had no deadline, and a reply waiter never failed when the adapter exited: both now have one (90 s and 60 s) and fail on exit.
+- (low) The eval said the tarball holds no demo, while the console's synthetic recording is included (the console's demo mode loads it): the eval now says so.
+
+**Codex review, round 2** (of 693ca01): ordinary relative tarballs become absolute, credential URLs are refused, and the registered command answers MCP. Fixed, each with a test:
+
+- (medium) The URL check missed `git+ssh:` specs without `//`, and the path rule rewrote `@scope/foo.tgz` and `github:owner/repo.tgz` as local paths and kept `file:` as part of a path. Specs are now told apart first: a registry name, a host shorthand, or a local path (`file:` stripped), each with its own grammar; anything else is refused.
+- (medium) The test's MCP reader parsed partial lines from the pipe and did not fail on a closed stream: it now parses whole lines only and fails waiters on exit, error or close.
+- (low) The ADR said the characters were safe for every shell; it now states the guarantee for the two paths the command takes (one POSIX argument, the Windows `cmd /c` line).
+
+**Codex review, round 3** (of 4296c04), checked against npm's own spec parser (`npm-package-arg` 12): (medium) `dist/pkg.tgz` is a GitHub shorthand to npm, not a local file; (medium) npm resolves `file:~/…` under the home folder; (medium) npm reads `pkg@bundle.tgz` and `pkg@.next` as local paths. Now a bare name ending `.tgz` with no slash is a file, `dir/pkg.tgz` is kept as a shorthand (a local file in a folder is written `./dir/pkg.tgz`), `~` specs are refused, and a registry version must be an exact semver or a plain tag. (low) The test's MCP reader could fail a reply on exit before stdout delivered its last line: it now decides when stdout closes. Each case has an assertion.
+
+**Codex review, round 4** (of d36346a): `dir/pkg.tgz` and the reader fix hold. (medium) npm reads `pkg@1.2.3-foo.tgz` as a local tarball, and (medium) `./~/pkg.tgz` under the home folder; (low) `pkg@x` is a range to npm, and `pkg@1.2.3+build` an exact version. Now no spec ending in a tarball suffix is a registry name (so `@scope/foo.tgz` is refused too), no spec with `~` is written, a tag is lowercase with two or more characters, and an exact version may carry `+build`; each case has an assertion. The rule stays narrow on purpose: a spec it cannot be sure of is refused with the advice to install globally, never rewritten.
+- **CI on Windows** then failed the tarball test: the runner's temporary folder is `C:UsersRUNNER~1…`, and the rule refused every `~`. Only `~` as a whole path part (`~/x`, `./~/x`, `file:~/x`) is refused now; inside a name, as in a Windows short name, it is kept (unit assertion).
+
