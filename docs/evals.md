@@ -4379,3 +4379,16 @@ ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file 
 
 **Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
 
+## P2c — Approval bound to a node hash (defined 2026-11-21, before the code)
+
+ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts only.
+
+| Eval | Expected |
+| --- | --- |
+| Node hash | Each node of a stored version 3 graph has a `nodeSha256` (in the graph's `nodeHashes`, in canonical node order): SHA-256 of the JCS form of `kind`, `label`, `status` and `to` when present, and the canonical `evidence`. A reordered packet gives the same hashes; a change to any of those fields changes the hash; the node ID does not enter it. Versions 1 and 2 have no hashes. |
+| A person decides | `POST /api/graphs/<id>/reviews` with `{ nodeId, nodeSha256, decision: "approve" \| "reject", reviewer }` records the decision and returns the graph's current reviews. It needs the token or session cookie, the local Origin and `Sec-Fetch-Site: same-origin`; the CLI and MCP adapter cannot send it, and no MCP tool decides. A hash that is not the node's current one is a 409; an unknown node, a version 1 or 2 graph, or a bad decision is a 400; an unknown graph is a 404. The reviewer is 1 to 64 visible characters (no control, format or separator character), typed by the person and shown as self-asserted. |
+| Republish | Publishing the same party's graph from the same session again keeps the decision of every node whose hash is unchanged; a changed node starts unreviewed. Another session's graph never sees these decisions. |
+| Read | `GET /api/graphs/<id>` adds `reviews`: for each node with a decision on its current hash, `{ nodeId, nodeSha256, decision, reviewer, decidedAt }`. MCP `graph_read` passes them on as data. |
+| Browser | The library page has a "Review a graph" section: a graph ID and a reviewer name show each node with its kind, label, cited lines or artifacts, hash prefix and decision, with Approve and Reject buttons. Labels and names are set with `textContent`; a label holding markup stays text. |
+| Schema | Schema version 5 adds the reviews table; a version 4 file is upgraded in place, and a newer file is refused. |
+
