@@ -4426,3 +4426,12 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Results — P5d (2026-11-21):** the Clean install workflow passes on `ubuntu-latest`, `windows-latest` and `macos-latest` (run of a32fc37), and `node scripts/clean-install-check.mjs` passes on Windows locally. The first Windows run failed after every step had passed: the check waited for the server's exit event after the `cmd.exe` shim had already exited, so it now waits on the promise made at spawn, for at most 15 s. The adapter's replies are read as whole lines, as in P5c's test after its review.
 
+**Codex review, round 1** (of 7f6370b): no fallback to the checkout (the check runs the absolute shim or bin in the fresh prefix), and the workflow keeps `contents: read`, no persisted credentials and a 15-minute limit. Fixed in the script, run again on Windows from a folder whose name holds spaces:
+
+- (medium) The MCP adapter could outlive a failed check: every process the check starts is tracked from spawn and its tree is stopped in `finally`, with bounded waits.
+- (medium) A stop was assumed, not confirmed: `taskkill` has a 15 s limit, and the eval fails if the server's port still answers afterwards.
+- (medium) npm ran with the developer's cache and config: both npm calls use an empty cache and empty user and global config under the temporary folder.
+- (medium) cmd.exe expands `%` even inside quotes: the check refuses a temporary folder holding `%` or `"` with a fixed message, and its folder name now holds spaces, so the quoting of every command line is exercised.
+- (low) Failure messages could print sign-in codes: they are redacted.
+- (low) The bind address came from the banner: the check connects to 127.0.0.1 and to each of the machine's other IPv4 addresses, which must refuse.
+
