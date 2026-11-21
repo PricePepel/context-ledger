@@ -433,6 +433,8 @@ export function createAuth({ token, port, now = Date.now }) {
     isOwnToken: text => timingSafeEqual(digest(text), tokenDigest),
     /** True when the request carries the bearer token or a live session cookie. */
     allowed: request => bearer(request) || session(request),
+    /** True when the request carries a live browser session cookie (P2c). */
+    signedIn: request => session(request),
     /** A new one-time sign-in code. */
     mintCode() {
       const code = newSecret();

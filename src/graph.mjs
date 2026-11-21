@@ -238,6 +238,11 @@ export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, m
   assertAcyclic(edges.get('depends_on'), 'dependency');
   assertAcyclic(edges.get('supersedes'), 'supersession');
   const superseded = new Set(edges.get('supersedes').map(edge => edge.to));
+  // P2c review: a version 3 node is hashed with JCS, which refuses a lone surrogate, so
+  // such a label is refused here with a fixed sentence instead of failing the publish.
+  if (version === 3 && packet.nodes.some(node => !node.label.isWellFormed())) {
+    throw new GraphInputError('A label must be well-formed Unicode text.');
+  }
   if (isPartyGraph(packet)) {
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
