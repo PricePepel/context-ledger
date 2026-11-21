@@ -588,3 +588,7 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 - Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). A bare `npx -y <tarball>` runs nothing for a local tarball, so use the `--package` form.
 - **Next owner:** P5d (clean-install CI job on three systems) and P5e (launch docs).
 
+## Current checkpoint — P5e launch docs (2026-11-21)
+
+Branch `claude/p5e-launch-docs`. The README opens with **Install**: `npx` from GitHub today, the npm name once the user publishes `@pricepepel/context-ledger` (with `--access public`), a global install, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package; nothing else in P5 is open except the license key (ADR-13), which is the user's product decision.
+
