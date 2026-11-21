@@ -109,8 +109,9 @@ export function createModel({ workingMs = 60_000 } = {}) {
         if (!before.has(id)) added.push(nodeKey(key, id));
         else if (before.get(id) !== text) changed.push(nodeKey(key, id));
       }
-      const read = (graph.packet.links ?? []).map(linkTarget).filter(Boolean)
-        .map(target => nodeKey(target.party, target.id));
+      // P2b review: an answer to a question that has since changed reads nothing current.
+      const read = (graph.packet.links ?? []).filter(link => link.type !== 'answers' || answerHolds(link))
+        .map(linkTarget).filter(Boolean).map(target => nodeKey(target.party, target.id));
       parties.set(key, {
         key,
         party: graph.packet.party ?? null,

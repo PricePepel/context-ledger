@@ -314,3 +314,19 @@ test('P2b review round 2: an answer edge to a changed question is not drawn, and
   assert.deepEqual(model.apply({ graph: artifactOnly(second.id), provider: 'claude', at: 5 }).changed, []);
   store.close();
 });
+
+test('P2b review round 3: a late answer to a question that has since changed flashes no read line', () => {
+  const model = createModel();
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const question = sessionId => ({ id: sessionId.slice(0, 8) + 'q'.repeat(56), packet: { version: 3, sessionId, party: 'ali',
+    nodes: [{ id: 'which-port', kind: 'question', status: 'open', to: 'leo', label: 'Which port?', evidence: [{ message: key(1) }] }], edges: [] } });
+  const asked = question(first);
+  model.apply({ graph: asked, provider: 'claude', at: 1 });
+  model.apply({ graph: question(second), provider: 'claude', at: 2 });
+  const answer = { id: 'l'.repeat(64), packet: { version: 2, sessionId: 'f'.repeat(64), party: 'leo', nodes: [{ id: 'port', kind: 'decision', label: 'Port 4317', evidenceLines: [1] }],
+    edges: [], links: [{ from: 'port', graph: asked.id, to: 'which-port', type: 'answers' }] } };
+  assert.deepEqual(model.apply({ graph: answer, provider: 'codex', at: 3 }).read, []);
+  assert.deepEqual(model.graph().edges.filter(edge => edge.type === 'answers'), []);
+});
+

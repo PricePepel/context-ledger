@@ -4379,3 +4379,5 @@ ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file 
 
 **Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
 
+**Codex review, round 3** (of a7bf589): both round-2 fixes hold. (low) An answer published after its question had changed still flashed a read line to the changed question: such a link now reads nothing (node test).
+

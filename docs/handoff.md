@@ -569,3 +569,13 @@ PR #58, branch `claude/p2a-project-scope`. P2 is split into P2a–P2c on the boa
 - A room opened across projects before P2a stays readable but takes no choices (`takesChoices: false`); the browser shows its choices without buttons.
 - **Next owner:** P2b (version 3 citations) is stacked on this branch; P2c follows it.
 
+## Current checkpoint — P2b message-key and artifact citations (2026-11-21)
+
+PR #59, branch `claude/p2b-citations`. Read the P2b section of [the eval log](evals.md) and ADR-7b in [the architecture](architecture.md) §12.
+
+- Packet version 3 cites `{ message: <P1c key> }` or `{ artifact: <id> }`; versions 1 and 2 are unchanged. The stored graph adds `citations` (lines and artifact rows per node), which every reader uses.
+- Artifacts (commit, pull request, file) are registered per project with `ledger artifact add|list` or `/api/artifacts`; schema version 4.
+- `graph_schema` defaults to version 3, and `session_read` shows each turn's key.
+- Citations compare with their session (lines and keys) in the diff and the console; artifacts compare as they are.
+- **Next owner:** P2c (node-hash approval) is stacked on this branch.
+
