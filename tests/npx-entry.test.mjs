@@ -104,8 +104,11 @@ function rpc(child) {
     }
     wake();
   });
-  const end = why => { gone ??= new Error(`The adapter ${why}: ${buffered}`); wake(); };
-  child.once('exit', code => end(`exited (${code})`));
+  // Missing replies are decided when stdout closes, after its last line arrived; the exit
+  // status only goes into the message (P5c review round 3).
+  let status = 'running';
+  const end = why => { gone ??= new Error(`The adapter ${why} (${status}): ${buffered}`); wake(); };
+  child.once('exit', (code, signal) => { status = `exited ${signal ?? code}`; });
   child.once('error', error => end(`failed (${error.message})`));
   child.stdout.once('close', () => end('closed its output'));
   const reply = id => new Promise((done, fail) => {
@@ -214,18 +217,20 @@ test('P5c: install registers npx when run through it, and node with this file ot
       error => error instanceof InstallError && error.message === unsafeSpecLine, JSON.stringify(odd));
   }
   // A local tarball is made absolute, since the agent starts the adapter in another folder.
-  const relative = mcpServerCommand({ npm_command: 'exec', npm_config_package: join('dist', 'pkg.tgz') }, { file: cached, platform: 'linux', cwd: repo });
+  const relative = mcpServerCommand({ npm_command: 'exec', npm_config_package: './dist/pkg.tgz' }, { file: cached, platform: 'linux', cwd: repo });
   assert.equal(relative[3], join(repo, 'dist', 'pkg.tgz'));
   // P5c review round 2: each kind of spec is told apart before anything is rewritten.
   const written = spec => mcpServerCommand({ npm_command: 'exec', npm_config_package: spec }, { file: cached, platform: 'linux', cwd: repo })[3];
   for (const kept of ['@pricepepel/context-ledger', '@pricepepel/context-ledger@0.1.0', 'context-ledger@latest', '@scope/foo.tgz',
-    'github:PricePepel/context-ledger', 'github:owner/repo.tgz', 'PricePepel/context-ledger#main', 'gitlab:group/repo#v1.2']) {
+    'github:PricePepel/context-ledger', 'github:owner/repo.tgz', 'PricePepel/context-ledger#main', 'gitlab:group/repo#v1.2',
+    'dist/pkg.tgz', 'context-ledger@next', '@pricepepel/context-ledger@0.1.0-rc.1']) {
     assert.equal(written(kept), kept, kept);
   }
   assert.equal(written('file:dist/pkg.tgz'), join(repo, 'dist', 'pkg.tgz'), 'file: is a path, without the prefix');
   assert.equal(written('pkg.tgz'), join(repo, 'pkg.tgz'), 'a bare tarball name is a local file');
   for (const odd of ['git+ssh:git@github.com:owner/repo.git', 'git:github.com/owner/repo', 'ssh:owner/repo', 'npm:other@1', 'owner/repo/extra',
-    '#main', 'context-ledger@^1.0.0', 'context-ledger@>=1', 'file:dir with space/pkg.tgz']) {
+    '#main', 'context-ledger@^1.0.0', 'context-ledger@>=1', 'file:dir with space/pkg.tgz',
+    'file:~/pkg.tgz', '~/pkg.tgz', 'pkg@bundle.tgz', 'pkg@.next', 'pkg@1.2']) {
     assert.throws(() => written(odd), error => error instanceof InstallError && error.message === unsafeSpecLine, odd);
   }
   assert.deepEqual(mcpServerCommand({ npm_command: 'run-script' }, { file: cached }), ['node', cached], 'not npx');
