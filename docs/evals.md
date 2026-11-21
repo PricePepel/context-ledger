@@ -4455,3 +4455,5 @@ ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts
 - (medium) The test did not check the npx subcommand, passed with no global install line, and never ran `uninstall`: it checks each, and says that the installed command is driven by P5d's clean-install eval.
 - (low) The GitHub install needs Git: named as a prerequisite. (low) The handoff called P5 closed before P5d merged: reworded.
 
+**Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
+

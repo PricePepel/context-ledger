@@ -39,6 +39,9 @@ test('P5e: the Install section names this package and its command', () => {
   const globals = [...install.matchAll(/npm (install|uninstall) --global ([^\s`]+)/gu)];
   assert.ok(globals.some(([, verb]) => verb === 'install') && globals.some(([, verb]) => verb === 'uninstall'));
   for (const [, , name] of globals) assert.ok(name === pkg.name || name === 'github:PricePepel/context-ledger', name);
+  // P5e review round 2: the install that works before publication, and the uninstall, each by name.
+  assert.ok(install.includes('npm install --global github:PricePepel/context-ledger'), 'the GitHub install');
+  assert.ok(install.includes(`npm uninstall --global ${pkg.name}`), 'the uninstall by the package name');
   assert.match(pkg.repository.url, /github\.com\/PricePepel\/context-ledger\.git$/u);
   // The data folder it names is the one the bin uses.
   assert.match(readFileSync(bin, 'utf8'), /join\(homeOf\(\), '\.context-ledger', 'ledger\.sqlite'\)/u);
