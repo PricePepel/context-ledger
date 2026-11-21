@@ -159,9 +159,16 @@ test('P2c: the review route is for people in the browser; reads carry the decisi
   const { graph } = (await post('/api/graphs', packet(session.id), { ...ledger.auth, Origin: ledger.origin })).body;
   const [first] = graph.nodeHashes;
   const review = { nodeId: first.id, nodeSha256: first.sha256, decision: 'approve', reviewer: 'Leo Park' };
-  const browser = { ...ledger.auth, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' };
-  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin }),
-    { status: 403, body: { error: 'Nodes are approved or rejected by people in the browser.' } }, 'an agent client');
+  // A browser signs in with a one-time link and then holds a session cookie.
+  const { path } = (await post('/api/login', {}, ledger.auth)).body;
+  const signedIn = await fetch(ledger.origin + path, { redirect: 'manual' });
+  const cookie = signedIn.headers.get('set-cookie').split(';')[0];
+  const browser = { Cookie: cookie, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' };
+  const refusal = { status: 403, body: { error: 'Nodes are approved or rejected by people in the browser, signed in.' } };
+  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin }), refusal, 'an agent client');
+  // P2c review: the bearer token with a browser's header is still not a browser.
+  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' }), refusal, 'token and header');
+  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { Cookie: cookie, Origin: ledger.origin }), refusal, 'a cookie without the header');
   assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' })).status, 401, 'no token or cookie');
   assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { ...browser, Origin: 'http://evil.test' })).status, 403, 'a foreign Origin');
   const recorded = await post(`/api/graphs/${graph.id}/reviews`, review, browser);
@@ -182,3 +189,63 @@ test('P2c: the review route is for people in the browser; reads carry the decisi
   const { result } = await client.request(3, 'tools/list');
   assert.equal(result.tools.some(tool => /review/iu.test(tool.name)), false);
 });
+
+// P2c review (Codex round 1).
+test('P2c review: a label JCS cannot hash is a 400, not a server error', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'leo.jsonl', transcript });
+  const lone = String.fromCharCode(0xd800);
+  assert.throws(() => store.publishGraph(packet(session.id, [{ ...nodes()[0], label: `Port ${lone}4317` }])),
+    error => error.constructor.name === 'GraphInputError' && error.message === 'A label must be well-formed Unicode text.');
+  // Version 2 keeps what it accepted before.
+  assert.ok(store.publishGraph({ version: 2, sessionId: session.id, party: 'ali', nodes: [{ id: 'a', kind: 'goal', label: `Ship ${lone}`, evidenceLines: [1] }], edges: [] }).id);
+  store.close();
+});
+
+test('P2c review: a version 3 graph stored before P2c gains its hashes by a republish, keeping its ID and time', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-p2c-legacy-'));
+  const path = join(directory, 'ledger.sqlite');
+  const store = openStore(path);
+  let raw;
+  // One cleanup, in order: Windows cannot remove an open database.
+  t.after(async () => {
+    store.close();
+    raw?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const session = store.importTranscript({ provider: 'claude', source: 'leo.jsonl', transcript });
+  const graph = store.publishGraph(packet(session.id));
+  // What P2b stored: grounding and citations, no nodeHashes.
+  raw = new DatabaseSync(path);
+  raw.prepare("UPDATE graphs SET payload = json_remove(payload, '$.nodeHashes') WHERE id = ?").run(graph.id);
+  const stamp = raw.prepare('SELECT created_at AS at FROM graphs WHERE id = ?').get(graph.id).at;
+  assert.equal(store.getGraph(graph.id).nodeHashes, undefined);
+  assert.throws(() => store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: graph.nodeHashes[0].sha256, decision: 'approve', reviewer: 'Leo' }), /Only version 3 graph nodes/u);
+  const again = store.publishGraph(packet(session.id));
+  assert.equal(again.id, graph.id);
+  assert.deepEqual(again.nodeHashes, graph.nodeHashes);
+  assert.equal(raw.prepare('SELECT created_at AS at FROM graphs WHERE id = ?').get(graph.id).at, stamp);
+  assert.equal(store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: graph.nodeHashes.find(entry => entry.id === 'port').sha256, decision: 'approve', reviewer: 'Leo' }).length, 1);
+});
+
+test('P2c review: decisions stay with their party and node ID, and the recipient enters the hash', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'leo.jsonl', transcript });
+  // Two nodes with the same content: one hash, two decisions.
+  const twins = store.publishGraph(packet(session.id, [
+    { id: 'first', kind: 'goal', label: 'Ship it', evidence: [{ message: key(1) }] },
+    { id: 'second', kind: 'goal', label: 'Ship it', evidence: [{ message: key(1) }] },
+  ]));
+  const [a, b] = twins.nodeHashes;
+  assert.equal(a.sha256, b.sha256);
+  store.reviewNode(twins.id, { nodeId: 'first', nodeSha256: a.sha256, decision: 'approve', reviewer: 'Leo' });
+  assert.deepEqual(store.graphReviews(twins.id).map(row => row.nodeId), ['first']);
+  // Another party's graph from the same session with the same node sees nothing.
+  const ali = store.publishGraph({ ...packet(session.id, [{ id: 'first', kind: 'goal', label: 'Ship it', evidence: [{ message: key(1) }] }]), party: 'ali' });
+  assert.deepEqual(store.graphReviews(ali.id), []);
+  // A question's recipient is part of what it says.
+  const asked = { id: 'q', kind: 'question', status: 'open', to: 'ali', label: 'Which port?', evidence: [{ message: key(1) }] };
+  assert.notEqual(nodeSha256({ ...asked, to: 'bea' }), nodeSha256(asked));
+  store.close();
+});
+

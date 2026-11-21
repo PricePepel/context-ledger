@@ -86,3 +86,26 @@ test('a version 2 graph is not reviewed node by node, and a name is needed', asy
   await expect(page.locator('#review-status')).toHaveText('Type your name first.');
   await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Not reviewed');
 });
+
+test('P2c review: a graph opened while a decision is in flight keeps working buttons', async ({ page, request, baseURL }) => {
+  const one = await publishV3(request, baseURL, `p2c-race-a-${Date.now().toString(36)}`);
+  const two = await publishV3(request, baseURL, `p2c-race-b-${Date.now().toString(36)}`);
+  let release;
+  const held = new Promise(done => { release = done; });
+  await page.route('**/api/graphs/*/reviews', async route => { await held; await route.continue(); });
+  await page.goto('/');
+  await page.getByLabel('Your name').fill('Leo Park');
+  await page.getByLabel('Graph ID', { exact: true }).fill(one.graph.id);
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  await page.locator('#review-nodes li[data-node="port"]').getByRole('button', { name: 'Approve' }).click();
+  // While that decision waits, the person opens the second graph.
+  await page.getByLabel('Graph ID', { exact: true }).fill(two.graph.id);
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Not reviewed');
+  release();
+  await expect(page.locator('#review-nodes li[data-node="port"]').getByRole('button', { name: 'Approve' })).toBeEnabled();
+  await page.unroute('**/api/graphs/*/reviews');
+  await page.locator('#review-nodes li[data-node="port"]').getByRole('button', { name: 'Approve' }).click();
+  await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Approved by Leo Park');
+});
+

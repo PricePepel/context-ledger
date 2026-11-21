@@ -4388,9 +4388,19 @@ ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts
 | Eval | Expected |
 | --- | --- |
 | Node hash | Each node of a stored version 3 graph has a `nodeSha256` (in the graph's `nodeHashes`, in canonical node order): SHA-256 of the JCS form of `kind`, `label`, `status` and `to` when present, and the canonical `evidence`. A reordered packet gives the same hashes; a change to any of those fields changes the hash; the node ID does not enter it. Versions 1 and 2 have no hashes. |
-| A person decides | `POST /api/graphs/<id>/reviews` with `{ nodeId, nodeSha256, decision: "approve" \| "reject", reviewer }` records the decision and returns the graph's current reviews. It needs the token or session cookie, the local Origin and `Sec-Fetch-Site: same-origin`; the CLI and MCP adapter cannot send it, and no MCP tool decides. A hash that is not the node's current one is a 409; an unknown node, a version 1 or 2 graph, or a bad decision is a 400; an unknown graph is a 404. The reviewer is 1 to 64 visible characters (no control, format or separator character), typed by the person and shown as self-asserted. |
+| A person decides | `POST /api/graphs/<id>/reviews` with `{ nodeId, nodeSha256, decision: "approve" \| "reject", reviewer }` records the decision and returns the graph's current reviews. It needs a browser's sign-in cookie (the bearer token alone is refused), the local Origin and `Sec-Fetch-Site: same-origin`; the CLI and MCP adapter cannot send it, and no MCP tool decides. This keeps agent clients out; it does not prove who clicked. A hash that is not the node's current one is a 409; an unknown node, a version 1 or 2 graph, or a bad decision is a 400; an unknown graph is a 404. The reviewer is 1 to 64 visible characters (no control, format or separator character), typed by the person and shown as self-asserted. |
 | Republish | Publishing the same party's graph from the same session again keeps the decision of every node whose hash is unchanged; a changed node starts unreviewed. Another session's graph never sees these decisions. |
 | Read | `GET /api/graphs/<id>` adds `reviews`: for each node with a decision on its current hash, `{ nodeId, nodeSha256, decision, reviewer, decidedAt }`. MCP `graph_read` passes them on as data. |
 | Browser | The library page has a "Review a graph" section: a graph ID and a reviewer name show each node with its kind, label, cited lines or artifacts, hash prefix and decision, with Approve and Reject buttons. Labels and names are set with `textContent`; a label holding markup stays text. |
 | Schema | Schema version 5 adds the reviews table; a version 4 file is upgraded in place, and a newer file is refused. |
+
+**Results — P2c (2026-11-21, Windows):** every row passes. Suites: graph 9/9; node 519 pass, 10 skipped; Playwright 32/32; runtime OK (66 skipped).
+
+**Codex review, round 1** (of ef21bad): no decision leaks past the review key, no field left out of the hash, no review text rendered as HTML. Fixed, each with a test:
+
+- (high) Any local process holding the bearer token could send the browser's `Sec-Fetch-Site` and record a decision, so "no agent can" was false. The route now also needs a browser's sign-in cookie: the bearer token alone is refused even with the header. The README and ADR say what remains: a program running as the person could still sign in as a browser does (ADR-10 trusts the OS user).
+- (medium) A graph opened while a decision was in flight kept its buttons disabled: they are drawn again, enabled, when the decision ends (Playwright, with the POST held).
+- (medium) A lone surrogate, which the version 3 label schema allows, made the JCS hash fail with a 500: a version 3 label must now be well-formed Unicode (400). Version 2 is unchanged.
+- (low) The upgrade of a version 3 graph stored before P2c was untested: a republish now adds its hashes with the same ID and time, and the browser says how to enable review until then.
+- (low) Added: a second party in the same session sees no decision, two nodes with the same content keep separate decisions, and a question's recipient enters its hash.
 

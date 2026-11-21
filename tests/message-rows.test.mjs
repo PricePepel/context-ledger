@@ -198,7 +198,7 @@ test('a new file is at schema version 3 with the messages table, its keys and th
   const check = new DatabaseSync(path);
   keep(() => check.close());
   // P2b added version 4 (artifacts) on top of these rows; a new file is at the newest.
-  assert.equal(schemaVersion, 4);
+  assert.ok(schemaVersion >= 4);
   assert.equal(userVersion(check), schemaVersion);
   assert.deepEqual(rows(check, 'PRAGMA table_info(messages)').map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })), [
     { name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },

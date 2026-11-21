@@ -517,7 +517,9 @@ async function loadReview(id) {
       return;
     }
     renderReview(graph);
-    reviewStatus.textContent = `${graph.packet.nodes.length} ${graph.packet.nodes.length === 1 ? 'node' : 'nodes'} of ${graph.packet.party}'s graph.`;
+    reviewStatus.textContent = Array.isArray(graph.nodeHashes)
+      ? `${graph.packet.nodes.length} ${graph.packet.nodes.length === 1 ? 'node' : 'nodes'} of ${graph.packet.party}'s graph.`
+      : 'This graph was stored before node hashes existed. Publish the same packet again to review it.';
   } catch (error) {
     reviewStatus.textContent = `Unable to read the graph. ${error.message}`;
   }
@@ -552,6 +554,9 @@ async function reviewNode(nodeId, nodeSha256, decision) {
     }
   } finally {
     reviewing = false;
+    // P2c review: another graph opened while this decision was in flight was drawn with
+    // its buttons disabled; draw it again, enabled.
+    if (reviewGraph && reviewGraph !== graph) renderReview(reviewGraph);
   }
   reviewNodes.querySelector(`li[data-node="${nodeId}"] button[data-decision="${decision}"]`)?.focus();
 }
