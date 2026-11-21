@@ -112,16 +112,30 @@ try {
 
   const [mcpFile, mcpList, mcpExtra] = argv(['mcp']);
   const adapter = spawn(mcpFile, mcpList, { env, cwd: work, stdio: ['pipe', 'pipe', 'pipe'], ...mcpExtra });
-  let lines = '';
+  // Whole lines only, since a pipe can split a reply anywhere; a closed stdout fails the
+  // wait once its last line has been read.
+  let buffered = '';
+  let closed = false;
+  const messages = [];
   adapter.stdout.setEncoding('utf8');
-  adapter.stdout.on('data', chunk => { lines += chunk; });
+  adapter.stdout.on('data', chunk => {
+    buffered += chunk;
+    let end;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      const line = buffered.slice(0, end).trim();
+      buffered = buffered.slice(end + 1);
+      try { messages.push(JSON.parse(line)); } catch { /* not a protocol line */ }
+    }
+  });
+  adapter.stdout.once('close', () => { closed = true; });
   const reply = id => new Promise((done, fail) => {
-    const timer = setTimeout(() => fail(new Error(`No MCP reply ${id}: ${lines}`)), 60_000);
-    const check = () => {
-      const line = lines.split('\n').find(text => text.startsWith('{') && JSON.parse(text).id === id);
-      if (line) { clearTimeout(timer); clearInterval(poll); done(JSON.parse(line)); }
-    };
-    const poll = setInterval(check, 50);
+    const finish = result => { clearTimeout(timer); clearInterval(poll); result(); };
+    const timer = setTimeout(() => finish(() => fail(new Error(`No MCP reply ${id} within 60 s.`))), 60_000);
+    const poll = setInterval(() => {
+      const message = messages.find(candidate => candidate?.id === id);
+      if (message) finish(() => done(message));
+      else if (closed) finish(() => fail(new Error(`The MCP adapter closed its output before reply ${id}.`)));
+    }, 50);
   });
   const send = message => adapter.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } });
