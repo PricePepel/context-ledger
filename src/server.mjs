@@ -241,7 +241,20 @@ const routes = [
   } },
   { method: 'GET', pattern: idPattern('/api/graphs'), handler: ({ params: [id] }) => {
     const graph = store.getGraph(id);
-    return graph ? { graph } : undefined;
+    if (!graph) return undefined;
+    // Card P2c: a version 3 graph comes with the decisions on its nodes' current hashes.
+    return { graph: graph.packet.version === 3 ? { ...graph, reviews: store.graphReviews(id) } : graph };
+  } },
+  { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
+    // People approve or reject nodes in the browser, as they decide room proposals: a
+    // browser sets Sec-Fetch-Site and page scripts cannot forge it, which keeps honest
+    // agent clients (the CLI and the MCP adapter) out; it does not prove who clicked.
+    if (request.headers['sec-fetch-site'] !== 'same-origin') {
+      throw new HttpError(403, 'Nodes are approved or rejected by people in the browser.');
+    }
+    const input = await readJson(request, origin, 'A node review');
+    const reviews = store.reviewNode(id, input);
+    return reviews ? { reviews } : undefined;
   } },
   { method: 'GET', pattern: idPattern('/api/graphs', '/export'), handler: ({ params: [id], url, response }) => {
     if ([...url.searchParams.keys()].length) throw new InputError('This export takes no parameters.');
