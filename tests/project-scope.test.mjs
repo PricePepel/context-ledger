@@ -8,6 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { InputError, openStore } from '../src/store.mjs';
 import { GraphInputError } from '../src/graph.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
@@ -207,4 +208,96 @@ test('P2a: the MCP tools pass project on, refuse bad slugs, and refuse rows a le
     }
     assert.equal(ledger.requests.length, count, 'a refused slug reaches no ledger');
   }
+});
+
+// P2a review (Codex round 1).
+async function fileStore(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-p2a-file-'));
+  const path = join(directory, 'ledger.sqlite');
+  const store = openStore(path);
+  const raw = new DatabaseSync(path);
+  t.after(async () => {
+    store.close();
+    raw.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const session = (name, project) => store.importTranscript({ provider: 'claude', source: `${name}.jsonl`, transcript: say(`${name}: synthetic`), project });
+  return { store, raw, session };
+}
+
+test('P2a review: a room opened across projects before P2a is readable but takes no choices and names no newer graph', async t => {
+  const { store, raw, session } = await fileStore(t);
+  const leoSession = session('leo', 'orbit');
+  const aliSession = session('ali', 'orbit');
+  session('vela-anchor', 'vela');
+  const ali = graphOf(store, aliSession.id, 'ali');
+  const leo = graphOf(store, leoSession.id, 'leo', [{ from: 'offer', graph: ali.id, to: 'offer', type: 'matches' }]);
+  const room = store.openRoom({ graphIds: [leo.id, ali.id] });
+  // What a file from before P2a may hold: the two sides now in two projects.
+  raw.prepare("UPDATE sessions SET project_id = (SELECT id FROM projects WHERE slug = 'vela') WHERE id = ?").run(aliSession.id);
+  graphOf(store, session('ali-2', 'vela').id, 'ali');
+  graphOf(store, session('leo-2', 'orbit').id, 'leo');
+  const view = store.getRoom(room.id);
+  assert.equal(view.proposals.length, 1, 'still readable');
+  assert.deepEqual(view.newerGraphs, []);
+  assert.throws(() => store.decide(room.id, { proposalId: view.proposals[0].id, party: 'leo', choice: 'confirm' }),
+    error => error instanceof InputError && error.message === 'This room joins graphs from two projects, so it takes no choices; open a room within one project.');
+  assert.deepEqual(store.listRooms({ limit: 10 }).rooms.map(row => [row.id, row.project]), [[room.id, null]]);
+  assert.deepEqual(store.listRooms({ project: 'orbit', limit: 10 }).rooms, []);
+  assert.deepEqual(store.listRooms({ project: 'vela', limit: 10 }).rooms, []);
+});
+
+test('P2a review: a session without a project matches no project, not another session without one', async t => {
+  const { store, raw, session } = await fileStore(t);
+  const a = session('a', 'orbit');
+  const b = session('b', 'orbit');
+  const ali = graphOf(store, b.id, 'ali');
+  // project_id is nullable (SQLite cannot add a NOT NULL foreign key); the trigger fills it only on insert.
+  raw.prepare('UPDATE sessions SET project_id = NULL WHERE id IN (?, ?)').run(a.id, b.id);
+  assert.throws(() => graphOf(store, a.id, 'leo', [{ from: 'offer', graph: ali.id, to: 'offer', type: 'matches' }]),
+    error => error instanceof GraphInputError && error.message === 'A link must point at a graph in the same project.');
+  const leo = graphOf(store, a.id, 'leo');
+  assert.throws(() => store.openRoom({ graphIds: [leo.id, ali.id] }),
+    error => error instanceof InputError && error.message === 'A room needs two graphs from the same project.');
+  assert.deepEqual(store.listGraphs({ limit: 10 }).graphs.map(row => row.project), [null, null]);
+});
+
+test('P2a review: the project filter pages rooms across interleaved projects', () => {
+  const store = openStore(':memory:');
+  const session = (name, project) => store.importTranscript({ provider: 'claude', source: `${name}.jsonl`, transcript: say(`${name}: synthetic`), project });
+  const rooms = [];
+  for (const [index, project] of ['orbit', 'vela', 'orbit', 'vela', 'orbit'].entries()) {
+    const ali = graphOf(store, session(`ali-${index}`, project).id, 'ali');
+    const leo = graphOf(store, session(`leo-${index}`, project).id, 'leo');
+    rooms.push({ project, id: store.openRoom({ graphIds: [leo.id, ali.id] }).id });
+  }
+  const walk = project => {
+    const seen = [];
+    let after;
+    do {
+      const page = store.listRooms({ project, limit: 1, after });
+      seen.push(...page.rooms.map(row => row.id));
+      after = page.next;
+    } while (after);
+    return seen;
+  };
+  const expected = project => rooms.filter(room => room.project === project).map(room => room.id).reverse();
+  assert.deepEqual(walk('orbit'), expected('orbit'));
+  assert.deepEqual(walk('vela'), expected('vela'));
+  store.close();
+});
+
+test('P2a review: session_search refuses a later ledger page with a row of another project', async t => {
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const ledger = await fakeLedger(t, url => (url.searchParams.get('after') === first
+    ? { sessions: [{ id: second, project: 'vela' }], next: null }
+    : { sessions: [{ id: first, project: 'orbit' }], next: first }));
+  const client = startMcp(ledger.port);
+  t.after(() => client.close());
+  await client.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+  // Without a limit the tool reads on through the ledger's pages.
+  const result = await client.call(2, 'session_search', { project: 'orbit' });
+  assert.deepEqual([result.isError, result.content[0].text], [true, 'This Context Ledger cannot filter by project. Restart it with npm start.']);
+  assert.equal(ledger.requests.length, 2);
 });

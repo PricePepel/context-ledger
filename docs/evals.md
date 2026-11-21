@@ -4345,6 +4345,12 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 | MCP | `session_search`, `graph_list` and `room_list` take an optional `project` (ASCII letters folded to lowercase, like `party`) and pass it on; without it they cover every project. A row from a ledger that ignored the filter (another project, or no `project` field) makes the tool fail with a fixed sentence instead of returning wrong rows. The pinned tool list keeps its fourteen tools; the new arguments have their own size budget. |
 | Nothing else moves | Every response pinned by `tests/routes.test.mjs` other than the list rows' new `project` field is unchanged, the token is needed on every route as before, and the browser app and console still pass. |
 
+**Codex review, round 1** (of b7017f8): the auth gate, fixed error texts and republish path hold. Fixed, each with a test in `tests/project-scope.test.mjs`:
+
+- (medium) A room opened across projects before P2a still took choices, and its newer-graph notice searched both projects. Such a room is now read-only (`decide` refuses it with a fixed sentence), names no newer graph, lists with `project: null` and matches no project filter.
+- (medium) A session whose project is missing (`project_id` is nullable; the trigger fills it only on insert) matched another such session, so links and rooms between them passed. A missing project now matches nothing.
+- (low) Paging with the filter was tested for graphs only: added a room walk over interleaved projects, and a `session_search` whose second ledger page holds another project's row.
+
 ## P2b — Message-key and artifact citations (defined 2026-11-21, before the code)
 
 ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file line numbers; P1c gave every stored message a stable key. Synthetic transcripts and made-up repositories only (`orbit-labs/adapter`).
