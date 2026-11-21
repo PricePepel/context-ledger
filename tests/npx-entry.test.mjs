@@ -228,6 +228,8 @@ test('P5c: install registers npx when run through it, and node with this file ot
   }
   assert.equal(written('file:dist/pkg.tgz'), join(repo, 'dist', 'pkg.tgz'), 'file: is a path, without the prefix');
   assert.equal(written('pkg.tgz'), join(repo, 'pkg.tgz'), 'a bare tarball name is a local file');
+  // A ~ inside a name, as in a Windows short name (C:UsersRUNNER~1), is kept.
+  assert.equal(written('./RUNNER~1/pkg.tgz'), join(repo, 'RUNNER~1', 'pkg.tgz'));
   for (const odd of ['git+ssh:git@github.com:owner/repo.git', 'git:github.com/owner/repo', 'ssh:owner/repo', 'npm:other@1', 'owner/repo/extra',
     '#main', 'context-ledger@^1.0.0', 'context-ledger@>=1', 'file:dir with space/pkg.tgz',
     'file:~/pkg.tgz', '~/pkg.tgz', 'pkg@bundle.tgz', 'pkg@.next', 'pkg@1.2',

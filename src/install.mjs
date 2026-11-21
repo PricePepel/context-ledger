@@ -87,7 +87,7 @@ const localSpec = /^(?:file:(?!\/\/)|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/u;
 // As npm reads it: a bare name ending .tgz with no slash is a file; dir/pkg.tgz is a GitHub
 // shorthand, and a local file in a folder is written ./dir/pkg.tgz (P5c review).
 const tarballName = /^[^@/\\:~]+\.t(?:ar\.)?gz$/u;
-const safePath = /^[A-Za-z0-9@/\\._:+-]{1,500}$/u;
+const safePath = /^[A-Za-z0-9@/\\._:~+-]{1,500}$/u;
 export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (only a registry name, a host shorthand such as github:owner/repo, or a local path without spaces can). ' +
   'Install the package with npm install --global and run context-ledger install again.';
 
@@ -99,9 +99,10 @@ export function writableSpec(spec, cwd) {
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(spec)?.[1];
   if (scheme && !['github', 'gitlab', 'bitbucket', 'gist'].includes(scheme) && !(scheme === 'file' && !spec.startsWith('file://'))
     && !/^[A-Za-z]:[\\/]/u.test(spec)) return undefined;
-  // ~ is the home folder to npm wherever it stands in a path (./~/x too), which this
-  // process cannot be sure to see the same way, so no spec with one is written.
-  if (spec.includes('~')) return undefined;
+  // ~ as a whole path part is the home folder to npm (~/x, ./~/x, file:~/x), which this
+  // process cannot be sure to see the same way, so such a spec is not written. Inside a
+  // name it is an ordinary character: Windows short names such as RUNNER~1 hold one.
+  if (/(?:^|[\\/:])~(?:[\\/]|$)/u.test(spec)) return undefined;
   if (localSpec.test(spec) || tarballName.test(spec)) {
     const path = resolve(cwd, spec.startsWith('file:') ? spec.slice('file:'.length) : spec);
     return safePath.test(path) ? path : undefined;
