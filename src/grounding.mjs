@@ -12,14 +12,15 @@ import { isGrounded } from './latent.mjs';
  * inferred: isGrounded(label, '') is true exactly when there is nothing to compare.
  *
  * `messages` are the session's stored messages ({ line, text }). Lists follow the
- * packet's node order, which is canonical for v2 packets.
+ * packet's node order, which is canonical for v2 and v3 packets. `linesOf(node)` gives a
+ * node's cited lines (a version 3 node's resolved message keys; P2b).
  */
-export function groundNodes(packet, messages) {
+export function groundNodes(packet, messages, linesOf = node => node.evidenceLines) {
   const textAt = new Map(messages.map(message => [message.line, message.text]));
   const quotedNodeIds = [];
   const inferredNodeIds = [];
   for (const node of packet.nodes) {
-    const cited = node.evidenceLines.map(line => textAt.get(line) ?? '').join('\n');
+    const cited = linesOf(node).map(line => textAt.get(line) ?? '').join('\n');
     const quoted = !isGrounded(node.label, '') && isGrounded(node.label, cited);
     (quoted ? quotedNodeIds : inferredNodeIds).push(node.id);
   }

@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mcpPath, mcpServerCommand } from '../src/install.mjs';
+import { InstallError, mcpPath, mcpServerCommand, unsafeSpecLine } from '../src/install.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(repo, 'bin', 'context-ledger.mjs');
@@ -72,14 +72,56 @@ async function startBin(t, later, args, env, cwd) {
     if (running) await ended;
   });
   let output = '';
+  // P5c review: a start that never prints fails after 90 s instead of holding the file.
   await new Promise((done, fail) => {
+    const timer = setTimeout(() => fail(new Error('The ledger did not start within 90 s: ' + output)), 90_000);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      if (/listening at http:\/\/127\.0\.0\.1:\d+/u.test(output)) done();
+      if (/listening at http:\/\/127\.0\.0\.1:\d+/u.test(output)) { clearTimeout(timer); done(); }
     });
-    ended.then(() => fail(new Error('The ledger exited before listening: ' + output)));
+    ended.then(() => { clearTimeout(timer); fail(new Error('The ledger exited before listening: ' + output)); });
   });
+}
+
+// One JSON-RPC exchange with an adapter child: each reply within 60 s, and a child that
+// exits fails every wait (P5c review).
+function rpc(child) {
+  // Whole lines only: a pipe can split a reply anywhere (P5c review round 2).
+  let buffered = '';
+  const messages = [];
+  let gone;
+  const waiting = new Set();
+  const wake = () => { for (const check of waiting) check(); };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    buffered += chunk;
+    let end;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      const line = buffered.slice(0, end).trim();
+      buffered = buffered.slice(end + 1);
+      try { messages.push(JSON.parse(line)); } catch { /* not a protocol line */ }
+    }
+    wake();
+  });
+  // Missing replies are decided when stdout closes, after its last line arrived; the exit
+  // status only goes into the message (P5c review round 3).
+  let status = 'running';
+  const end = why => { gone ??= new Error(`The adapter ${why} (${status}): ${buffered}`); wake(); };
+  child.once('exit', (code, signal) => { status = `exited ${signal ?? code}`; });
+  child.once('error', error => end(`failed (${error.message})`));
+  child.stdout.once('close', () => end('closed its output'));
+  const reply = id => new Promise((done, fail) => {
+    const timer = setTimeout(() => { waiting.delete(check); fail(new Error(`No reply ${id} within 60 s`)); }, 60_000);
+    const check = () => {
+      const message = messages.find(candidate => candidate?.id === id);
+      if (message || gone) { clearTimeout(timer); waiting.delete(check); return message ? done(message) : fail(gone); }
+    };
+    waiting.add(check);
+    check();
+  });
+  const send = message => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+  return { reply, send };
 }
 
 test('P5c: the package is publishable, and the tarball holds only the allowlist', async () => {
@@ -139,20 +181,10 @@ test('P5c: under the bin the server, CLI and MCP adapter share the per-user data
   // The MCP adapter through the bin, started in another folder, finds the token too.
   const adapter = spawn(process.execPath, [bin, 'mcp'], { env: { ...env }, cwd: elsewhere, stdio: ['pipe', 'pipe', 'pipe'] });
   later(async () => { if (adapter.exitCode === null) { adapter.kill(); await once(adapter, 'exit'); } });
-  let lines = '';
-  adapter.stdout.setEncoding('utf8');
-  const reply = id => new Promise(done => {
-    const check = () => {
-      const line = lines.split('\n').find(text => text.includes(`"id":${id}`));
-      if (line) { adapter.stdout.off('data', onData); done(JSON.parse(line)); }
-    };
-    const onData = chunk => { lines += chunk; check(); };
-    adapter.stdout.on('data', onData);
-    check();
-  });
-  adapter.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } }) + '\n');
+  const { reply, send } = rpc(adapter);
+  send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } });
   await reply(1);
-  adapter.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_search', arguments: { query: 'vela' } } }) + '\n');
+  send({ id: 2, method: 'tools/call', params: { name: 'session_search', arguments: { query: 'vela' } } });
   const result = (await reply(2)).result;
   assert.equal(result.isError, undefined, JSON.stringify(result));
   assert.equal(JSON.parse(result.content[0].text).sessions.length, 1);
@@ -172,9 +204,37 @@ test('P5c: install registers npx when run through it, and node with this file ot
     ['npx', '-y', '--package', spec, 'context-ledger', 'mcp']);
   assert.deepEqual(mcpServerCommand({ npm_command: 'exec', npm_config_package: spec }, { file: cached, platform: 'win32' }),
     ['cmd', '/c', 'npx', '-y', '--package', spec, 'context-ledger', 'mcp']);
-  for (const odd of [undefined, '', 'a b', `a${String.fromCodePoint(10)}b`, 'x%PATH%', 'say"hi', 'x'.repeat(501)]) {
-    assert.deepEqual(mcpServerCommand({ npm_command: 'exec', npm_config_package: odd }, { file: cached, platform: 'darwin' }),
-      ['npx', '-y', '--package', `${pkg.name}@${pkg.version}`, 'context-ledger', 'mcp'], JSON.stringify(odd));
+  // No spec from npm: this package's name and version.
+  for (const missing of [undefined, '']) {
+    assert.deepEqual(mcpServerCommand({ npm_command: 'exec', npm_config_package: missing }, { file: cached, platform: 'darwin' }),
+      ['npx', '-y', '--package', `${pkg.name}@${pkg.version}`, 'context-ledger', 'mcp'], JSON.stringify(missing));
+  }
+  // P5c review: a spec that a shell would read (on Windows the agent hands the line to
+  // cmd.exe), or a URL that can carry credentials, is refused, never written or replaced.
+  for (const odd of ['a b', `a${String.fromCodePoint(10)}b`, 'x%PATH%', 'say"hi', 'a&b', 'a|b', 'a^b', 'a>b', 'a(b)', 'a,b', 'a;b', 'a=b', 'a!b',
+    'x'.repeat(501), 'https://leo:secret@example.test/pkg.tgz', 'git+https://token@example.test/repo.git', 'file:///tmp/pkg.tgz', 7]) {
+    assert.throws(() => mcpServerCommand({ npm_command: 'exec', npm_config_package: odd }, { file: cached, platform: 'win32' }),
+      error => error instanceof InstallError && error.message === unsafeSpecLine, JSON.stringify(odd));
+  }
+  // A local tarball is made absolute, since the agent starts the adapter in another folder.
+  const relative = mcpServerCommand({ npm_command: 'exec', npm_config_package: './dist/pkg.tgz' }, { file: cached, platform: 'linux', cwd: repo });
+  assert.equal(relative[3], join(repo, 'dist', 'pkg.tgz'));
+  // P5c review round 2: each kind of spec is told apart before anything is rewritten.
+  const written = spec => mcpServerCommand({ npm_command: 'exec', npm_config_package: spec }, { file: cached, platform: 'linux', cwd: repo })[3];
+  for (const kept of ['@pricepepel/context-ledger', '@pricepepel/context-ledger@0.1.0', 'context-ledger@latest',
+    'github:PricePepel/context-ledger', 'github:owner/repo.tgz', 'PricePepel/context-ledger#main', 'gitlab:group/repo#v1.2',
+    'dist/pkg.tgz', 'context-ledger@next', '@pricepepel/context-ledger@0.1.0-rc.1', 'pkg@1.2.3+build.5']) {
+    assert.equal(written(kept), kept, kept);
+  }
+  assert.equal(written('file:dist/pkg.tgz'), join(repo, 'dist', 'pkg.tgz'), 'file: is a path, without the prefix');
+  assert.equal(written('pkg.tgz'), join(repo, 'pkg.tgz'), 'a bare tarball name is a local file');
+  // A ~ inside a name, as in a Windows short name (C:UsersRUNNER~1), is kept.
+  assert.equal(written('./RUNNER~1/pkg.tgz'), join(repo, 'RUNNER~1', 'pkg.tgz'));
+  for (const odd of ['git+ssh:git@github.com:owner/repo.git', 'git:github.com/owner/repo', 'ssh:owner/repo', 'npm:other@1', 'owner/repo/extra',
+    '#main', 'context-ledger@^1.0.0', 'context-ledger@>=1', 'file:dir with space/pkg.tgz',
+    'file:~/pkg.tgz', '~/pkg.tgz', 'pkg@bundle.tgz', 'pkg@.next', 'pkg@1.2',
+    '@scope/foo.tgz', 'pkg@1.2.3-foo.tgz', 'pkg@1.2.3-foo.tar.gz', 'pkg@1.2.3-foo.TGZ', './~/pkg.tgz', 'file:./~/pkg.tgz', 'pkg@x', 'pkg@X', 'gitlab:group/repo#~1']) {
+    assert.throws(() => written(odd), error => error instanceof InstallError && error.message === unsafeSpecLine, odd);
   }
   assert.deepEqual(mcpServerCommand({ npm_command: 'run-script' }, { file: cached }), ['node', cached], 'not npx');
 });
@@ -193,8 +253,8 @@ test('P5c: from a packed tarball in an empty folder, npx starts the ledger, impo
   await startBin(t, later, [...npx, 'start'], env, empty);
   const transcript = join(empty, 'leo.jsonl');
   await writeFile(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: 'Leo: ship the synthetic adapter on port 4317.' } }) + '\n');
-  const call = async args => {
-    const result = await exec(npx[0], [...npx.slice(1), ...args], { env, cwd: empty });
+  const call = async (args, extra = {}) => {
+    const result = await exec(npx[0], [...npx.slice(1), ...args], { env: { ...env, ...extra }, cwd: empty });
     assert.equal(result.code, 0, `${args.join(' ')}: ${result.stderr}`);
     return result.stdout;
   };
@@ -206,4 +266,23 @@ test('P5c: from a packed tarball in an empty folder, npx starts the ledger, impo
   const read = JSON.parse(await call(['graph', 'read', published.graph.id]));
   assert.equal(read.graph.packet.nodes[0].label, 'Port 4317');
   assert.ok(existsSync(join(home, '.context-ledger', 'ledger.sqlite')));
+
+  // P5c review: what install registers through npx, run as an agent would, answers MCP.
+  // The dry run needs only a file to stand in for the Claude CLI; nothing is registered.
+  const planned = await call(['install', '--agent', 'claude', '--dry-run'], { CONTEXT_LEDGER_CLAUDE_BIN: process.execPath });
+  const registered = / -- (.+) \(Claude Code refuses/u.exec(planned)?.[1];
+  assert.ok(registered, planned);
+  const [commandName, ...commandArgs] = registered.split(' ');
+  assert.equal(commandArgs[commandArgs.indexOf('--package') + 1], tarball, 'the absolute tarball path');
+  const env2 = { ...env, CONTEXT_LEDGER_DB: /CONTEXT_LEDGER_DB=(\S+)/u.exec(planned)[1] };
+  const adapter = spawn(commandName, commandArgs, { env: env2, cwd: directory, stdio: ['pipe', 'pipe', 'pipe'] });
+  later(async () => { if (adapter.exitCode === null && adapter.signalCode === null) { adapter.kill(); await once(adapter, 'exit').catch(() => {}); } });
+  const { reply, send } = rpc(adapter);
+  send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } });
+  await reply(1);
+  send({ id: 2, method: 'tools/call', params: { name: 'session_search', arguments: { query: 'adapter' } } });
+  const found = (await reply(2)).result;
+  assert.equal(found.isError, undefined, JSON.stringify(found));
+  assert.deepEqual(JSON.parse(found.content[0].text).sessions.map(row => row.id), [session.id]);
+  adapter.stdin.end();
 });

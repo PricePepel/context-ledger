@@ -7,7 +7,8 @@ import { graphContext } from './context.mjs';
 import { ConflictError, InputError } from './errors.mjs';
 import { diffGraphs } from './diff.mjs';
 import { graphPrefixLength, nodeLinkBundle } from './export.mjs';
-import { canonicalPacket, validateGraph } from './graph.mjs';
+import { mountArtifacts } from './artifacts.mjs';
+import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema } from './migrate.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
@@ -365,8 +366,8 @@ export function openStore(path) {
     const newer = readGraph(id);
     const older = readGraph(fromId);
     if (!newer || !older) return;
-    if (newer.packet.version !== 2 || older.packet.version !== 2 || newer.packet.party !== older.packet.party) {
-      throw new InputError('Both graphs must be version 2 graphs of the same party.');
+    if (!isPartyGraph(newer.packet) || !isPartyGraph(older.packet) || newer.packet.party !== older.packet.party) {
+      throw new InputError('Both graphs must be version 2 or 3 graphs of the same party.');
     }
     return diffGraphs(older, newer);
   };
@@ -377,6 +378,7 @@ export function openStore(path) {
   `);
   const graphProject = id => selectGraphProject.get(id)?.project ?? null;
   const rooms = mountRooms(database, readGraph, graphProject);
+  const artifacts = mountArtifacts(database, defaultProject);
 
   // Version 2 adds projects and sessions.project_id. Version 3 adds one messages row per
   // turn; sessions.messages is still written for builds from before versions. Sessions are
@@ -587,14 +589,28 @@ export function openStore(path) {
       // P2a: a link must stay in the project of the session this graph cites.
       // A session or graph without a resolved project matches nothing (P2a review).
       const project = getSummary.get(sessionId).project ?? null;
-      const options = { lookupGraph: id => readGraph(id), sameProject: id => project !== null && graphProject(id) === project };
+      // P2b: version 3 cites this session's messages by key and this project's artifacts.
+      const options = {
+        lookupGraph: id => readGraph(id),
+        sameProject: id => project !== null && graphProject(id) === project,
+        messageKeys: messages.map(message => message.key),
+        hasArtifact: id => artifacts.artifactInProject(id, project),
+      };
       validateGraph(packet, sourceLines, options);
       // Derive from the canonical form so derived ID lists follow its order.
       const ordered = canonicalPacket(packet);
       const derived = validateGraph(ordered, sourceLines, options);
       const canonical = serializeGraphPacket(ordered);
       const id = createHash('sha256').update(canonical).digest('hex');
-      const payload = { packet: JSON.parse(canonical), ...derived, ...groundNodes(ordered, messages) };
+      // P2b: a version 3 graph stores what its citations resolved to, so every reader
+      // gets lines (and artifacts) without parsing keys again; G7 grounds on those lines.
+      let citations;
+      if (ordered.version === 3) {
+        const lineAt = new Map(messages.map(message => [message.key, message.line]));
+        citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
+      }
+      const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
+      const payload = { packet: JSON.parse(canonical), ...derived, ...(citations ? { citations } : {}), ...groundNodes(ordered, messages, linesOf) };
       try {
         insertGraph.run(id, sessionId, JSON.stringify(payload));
       } catch (error) {
@@ -610,6 +626,8 @@ export function openStore(path) {
     diffGraphs: diff,
 
     ...rooms,
+
+    ...artifacts,
 
     close() {
       database.close();

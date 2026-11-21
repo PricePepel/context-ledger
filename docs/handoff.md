@@ -569,6 +569,16 @@ PR #58, branch `claude/p2a-project-scope`. P2 is split into P2a–P2c on the boa
 - A room opened across projects before P2a stays readable but takes no choices (`takesChoices: false`); the browser shows its choices without buttons.
 - **Next owner:** P2b (version 3 citations) is stacked on this branch; P2c follows it.
 
+## Current checkpoint — P2b message-key and artifact citations (2026-11-21)
+
+PR #59, branch `claude/p2b-citations`. Read the P2b section of [the eval log](evals.md) and ADR-7b in [the architecture](architecture.md) §12.
+
+- Packet version 3 cites `{ message: <P1c key> }` or `{ artifact: <id> }`; versions 1 and 2 are unchanged. The stored graph adds `citations` (lines and artifact rows per node), which every reader uses.
+- Artifacts (commit, pull request, file) are registered per project with `ledger artifact add|list` or `/api/artifacts`; schema version 4.
+- `graph_schema` defaults to version 3, and `session_read` shows each turn's key.
+- Citations compare with their session (lines and keys) in the diff and the console; artifacts compare as they are.
+- **Next owner:** P2c (node-hash approval) is stacked on this branch.
+
 ## Current checkpoint — P5c `npx` entry point (2026-11-21)
 
 Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
@@ -577,4 +587,8 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 - `package.json` is publishable: no `private`, a `files` allowlist, MIT, repository and engines. The name `context-ledger` is taken on npm by an unrelated package, so the package is `@pricepepel/context-ledger` (publish with `--access public`); the command stays `context-ledger`. Nobody has run `npm publish`: that is the user's step.
 - Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). A bare `npx -y <tarball>` runs nothing for a local tarball, so use the `--package` form.
 - **Next owner:** P5d (clean-install CI job on three systems) and P5e (launch docs).
+
+## Current checkpoint — P5d clean-install eval (2026-11-21)
+
+PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the checkout, installs the tarball globally into an empty prefix on Linux, Windows and macOS, and drives the installed `context-ledger` command from an empty folder and home: usage, start, import, search, graph publish and read, login and the MCP adapter. Run it locally with `node scripts/clean-install-check.mjs`. The script is not in the package.
 

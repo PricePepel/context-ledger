@@ -1,6 +1,6 @@
 // Schema versions of ledger.sqlite, kept in PRAGMA user_version. A file written before
 // versions existed is version 0 and is upgraded in place when a store opens it.
-export const schemaVersion = 3;
+export const schemaVersion = 4;
 
 const userVersion = database => database.prepare('PRAGMA user_version').get().user_version;
 const columns = (database, table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -294,6 +294,21 @@ export function migrate(database, bootstrap = () => {}) {
           ${insertRows} ${legacyRows('NEW.id', 'NEW.messages')} ORDER BY m.key;
         END;
         PRAGMA user_version = 3;
+      `);
+    }
+    if (version < 4) {
+      // Card P2b (ADR-7b): artifacts a version 3 graph can cite, per project.
+      database.exec(`
+        CREATE TABLE artifacts (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          kind TEXT NOT NULL CHECK (kind IN ('commit', 'pr', 'file')),
+          repo TEXT NOT NULL,
+          ref TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE (project_id, kind, repo, ref)
+        ) STRICT;
+        PRAGMA user_version = 4;
       `);
     }
     database.exec('COMMIT');

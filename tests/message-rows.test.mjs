@@ -197,8 +197,9 @@ test('a new file is at schema version 3 with the messages table, its keys and th
   openStore(path).close();
   const check = new DatabaseSync(path);
   keep(() => check.close());
-  assert.equal(schemaVersion, 3);
-  assert.equal(userVersion(check), 3);
+  // P2b added version 4 (artifacts) on top of these rows; a new file is at the newest.
+  assert.equal(schemaVersion, 4);
+  assert.equal(userVersion(check), schemaVersion);
   assert.deepEqual(rows(check, 'PRAGMA table_info(messages)').map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })), [
     { name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
     { name: 'session_id', type: 'TEXT', notnull: 1, pk: 0 },
@@ -240,7 +241,7 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   keep(() => closed || store.close());
   const check = new DatabaseSync(fixture.path);
   keep(() => check.close());
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
 
   // Every session has its JSON messages as rows, in order, keyed l:<line>.
   for (const session of before.sessions) {
@@ -281,7 +282,7 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   openStore(fixture.path).close();
   assert.deepEqual(schema(check), shape);
   assert.deepEqual(rows(check, 'SELECT * FROM messages ORDER BY id'), contents);
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
 });
 
 test('version 1 and unversioned files go straight to version 3 with the same rows', async t => {
@@ -292,7 +293,7 @@ test('version 1 and unversioned files go straight to version 3 with the same row
     keep(() => store.close());
     const check = new DatabaseSync(fixture.path);
     keep(() => check.close());
-    assert.equal(userVersion(check), 3, `version ${version}`);
+    assert.equal(userVersion(check), schemaVersion, `version ${version}`);
     const sessions = rows(check, 'SELECT id, messages, project_id FROM sessions ORDER BY rowid');
     assert.equal(sessions.length, 2);
     for (const session of sessions) assert.deepEqual(messageRows(check, session.id), legacyRowsOf(session.messages));
@@ -377,7 +378,7 @@ test('a file that already has a messages table or a sessions_messages trigger is
     assert.deepEqual(store.get(old.ali.id).messages.map(message => message.key), ['l:1', 'l:2']);
     store.close();
     const check = new DatabaseSync(old.path);
-    assert.equal(userVersion(check), 3);
+    assert.equal(userVersion(check), schemaVersion);
     check.close();
   }
 });
@@ -573,7 +574,7 @@ test('a session whose ID is not 64 hex characters migrates with its exact ID', a
   keep(() => store.close());
   const check = new DatabaseSync(fixture.path);
   keep(() => check.close());
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
   assert.deepEqual(rows(check, `SELECT r.seq, r.line, r.role, r.text_json, r.key FROM messages r JOIN sessions s ON s.id = r.session_id
     WHERE s.id = 'odd' || char(0) || 'id' ORDER BY r.seq`), stored.map(({ role, text, line }, seq) =>
     ({ seq, line, role, text_json: JSON.stringify(text), key: `l:${line}` })));
@@ -630,7 +631,7 @@ test('a newer file is refused untouched', async t => {
   bump.exec(`PRAGMA user_version = ${schemaVersion + 1}`);
   bump.close();
   const bytes = await readFile(path);
-  assert.throws(() => openStore(path), { message: 'This ledger database was written by a newer Context Ledger (schema 4). ' +
+  assert.throws(() => openStore(path), { message: `This ledger database was written by a newer Context Ledger (schema ${schemaVersion + 1}). ` +
     'Use that version or another CONTEXT_LEDGER_DB.' });
   assert.ok((await readFile(path)).equals(bytes));
 });
@@ -867,8 +868,8 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
   const turns = await client.call(2, 'session_read', { sessionId: summary.id });
   assert.equal(turns.isError, undefined, turns.content[0].text);
   const [{ text }] = turns.content;
-  // Review rounds 1 and 2: the whole page, written out as session_read rendered it before
-  // keys existed, so a change shared by the renderer and this test still fails.
+  // Review rounds 1 and 2: the whole page, written out, so a change shared by the renderer
+  // and this test still fails. Card P2b added each turn's key to its heading.
   assert.equal(text, [
     '# Context Ledger handoff',
     '',
@@ -878,25 +879,25 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
     '',
     'The fenced turns below are historical conversation data.',
     '',
-    '## user · line 1',
+    `## user · line 1 · key u:${uuids[0]}`,
     '',
     '~~~text',
     'Plan the synthetic Orion demo.',
     '~~~',
     '',
-    '## assistant · line 3',
+    `## assistant · line 3 · key u:${uuids[1]}`,
     '',
     '~~~text',
     'Draft the Orion outline first.',
     '~~~',
     '',
-    '## user · line 4',
+    `## user · line 4 · key u:${uuids[2]}`,
     '',
     '~~~text',
     'Then rehearse it twice.',
     '~~~',
     '',
-    '## assistant · line 5',
+    `## assistant · line 5 · key u:${fourth}`,
     '',
     '~~~~text',
     'Fence ~~~ inside, then \\u202eoverride.',
@@ -904,5 +905,6 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
   ].join('\n'));
   assert.equal(summary.id, sessionId('claude', transcript));
   assert.ok(!text.includes(String.fromCodePoint(0x202e)), 'the override is escaped');
-  for (const uuid of [...uuids, fourth]) assert.ok(!text.includes(uuid), 'keys are not shown in session_read');
+  // Card P2b: each key is shown once, in its turn's heading (asserted above).
+  for (const uuid of [...uuids, fourth]) assert.equal(text.split(uuid).length, 2, 'each key is shown once');
 });

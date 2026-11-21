@@ -4355,17 +4355,61 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 
 **Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.
 
+## P2b — Message-key and artifact citations (defined 2026-11-21, before the code)
+
+ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file line numbers; P1c gave every stored message a stable key. Synthetic transcripts and made-up repositories only (`orbit-labs/adapter`).
+
+| Eval | Expected |
+| --- | --- |
+| Version 3 packet | `schemas/semantic-graph-v3.schema.json` is version 2 with `evidence` in place of `evidenceLines`: 1 to 100 unique citations, each exactly `{ "message": "<key>" }` (a `u:`, `h:` or `l:` key) or `{ "artifact": "<64 hex>" }`. Parties, questions, edges and links are as in version 2. Versions 1 and 2 publish and read exactly as before. |
+| Citations resolve | Every message key must be a stored message of the packet's session, and every artifact must be registered in that session's project; otherwise a 400 with a fixed sentence that names no key or ID. Order is not identity: citations are sorted in the canonical packet, so a reordered packet gets the same graph ID. |
+| Derived citations | The stored graph keeps the packet as sent (canonical) and adds `citations`: for each node, the transcript lines its message keys resolve to and the artifacts it cites (`kind`, `repo`, `ref`). G7 grounding, `context_for`, the G11 diff, the G12 export and the console's evidence panel read lines from there, so a version 3 graph shows the same turns as the version 2 graph with the same lines. |
+| Rooms and links | Version 2 and version 3 graphs link to each other and meet in rooms; every party-graph rule (other party, other session, same project, no superseded target) applies to both. |
+| Artifacts | Schema version 4 adds an `artifacts` table: per project, kind `commit`, `pr` or `file`, a repository path such as `orbit-labs/adapter`, and a ref (a hex commit of 7 to 64 characters, a pull request number, or a relative file path with no `.` or `..` part). The ID is SHA-256 of the project, kind, repository and ref, so registering twice returns the same row. `POST /api/artifacts` (token and local Origin) and `ledger artifact add <kind> <repo> <ref> [--project <slug>]` register one; `GET /api/artifacts?project=` and `ledger artifact list` list them, newest first, with paging. Nothing registers an artifact by itself. A version 3 file is upgraded in place, and a newer file is refused untouched. |
+| MCP | `graph_schema` offers versions 1, 2 and 3, with 3 as the default; `session_read` shows each turn's key beside its line, so an agent can cite it; `graph_publish` says that version 3 cites message keys or artifacts. No MCP tool registers an artifact. The pinned tool list keeps its fourteen tools. |
+
+**Results — P2b (2026-11-21, Windows):** every row passes. Code in `src/artifacts.mjs`, `src/graph.mjs`, `src/store.mjs`, `src/migrate.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/mcp/*` and the readers; tests in `tests/citations.test.mjs` and the console spec.
+
+**Codex review, round 1** (of 4861b83): no cross-session or cross-project resolution at publish, no canonicalization hole, and migration, auth, Origin and escaping hold. Fixed, each with a test:
+
+- (medium) The console dropped artifact citations, and its panel took the raw packet node, which a version 3 node gives no `evidenceLines`. The model now passes lines and artifacts to the panel, which lists each artifact as text and says when a node cites artifacts only (Playwright).
+- (medium) The diff and the console compared citations without their session, so `l:1`, a reused record UUID or a line number in another session looked unchanged, and an answer link carried over to a question whose cited turn changed. Citations from another session are now a change in both (node test with one key in two sessions, for version 2 lines and version 3 keys).
+- (low) The export flattened artifacts into `source_location` text, where a file path may hold `, ` or `@`: nodes also carry `ledger_artifacts` records.
+- (low) `ledger artifact list` could read only the first 20 rows: it takes `--limit` and `--after`.
+
+**Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
+
+**Codex review, round 3** (of a7bf589): both round-2 fixes hold. (low) An answer published after its question had changed still flashed a read line to the changed question: such a link now reads nothing (node test).
+
 ## P5c — `npx` entry point (defined 2026-11-21, before the code)
 
 The user's answers of 2026-11-21: prepare the package for npm but do not publish it; default the database to a per-user folder under the bin; when `install` runs through `npx`, register `npx`; the bin is `context-ledger`. Synthetic data only.
 
 | Eval | Expected |
 | --- | --- |
-| Publishable package | `package.json` has no `private`, a `bin` named `context-ledger`, a `files` allowlist (`bin/`, `src/`, `public/`, `schemas/`, `rules/latent-rules.json`, README, LICENSE), the MIT `license`, the `repository` and `engines` (Node 22.14 or newer). `npm pack --dry-run` lists no test, fixture, demo, doc, runtime, `.sqlite`, `.env`, key or token file, and nothing outside the allowlist. No new runtime dependency. Nobody runs `npm publish` in this card. |
+| Publishable package | `package.json` has no `private`, a `bin` named `context-ledger`, a `files` allowlist (`bin/`, `src/`, `public/`, `schemas/`, `rules/latent-rules.json`, README, LICENSE), the MIT `license`, the `repository` and `engines` (Node 22.14 or newer). `npm pack --dry-run` lists no test, fixture, `demo/` script or transcript, doc, runtime, `.sqlite`, `.env`, key or token file, and nothing outside the allowlist. The console's bundled synthetic recording (`public/console/demo-recording.json`) is included, because the console's demo mode loads it. No new runtime dependency. Nobody runs `npm publish` in this card. |
 | One bin | `context-ledger start` runs the server, `context-ledger mcp` the stdio MCP adapter, and every other argument list runs the `ledger` CLI exactly as `npm run ledger --` does (same output, exit status and escaping). With no arguments it prints the usage. |
 | Per-user database | Under the bin, an unset `CONTEXT_LEDGER_DB` becomes `.context-ledger/ledger.sqlite` in the home folder (`USERPROFILE` on Windows, `HOME` elsewhere), for the server, the CLI and the MCP adapter alike, so they find one token file whatever folder each starts in. A set value is kept. `npm start` and `npm run ledger` from a checkout keep today's defaults. |
-| Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. |
+| Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. A local tarball path is made absolute. A spec that is a URL (it can carry credentials) or holds a space or a shell character is refused before any CLI runs. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. The registered command, run as an agent would, answers MCP. |
 | Works from a tarball | In an empty folder, `npm pack` then `npx -y --package <tarball> context-ledger …` starts the ledger, imports a synthetic transcript, publishes a graph and reads it back; a node test does this on each system. |
+
+**Codex review, round 1** (of f279d69): the server, CLI and adapter share one database and token path under the bin, and the CLI dispatch is unchanged. Fixed, each with a test in `tests/npx-entry.test.mjs`:
+
+- (high) On Windows the spec went into a `cmd /c` line that the agent later hands to cmd.exe, and the filter let shell characters through. (high) A URL spec with credentials would be copied into both agents' configs. Specs are now limited to letters, digits and `@ / \ . _ : # ~ + -`; URLs and anything else are refused before any CLI runs (ADR-15c).
+- (medium) A local tarball spec was replayed from the agent's folder, and a path with a space fell back silently to a registry version that does not exist before publication. A local path is now made absolute, and an unusable one is refused, not replaced. The tarball test now runs `install --dry-run` through npx and starts the registered command as an agent would: it answers `session_search`.
+- (medium) The tests' server start and MCP replies had no deadline, and a reply waiter never failed when the adapter exited: both now have one (90 s and 60 s) and fail on exit.
+- (low) The eval said the tarball holds no demo, while the console's synthetic recording is included (the console's demo mode loads it): the eval now says so.
+
+**Codex review, round 2** (of 693ca01): ordinary relative tarballs become absolute, credential URLs are refused, and the registered command answers MCP. Fixed, each with a test:
+
+- (medium) The URL check missed `git+ssh:` specs without `//`, and the path rule rewrote `@scope/foo.tgz` and `github:owner/repo.tgz` as local paths and kept `file:` as part of a path. Specs are now told apart first: a registry name, a host shorthand, or a local path (`file:` stripped), each with its own grammar; anything else is refused.
+- (medium) The test's MCP reader parsed partial lines from the pipe and did not fail on a closed stream: it now parses whole lines only and fails waiters on exit, error or close.
+- (low) The ADR said the characters were safe for every shell; it now states the guarantee for the two paths the command takes (one POSIX argument, the Windows `cmd /c` line).
+
+**Codex review, round 3** (of 4296c04), checked against npm's own spec parser (`npm-package-arg` 12): (medium) `dist/pkg.tgz` is a GitHub shorthand to npm, not a local file; (medium) npm resolves `file:~/…` under the home folder; (medium) npm reads `pkg@bundle.tgz` and `pkg@.next` as local paths. Now a bare name ending `.tgz` with no slash is a file, `dir/pkg.tgz` is kept as a shorthand (a local file in a folder is written `./dir/pkg.tgz`), `~` specs are refused, and a registry version must be an exact semver or a plain tag. (low) The test's MCP reader could fail a reply on exit before stdout delivered its last line: it now decides when stdout closes. Each case has an assertion.
+
+**Codex review, round 4** (of d36346a): `dir/pkg.tgz` and the reader fix hold. (medium) npm reads `pkg@1.2.3-foo.tgz` as a local tarball, and (medium) `./~/pkg.tgz` under the home folder; (low) `pkg@x` is a range to npm, and `pkg@1.2.3+build` an exact version. Now no spec ending in a tarball suffix is a registry name (so `@scope/foo.tgz` is refused too), no spec with `~` is written, a tag is lowercase with two or more characters, and an exact version may carry `+build`; each case has an assertion. The rule stays narrow on purpose: a spec it cannot be sure of is refused with the advice to install globally, never rewritten.
+- **CI on Windows** then failed the tarball test: the runner's temporary folder is `C:UsersRUNNER~1…`, and the rule refused every `~`. Only `~` as a whole path part (`~/x`, `./~/x`, `file:~/x`) is refused now; inside a name, as in a Windows short name, it is kept (unit assertion).
 
 ## P5d — Clean-install eval on three systems (defined 2026-11-21, before the code)
 
@@ -4379,4 +4423,6 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 | Agents | `context-ledger mcp` answers `initialize` and `tools/list`, and `session_search` finds the imported session. |
 | Clean stop | The server stops, and the check leaves nothing outside its temporary folder. |
 | Local | `node scripts/clean-install-check.mjs` runs the same check on a developer machine (it packs the checkout itself). The script is not in the package. |
+
+**Results — P5d (2026-11-21):** the Clean install workflow passes on `ubuntu-latest`, `windows-latest` and `macos-latest` (run of a32fc37), and `node scripts/clean-install-check.mjs` passes on Windows locally. The first Windows run failed after every step had passed: the check waited for the server's exit event after the `cmd.exe` shim had already exited, so it now waits on the promise made at spawn, for at most 15 s. The adapter's replies are read as whole lines, as in P5c's test after its review.
 

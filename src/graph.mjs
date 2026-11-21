@@ -1,13 +1,58 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import graphSchemaV1 from '../schemas/semantic-graph.schema.json' with { type: 'json' };
 import graphSchemaV2 from '../schemas/semantic-graph-v2.schema.json' with { type: 'json' };
+import graphSchemaV3 from '../schemas/semantic-graph-v3.schema.json' with { type: 'json' };
 
 const ajv = new Ajv2020({ strict: true, ownProperties: true });
 // A Map, not an object literal: `version` is untrusted input, and an inherited key
 // such as "constructor" must not resolve to a function that skips validation.
-const validateShape = new Map([[1, ajv.compile(graphSchemaV1)], [2, ajv.compile(graphSchemaV2)]]);
+const validateShape = new Map([[1, ajv.compile(graphSchemaV1)], [2, ajv.compile(graphSchemaV2)], [3, ajv.compile(graphSchemaV3)]]);
 
-export const graphSchemas = { 1: graphSchemaV1, 2: graphSchemaV2 };
+export const graphSchemas = { 1: graphSchemaV1, 2: graphSchemaV2, 3: graphSchemaV3 };
+
+/**
+ * Card P2b: version 3 is version 2 with citations by message key or artifact instead of
+ * line numbers. Both are party graphs: parties, questions, links and rooms work the same.
+ */
+export const isPartyGraph = packet => packet?.version === 2 || packet?.version === 3;
+
+/**
+ * The transcript lines a node cites: its evidenceLines in versions 1 and 2, and in
+ * version 3 the lines its message keys resolved to when the graph was published (the
+ * stored graph's `citations`). Artifacts cite no line.
+ */
+export function nodeLines(graph, node) {
+  if (graph.packet.version !== 3) return node.evidenceLines;
+  return citationOf(graph, node)?.lines ?? [];
+}
+
+/** The artifacts a version 3 node cites, as stored when it was published: [{ id, kind, repo, ref }]. */
+export function nodeArtifacts(graph, node) {
+  return graph.packet.version === 3 ? citationOf(graph, node)?.artifacts ?? [] : [];
+}
+
+// `citations` is a list in canonical node order ({ id, lines, artifacts }), not an object,
+// so a node ID such as "12" cannot change the order of its keys.
+const citationOf = (graph, node) => (Array.isArray(graph.citations) ? graph.citations.find(entry => entry.id === node.id) : undefined);
+
+/**
+ * Card P2b: what a version 3 packet's citations resolve to, in canonical node order.
+ * `lineOf(key)` gives a stored message's line and `artifactOf(id)` its stored row.
+ */
+export function resolveCitations(packet, lineOf, artifactOf) {
+  return packet.nodes.map(node => ({
+    id: node.id,
+    lines: [...new Set(node.evidence.filter(citation => citation.message !== undefined).map(citation => lineOf(citation.message)))]
+      .sort((a, b) => a - b),
+    artifacts: node.evidence.filter(citation => citation.artifact !== undefined).map(citation => {
+      const { id, kind, repo, ref } = artifactOf(citation.artifact);
+      return { id, kind, repo, ref };
+    }),
+  }));
+}
+
+// Messages before artifacts, each in code-unit order: one canonical order for a set.
+const citationKey = citation => (citation.message !== undefined ? '0' + citation.message : '1' + citation.artifact);
 
 const edgeKinds = {
   advances: [['action'], ['goal']],
@@ -50,10 +95,12 @@ export const compareBy = (...keys) => (a, b) => {
  * keep their order because their identity has always included it.
  */
 export function canonicalPacket(packet) {
-  if (packet.version !== 2) return packet;
+  if (!isPartyGraph(packet)) return packet;
   const rank = node => kindOrder.indexOf(node.kind);
   const nodes = packet.nodes
-    .map(node => ({ ...node, evidenceLines: [...node.evidenceLines].sort((a, b) => a - b) }))
+    .map(node => (packet.version === 3
+      ? { ...node, evidence: [...node.evidence].sort((a, b) => compareText(citationKey(a), citationKey(b))) }
+      : { ...node, evidenceLines: [...node.evidenceLines].sort((a, b) => a - b) }))
     .sort((a, b) => rank(a) - rank(b) || compareText(a.id, b.id));
   const canonical = {
     ...packet,
@@ -66,13 +113,23 @@ export function canonicalPacket(packet) {
   return canonical;
 }
 
-function indexNodes(nodes, sourceLines) {
+function indexNodes(nodes, sourceLines, { messageKeys, hasArtifact }) {
   const evidence = new Set(sourceLines);
+  const keys = new Set(messageKeys ?? []);
   const byId = new Map();
   for (const node of nodes) {
     if (byId.has(node.id)) throw new GraphInputError('Node IDs must be unique.');
-    if (!node.evidenceLines.every(line => evidence.has(line))) {
+    if (node.evidenceLines && !node.evidenceLines.every(line => evidence.has(line))) {
       throw new GraphInputError('Evidence must refer to stored lines in the source session.');
+    }
+    // Card P2b: fixed sentences that name no key or artifact ID.
+    for (const citation of node.evidence ?? []) {
+      if (citation.message !== undefined && !keys.has(citation.message)) {
+        throw new GraphInputError('Evidence must cite stored messages of the source session by key.');
+      }
+      if (citation.artifact !== undefined && !hasArtifact?.(citation.artifact)) {
+        throw new GraphInputError('Evidence must cite an artifact registered in this project.');
+      }
     }
     byId.set(node.id, node);
   }
@@ -134,7 +191,7 @@ function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
     if (superseded.has(from)) throw new GraphInputError('A link cannot start at a superseded decision.');
     if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
     const remote = remoteGraphs.get(graph)?.packet;
-    if (remote?.version !== 2) throw new GraphInputError('A link must point at a stored version 2 graph.');
+    if (!isPartyGraph(remote)) throw new GraphInputError('A link must point at a stored version 2 or 3 graph.');
     // Card P2a (ADR-7a): graphs are project-scoped, so a link cannot cross projects.
     if (sameProject && !sameProject(graph)) throw new GraphInputError('A link must point at a graph in the same project.');
     // Party names are self-asserted. Requiring a different transcript at least stops
@@ -165,21 +222,23 @@ function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
  * Validate a v1 or v2 packet against the original line numbers retained for its
  * source session and derive its actionable state in packet order. Version 2 links
  * are checked with `lookupGraph(id)`, which returns a stored graph or undefined, and
- * `sameProject(id)`, true when that graph is in this packet's project (P2a).
+ * `sameProject(id)`, true when that graph is in this packet's project (P2a). Version 3
+ * citations are checked against `messageKeys` (the session's keys) and `hasArtifact(id)`,
+ * true for an artifact registered in this packet's project (P2b).
  */
-export function validateGraph(packet, sourceLines, { lookupGraph, sameProject } = {}) {
+export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, messageKeys, hasArtifact } = {}) {
   const version = packet?.version;
   const validate = validateShape.get(version);
   if (!validate?.(packet)) {
     throw new GraphInputError(validate ? `Invalid version ${version} graph packet.` : 'Unsupported graph packet version.');
   }
 
-  const nodes = indexNodes(packet.nodes, sourceLines);
+  const nodes = indexNodes(packet.nodes, sourceLines, { messageKeys, hasArtifact });
   const edges = indexEdges(packet.edges, nodes);
   assertAcyclic(edges.get('depends_on'), 'dependency');
   assertAcyclic(edges.get('supersedes'), 'supersession');
   const superseded = new Set(edges.get('supersedes').map(edge => edge.to));
-  if (version === 2) {
+  if (isPartyGraph(packet)) {
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
     }
@@ -202,7 +261,7 @@ export function validateGraph(packet, sourceLines, { lookupGraph, sameProject } 
       .filter(node => node.kind === 'decision' && !superseded.has(node.id))
       .map(node => node.id),
   };
-  if (version !== 2) return derived;
+  if (!isPartyGraph(packet)) return derived;
 
   const answered = new Set(edges.get('answers').filter(edge => !superseded.has(edge.from)).map(edge => edge.to));
   return {
