@@ -42,6 +42,7 @@ const home = join(root, 'home');
 const work = join(root, 'work');
 for (const folder of [prefix, home, work]) await mkdir(folder);
 let server;
+let serverEnded = Promise.resolve();
 
 try {
   let tarball = process.argv[2] && resolve(process.argv[2]);
@@ -77,6 +78,7 @@ try {
   const [file, list, extra] = argv(['start']);
   server = spawn(file, list, { env, cwd: work, stdio: ['ignore', 'pipe', 'pipe'], detached: !windows, ...extra });
   const ended = once(server, 'exit').catch(() => {});
+  serverEnded = ended;
   let output = '';
   await new Promise((done, fail) => {
     const timer = setTimeout(() => fail(new Error('The ledger did not start within 60 s: ' + output)), 60_000);
@@ -134,13 +136,15 @@ try {
   await once(adapter, 'exit');
   step('the MCP adapter answers and finds the session');
 } finally {
-  if (server && server.exitCode === null && server.signalCode === null) {
+  // The exit promise made at spawn: on Windows the cmd.exe shim may have exited already,
+  // and an exit listener added now would wait for nothing. At most 15 s either way.
+  if (server) {
     if (windows) {
       await run(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(server.pid), '/T', '/F']).catch(() => {});
     } else {
       try { process.kill(-server.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
-    await once(server, 'exit').catch(() => {});
+    await Promise.race([serverEnded, new Promise(done => setTimeout(done, 15_000).unref())]);
   }
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
