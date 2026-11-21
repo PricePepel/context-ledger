@@ -127,7 +127,8 @@ test('session_read pages the long transcript, and the late facts appear only aft
   const later = rest.join('\n');
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const states = (text, value) => new RegExp(`(?<![\\w-])${escape(value)}(?![\\w-])`, 'iu').test(text);
-  const lastLineOnFirst = Math.max(...[...pages[0].matchAll(/^## \w+ · line (\d+)$/gmu)].map(match => Number(match[1])));
+  // Card P2b: a heading may end with the turn's key.
+  const lastLineOnFirst = Math.max(...[...pages[0].matchAll(/^## \w+ · line (\d+)(?: · key \S+)?$/gmu)].map(match => Number(match[1])));
   t.diagnostic(`${pages.length} pages; page 1 ends at line ${lastLineOnFirst} of ${transcript.split('\n').length}`);
 
   for (const fact of facts) {

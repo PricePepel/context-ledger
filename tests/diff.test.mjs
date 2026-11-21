@@ -132,7 +132,7 @@ test('review of G11: a reused node ID is a change of kind, not a supersession or
 test('other parties, version 1 graphs and unknown graphs are refused or not found', () => {
   const { store, ali, v1 } = setup();
   assert.throws(() => store.diffGraphs(v1.id, ali.id), error => error instanceof InputError
-    && error.message === 'Both graphs must be version 2 graphs of the same party.');
+    && error.message === 'Both graphs must be version 2 or 3 graphs of the same party.');
   const session = store.importTranscript({ provider: 'claude', source: 'v1.jsonl', transcript: say('Ship it.') });
   const old = store.publishGraph({ version: 1, sessionId: session.id, nodes: [{ id: 'g', kind: 'goal', label: 'Ship it', evidenceLines: [1] }], edges: [] });
   assert.throws(() => store.diffGraphs(old.id, old.id), InputError);

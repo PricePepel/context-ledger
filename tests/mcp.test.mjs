@@ -149,8 +149,9 @@ test('each tool calls the matching ledger route with the CLI conventions', async
   const origin = `http://127.0.0.1:${ledger.port}`;
   const packet = { version: 2, sessionId: otherGraphId, party: 'leo', nodes: [], edges: [] };
 
+  // Card P2b: version 3 is the default.
   const schema = await client.call(1, 'graph_schema', {});
-  assert.deepEqual(JSON.parse(schema.content[0].text), graphSchemas[2]);
+  assert.deepEqual(JSON.parse(schema.content[0].text), graphSchemas[3]);
   const schemaV1 = await client.call(2, 'graph_schema', { version: 1 });
   assert.deepEqual(JSON.parse(schemaV1.content[0].text), graphSchemas[1]);
   assert.equal(ledger.requests.length, 0);
@@ -268,8 +269,8 @@ test('bad tool arguments are tool errors and never reach the ledger', async t =>
   const ledger = await fakeLedger(t, () => ({ body: {} }));
   const client = mcp(t, ledger.port);
   const cases = [
-    ['graph_schema', { version: 3 }, /version must be 1 or 2/],
-    ['graph_schema', { version: '2' }, /version must be 1 or 2/],
+    ['graph_schema', { version: 4 }, /version must be 1, 2 or 3/],
+    ['graph_schema', { version: '2' }, /version must be 1, 2 or 3/],
     ['graph_schema', { extra: true }, /Unknown argument "extra"/],
     ['graph_publish', undefined, /packet must be a JSON object/],
     ['graph_publish', { packet: [] }, /packet must be a JSON object/],

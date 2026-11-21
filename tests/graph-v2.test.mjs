@@ -92,7 +92,9 @@ test('v2 rejects malformed question, offer and party fields', () => {
   rejects(graph => { graph.nodes[1].to = 'ali'; });
   rejects(graph => { graph.nodes[6].to = 'ali'; });
   rejects(graph => { graph.edges.push({ from: 'mcp-help', to: 'lunch', type: 'answers' }); }, /expected kinds/);
-  rejects(graph => { graph.version = 3; }, /Unsupported/);
+  // Card P2b: version 3 exists, and a version 2 body is not a valid one.
+  rejects(graph => { graph.version = 3; }, /Invalid version 3/);
+  rejects(graph => { graph.version = 4; }, /Unsupported/);
   // Inherited object keys must not resolve to a validator.
   for (const version of ['constructor', 'toString', '__proto__', 'hasOwnProperty', '2']) {
     rejects(graph => { graph.version = version; graph.nodes = [{ id: 'x', kind: 'evil', evidenceLines: [1] }]; }, /Unsupported/);
@@ -100,7 +102,7 @@ test('v2 rejects malformed question, offer and party fields', () => {
 });
 
 test('v2 rejects links to unknown graphs, unknown nodes, wrong kinds, own party and duplicates', () => {
-  rejects(graph => { graph.links[0].graph = 'd'.repeat(64); }, /stored version 2 graph/);
+  rejects(graph => { graph.links[0].graph = 'd'.repeat(64); }, /stored version 2 or 3 graph/);
   rejects(graph => { graph.links[0].to = 'missing'; }, /remote node/);
   rejects(graph => { graph.links[0].from = 'missing'; }, /local node/);
   rejects(graph => { graph.links[0].to = 'which-port'; }, /remote node/);
