@@ -145,15 +145,15 @@ test('P2b: a version 3 file gains the artifacts table in place; the step is vers
   first.close();
   // What a build of P1c (schema version 3) left: no artifacts table.
   const raw = new DatabaseSync(path);
-  raw.exec('DROP TABLE artifacts; PRAGMA user_version = 3;');
+  raw.exec('DROP TABLE artifacts; DROP TABLE IF EXISTS node_reviews; PRAGMA user_version = 3;');
   raw.close();
-  assert.equal(schemaVersion, 4);
+  assert.ok(schemaVersion >= 4, 'the artifacts step is version 4');
   const store = openStore(path);
   assert.equal(store.get(session.id).messages.length, 3);
   assert.ok(store.registerArtifact({ kind: 'pr', repo: 'orbit-labs/adapter', ref: '7' }).id);
   store.close();
   const check = new DatabaseSync(path);
-  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, schemaVersion);
   assert.deepEqual(check.prepare('PRAGMA table_info(artifacts)').all().map(column => column.name), ['id', 'project_id', 'kind', 'repo', 'ref', 'created_at']);
   check.close();
 });

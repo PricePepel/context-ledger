@@ -1,6 +1,6 @@
 // Schema versions of ledger.sqlite, kept in PRAGMA user_version. A file written before
 // versions existed is version 0 and is upgraded in place when a store opens it.
-export const schemaVersion = 4;
+export const schemaVersion = 5;
 
 const userVersion = database => database.prepare('PRAGMA user_version').get().user_version;
 const columns = (database, table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -309,6 +309,22 @@ export function migrate(database, bootstrap = () => {}) {
           UNIQUE (project_id, kind, repo, ref)
         ) STRICT;
         PRAGMA user_version = 4;
+      `);
+    }
+    if (version < 5) {
+      // Card P2c (ADR-7c): a person's decision on one version 3 node, by its hash.
+      database.exec(`
+        CREATE TABLE node_reviews (
+          session_id TEXT NOT NULL,
+          party TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          node_sha256 TEXT NOT NULL,
+          decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+          reviewer TEXT NOT NULL,
+          decided_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, party, node_id, node_sha256)
+        ) STRICT;
+        PRAGMA user_version = 5;
       `);
     }
     database.exec('COMMIT');

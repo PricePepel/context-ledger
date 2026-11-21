@@ -588,6 +588,14 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 - Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). A bare `npx -y <tarball>` runs nothing for a local tarball, so use the `--package` form.
 - **Next owner:** P5d (clean-install CI job on three systems) and P5e (launch docs).
 
+## Current checkpoint — P2c approval bound to a node hash (2026-11-21)
+
+Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
+
+- Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
+
 ## Current checkpoint — P5d clean-install eval (2026-11-21)
 
 PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the checkout, installs the tarball globally into an empty prefix on Linux, Windows and macOS, and drives the installed `context-ledger` command from an empty folder and home: usage, start, import, search, graph publish and read, login and the MCP adapter. Run it locally with `node scripts/clean-install-check.mjs`. The script is not in the package.
