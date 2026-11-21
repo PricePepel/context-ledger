@@ -4354,3 +4354,16 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 **Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
 
 **Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.
+
+## P5c — `npx` entry point (defined 2026-11-21, before the code)
+
+The user's answers of 2026-11-21: prepare the package for npm but do not publish it; default the database to a per-user folder under the bin; when `install` runs through `npx`, register `npx`; the bin is `context-ledger`. Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| Publishable package | `package.json` has no `private`, a `bin` named `context-ledger`, a `files` allowlist (`bin/`, `src/`, `public/`, `schemas/`, `rules/latent-rules.json`, README, LICENSE), the MIT `license`, the `repository` and `engines` (Node 22.14 or newer). `npm pack --dry-run` lists no test, fixture, demo, doc, runtime, `.sqlite`, `.env`, key or token file, and nothing outside the allowlist. No new runtime dependency. Nobody runs `npm publish` in this card. |
+| One bin | `context-ledger start` runs the server, `context-ledger mcp` the stdio MCP adapter, and every other argument list runs the `ledger` CLI exactly as `npm run ledger --` does (same output, exit status and escaping). With no arguments it prints the usage. |
+| Per-user database | Under the bin, an unset `CONTEXT_LEDGER_DB` becomes `.context-ledger/ledger.sqlite` in the home folder (`USERPROFILE` on Windows, `HOME` elsewhere), for the server, the CLI and the MCP adapter alike, so they find one token file whatever folder each starts in. A set value is kept. `npm start` and `npm run ledger` from a checkout keep today's defaults. |
+| Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. |
+| Works from a tarball | In an empty folder, `npm pack` then `npx -y --package <tarball> context-ledger …` starts the ledger, imports a synthetic transcript, publishes a graph and reads it back; a node test does this on each system. |
+
