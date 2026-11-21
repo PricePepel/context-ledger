@@ -370,7 +370,13 @@ export function openStore(path) {
     }
     return diffGraphs(older, newer);
   };
-  const rooms = mountRooms(database, readGraph);
+  // Card P2a (ADR-7a): a graph's project is the project of the session it cites.
+  const selectGraphProject = database.prepare(`
+    SELECT p.slug AS project FROM graphs g JOIN sessions s ON s.id = g.session_id LEFT JOIN projects p ON p.id = s.project_id
+    WHERE g.id = ?
+  `);
+  const graphProject = id => selectGraphProject.get(id)?.project ?? null;
+  const rooms = mountRooms(database, readGraph, graphProject);
 
   // Version 2 adds projects and sessions.project_id. Version 3 adds one messages row per
   // turn; sessions.messages is still written for builds from before versions. Sessions are
@@ -413,15 +419,16 @@ export function openStore(path) {
   };
   const page = (rows, limit) => ({ rows: rows.slice(0, limit), next: rows.length > limit ? rows[limit - 1].id : null });
   const selectGraphs = database.prepare(`
-    SELECT g.id, g.session_id AS sessionId, s.title AS sessionTitle, g.party,
+    SELECT g.id, g.session_id AS sessionId, s.title AS sessionTitle, g.party, p.slug AS project,
       CASE WHEN json_valid(g.payload) THEN json_extract(g.payload, '$.packet.version') END AS version,
       g.created_at AS createdAt,
       CASE WHEN json_valid(g.payload) THEN json_array_length(g.payload, '$.packet.nodes') END AS nodes,
       CASE WHEN json_valid(g.payload) THEN json_array_length(g.payload, '$.packet.edges') END AS edges,
       CASE WHEN json_valid(g.payload) THEN coalesce(json_array_length(g.payload, '$.packet.links'), 0) END AS links
-    FROM graphs g LEFT JOIN sessions s ON s.id = g.session_id
+    FROM graphs g LEFT JOIN sessions s ON s.id = g.session_id LEFT JOIN projects p ON p.id = s.project_id
     WHERE ($sessionId IS NULL OR g.session_id = $sessionId)
       AND ($party IS NULL OR g.party = $party)
+      AND ($project IS NULL OR p.slug = $project)
       AND ($before IS NULL OR g.rowid < $before)
     ORDER BY g.rowid DESC LIMIT $n
   `);
@@ -516,9 +523,9 @@ export function openStore(path) {
       return { sessions, next };
     },
 
-    /** Published graphs, newest first, optionally for one session and/or one party. */
-    listGraphs({ sessionId = null, party = null, limit, after }) {
-      const rows = selectGraphs.all({ $sessionId: sessionId, $party: party, $before: before('graphs', after), $n: limit + 1 });
+    /** Published graphs, newest first, optionally for one session, party and/or project (P2a). */
+    listGraphs({ sessionId = null, party = null, project = null, limit, after }) {
+      const rows = selectGraphs.all({ $sessionId: sessionId, $party: party, $project: project, $before: before('graphs', after), $n: limit + 1 });
       const { rows: graphs, next } = page(rows, limit);
       return { graphs, next };
     },
@@ -577,7 +584,9 @@ export function openStore(path) {
       // P1c: the messages come from their rows; G7 grounds each node in them.
       const messages = readMessages(sessionId);
       const sourceLines = messages.map(message => message.line);
-      const options = { lookupGraph: id => readGraph(id) };
+      // P2a: a link must stay in the project of the session this graph cites.
+      const project = getSummary.get(sessionId).project ?? null;
+      const options = { lookupGraph: id => readGraph(id), sameProject: id => graphProject(id) === project };
       validateGraph(packet, sourceLines, options);
       // Derive from the canonical form so derived ID lists follow its order.
       const ordered = canonicalPacket(packet);

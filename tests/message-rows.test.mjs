@@ -147,7 +147,10 @@ async function oldLedger(directory, version, encoding = 'UTF-8') {
   const scratchPath = join(directory, `scratch-${version}.sqlite`);
   const scratch = openStore(scratchPath);
   const leo = scratch.importTranscript({ provider: 'claude', source: 'leo.jsonl', transcript: leoTranscript, project: 'acme' });
-  const ali = scratch.importTranscript({ provider: 'codex', source: 'ali.jsonl', transcript: aliTranscript });
+  // P2a refuses a link across projects, which older builds stored. Ali's session is made in
+  // acme so the link and room can be published, and moved to default when copied below,
+  // as a file from before P2a may hold it.
+  const ali = { ...scratch.importTranscript({ provider: 'codex', source: 'ali.jsonl', transcript: aliTranscript, project: 'acme' }), project: 'default' };
   const v1 = scratch.publishGraph({ version: 1, sessionId: leo.id, nodes: [{ id: 'ship', kind: 'goal', label: 'Ship Orion', evidenceLines: [1] }], edges: [] });
   const leoGraph = scratch.publishGraph({ version: 2, sessionId: leo.id, party: 'leo',
     nodes: [{ id: 'demo', kind: 'goal', label: 'Synthetic demo', evidenceLines: [1, 3] }], edges: [] });
@@ -172,6 +175,7 @@ async function oldLedger(directory, version, encoding = 'UTF-8') {
   };
   if (version >= 2) copy('projects', 'id, slug, name, created_at');
   copy('sessions', version >= 2 ? `${sessionColumns}, project_id` : sessionColumns);
+  if (version >= 2) old.prepare("UPDATE sessions SET project_id = (SELECT id FROM projects WHERE slug = 'default') WHERE id = ?").run(ali.id);
   copy('graphs', version >= 1 ? 'id, session_id, payload, created_at, party' : 'id, session_id, payload');
   copy('rooms', version >= 1 ? 'id, graph_a, graph_b, created_at' : 'id, graph_a, graph_b');
   copy('room_choices', 'room_id, proposal_id, party, choice');

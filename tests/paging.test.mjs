@@ -254,7 +254,7 @@ test('session_search pages 300 escape-heavy sessions; session_read splits long t
     if (!page.more) break;
     assert.equal(Object.keys(page)[0], 'more');
     assert.equal(page.more.after, page.sessions.at(-1).id);
-    assert.match(page.more.note, /Call session_search again with the same query and provider and after set to more\.after\./);
+    assert.match(page.more.note, /Call session_search again with the same query, provider and project and after set to more\.after\./);
     after = page.more.after;
     assert.ok(id < 100);
   }
@@ -556,7 +556,14 @@ test('context_for pages whole briefing lines and keeps the meter on every page',
 // budget counts these 13 by name and survives that merge.
 const cycleTools = ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open',
   'room_read', 'latent_read', 'latent_transfer', 'latent_team', 'graph_list', 'room_list'];
-const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name))).length;
+// Card P2a: the project filter on session_search, graph_list and room_list is that card's
+// growth, so it is taken out here and has its own budget below.
+const withoutProject = tool => {
+  const { project: _project, ...properties } = tool.inputSchema.properties ?? {};
+  return { ...tool, description: tool.description.replace(', party and/or project', ' and/or party').replace('graphId, party and/or project', 'graphId and/or party'),
+    inputSchema: { ...tool.inputSchema, properties } };
+};
+const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name)).map(withoutProject)).length;
 
 test('review round 3: required arguments are those of 19f6522, and every new paging argument is optional', async t => {
   const client = mcp(t, 9);
@@ -579,6 +586,10 @@ test('tools/list: the cycle\'s thirteen closed tools, at most 3,500 characters m
   for (const name of cycleTools) assert.ok(names.includes(name), name);
   const size = cycleSize(result.tools);
   assert.ok(size <= 7066 + 3500, `tools/list is ${size} characters`);
+  // P2a's own budget: the three project arguments and their mention, at most 400 characters.
+  const scoped = JSON.stringify(result.tools.filter(tool => cycleTools.includes(tool.name))).length;
+  assert.ok(scoped - size <= 400, `the project filters add ${scoped - size} characters`);
+  assert.deepEqual(result.tools.filter(tool => tool.inputSchema.properties?.project).map(tool => tool.name), ['session_search', 'graph_list', 'room_list']);
   const merged = [...result.tools, { name: 'handoff_publish', description: 'x'.repeat(1800), inputSchema: { type: 'object', additionalProperties: false } }];
   assert.equal(cycleSize(merged), size, 'another branch\'s tool does not use this cycle\'s budget');
   for (const tool of result.tools) {

@@ -131,10 +131,10 @@ test('a version 0 ledger upgrades in place, keeps every row and lists old and ne
 
   const listed = store.listGraphs({ limit: 100 }).graphs.map(row => ({ ...row }));
   const row = (graph, party, extra = {}) => ({ id: graph.id, sessionId: graph.packet.sessionId, sessionTitle: graph.packet.sessionId === fixture.leo.id
-    ? 'Plan the synthetic Vega demo.' : 'Ali reviews the Vega outline.', party, version: graph.packet.version, createdAt: null,
+    ? 'Plan the synthetic Vega demo.' : 'Ali reviews the Vega outline.', party, project: 'default', version: graph.packet.version, createdAt: null,
   nodes: graph.packet.nodes.length, edges: 0, links: graph.packet.links?.length ?? 0, ...extra });
   assert.deepEqual(listed, [
-    { id: '9'.repeat(64), sessionId: fixture.leo.id, sessionTitle: 'Plan the synthetic Vega demo.', party: null, version: null,
+    { id: '9'.repeat(64), sessionId: fixture.leo.id, sessionTitle: 'Plan the synthetic Vega demo.', party: null, project: 'default', version: null,
       createdAt: null, nodes: null, edges: null, links: null },
     row(fixture.aliGraph, 'ali'), row(fixture.leoGraph, 'leo'), row(fixture.v1, null),
   ]);

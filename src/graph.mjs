@@ -121,7 +121,7 @@ function assertAcyclic(edges, relationship) {
   for (const id of targets.keys()) visit(id);
 }
 
-function assertLinks(packet, nodes, superseded, lookupGraph) {
+function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
   const seen = new Set();
   const remoteGraphs = new Map();
   for (const [index, { from, graph, to, type }] of (packet.links ?? []).entries()) {
@@ -135,6 +135,8 @@ function assertLinks(packet, nodes, superseded, lookupGraph) {
     if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
     const remote = remoteGraphs.get(graph)?.packet;
     if (remote?.version !== 2) throw new GraphInputError('A link must point at a stored version 2 graph.');
+    // Card P2a (ADR-7a): graphs are project-scoped, so a link cannot cross projects.
+    if (sameProject && !sameProject(graph)) throw new GraphInputError('A link must point at a graph in the same project.');
     // Party names are self-asserted. Requiring a different transcript at least stops
     // one session from posing as both sides of a negotiation.
     if (remote.party === packet.party || remote.sessionId === packet.sessionId) {
@@ -162,9 +164,10 @@ function assertLinks(packet, nodes, superseded, lookupGraph) {
 /**
  * Validate a v1 or v2 packet against the original line numbers retained for its
  * source session and derive its actionable state in packet order. Version 2 links
- * are checked with `lookupGraph(id)`, which returns a stored graph or undefined.
+ * are checked with `lookupGraph(id)`, which returns a stored graph or undefined, and
+ * `sameProject(id)`, true when that graph is in this packet's project (P2a).
  */
-export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
+export function validateGraph(packet, sourceLines, { lookupGraph, sameProject } = {}) {
   const version = packet?.version;
   const validate = validateShape.get(version);
   if (!validate?.(packet)) {
@@ -180,7 +183,7 @@ export function validateGraph(packet, sourceLines, { lookupGraph } = {}) {
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
     }
-    assertLinks(packet, nodes, superseded, lookupGraph);
+    assertLinks(packet, nodes, superseded, lookupGraph, sameProject);
   }
 
   const waiting = new Set();
