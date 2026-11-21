@@ -51,8 +51,11 @@ const accepts = (host, port) => new Promise(done => {
 // A space in the folder exercises the quoting of every command line. cmd.exe expands
 // %NAME% even inside quotes, so a folder with % (or a quote) cannot be handed to the .cmd
 // shim safely: the check refuses to run there rather than test something else (P5d review).
+// Checked before anything is created, so a refusal leaves nothing behind (P5d review round 2).
+if (windows && /["%]/u.test(tmpdir())) throw new Error('The temporary folder holds " or %, which cmd.exe cannot be given safely; set TEMP to another folder.');
+// npm's own project config would apply to npm pack in the checkout; the repository has none.
+assert.ok(!existsSync(join(repo, '.npmrc')), 'no .npmrc in the checkout');
 const root = await mkdtemp(join(tmpdir(), 'ledger clean install '));
-if (windows && /["%]/u.test(root)) throw new Error('The temporary folder holds " or %, which cmd.exe cannot be given safely; set TEMP to another folder.');
 const prefix = join(root, 'prefix');
 const home = join(root, 'home');
 const work = join(root, 'work');
@@ -62,30 +65,58 @@ const npmGlobalConfig = join(root, 'npmrc-global');
 for (const folder of [prefix, home, work, npmCache]) await mkdir(folder);
 await writeFile(npmConfig, '');
 await writeFile(npmGlobalConfig, '');
+// Inherited npm settings (registry, offline, any case) are dropped, so only these apply.
+const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/iu.test(name)));
 const npmEnv = {
-  ...process.env, npm_config_cache: npmCache, npm_config_userconfig: npmConfig, npm_config_globalconfig: npmGlobalConfig,
+  ...inherited, npm_config_cache: npmCache, npm_config_userconfig: npmConfig, npm_config_globalconfig: npmGlobalConfig,
   npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false', npm_config_logs_dir: join(npmCache, '_logs'),
 };
 const npm = (args, options) => run(process.execPath, [npmCli, ...args], { encoding: 'utf8', timeout: 300_000, env: npmEnv, ...options });
 
-const started = []; // { child, ended } for every process the check starts
+// Process IDs of a tree, from its root down: PowerShell's process table on Windows, ps elsewhere.
+async function treeOf(pid) {
+  const rows = windows
+    ? (await run(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'],
+      { encoding: 'utf8', timeout: 30_000 })).stdout
+    : (await run('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 30_000 })).stdout;
+  const children = new Map();
+  for (const line of rows.split(/\r?\n/u)) {
+    const [child, parent] = line.trim().split(/\s+/u).map(Number);
+    if (Number.isInteger(child) && Number.isInteger(parent)) children.set(parent, [...(children.get(parent) ?? []), child]);
+  }
+  const tree = [pid];
+  for (let index = 0; index < tree.length; index += 1) tree.push(...(children.get(tree[index]) ?? []));
+  return tree;
+}
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+
+const started = []; // { child, ended, tree } for every process the check starts
 const startChild = (file, list, options) => {
   const child = spawn(file, list, { ...options, detached: !windows });
   const ended = once(child, 'exit').catch(() => {});
-  const entry = { child, ended, running: true };
+  const entry = { child, ended, running: true, tree: [] };
   ended.then(() => { entry.running = false; });
   started.push(entry);
   return entry;
 };
 // Stops a child and everything it started: taskkill /T on Windows (where the .cmd shim's
-// node is a grandchild), the process group elsewhere. Bounded at 15 s.
+// node is a grandchild), the process group elsewhere, then each process of the tree seen
+// while it ran is killed by ID if it is still there. Fails unless every one has gone
+// within 15 s (P5d review round 2: a launcher can exit before its descendant).
 async function stopTree(entry) {
   if (windows) {
     await run(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(entry.child.pid), '/T', '/F'], { timeout: 15_000 }).catch(() => {});
   } else {
     try { process.kill(-entry.child.pid, 'SIGTERM'); } catch { /* already gone */ }
   }
-  await Promise.race([entry.ended, new Promise(done => setTimeout(done, 15_000).unref())]);
+  const pids = [...new Set([entry.child.pid, ...entry.tree])];
+  for (let waited = 0; waited < 15_000 && pids.some(alive); waited += 250) {
+    for (const pid of pids.filter(alive)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone or not ours */ } }
+    await new Promise(done => setTimeout(done, 250));
+  }
+  const left = pids.filter(alive);
+  if (left.length) throw new Error(`Processes ${left.join(', ')} were still running after the check stopped them.`);
 }
 
 let port;
@@ -132,6 +163,7 @@ try {
     });
     server.ended.then(() => { clearTimeout(timer); fail(new Error(redact('The ledger exited before listening: ' + output))); });
   });
+  server.tree = await treeOf(server.child.pid);
   // Loopback only: the port answers on 127.0.0.1 and on none of this machine's other
   // addresses (P5d review: the banner alone does not prove the bind address).
   assert.ok(await accepts('127.0.0.1', port), 'the ledger answers on 127.0.0.1');
@@ -188,6 +220,7 @@ try {
   const send = message => adapter.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } });
   assert.equal((await reply(1)).result.serverInfo.name, 'context-ledger');
+  adapter.tree = await treeOf(adapter.child.pid);
   send({ id: 2, method: 'tools/list' });
   assert.ok((await reply(2)).result.tools.some(tool => tool.name === 'session_search'));
   send({ id: 3, method: 'tools/call', params: { name: 'session_search', arguments: { query: 'adapter' } } });
@@ -202,7 +235,7 @@ try {
 } finally {
   // Everything started is stopped, whatever failed above, and the server's port must be
   // free afterwards: a stop that leaves it listening fails the eval (P5d review).
-  for (const entry of started.reverse()) if (entry.running) await stopTree(entry);
+  for (const entry of started.reverse()) await stopTree(entry).catch(error => { failure ??= error; });
   if (port !== undefined) {
     let free = false;
     for (let attempt = 0; attempt < 30 && !free; attempt += 1) {

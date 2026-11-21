@@ -4435,3 +4435,5 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - (low) Failure messages could print sign-in codes: they are redacted.
 - (low) The bind address came from the banner: the check connects to 127.0.0.1 and to each of the machine's other IPv4 addresses, which must refuse.
 
+**Codex review, round 2** (of 8415733): redaction and the loopback probes hold. (medium) Cleanup could report success with a child still running (a launcher can exit before its descendant, and the adapter was not checked): the check now records each process tree while it runs, kills what is left by ID, and fails unless every process is gone within 15 s. (medium) npm still inherited `npm_config_*` settings (in any case): all `npm_*` variables are dropped before its own are set, and the check asserts the checkout has no `.npmrc`. (low) A refused temporary folder was left behind: the parent folder is checked before anything is created.
+
