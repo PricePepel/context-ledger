@@ -365,7 +365,7 @@ function renderRoom(room) {
   const takesChoices = room.takesChoices !== false;
   renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties, takesChoices));
   if (!takesChoices) {
-    roomProposals.prepend(textElement('li', 'This room joins graphs from two projects, so it takes no choices. Open a room within one project.', 'room-note'));
+    roomProposals.prepend(textElement('li', "This room's graphs are not both in one known project, so it takes no choices. Open a room with two graphs from the same project.", 'room-note'));
   }
   const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
   renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));

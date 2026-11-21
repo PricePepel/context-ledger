@@ -4353,3 +4353,4 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 
 **Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
 
+**Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.

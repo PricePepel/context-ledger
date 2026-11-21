@@ -241,7 +241,7 @@ test('P2a review: a room opened across projects before P2a is readable but takes
   assert.equal(view.proposals.length, 1, 'still readable');
   assert.deepEqual(view.newerGraphs, []);
   assert.throws(() => store.decide(room.id, { proposalId: view.proposals[0].id, party: 'leo', choice: 'confirm' }),
-    error => error instanceof InputError && error.message === 'This room joins graphs from two projects, so it takes no choices; open a room within one project.');
+    error => error instanceof InputError && error.message === "This room's graphs are not both in one known project, so it takes no choices; open a room with two graphs from the same project.");
   assert.deepEqual(store.listRooms({ limit: 10 }).rooms.map(row => [row.id, row.project]), [[room.id, null]]);
   assert.deepEqual(store.listRooms({ project: 'orbit', limit: 10 }).rooms, []);
   assert.deepEqual(store.listRooms({ project: 'vela', limit: 10 }).rooms, []);

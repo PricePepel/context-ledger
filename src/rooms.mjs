@@ -169,7 +169,7 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
       if (!room) return;
       // A room opened across projects before P2a stays readable but takes no choices.
       if (roomProject(selectRoom.get(id)) === null) {
-        throw new InputError('This room joins graphs from two projects, so it takes no choices; open a room within one project.');
+        throw new InputError("This room's graphs are not both in one known project, so it takes no choices; open a room with two graphs from the same project.");
       }
       const { proposalId, party, choice } = input ?? {};
       if (!room.proposals.some(proposal => proposal.id === proposalId)) throw new InputError('Unknown proposal in this room.');
