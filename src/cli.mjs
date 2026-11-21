@@ -21,6 +21,8 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
+  '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
+  '       npm run ledger -- artifact list [--project <slug>]\n' +
   '       npm run ledger -- login\n' +
   '       npm run ledger -- import-t3 <copy-of-statev2.sqlite> [--thread <id>] [--list]\n' +
   '       npm run ledger -- install|uninstall [--agent claude|codex] [--dry-run]';
@@ -89,6 +91,22 @@ function command(argv) {
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
     return { action, path: '/api/export?' + new URLSearchParams(args.slice(1).map(id => ['graph', id])), raw: true };
+  }
+  // Card P2b: a person registers an artifact a version 3 graph can cite; the ledger checks it.
+  if (action === 'artifact' && (args[0] === 'add' || args[0] === 'list')) {
+    const { values, positionals } = options(args.slice(1), { project: { type: 'string', multiple: true } });
+    if (values.project?.length > 1) throw new Error('Give --project once.');
+    const [project] = values.project ?? [];
+    if (project !== undefined && (project.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(project))) {
+      throw new Error('Project must be a slug of at most 64 lowercase letters, digits and single hyphens.');
+    }
+    if (args[0] === 'list' && positionals.length === 0) {
+      return { action, path: '/api/artifacts' + (project ? '?' + new URLSearchParams({ project }) : '') };
+    }
+    if (args[0] === 'add' && positionals.length === 3) {
+      const [kind, repo, ref] = positionals;
+      return { action, path: '/api/artifacts', body: JSON.stringify({ kind, repo, ref, ...(project ? { project } : {}) }) };
+    }
   }
   if (action === 'delete' && args.length === 1 && /^[a-f0-9]{64}$/.test(args[0])) {
     return { action, path: '/api/sessions/' + args[0], sessionId: args[0] };
@@ -423,7 +441,7 @@ async function main() {
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id } = command(argv);
+  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
   // Card P4a: keys, signing and checking work on local files; signing reads the session
@@ -451,10 +469,11 @@ async function main() {
   const withoutToken = otherPort !== undefined ? tokenForOtherPort(otherPort) : noToken;
   // A graph packet or a delete is not sent where the token does not go: the listener on
   // this port is not known to be the ledger.
-  if ((packetPath !== undefined || action === 'delete') && token === undefined) throw new Error(withoutToken);
+  if ((packetPath !== undefined || body !== undefined || action === 'delete') && token === undefined) throw new Error(withoutToken);
   let write = login ? { method: 'POST' } : {};
-  if (packetPath !== undefined) {
-    write = { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: await readGraphPacket(packetPath) };
+  if (packetPath !== undefined || body !== undefined) {
+    const sent = body ?? await readGraphPacket(packetPath);
+    write = { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: sent };
   } else if (action === 'delete') {
     write = { method: 'DELETE', headers: { Origin: origin } };
   }
@@ -484,7 +503,7 @@ async function main() {
   }
   if (response.status === 404) throw new Error(action === 'graph' ? 'Graph not found.' : 'Session not found.');
   if (!response.ok) {
-    if (action === 'graph' && (response.status === 400 || response.status === 413)) {
+    if ((action === 'graph' || action === 'artifact') && (response.status === 400 || response.status === 413)) {
       const message = serverProblem(await response.json().catch(() => null));
       if (message) throw new Error(message);
     }
@@ -529,7 +548,7 @@ async function main() {
     console.log(terminalJson(data));
     return;
   }
-  if (action === 'graph') {
+  if (action === 'graph' || action === 'artifact') {
     console.log(terminalJson(data));
     return;
   }

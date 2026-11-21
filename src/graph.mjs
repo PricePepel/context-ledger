@@ -23,12 +23,32 @@ export const isPartyGraph = packet => packet?.version === 2 || packet?.version =
  */
 export function nodeLines(graph, node) {
   if (graph.packet.version !== 3) return node.evidenceLines;
-  return graph.citations?.[node.id]?.lines ?? [];
+  return citationOf(graph, node)?.lines ?? [];
 }
 
 /** The artifacts a version 3 node cites, as stored when it was published: [{ id, kind, repo, ref }]. */
 export function nodeArtifacts(graph, node) {
-  return graph.packet.version === 3 ? graph.citations?.[node.id]?.artifacts ?? [] : [];
+  return graph.packet.version === 3 ? citationOf(graph, node)?.artifacts ?? [] : [];
+}
+
+// `citations` is a list in canonical node order ({ id, lines, artifacts }), not an object,
+// so a node ID such as "12" cannot change the order of its keys.
+const citationOf = (graph, node) => (Array.isArray(graph.citations) ? graph.citations.find(entry => entry.id === node.id) : undefined);
+
+/**
+ * Card P2b: what a version 3 packet's citations resolve to, in canonical node order.
+ * `lineOf(key)` gives a stored message's line and `artifactOf(id)` its stored row.
+ */
+export function resolveCitations(packet, lineOf, artifactOf) {
+  return packet.nodes.map(node => ({
+    id: node.id,
+    lines: [...new Set(node.evidence.filter(citation => citation.message !== undefined).map(citation => lineOf(citation.message)))]
+      .sort((a, b) => a - b),
+    artifacts: node.evidence.filter(citation => citation.artifact !== undefined).map(citation => {
+      const { id, kind, repo, ref } = artifactOf(citation.artifact);
+      return { id, kind, repo, ref };
+    }),
+  }));
 }
 
 // Messages before artifacts, each in code-unit order: one canonical order for a set.

@@ -196,6 +196,15 @@ const routes = [
     const packet = await readJson(request, origin, 'Graph publication');
     return { graph: store.publishGraph(packet) };
   } },
+  // Card P2b (ADR-7b): artifacts are registered by a person, never found automatically.
+  { method: 'POST', path: '/api/artifacts', handler: async ({ request, origin }) => {
+    const input = await readJson(request, origin, 'Artifact registration');
+    return { artifact: store.registerArtifact(input) };
+  } },
+  { method: 'GET', path: '/api/artifacts', handler: ({ url }) => {
+    const { limit = 20, after, project } = listParameters(url, ['project']);
+    return store.listArtifacts({ project, limit, after });
+  } },
   { method: 'GET', path: '/api/sessions', handler: ({ url }) => {
     const query = url.searchParams.get('q') ?? '';
     const provider = url.searchParams.get('provider') ?? '';

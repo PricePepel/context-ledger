@@ -19,6 +19,16 @@ const startOfDay = at => {
   return day.getTime();
 };
 
+/**
+ * The transcript lines a node cites. Card P2b: a version 3 node cites message keys, which
+ * the ledger resolved to lines when the graph was published (the graph's `citations`).
+ */
+export function citedLines(graph, node) {
+  if (graph.packet.version !== 3) return node.evidenceLines;
+  const entry = Array.isArray(graph.citations) ? graph.citations.find(citation => citation.id === node.id) : undefined;
+  return Array.isArray(entry?.lines) ? entry.lines.filter(line => Number.isSafeInteger(line)) : [];
+}
+
 export function createModel({ workingMs = 60_000 } = {}) {
   const parties = new Map(); // key -> { key, party, label, provider, sessionId, graph, meter, at }
   const graphParty = new Map(); // graph ID -> party key, for every graph seen
@@ -32,7 +42,8 @@ export function createModel({ workingMs = 60_000 } = {}) {
   };
 
   // Everything a person sees or checks on a node: a change to any of it is a change.
-  const nodeText = node => JSON.stringify([node.kind, node.label, node.status ?? null, node.to ?? null, node.evidenceLines]);
+  // Card P2b: a version 3 node cites `evidence` (message keys or artifacts) instead.
+  const nodeText = node => JSON.stringify([node.kind, node.label, node.status ?? null, node.to ?? null, node.evidenceLines ?? node.evidence]);
   function nodeLabels(graph) {
     return new Map(graph.packet.nodes.map(node => [node.id, nodeText(node)]));
   }
@@ -124,7 +135,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
           const asked = target && snapshots.get(link.graph)?.packet.nodes.find(node => node.id === link.to);
           const current = asked && parties.get(target.party)?.graph.packet.nodes.find(node => node.id === link.to);
           if (current && current.label === asked.label && (current.to ?? null) === (asked.to ?? null)
-            && JSON.stringify(current.evidenceLines) === JSON.stringify(asked.evidenceLines)) {
+            && JSON.stringify(current.evidenceLines ?? current.evidence) === JSON.stringify(asked.evidenceLines ?? asked.evidence)) {
             answered.add(nodeKey(target.party, target.id));
           }
         }
@@ -161,7 +172,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
             label: node.label,
             status: node.status ?? null,
             to: node.to ?? null,
-            evidenceLines: node.evidenceLines,
+            evidenceLines: citedLines(entry.graph, node),
             mark: nodeMark(node),
             superseded: node.kind === 'decision' && superseded.has(node.id),
             answered: node.kind === 'question' && node.status === 'open' && !open.has(node.id),
