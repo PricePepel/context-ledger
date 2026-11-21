@@ -569,3 +569,12 @@ PR #58, branch `claude/p2a-project-scope`. P2 is split into P2a–P2c on the boa
 - A room opened across projects before P2a stays readable but takes no choices (`takesChoices: false`); the browser shows its choices without buttons.
 - **Next owner:** P2b (version 3 citations) is stacked on this branch; P2c follows it.
 
+## Current checkpoint — P5c `npx` entry point (2026-11-21)
+
+Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
+
+- `bin/context-ledger.mjs`: `context-ledger start`, `context-ledger mcp`, and every `ledger` subcommand. Under the bin an unset `CONTEXT_LEDGER_DB` is `~/.context-ledger/ledger.sqlite` (USERPROFILE on Windows); a checkout's `npm start` keeps its own default.
+- `package.json` is publishable: no `private`, a `files` allowlist, MIT, repository and engines. The name `context-ledger` is taken on npm by an unrelated package, so the package is `@pricepepel/context-ledger` (publish with `--access public`); the command stays `context-ledger`. Nobody has run `npm publish`: that is the user's step.
+- Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). A bare `npx -y <tarball>` runs nothing for a local tarball, so use the `--package` form.
+- **Next owner:** P5d (clean-install CI job on three systems) and P5e (launch docs).
+

@@ -18,6 +18,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import packageJson from '../package.json' with { type: 'json' };
 import { inlineText } from './text.mjs';
 
 export const serverName = 'context-ledger';
@@ -65,6 +66,25 @@ function databaseFor(env) {
   return resolve(value);
 }
 
+// A package spec npm hands a bin it runs through npx (npm_config_package): one line of
+// visible characters. Anything else falls back to this package's own name and version.
+const specPattern = /^[^\p{C}\s"%]{1,500}$/u;
+
+/**
+ * Card P5c: the command an agent runs for the MCP adapter. From a checkout or a global
+ * install, node and this file, as before. Run through npx (npm says exec, and the file
+ * sits in npm's _npx cache, which npm may clear), npx with the spec it was run from, or
+ * this name and version; on Windows through cmd /c, since the agents cannot start the
+ * npx.cmd shim themselves.
+ */
+export function mcpServerCommand(env = process.env, { file = mcpPath, platform = process.platform } = {}) {
+  if (env.npm_command !== 'exec' || !/[\\/]_npx[\\/]/u.test(file)) return ['node', file];
+  const named = env.npm_config_package;
+  const spec = typeof named === 'string' && specPattern.test(named) ? named : `${packageJson.name}@${packageJson.version}`;
+  const npx = ['npx', '-y', '--package', spec, Object.keys(packageJson.bin)[0], 'mcp'];
+  return platform === 'win32' ? ['cmd', '/c', ...npx] : npx;
+}
+
 /** The two agents, with their CLI, instruction file and MCP commands. */
 export function agentTargets(env = process.env, mode = 'install') {
   const home = homeOf(env);
@@ -76,7 +96,7 @@ export function agentTargets(env = process.env, mode = 'install') {
   // Uninstall registers nothing, so it does not read the value (P5b review).
   const database = mode === 'install' ? databaseFor(env) : undefined;
   const pairs = [...(port ? [`PORT=${port}`] : []), ...(database ? [`CONTEXT_LEDGER_DB=${database}`] : [])];
-  const server = ['node', mcpPath];
+  const server = mcpServerCommand(env);
   return {
     claude: {
       key: 'claude',

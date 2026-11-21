@@ -1,7 +1,22 @@
 {
-  "name": "context-ledger",
+  "name": "@pricepepel/context-ledger",
   "version": "0.1.0",
-  "private": true,
+  "description": "A local ledger of agent transcripts and cited semantic graphs, shared with Claude Code and Codex over MCP.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PricePepel/context-ledger.git"
+  },
+  "bin": {
+    "context-ledger": "bin/context-ledger.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "schemas/",
+    "rules/latent-rules.json"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.14.0"
