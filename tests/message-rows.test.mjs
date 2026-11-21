@@ -259,7 +259,8 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   assert.deepEqual(leo.messages, JSON.parse(before.sessions[0].messages).map(message => ({ ...message, key: `l:${message.line}` })));
   assert.equal(leo.project, 'acme');
   for (const graph of [fixture.v1, fixture.leoGraph, fixture.aliGraph]) assert.deepEqual(store.getGraph(graph.id), graph);
-  assert.deepEqual(store.getRoom(fixture.room.id), fixture.room);
+  // P2a: the fixture's room joins two projects (see oldLedger), so it is read-only now.
+  assert.deepEqual(store.getRoom(fixture.room.id), { ...fixture.room, takesChoices: false });
   assert.deepEqual(store.getGraphContext(fixture.leoGraph.id), fixture.context);
 
   // Line citations still validate against the migrated rows.

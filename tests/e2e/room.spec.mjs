@@ -258,3 +258,23 @@ test('a diff that answers after the person opened another room does not touch th
   expect(await page.locator('#room-updates').innerHTML()).toBe(before);
   await expect(page.locator('#room-updates')).not.toContainText(`Demo A ${tag}`);
 });
+
+test('P2a review: a room across projects shows its choices but no buttons', async ({ page, request, baseURL }) => {
+  const { ali, leo } = await publishPair(request, baseURL, 'Two evenings of GPU time, read-only');
+  // Such a room can only come from a file older than P2a, so the response is changed here.
+  await page.route('**/api/rooms', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.room.takesChoices = false;
+    body.room.proposals[0].choices[body.room.parties[0].party] = 'confirm';
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(leo.id);
+  await page.getByLabel('Second graph ID').fill(ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-proposals')).toContainText('This room joins graphs from two projects, so it takes no choices.');
+  await expect(page.locator('.choice-button')).toHaveCount(0);
+  await expect(page.locator('.choice-made').first()).toBeVisible();
+  await expect(page.locator('#room-proposals')).toContainText(`${'ali'}: confirm`);
+});

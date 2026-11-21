@@ -559,3 +559,13 @@ PR #38, branch `ruslan/p5a-cross-os-ci`. The Node suites, the graph suite and th
 - **Fix.** Both checks ask PowerShell how SDDL spells the current account (from a descriptor built in memory from the SID; the key check falls back to the SID if PowerShell refuses) and accept that spelling like the SID. The test helper `restrictToOwner` writes one owner-only descriptor, since an elevated administrator's new files carry explicit default entries and belong to Administrators. Waits on server children fail when the child exits, the test MCP client waits 45 s for the slow first call, and CI runs `node --test` with a five-minute limit per file.
 - **Review:** five Codex rounds, each finding fixed or recorded in the P5a section of the eval log.
 - **Next owner:** nothing open on this card. If a new Windows-only failure shows up in CI and not locally, suspect the runner account first: it is an elevated administrator, unlike most developer machines.
+
+## Current checkpoint — P2a project scope (2026-11-21)
+
+PR #58, branch `claude/p2a-project-scope`. P2 is split into P2a–P2c on the board; the user's wave 2 decisions are ADR-7a to 7d in [the architecture](architecture.md) §12. Read the P2a section of [the eval log](evals.md).
+
+- A graph's project is the project of the session it cites. Links and rooms across projects are refused; a session with no project matches nothing.
+- Graph and room list rows name the project, and the HTTP lists and MCP `session_search`, `graph_list` and `room_list` take `project`. The MCP tools refuse rows a ledger from before P2a did not filter.
+- A room opened across projects before P2a stays readable but takes no choices (`takesChoices: false`); the browser shows its choices without buttons.
+- **Next owner:** P2b (version 3 citations) is stacked on this branch; P2c follows it.
+
