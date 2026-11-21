@@ -4368,3 +4368,12 @@ ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file 
 | Artifacts | Schema version 4 adds an `artifacts` table: per project, kind `commit`, `pr` or `file`, a repository path such as `orbit-labs/adapter`, and a ref (a hex commit of 7 to 64 characters, a pull request number, or a relative file path with no `.` or `..` part). The ID is SHA-256 of the project, kind, repository and ref, so registering twice returns the same row. `POST /api/artifacts` (token and local Origin) and `ledger artifact add <kind> <repo> <ref> [--project <slug>]` register one; `GET /api/artifacts?project=` and `ledger artifact list` list them, newest first, with paging. Nothing registers an artifact by itself. A version 3 file is upgraded in place, and a newer file is refused untouched. |
 | MCP | `graph_schema` offers versions 1, 2 and 3, with 3 as the default; `session_read` shows each turn's key beside its line, so an agent can cite it; `graph_publish` says that version 3 cites message keys or artifacts. No MCP tool registers an artifact. The pinned tool list keeps its fourteen tools. |
 
+**Results — P2b (2026-11-21, Windows):** every row passes. Code in `src/artifacts.mjs`, `src/graph.mjs`, `src/store.mjs`, `src/migrate.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/mcp/*` and the readers; tests in `tests/citations.test.mjs` and the console spec.
+
+**Codex review, round 1** (of 4861b83): no cross-session or cross-project resolution at publish, no canonicalization hole, and migration, auth, Origin and escaping hold. Fixed, each with a test:
+
+- (medium) The console dropped artifact citations, and its panel took the raw packet node, which a version 3 node gives no `evidenceLines`. The model now passes lines and artifacts to the panel, which lists each artifact as text and says when a node cites artifacts only (Playwright).
+- (medium) The diff and the console compared citations without their session, so `l:1`, a reused record UUID or a line number in another session looked unchanged, and an answer link carried over to a question whose cited turn changed. Citations from another session are now a change in both (node test with one key in two sessions, for version 2 lines and version 3 keys).
+- (low) The export flattened artifacts into `source_location` text, where a file path may hold `, ` or `@`: nodes also carry `ledger_artifacts` records.
+- (low) `ledger artifact list` could read only the first 20 rows: it takes `--limit` and `--after`.
+

@@ -50,6 +50,8 @@ export function nodeLinkBundle(graphs, sessionOf) {
         ...(node.status ? { status: node.status } : {}),
         ...(node.to ? { to: node.to } : {}),
         ...(packet.party ? { party: packet.party } : {}),
+        // P2b review: the artifacts as records too, since a file path may hold ", " or "@".
+        ...(packet.version === 3 ? { ledger_artifacts: nodeArtifacts(graph, node) } : {}),
         ledger_graph: graph.id,
         ledger_node: node.id,
       });

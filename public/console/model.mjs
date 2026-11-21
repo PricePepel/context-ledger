@@ -29,6 +29,18 @@ export function citedLines(graph, node) {
   return Array.isArray(entry?.lines) ? entry.lines.filter(line => Number.isSafeInteger(line)) : [];
 }
 
+/**
+ * The artifacts a version 3 node cites (P2b review): { kind, repo, ref } strings, as the
+ * ledger stored them when the graph was published. Anything else is left out.
+ */
+export function citedArtifacts(graph, node) {
+  if (graph.packet.version !== 3) return [];
+  const entry = Array.isArray(graph.citations) ? graph.citations.find(citation => citation.id === node.id) : undefined;
+  return (Array.isArray(entry?.artifacts) ? entry.artifacts : [])
+    .filter(artifact => ['kind', 'repo', 'ref'].every(field => typeof artifact?.[field] === 'string'))
+    .map(({ kind, repo, ref }) => ({ kind, repo, ref }));
+}
+
 export function createModel({ workingMs = 60_000 } = {}) {
   const parties = new Map(); // key -> { key, party, label, provider, sessionId, graph, meter, at }
   const graphParty = new Map(); // graph ID -> party key, for every graph seen
@@ -41,11 +53,17 @@ export function createModel({ workingMs = 60_000 } = {}) {
     return party ? { party, id: link.to } : null;
   };
 
+  // The same evidence: the same citations in the same session (P2b review: a key such as
+  // l:1, or a line number, names another turn in another session).
+  const sameCitations = (graphA, nodeA, graphB, nodeB) => graphA.packet.sessionId === graphB.packet.sessionId
+    && JSON.stringify(nodeA.evidenceLines ?? nodeA.evidence) === JSON.stringify(nodeB.evidenceLines ?? nodeB.evidence);
+
   // Everything a person sees or checks on a node: a change to any of it is a change.
   // Card P2b: a version 3 node cites `evidence` (message keys or artifacts) instead.
   const nodeText = node => JSON.stringify([node.kind, node.label, node.status ?? null, node.to ?? null, node.evidenceLines ?? node.evidence]);
   function nodeLabels(graph) {
-    return new Map(graph.packet.nodes.map(node => [node.id, nodeText(node)]));
+    // The session too: the same lines or keys in another session cite other turns (P2b review).
+    return new Map(graph.packet.nodes.map(node => [node.id, graph.packet.sessionId + nodeText(node)]));
   }
 
   /** Open questions of a party's current graph that no current graph answers. */
@@ -135,7 +153,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
           const asked = target && snapshots.get(link.graph)?.packet.nodes.find(node => node.id === link.to);
           const current = asked && parties.get(target.party)?.graph.packet.nodes.find(node => node.id === link.to);
           if (current && current.label === asked.label && (current.to ?? null) === (asked.to ?? null)
-            && JSON.stringify(current.evidenceLines ?? current.evidence) === JSON.stringify(asked.evidenceLines ?? asked.evidence)) {
+            && sameCitations(parties.get(target.party).graph, current, snapshots.get(link.graph), asked)) {
             answered.add(nodeKey(target.party, target.id));
           }
         }
@@ -173,6 +191,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
             status: node.status ?? null,
             to: node.to ?? null,
             evidenceLines: citedLines(entry.graph, node),
+            artifacts: citedArtifacts(entry.graph, node),
             mark: nodeMark(node),
             superseded: node.kind === 'decision' && superseded.has(node.id),
             answered: node.kind === 'question' && node.status === 'open' && !open.has(node.id),
@@ -215,7 +234,8 @@ export function createModel({ workingMs = 60_000 } = {}) {
       const slash = key.lastIndexOf('/');
       const entry = parties.get(key.slice(0, slash));
       const node = entry?.graph.packet.nodes.find(candidate => candidate.id === key.slice(slash + 1));
-      return node ? { entry, node } : null;
+      // P2b: the panel reads lines and artifacts, which a version 3 node keeps in the graph.
+      return node ? { entry, node: { ...node, evidenceLines: citedLines(entry.graph, node), artifacts: citedArtifacts(entry.graph, node) } } : null;
     },
   };
 }

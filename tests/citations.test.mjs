@@ -221,3 +221,66 @@ test('P2b: the artifact routes need the token and the local Origin; the CLI regi
     assert.equal((await cli(args, ledger)).code, 1, args.join(' '));
   }
 });
+
+// P2b review (Codex round 1).
+import { citedArtifacts, createModel } from '../public/console/model.mjs';
+
+test('P2b review: the same key or line in another session is a change, for the diff and the console', () => {
+  const store = openStore(':memory:');
+  // Two sessions whose first turns have the same record UUID (another transcript reusing it).
+  const first = store.importTranscript({ provider: 'claude', source: 'a.jsonl', transcript: claude([['user', 'Leo: port 4317.']]), project: 'orbit' });
+  const second = store.importTranscript({ provider: 'claude', source: 'b.jsonl', transcript: claude([['user', 'Leo: port 4400 instead.']]), project: 'orbit' });
+  const v3 = sessionId => packet(sessionId, [{ id: 'port', kind: 'decision', label: 'The port', evidence: [{ message: key(1) }] }]);
+  const older = store.publishGraph(v3(first.id));
+  const newer = store.publishGraph(v3(second.id));
+  assert.deepEqual(store.diffGraphs(newer.id, older.id).nodes.changed.map(node => [node.id, Object.keys(node.changes)]), [['port', ['evidence']]]);
+  const v2 = sessionId => ({ version: 2, sessionId, party: 'ali', nodes: [{ id: 'port', kind: 'decision', label: 'The port', evidenceLines: [1] }], edges: [] });
+  const olderLines = store.publishGraph(v2(first.id));
+  const newerLines = store.publishGraph(v2(second.id));
+  assert.deepEqual(store.diffGraphs(newerLines.id, olderLines.id).nodes.changed.map(node => [node.id, Object.keys(node.changes)]), [['port', ['evidenceLines']]]);
+  // Same session, same citations: no change.
+  assert.deepEqual(store.diffGraphs(older.id, older.id).nodes.changed, []);
+
+  // The console: a republish in another session with the same keys changes the node, and an
+  // answer to the old question does not carry over to it.
+  const model = createModel();
+  const question = sessionId => ({ id: sessionId.slice(0, 8) + 'q'.repeat(56), packet: { version: 3, sessionId, party: 'ali',
+    nodes: [{ id: 'which-port', kind: 'question', status: 'open', to: 'leo', label: 'Which port?', evidence: [{ message: key(1) }] }], edges: [] } });
+  const asked = question(first.id);
+  model.apply({ graph: asked, provider: 'claude', at: 1 });
+  model.apply({ graph: { id: 'l'.repeat(64), packet: { version: 2, sessionId: 'f'.repeat(64), party: 'leo', nodes: [{ id: 'port', kind: 'decision', label: 'Port 4317', evidenceLines: [1] }],
+    edges: [], links: [{ from: 'port', graph: asked.id, to: 'which-port', type: 'answers' }] } }, provider: 'codex', at: 2 });
+  assert.equal(model.answeredByLink().size, 1);
+  const moved = model.apply({ graph: question(second.id), provider: 'claude', at: 3 });
+  assert.deepEqual(moved.changed.length, 1, 'the node changed');
+  assert.equal(model.answeredByLink().size, 0, 'the old answer does not answer the new question');
+  store.close();
+});
+
+test('P2b review: the export keeps artifacts as records, and the console passes them to the panel', () => {
+  const { store, session } = setup();
+  const file = store.registerArtifact({ project: 'orbit', kind: 'file', repo: 'orbit-labs/adapter', ref: 'docs/a, b@c.md' });
+  const graph = store.publishGraph(packet(session.id, [{ id: 'doc', kind: 'goal', label: 'Write the doc', evidence: [{ artifact: file.id }] }]));
+  const exported = store.exportGraphs([graph.id]).nodes[0];
+  assert.deepEqual(exported.ledger_artifacts, [{ id: file.id, kind: 'file', repo: 'orbit-labs/adapter', ref: 'docs/a, b@c.md' }]);
+  assert.deepEqual(citedArtifacts(graph, graph.packet.nodes[0]), [{ kind: 'file', repo: 'orbit-labs/adapter', ref: 'docs/a, b@c.md' }]);
+  assert.deepEqual(citedArtifacts({ ...graph, citations: [{ id: 'doc', artifacts: [{ kind: 1 }] }] }, graph.packet.nodes[0]), [], 'odd rows are left out');
+  const model = createModel();
+  model.apply({ graph, provider: 'claude', at: 1 });
+  const [column] = model.graph().columns;
+  assert.deepEqual(column.nodes[0].evidenceLines, []);
+  assert.deepEqual(column.nodes[0].artifacts, [{ kind: 'file', repo: 'orbit-labs/adapter', ref: 'docs/a, b@c.md' }]);
+  store.close();
+});
+
+test('P2b review: ledger artifact list pages with --limit and --after', async t => {
+  const ledger = await startLedger(t);
+  for (const ref of ['1', '2', '3']) assert.equal((await cli(['artifact', 'add', 'pr', 'orbit-labs/adapter', ref], ledger)).code, 0);
+  const first = JSON.parse((await cli(['artifact', 'list', '--limit', '2'], ledger)).stdout);
+  assert.deepEqual([first.artifacts.map(row => row.ref), typeof first.next], [['3', '2'], 'string']);
+  const rest = JSON.parse((await cli(['artifact', 'list', '--limit', '2', '--after', first.next], ledger)).stdout);
+  assert.deepEqual([rest.artifacts.map(row => row.ref), rest.next], [['1'], null]);
+  for (const args of [['--limit', '0'], ['--limit', '101'], ['--after', 'x'], ['--limit', '1', '--limit', '2']]) {
+    assert.equal((await cli(['artifact', 'list', ...args], ledger)).code, 1, args.join(' '));
+  }
+});

@@ -44,7 +44,10 @@ export function diffGraphs(older, newer) {
     if (!old) continue;
     const changes = {};
     for (const field of nodeFields) {
-      if (!same(old[field], node[field])) changes[field] = { from: old[field] ?? null, to: node[field] ?? null };
+      // P2b review: lines and keys name turns of their own session, so the same citation
+      // from another session is a change.
+      const moved = (field === 'evidenceLines' || field === 'evidence') && a.sessionId !== b.sessionId && (old[field] ?? node[field]) !== undefined;
+      if (moved || !same(old[field], node[field])) changes[field] = { from: old[field] ?? null, to: node[field] ?? null };
     }
     if (Object.keys(changes).length) changed.push({ ...brief(node), changes });
   }

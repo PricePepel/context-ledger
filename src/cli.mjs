@@ -22,7 +22,7 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
   '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
-  '       npm run ledger -- artifact list [--project <slug>]\n' +
+  '       npm run ledger -- artifact list [--project <slug>] [--limit <n>] [--after <id>]\n' +
   '       npm run ledger -- login\n' +
   '       npm run ledger -- import-t3 <copy-of-statev2.sqlite> [--thread <id>] [--list]\n' +
   '       npm run ledger -- install|uninstall [--agent claude|codex] [--dry-run]';
@@ -94,15 +94,23 @@ function command(argv) {
   }
   // Card P2b: a person registers an artifact a version 3 graph can cite; the ledger checks it.
   if (action === 'artifact' && (args[0] === 'add' || args[0] === 'list')) {
-    const { values, positionals } = options(args.slice(1), { project: { type: 'string', multiple: true } });
-    if (values.project?.length > 1) throw new Error('Give --project once.');
+    const { values, positionals } = options(args.slice(1), {
+      project: { type: 'string', multiple: true }, limit: { type: 'string', multiple: true }, after: { type: 'string', multiple: true },
+    });
+    if (values.project?.length > 1 || values.limit?.length > 1 || values.after?.length > 1) throw new Error('Give each option once.');
     const [project] = values.project ?? [];
     if (project !== undefined && (project.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(project))) {
       throw new Error('Project must be a slug of at most 64 lowercase letters, digits and single hyphens.');
     }
+    const [limit] = values.limit ?? [];
+    const [after] = values.after ?? [];
+    if (limit !== undefined && (!/^[1-9][0-9]{0,2}$/u.test(limit) || Number(limit) > 100)) throw new Error('Limit must be an integer from 1 to 100.');
+    if (after !== undefined && !/^[a-f0-9]{64}$/u.test(after)) throw new Error('After must be an artifact ID from a previous list.');
     if (args[0] === 'list' && positionals.length === 0) {
-      return { action, path: '/api/artifacts' + (project ? '?' + new URLSearchParams({ project }) : '') };
+      const query = new URLSearchParams({ ...(project ? { project } : {}), ...(limit ? { limit } : {}), ...(after ? { after } : {}) });
+      return { action, path: '/api/artifacts' + (String(query) ? '?' + query : '') };
     }
+    if (args[0] === 'add' && (limit !== undefined || after !== undefined)) throw new Error(usage);
     if (args[0] === 'add' && positionals.length === 3) {
       const [kind, repo, ref] = positionals;
       return { action, path: '/api/artifacts', body: JSON.stringify({ kind, repo, ref, ...(project ? { project } : {}) }) };
