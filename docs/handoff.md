@@ -598,5 +598,5 @@ Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.
 
 ## Current checkpoint — P5e launch docs (2026-11-21)
 
-Branch `claude/p5e-launch-docs`. The README opens with **Install**: `npx` from GitHub today, the npm name once the user publishes `@pricepepel/context-ledger` (with `--access public`), a global install, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package; nothing else in P5 is open except the license key (ADR-13), which is the user's product decision.
+Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 

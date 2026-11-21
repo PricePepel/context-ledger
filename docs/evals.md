@@ -4441,9 +4441,17 @@ ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts
 
 | Eval | Expected |
 | --- | --- |
-| Install | The README opens with an Install section: the one-line `npx` start from the GitHub repository, which works today, the same with the npm name once the user publishes it, and a global install. The package name `@pricepepel/context-ledger` and the command `context-ledger` are both named, with why they differ. |
+| Install | The README opens with an Install section: a global install from the GitHub repository, which works today, the same by the npm name once the user publishes it, and `npx` for one-off commands with the whole prefix on each. The package name `@pricepepel/context-ledger` and the command `context-ledger` are both named, with why they differ. |
 | First run | It says what `start` prints (the address and a one-time sign-in link), where the data lives (`~/.context-ledger`, `USERPROFILE` on Windows) and how to import a first transcript from the browser or the command line. |
 | Agents | It shows `context-ledger install` (and `--dry-run`), what it registers through `npx` and from a global install, and that agents need the ledger running. |
 | Upgrade and remove | It says how to upgrade (re-run with a newer version; a database is upgraded in place, an older build refuses a newer one), how to remove the agents' blocks (`uninstall`) and the data folder. |
 | Not in this release | It lists what this release leaves out: the license key and paid tier (ADR-13), hosted sync, hash-chained review events and edits (P3), automatic transcript discovery. |
 | Accurate | Every command in the section runs as written: a node test runs each `context-ledger` command the section shows (through the bin, against a temporary home) and checks that the commands it does not run (`npx`, `npm install`) name the right package and bin. |
+
+**Codex review, round 1** (of b19c33b):
+
+- (high) After the `npx` quick start there was no `context-ledger` command for the next steps. The section now leads with a global install, which works from GitHub today (`npm install --global github:PricePepel/context-ledger`, checked into an empty prefix: it installs the command) and by name once published; `npx` is kept for one-off commands, with the whole prefix on each.
+- (medium) Removing `.context-ledger` left a database named in `CONTEXT_LEDGER_DB`: the removal step names it. (medium) The agent step left out that the `claude` and `codex` CLIs must be on `PATH` (a missing one gets the instruction block but no registration), the `cmd /c` wrapper on Windows, the fallback to the published name and version, and what a global install registers: all said now.
+- (medium) The test did not check the npx subcommand, passed with no global install line, and never ran `uninstall`: it checks each, and says that the installed command is driven by P5d's clean-install eval.
+- (low) The GitHub install needs Git: named as a prerequisite. (low) The handoff called P5 closed before P5d merged: reworded.
+

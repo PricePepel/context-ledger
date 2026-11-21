@@ -25,14 +25,20 @@ test('P5e: the Install section names this package and its command', () => {
   const [command] = Object.keys(pkg.bin);
   assert.equal(command, 'context-ledger');
   assert.ok(install.includes(`\`${pkg.name}\``), 'the package name');
-  // Every npx line runs this package's bin, from npm or from the repository.
-  const npx = [...install.matchAll(/npx -y --package (\S+) (\S+)/gu)];
+  // Every npx line runs this package's bin with a subcommand it has, from npm or GitHub
+  // (P5e review: the subcommand is checked too); a <placeholder> names no spec.
+  const npx = [...install.matchAll(/npx -y --package ([^\s`]+) ([^\s`]+) ([^\s`]+)/gu)];
   assert.ok(npx.length >= 2);
-  for (const [, spec, name] of npx) {
+  for (const [, spec, name, subcommand] of npx) {
     assert.equal(name, command, spec);
+    assert.ok(['start', 'login', 'mcp'].includes(subcommand), subcommand);
+    if (spec.startsWith('<')) continue;
     assert.ok(spec === 'github:PricePepel/context-ledger' || spec === pkg.name || spec.startsWith(`${pkg.name}@`), spec);
   }
-  for (const [, name] of install.matchAll(/npm (?:install|uninstall) --global ([^\s`]+)/gu)) assert.equal(name, pkg.name);
+  // Global installs and uninstalls name this package or its GitHub repository, and both appear.
+  const globals = [...install.matchAll(/npm (install|uninstall) --global ([^\s`]+)/gu)];
+  assert.ok(globals.some(([, verb]) => verb === 'install') && globals.some(([, verb]) => verb === 'uninstall'));
+  for (const [, , name] of globals) assert.ok(name === pkg.name || name === 'github:PricePepel/context-ledger', name);
   assert.match(pkg.repository.url, /github\.com\/PricePepel\/context-ledger\.git$/u);
   // The data folder it names is the one the bin uses.
   assert.match(readFileSync(bin, 'utf8'), /join\(homeOf\(\), '\.context-ledger', 'ledger\.sqlite'\)/u);
@@ -83,4 +89,10 @@ test('P5e: every context-ledger command the Install section shows is one the bin
   await ledger('import', '--provider', 'claude', transcript);
   assert.equal(JSON.parse((await ledger('search', 'launch', 'words')).stdout).length, 1);
   assert.match((await ledger('install', '--dry-run', '--agent', 'claude')).stdout, /would run/u);
+  // uninstall, on a home with nothing installed, says so and prints the remove command.
+  const removed = (await ledger('uninstall', '--agent', 'claude')).stdout;
+  assert.match(removed, /no block in /u);
+  assert.match(removed, /mcp remove --scope user context-ledger/u);
+  // The installed command (a global install into an empty prefix) is driven by the
+  // clean-install eval, scripts/clean-install-check.mjs (P5d); this runs the checkout's bin.
 });
