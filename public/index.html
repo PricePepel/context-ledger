@@ -92,6 +92,21 @@
           <ul id="room-agreed" class="agreed" aria-label="Agreed proposals"></ul>
         </div>
       </section>
+      <section class="room review" id="review" aria-labelledby="review-heading">
+        <p class="eyebrow">Review</p>
+        <h2 id="review-heading" tabindex="-1">Approve what an agent wrote</h2>
+        <p class="subtitle">Each node of a version 3 graph has a hash of what it says and cites. Approve or reject it; a node that changes starts unreviewed.</p>
+        <form id="review-form" class="room-form">
+          <label for="review-graph">Graph ID</label>
+          <input id="review-graph" name="graph" required pattern="[a-f0-9]{64}" autocomplete="off" spellcheck="false">
+          <label for="review-name">Your name</label>
+          <input id="review-name" name="reviewer" maxlength="64" autocomplete="name">
+          <button class="primary" type="submit">Show nodes</button>
+        </form>
+        <p class="room-note">Names are typed here and not verified, like the parties in a room.</p>
+        <p id="review-status" class="status" role="status"></p>
+        <ol id="review-nodes" class="proposals" aria-label="Nodes to review"></ol>
+      </section>
     </main>
     <footer>Imported transcripts retain their original line references.</footer>
   </div>

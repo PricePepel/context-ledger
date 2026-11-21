@@ -8,6 +8,7 @@ import { ConflictError, InputError } from './errors.mjs';
 import { diffGraphs } from './diff.mjs';
 import { graphPrefixLength, nodeLinkBundle } from './export.mjs';
 import { mountArtifacts } from './artifacts.mjs';
+import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema } from './migrate.mjs';
@@ -344,13 +345,15 @@ export function openStore(path) {
     throw error;
   }
 
-  // A graph stored before G7 has no quoted or inferred marks; publishing the same
-  // packet again adds them. The ID, row and created_at stay as they were.
+  // A graph stored before G7 has no quoted or inferred marks, and a version 3 graph
+  // stored before P2c no node hashes; publishing the same packet again adds them. The ID,
+  // row and created_at stay as they were.
   const insertGraph = database.prepare(`
     INSERT INTO graphs (id, session_id, payload)
     VALUES (?, ?, ?)
     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload
-      WHERE json_valid(graphs.payload) AND json_type(graphs.payload, '$.quotedNodeIds') IS NULL
+      WHERE json_valid(graphs.payload) AND (json_type(graphs.payload, '$.quotedNodeIds') IS NULL
+        OR (json_extract(graphs.payload, '$.packet.version') = 3 AND json_type(graphs.payload, '$.nodeHashes') IS NULL))
   `);
   const getGraph = database.prepare('SELECT payload FROM graphs WHERE id = ?');
   const countCitingGraphs = database.prepare('SELECT count(*) AS graphs FROM graphs WHERE session_id = ?');
@@ -379,6 +382,7 @@ export function openStore(path) {
   const graphProject = id => selectGraphProject.get(id)?.project ?? null;
   const rooms = mountRooms(database, readGraph, graphProject);
   const artifacts = mountArtifacts(database, defaultProject);
+  const reviews = mountReviews(database, readGraph);
 
   // Version 2 adds projects and sessions.project_id. Version 3 adds one messages row per
   // turn; sessions.messages is still written for builds from before versions. Sessions are
@@ -610,7 +614,9 @@ export function openStore(path) {
         citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
       }
       const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
-      const payload = { packet: JSON.parse(canonical), ...derived, ...(citations ? { citations } : {}), ...groundNodes(ordered, messages, linesOf) };
+      // P2c: and the hash a person approves or rejects, per node.
+      const versionThree = citations ? { citations, nodeHashes: nodeHashes(ordered) } : {};
+      const payload = { packet: JSON.parse(canonical), ...derived, ...versionThree, ...groundNodes(ordered, messages, linesOf) };
       try {
         insertGraph.run(id, sessionId, JSON.stringify(payload));
       } catch (error) {
@@ -628,6 +634,8 @@ export function openStore(path) {
     ...rooms,
 
     ...artifacts,
+
+    ...reviews,
 
     close() {
       database.close();

@@ -160,6 +160,10 @@ npm run --silent ledger -- artifact list --project orbit
 
 (`POST /api/artifacts` and `GET /api/artifacts?project=` do the same.) The stored graph adds `citations`: for each node, the transcript lines its keys resolve to and the artifacts it cites, which `context_for`, the export and the console show. Versions 1 and 2 stay valid, and version 2 and 3 graphs link to each other and meet in rooms. See the [v3 schema](schemas/semantic-graph-v3.schema.json).
 
+### Approving nodes
+
+Each version 3 node has a `nodeSha256`: a hash of its kind, label, status, recipient and citations. In the browser app, under **Review**, a person opens a graph by ID, types their name and approves or rejects each node. A decision belongs to that hash: when the agent publishes again from the same session, unchanged nodes keep their decision and a changed node starts unreviewed. `GET /api/graphs/GRAPH_ID` returns the current decisions, and MCP `graph_read` shows them. Only a signed-in browser on the ledger's own page can record one: the route needs the browser's sign-in cookie, which the CLI and the MCP adapter do not have. That keeps the CLI and the MCP adapter from recording decisions, but it is not a security boundary: whoever can read the access token can make a sign-in link with `ledger login` and act as a browser. It does not prove who clicked. Names are typed by the person and not verified. Hash-chained review events and edits come in P3.
+
 ## Graph context and the savings meter
 
 A graph belongs to the project of the session it cites. A link must point at a graph in the same project, and a room needs two graphs from one project.

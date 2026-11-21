@@ -456,3 +456,118 @@ roomForm.addEventListener('submit', async (event) => {
 
 const hashRoom = location.hash.match(/^#room=([a-f0-9]{64})$/u)?.[1];
 if (hashRoom) void loadRoom(hashRoom);
+
+// Card P2c (ADR-7c, 7d): a person approves or rejects the nodes of a version 3 graph by
+// their hash. Every label, citation and name is set with textContent.
+const reviewForm = document.querySelector('#review-form');
+const reviewGraphInput = document.querySelector('#review-graph');
+const reviewName = document.querySelector('#review-name');
+const reviewStatus = document.querySelector('#review-status');
+const reviewNodes = document.querySelector('#review-nodes');
+const reviewSubmit = reviewForm.querySelector('button[type="submit"]');
+const decisionWords = { approve: 'Approved', reject: 'Rejected' };
+let reviewGraph = null;
+let reviewing = false;
+
+function citationText(graph, node) {
+  const entry = (graph.citations ?? []).find(citation => citation.id === node.id);
+  const lines = (entry?.lines ?? []).map(line => `L${line}`);
+  const artifacts = (entry?.artifacts ?? []).map(artifact => `${artifact.kind} ${artifact.repo}@${artifact.ref}`);
+  return [...lines, ...artifacts].join(', ') || 'nothing';
+}
+
+function reviewRow(graph, node) {
+  const hash = (graph.nodeHashes ?? []).find(entry => entry.id === node.id)?.sha256;
+  const review = (graph.reviews ?? []).find(entry => entry.nodeId === node.id && entry.nodeSha256 === hash);
+  const item = document.createElement('li');
+  item.dataset.node = node.id;
+  item.dataset.state = review?.decision === 'approve' ? 'agreed' : review?.decision === 'reject' ? 'rejected' : 'proposed';
+  const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+  item.append(textElement('p', detail, 'node-kind'), labelElement(node.label),
+    textElement('p', `Cites ${citationText(graph, node)} · hash ${hash ? hash.slice(0, 12) + '…' : 'none'}`, 'room-note'),
+    textElement('p', review ? `${decisionWords[review.decision]} by ${review.reviewer} (self-asserted)` : 'Not reviewed', 'proposal-state'));
+  const actions = document.createElement('div');
+  actions.className = 'proposal-actions';
+  for (const decision of ['approve', 'reject']) {
+    const button = textElement('button', decision === 'approve' ? 'Approve' : 'Reject', 'choice-button');
+    button.type = 'button';
+    button.dataset.decision = decision;
+    button.setAttribute('aria-pressed', String(review?.decision === decision));
+    button.disabled = reviewing || !hash;
+    button.addEventListener('click', () => reviewNode(node.id, hash, decision));
+    actions.append(button);
+  }
+  item.append(actions);
+  return item;
+}
+
+function renderReview(graph) {
+  reviewGraph = graph;
+  renderRows(reviewNodes, graph.packet.nodes, node => reviewRow(graph, node));
+}
+
+async function loadReview(id) {
+  reviewStatus.textContent = 'Reading the graph…';
+  reviewNodes.replaceChildren();
+  reviewGraph = null;
+  try {
+    const { graph } = await request(`/api/graphs/${id}`);
+    if (graph.packet.version !== 3) {
+      reviewStatus.textContent = 'Only version 3 graphs are reviewed node by node.';
+      return;
+    }
+    renderReview(graph);
+    reviewStatus.textContent = Array.isArray(graph.nodeHashes)
+      ? `${graph.packet.nodes.length} ${graph.packet.nodes.length === 1 ? 'node' : 'nodes'} of ${graph.packet.party}'s graph.`
+      : 'This graph was stored before node hashes existed. Publish the same packet again to review it.';
+  } catch (error) {
+    reviewStatus.textContent = `Unable to read the graph. ${error.message}`;
+  }
+}
+
+async function reviewNode(nodeId, nodeSha256, decision) {
+  if (reviewing || !reviewGraph) return;
+  const reviewer = reviewName.value.trim();
+  if (!reviewer) {
+    reviewStatus.textContent = 'Type your name first.';
+    reviewName.focus();
+    return;
+  }
+  reviewing = true;
+  const graph = reviewGraph;
+  for (const button of reviewNodes.querySelectorAll('button')) button.disabled = true;
+  try {
+    const { reviews } = await request(`/api/graphs/${graph.id}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId, nodeSha256, decision, reviewer }),
+    });
+    reviewing = false;
+    if (reviewGraph !== graph) return;
+    renderReview({ ...graph, reviews });
+    reviewStatus.textContent = `${decisionWords[decision]} ${nodeId}.`;
+  } catch (error) {
+    reviewing = false;
+    if (reviewGraph === graph) {
+      renderReview(graph);
+      reviewStatus.textContent = `Review failed. ${error.message}`;
+    }
+  } finally {
+    reviewing = false;
+    // P2c review: another graph opened while this decision was in flight was drawn with
+    // its buttons disabled; draw it again, enabled.
+    if (reviewGraph && reviewGraph !== graph) renderReview(reviewGraph);
+  }
+  // Focus goes back only to the graph this decision was for (P2c review round 2).
+  if (reviewGraph === graph) reviewNodes.querySelector(`li[data-node="${nodeId}"] button[data-decision="${decision}"]`)?.focus();
+}
+
+reviewForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  reviewSubmit.disabled = true;
+  try {
+    await loadReview(reviewGraphInput.value.trim());
+  } finally {
+    reviewSubmit.disabled = false;
+  }
+});
