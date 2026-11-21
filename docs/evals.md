@@ -4374,3 +4374,8 @@ The user's answers of 2026-11-21: prepare the package for npm but do not publish
 - (medium) The tests' server start and MCP replies had no deadline, and a reply waiter never failed when the adapter exited: both now have one (90 s and 60 s) and fail on exit.
 - (low) The eval said the tarball holds no demo, while the console's synthetic recording is included (the console's demo mode loads it): the eval now says so.
 
+**Codex review, round 2** (of 693ca01): ordinary relative tarballs become absolute, credential URLs are refused, and the registered command answers MCP. Fixed, each with a test:
+
+- (medium) The URL check missed `git+ssh:` specs without `//`, and the path rule rewrote `@scope/foo.tgz` and `github:owner/repo.tgz` as local paths and kept `file:` as part of a path. Specs are now told apart first: a registry name, a host shorthand, or a local path (`file:` stripped), each with its own grammar; anything else is refused.
+- (medium) The test's MCP reader parsed partial lines from the pipe and did not fail on a closed stream: it now parses whole lines only and fails waiters on exit, error or close.
+- (low) The ADR said the characters were safe for every shell; it now states the guarantee for the two paths the command takes (one POSIX argument, the Windows `cmd /c` line).

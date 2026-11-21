@@ -67,14 +67,40 @@ function databaseFor(env) {
 }
 
 // The package spec npm hands a bin it runs through npx (npm_config_package) goes into the
-// agents' configs and, on Windows, a cmd /c line the agent hands to cmd.exe later, so only
-// characters no shell treats specially are written: letters, digits and @ / \ . _ : # ~ + -
-// (no space, quote, % ! ^ & | < > ( ) , ; =). A URL is refused, since it can carry
-// credentials; a local path is made absolute, since the agent starts in another folder.
-const specPattern = /^[A-Za-z0-9@/\\._:#~+-]{1,500}$/u;
-const localSpec = /^(?:\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])|\.t(?:ar\.)?gz$/u;
-export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (it is a URL, or holds a space or a shell character). ' +
+// agents' configs: on POSIX as one argument of the command, on Windows inside the cmd /c
+// line the agent hands to cmd.exe. Only three kinds are written (P5c review), each in a
+// grammar with no space, quote or character cmd.exe treats specially (% ! ^ & | < > ( ) , ; =):
+// - a registry package: name or @scope/name, with an optional @version or @tag;
+// - a hosted shorthand: github:, gitlab:, bitbucket: or gist: owner/repo, or a bare
+//   owner/repo, with an optional #ref;
+// - a local path (file:, ./, ../, /, \ or a drive letter, or a relative path ending .tgz),
+//   made absolute, since the agent starts in another folder.
+// Anything else, git+ssh: and every URL (which can carry credentials) among them, is refused.
+const registrySpec = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@[A-Za-z0-9._+-]+)?$/u;
+const hostedSpec = /^(?:(?:github|gitlab|bitbucket|gist):)?[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9._/-]+)?$/u;
+const localSpec = /^(?:file:(?!\/\/)|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/u;
+// As npm reads it: a spec ending .tgz is a file, unless it is a scoped name or a prefixed
+// host shorthand (github:owner/repo.tgz).
+const tarballName = /^(?!@|(?:github|gitlab|bitbucket|gist):).+\.t(?:ar\.)?gz$/u;
+const safePath = /^[A-Za-z0-9@/\\._:~+-]{1,500}$/u;
+export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (only a registry name, a host shorthand such as github:owner/repo, or a local path without spaces can). ' +
   'Install the package with npm install --global and run context-ledger install again.';
+
+/** The spec as written to the agents' configs, or undefined when it cannot be written safely. */
+export function writableSpec(spec, cwd) {
+  if (typeof spec !== 'string' || spec.length > 500) return undefined;
+  // A scheme first (a URL, git+ssh:, npm: and the like) is refused before anything else
+  // can read it as a path: only the host shorthands, file: and a drive letter pass.
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(spec)?.[1];
+  if (scheme && !['github', 'gitlab', 'bitbucket', 'gist'].includes(scheme) && !(scheme === 'file' && !spec.startsWith('file://'))
+    && !/^[A-Za-z]:[\\/]/u.test(spec)) return undefined;
+  if (localSpec.test(spec) || tarballName.test(spec)) {
+    const path = resolve(cwd, spec.startsWith('file:') ? spec.slice('file:'.length) : spec);
+    return safePath.test(path) ? path : undefined;
+  }
+  if (registrySpec.test(spec) || hostedSpec.test(spec)) return spec;
+  return undefined;
+}
 
 /**
  * Card P5c: the command an agent runs for the MCP adapter. From a checkout or a global
@@ -89,9 +115,8 @@ export function mcpServerCommand(env = process.env, { file = mcpPath, platform =
   if (spec === undefined || spec === '') {
     spec = `${packageJson.name}@${packageJson.version}`;
   } else {
-    if (typeof spec !== 'string' || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(spec)) throw new InstallError(unsafeSpecLine);
-    if (localSpec.test(spec)) spec = resolve(cwd, spec);
-    if (!specPattern.test(spec)) throw new InstallError(unsafeSpecLine);
+    spec = writableSpec(spec, cwd);
+    if (spec === undefined) throw new InstallError(unsafeSpecLine);
   }
   const npx = ['npx', '-y', '--package', spec, Object.keys(packageJson.bin)[0], 'mcp'];
   return platform === 'win32' ? ['cmd', '/c', ...npx] : npx;

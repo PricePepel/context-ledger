@@ -87,17 +87,32 @@ async function startBin(t, later, args, env, cwd) {
 // One JSON-RPC exchange with an adapter child: each reply within 60 s, and a child that
 // exits fails every wait (P5c review).
 function rpc(child) {
-  let lines = '';
+  // Whole lines only: a pipe can split a reply anywhere (P5c review round 2).
+  let buffered = '';
+  const messages = [];
   let gone;
   const waiting = new Set();
+  const wake = () => { for (const check of waiting) check(); };
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => { lines += chunk; for (const check of waiting) check(); });
-  child.once('exit', code => { gone = new Error(`The adapter exited (${code}): ${lines}`); for (const check of waiting) check(); });
+  child.stdout.on('data', chunk => {
+    buffered += chunk;
+    let end;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      const line = buffered.slice(0, end).trim();
+      buffered = buffered.slice(end + 1);
+      try { messages.push(JSON.parse(line)); } catch { /* not a protocol line */ }
+    }
+    wake();
+  });
+  const end = why => { gone ??= new Error(`The adapter ${why}: ${buffered}`); wake(); };
+  child.once('exit', code => end(`exited (${code})`));
+  child.once('error', error => end(`failed (${error.message})`));
+  child.stdout.once('close', () => end('closed its output'));
   const reply = id => new Promise((done, fail) => {
-    const timer = setTimeout(() => { waiting.delete(check); fail(new Error(`No reply ${id} within 60 s: ${lines}`)); }, 60_000);
+    const timer = setTimeout(() => { waiting.delete(check); fail(new Error(`No reply ${id} within 60 s`)); }, 60_000);
     const check = () => {
-      const line = lines.split('\n').find(text => text.startsWith('{') && JSON.parse(text).id === id);
-      if (line || gone) { clearTimeout(timer); waiting.delete(check); return line ? done(JSON.parse(line)) : fail(gone); }
+      const message = messages.find(candidate => candidate?.id === id);
+      if (message || gone) { clearTimeout(timer); waiting.delete(check); return message ? done(message) : fail(gone); }
     };
     waiting.add(check);
     check();
@@ -201,6 +216,18 @@ test('P5c: install registers npx when run through it, and node with this file ot
   // A local tarball is made absolute, since the agent starts the adapter in another folder.
   const relative = mcpServerCommand({ npm_command: 'exec', npm_config_package: join('dist', 'pkg.tgz') }, { file: cached, platform: 'linux', cwd: repo });
   assert.equal(relative[3], join(repo, 'dist', 'pkg.tgz'));
+  // P5c review round 2: each kind of spec is told apart before anything is rewritten.
+  const written = spec => mcpServerCommand({ npm_command: 'exec', npm_config_package: spec }, { file: cached, platform: 'linux', cwd: repo })[3];
+  for (const kept of ['@pricepepel/context-ledger', '@pricepepel/context-ledger@0.1.0', 'context-ledger@latest', '@scope/foo.tgz',
+    'github:PricePepel/context-ledger', 'github:owner/repo.tgz', 'PricePepel/context-ledger#main', 'gitlab:group/repo#v1.2']) {
+    assert.equal(written(kept), kept, kept);
+  }
+  assert.equal(written('file:dist/pkg.tgz'), join(repo, 'dist', 'pkg.tgz'), 'file: is a path, without the prefix');
+  assert.equal(written('pkg.tgz'), join(repo, 'pkg.tgz'), 'a bare tarball name is a local file');
+  for (const odd of ['git+ssh:git@github.com:owner/repo.git', 'git:github.com/owner/repo', 'ssh:owner/repo', 'npm:other@1', 'owner/repo/extra',
+    '#main', 'context-ledger@^1.0.0', 'context-ledger@>=1', 'file:dir with space/pkg.tgz']) {
+    assert.throws(() => written(odd), error => error instanceof InstallError && error.message === unsafeSpecLine, odd);
+  }
   assert.deepEqual(mcpServerCommand({ npm_command: 'run-script' }, { file: cached }), ['node', cached], 'not npx');
 });
 
