@@ -4332,3 +4332,25 @@ With main merged in, the Windows Node job ran until the job limit cancelled it (
 - **Round 3** (of 5e578dc): both round-2 findings fixed. (medium) In PowerShell's Constrained Language mode the descriptor cannot be built and key creation and loading failed: the spelling now falls back to the SID, which still refuses any alias. (low) The record's file name is compared exactly, not case-folded. (low) The eval row above described the old folder probe: corrected.
 - **Round 4** (of 9f8c8cf): the round-3 fixes hold, and the new test helper replaces the whole DACL. (low) The helper checked its result with the reader's policy, which accepts more than it promises: it now requires exactly this user as owner and one protected full-control entry. (low) Its PowerShell call had no timeout: 30 s, as in `src/token.mjs`.
 - **Round 5** (of b9d3e19): both round-4 fixes hold. (low) 20 s could still be shorter than the adapter's start plus the token read's own 30 s limit: the default wait is 45 s.
+
+## P2a — Project scope for graphs and MCP (defined 2026-11-21, before the code)
+
+ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a project; graphs, links, rooms and the MCP tools do not know about projects yet. Synthetic transcripts only: two projects, `orbit` and `vela`, each with sessions for two parties.
+
+| Eval | Expected |
+| --- | --- |
+| A graph's project | `GET /api/graphs` rows carry `project`, the slug of the cited session's project. `?project=<slug>` returns only that project's graphs, with paging; an unknown slug returns none; a malformed one is a 400 with the fixed slug rule, and a repeated one is refused. No packet field names a project. |
+| Links stay in a project | Publishing a graph whose link points at a graph of another project is a 400: "A link must point at a graph in the same project." The same link inside one project is accepted as before. |
+| Rooms stay in a project | `POST /api/rooms` with graphs from two projects is a 400: "A room needs two graphs from the same project." `GET /api/rooms` rows carry `project`, and `?project=` filters them. A room's "newer graph" notice (G11) names only graphs of the same project. |
+| MCP | `session_search`, `graph_list` and `room_list` take an optional `project` (ASCII letters folded to lowercase, like `party`) and pass it on; without it they cover every project. A row from a ledger that ignored the filter (another project, or no `project` field) makes the tool fail with a fixed sentence instead of returning wrong rows. The pinned tool list keeps its fourteen tools; the new arguments have their own size budget. |
+| Nothing else moves | Every response pinned by `tests/routes.test.mjs` other than the list rows' new `project` field is unchanged, the token is needed on every route as before, and the browser app and console still pass. |
+
+**Codex review, round 1** (of b7017f8): the auth gate, fixed error texts and republish path hold. Fixed, each with a test in `tests/project-scope.test.mjs`:
+
+- (medium) A room opened across projects before P2a still took choices, and its newer-graph notice searched both projects. Such a room is now read-only (`decide` refuses it with a fixed sentence), names no newer graph, lists with `project: null` and matches no project filter.
+- (medium) A session whose project is missing (`project_id` is nullable; the trigger fills it only on insert) matched another such session, so links and rooms between them passed. A missing project now matches nothing.
+- (low) Paging with the filter was tested for graphs only: added a room walk over interleaved projects, and a `session_search` whose second ledger page holds another project's row.
+
+**Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
+
+**Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.

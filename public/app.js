@@ -263,7 +263,7 @@ function partyColumn(party) {
   return column;
 }
 
-function proposalRow(proposal, parties) {
+function proposalRow(proposal, parties, takesChoices = true) {
   const item = document.createElement('li');
   item.dataset.proposal = proposal.id;
   item.dataset.state = proposal.state;
@@ -275,7 +275,8 @@ function proposalRow(proposal, parties) {
     group.className = 'choice-group';
     const made = proposal.choices[party];
     group.append(textElement('span', `${party}: ${made ?? 'undecided'}`, 'choice-made'));
-    for (const choice of ['confirm', 'reject']) {
+    // Card P2a: a read-only room keeps its recorded choices and offers no buttons.
+    for (const choice of takesChoices ? ['confirm', 'reject'] : []) {
       const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
       button.type = 'button';
       button.setAttribute('aria-pressed', String(made === choice));
@@ -360,7 +361,12 @@ function renderRoom(room) {
   renderUpdates(room);
   const parties = room.parties.map(party => party.party);
   renderRows(roomParties, room.parties, partyColumn);
-  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
+  // A ledger from before P2a sends no takesChoices; its rooms take choices as before.
+  const takesChoices = room.takesChoices !== false;
+  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties, takesChoices));
+  if (!takesChoices) {
+    roomProposals.prepend(textElement('li', "This room's graphs are not both in one known project, so it takes no choices. Open a room with two graphs from the same project.", 'room-note'));
+  }
   const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
   renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));
   if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));

@@ -83,6 +83,9 @@ function listParameters(url, filters) {
       if (value.length > 32 || !partyParameter.test(value)) {
         throw new InputError('party must be a party name of at most 32 lowercase letters, digits and single hyphens.');
       }
+    } else if (name === 'project') {
+      // P2a: a present but empty or malformed project is invalid, never "every project".
+      if (!isProjectSlug(value)) throw new InputError(projectSlugRule);
     } else if (!hexParameter.test(value)) {
       throw new InputError(`${name} must be a 64-character lowercase hex ID.`);
     }
@@ -209,12 +212,12 @@ const routes = [
     return store.listSessionsPage({ query, provider, project, limit, after });
   } },
   { method: 'GET', path: '/api/graphs', handler: ({ url }) => {
-    const { limit = 20, after, sessionId, party } = listParameters(url, ['sessionId', 'party']);
-    return store.listGraphs({ sessionId, party, limit, after });
+    const { limit = 20, after, sessionId, party, project } = listParameters(url, ['sessionId', 'party', 'project']);
+    return store.listGraphs({ sessionId, party, project, limit, after });
   } },
   { method: 'GET', path: '/api/rooms', handler: ({ url }) => {
-    const { limit = 20, after, graphId, party } = listParameters(url, ['graphId', 'party']);
-    return store.listRooms({ graphId, party, limit, after });
+    const { limit = 20, after, graphId, party, project } = listParameters(url, ['graphId', 'party', 'project']);
+    return store.listRooms({ graphId, party, project, limit, after });
   } },
   { method: 'GET', pattern: idPattern('/api/sessions'), handler: ({ params: [id] }) => {
     const session = store.get(id);
