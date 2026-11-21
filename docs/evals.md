@@ -4351,3 +4351,5 @@ ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a p
 - (medium) A session whose project is missing (`project_id` is nullable; the trigger fills it only on insert) matched another such session, so links and rooms between them passed. A missing project now matches nothing.
 - (low) Paging with the filter was tested for graphs only: added a room walk over interleaved projects, and a `session_search` whose second ledger page holds another project's row.
 
+**Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
+

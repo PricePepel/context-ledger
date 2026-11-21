@@ -262,6 +262,23 @@ test('P2a review: a session without a project matches no project, not another se
   assert.deepEqual(store.listGraphs({ limit: 10 }).graphs.map(row => row.project), [null, null]);
 });
 
+test('P2a review round 2: a room whose sessions lost their project names no newer graph and is read-only', async t => {
+  const { store, raw, session } = await fileStore(t);
+  const leoSession = session('leo', 'orbit');
+  const aliSession = session('ali', 'orbit');
+  const ali = graphOf(store, aliSession.id, 'ali');
+  const leo = graphOf(store, leoSession.id, 'leo', [{ from: 'offer', graph: ali.id, to: 'offer', type: 'matches' }]);
+  const room = store.openRoom({ graphIds: [leo.id, ali.id] });
+  const newerSession = session('ali-2', 'orbit');
+  graphOf(store, newerSession.id, 'ali');
+  assert.equal(store.getRoom(room.id).newerGraphs.length, 1, 'eligible while every project is known');
+  assert.equal(store.getRoom(room.id).takesChoices, true);
+  raw.prepare('UPDATE sessions SET project_id = NULL WHERE id IN (?, ?, ?)').run(leoSession.id, aliSession.id, newerSession.id);
+  const view = store.getRoom(room.id);
+  assert.deepEqual(view.newerGraphs, []);
+  assert.equal(view.takesChoices, false);
+});
+
 test('P2a review: the project filter pages rooms across interleaved projects', () => {
   const store = openStore(':memory:');
   const session = (name, project) => store.importTranscript({ provider: 'claude', source: `${name}.jsonl`, transcript: say(`${name}: synthetic`), project });

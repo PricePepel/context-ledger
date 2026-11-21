@@ -121,6 +121,8 @@ export function mountRooms(database, readGraph, graphProject = () => null) {
 
     return {
       id,
+      // P2a review: a room across projects is read-only, so the browser shows no choices.
+      takesChoices: project !== null,
       parties: graphs.map(graph => ({
         party: graph.packet.party,
         graphId: graph.id,
