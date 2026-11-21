@@ -579,3 +579,11 @@ PR #59, branch `claude/p2b-citations`. Read the P2b section of [the eval log](ev
 - Citations compare with their session (lines and keys) in the diff and the console; artifacts compare as they are.
 - **Next owner:** P2c (node-hash approval) is stacked on this branch.
 
+## Current checkpoint — P2c approval bound to a node hash (2026-11-21)
+
+Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
+
+- Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
+

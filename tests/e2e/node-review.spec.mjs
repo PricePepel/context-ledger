@@ -101,7 +101,9 @@ test('P2c review: a graph opened while a decision is in flight keeps working but
   // While that decision waits, the person opens the second graph.
   await page.getByLabel('Graph ID', { exact: true }).fill(two.graph.id);
   await page.getByRole('button', { name: 'Show nodes' }).click();
-  await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Not reviewed');
+  // The second graph is drawn while the first decision waits, with its buttons disabled.
+  await expect(page.locator('#review-nodes li[data-node="notes"]')).toContainText('p2c-race-b-');
+  await expect(page.locator('#review-nodes li[data-node="port"]').getByRole('button', { name: 'Approve' })).toBeDisabled();
   release();
   await expect(page.locator('#review-nodes li[data-node="port"]').getByRole('button', { name: 'Approve' })).toBeEnabled();
   await page.unroute('**/api/graphs/*/reviews');

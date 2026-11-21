@@ -4404,3 +4404,5 @@ ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts
 - (low) The upgrade of a version 3 graph stored before P2c was untested: a republish now adds its hashes with the same ID and time, and the browser says how to enable review until then.
 - (low) Added: a second party in the same session sees no decision, two nodes with the same content keep separate decisions, and a question's recipient enters its hash.
 
+**Codex review, round 2** (of 4430698): the cookie check, re-enabled buttons and the 400 hold. (medium) A bearer holder can still mint a sign-in link and act as a browser, and one ADR line still named the token: the README and ADR now call the route an interface boundary, not a credential one, and the line is corrected (docs only). (low) The race test did not prove the second graph was drawn while the decision waited: it now checks that graph's own label and a disabled button before the decision is released. (low) A failed decision could move focus into the newly opened graph: focus returns only when the graph is the one decided on.
+
