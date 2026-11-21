@@ -273,7 +273,7 @@ test('P2a review: a room across projects shows its choices but no buttons', asyn
   await page.getByLabel('First graph ID').fill(leo.id);
   await page.getByLabel('Second graph ID').fill(ali.id);
   await page.getByRole('button', { name: 'Open room' }).click();
-  await expect(page.locator('#room-proposals')).toContainText('This room joins graphs from two projects, so it takes no choices.');
+  await expect(page.locator('#room-proposals')).toContainText("This room's graphs are not both in one known project, so it takes no choices.");
   await expect(page.locator('.choice-button')).toHaveCount(0);
   await expect(page.locator('.choice-made').first()).toBeVisible();
   await expect(page.locator('#room-proposals')).toContainText(`${'ali'}: confirm`);
