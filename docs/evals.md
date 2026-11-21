@@ -4367,3 +4367,16 @@ The user's answers of 2026-11-21: prepare the package for npm but do not publish
 | Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. |
 | Works from a tarball | In an empty folder, `npm pack` then `npx -y --package <tarball> context-ledger …` starts the ledger, imports a synthetic transcript, publishes a graph and reads it back; a node test does this on each system. |
 
+## P5d — Clean-install eval on three systems (defined 2026-11-21, before the code)
+
+P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is the clean machine: nothing of the ledger is installed, and the check runs outside the checkout. Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| Install | A `clean install` job on `ubuntu-latest`, `windows-latest` and `macos-latest` packs the checkout with `npm pack`, installs the tarball globally into an empty prefix (`npm install --global --prefix`), and runs everything below through the installed `context-ledger` command (the `.cmd` shim on Windows), from an empty folder with an empty home folder. |
+| First run | `context-ledger` with no arguments prints the usage and exits 1. `context-ledger start` listens on loopback and writes its database and token file under `~/.context-ledger`. |
+| A round trip | `context-ledger import`, `search`, `graph publish` and `graph read` work against that server; `context-ledger login` prints a one-time sign-in link of the expected shape. |
+| Agents | `context-ledger mcp` answers `initialize` and `tools/list`, and `session_search` finds the imported session. |
+| Clean stop | The server stops, and the check leaves nothing outside its temporary folder. |
+| Local | `node scripts/clean-install-check.mjs` runs the same check on a developer machine (it packs the checkout itself). The script is not in the package. |
+
