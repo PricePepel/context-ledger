@@ -20,6 +20,7 @@ predict which; the receipt says afterwards) and on every flagged run:
 Nothing here is written to disk. The watchdog's thought record and memory references are
 dropped once the decision is made.
 """
+import math
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -187,7 +188,15 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None):
+    def calibration(self, task, steps):
+        """W3: the committed calibration of this kind of task, for these weights and steps."""
+        if not task:
+            return None
+        from .abstain import load_calibration
+        from .watchdog import team_weights
+        return load_calibration(self.team.model_name, team_weights(self.team)[0], steps, task)
+
+    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None, task=None):
         """One guarded batch. audit: True or False forces the audits; None samples them.
 
         gateways (W2): one gateway.Gateway per question, its permissions fixed. Each admits the
@@ -228,6 +237,7 @@ class Guard:
         gates = None if gateways is None else [OutputGate(g) for g in gateways]
         try:
             outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
+                                 calibration=self.calibration(task, steps),
                                  cap=cap)
         except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
             outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
@@ -246,10 +256,17 @@ class Guard:
     def _over(self, started, cap):
         return cap is not None and time.monotonic() - started > cap
 
-    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None, cap=None):
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None, cap=None,
+             calibration=None):
         from .watchdog import weights_state
         rows = len(questions)
-        answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
+        scored = calibration is not None
+        answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch,
+                                                **({"scores": True} if scored else {}))
+        confidences = [None] * rows
+        if scored:   # W3: the log-probability of each answer's final number (confidence.py)
+            from .confidence import answer_logprob
+            confidences = [answer_logprob(d["pieces"], d["logprobs"]) for d in receipt.details]
         try:
             results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
         except Exception:   # noqa: BLE001 - the watchdog could not check this run: hold it
@@ -277,7 +294,12 @@ class Guard:
             if envelope is not None:
                 runs[row].submit(envelope)
             broken = gates is not None and gates[row].label_broken()
-            decisions.append(runs[row].decide(calibrated=False, label_broken=broken))
+            if scored:   # row 5: an answer with no number has no score and is never released
+                confidence = confidences[row] if confidences[row] is not None else -math.inf
+                decisions.append(runs[row].decide(calibrated=True, label_broken=broken, confidence=confidence,
+                                                  threshold=calibration["threshold"]))
+            else:
+                decisions.append(runs[row].decide(calibrated=False, label_broken=broken))
         fallback_rows = [r for r, d in enumerate(decisions) if d.action == "fallback"]
         fallback = {}
         if fallback_rows:

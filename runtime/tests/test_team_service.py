@@ -112,11 +112,16 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(events[1]["latent_receipt"]["decision"]["marks"], ["fallback", "uncalibrated"],
                          "a streamed fallback is marked too")
 
-    def test_only_a_release_leaves_the_route(self):
+    def test_only_a_release_carries_model_text(self):
+        # W3: an abstention is an outcome, not an error, and it carries no model text even
+        # when a broken guard hands the route some.
         service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team, "abstain", "low-confidence"))
-        with self.assertRaises(ApiError) as raised:
-            service({"question": "q"})
-        self.assertEqual(raised.exception.status, 409)
+        result = service({"question": "q"})
+        self.assertEqual((result["mode"], result["answer"], result["reason"]), ("abstained", None, "low-confidence"))
+        self.assertNotIn("18", json.dumps(result))
+        chat = service.chat({"model": MODEL_ID, "messages": [{"role": "user", "content": "q"}]})
+        self.assertNotIn("18", chat["choices"][0]["message"]["content"])
+        self.assertIn("declined", chat["choices"][0]["message"]["content"])
 
     def test_no_response_carries_a_vector_or_a_free_number(self):
         def leaves(value):

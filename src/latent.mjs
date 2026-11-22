@@ -649,7 +649,8 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
 // W2: secrets the caller declares, and anything the runtime's scanner finds, are replaced by
 // placeholders before the model reads any text, and come back in the answer only with
 // clearance "sensitive" (the runtime's gateway).
-const teamFields = ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance'];
+const teamFields = ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance', 'task'];
+const taskName = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 const teamRoles = new Set(['planner', 'critic', 'refiner', 'solver']);
 
 function checkTeam(input) {
@@ -673,6 +674,9 @@ function checkTeam(input) {
   }
   if (clearance !== undefined && clearance !== 'public' && clearance !== 'sensitive') {
     throw new InputError('clearance must be public or sensitive.');
+  }
+  if (input.task !== undefined && (typeof input.task !== 'string' || !taskName.test(input.task))) {
+    throw new InputError('task must be a short lower-case name, such as gsm8k-arithmetic.');
   }
   return Object.fromEntries(teamFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 }
@@ -742,6 +746,8 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   // An older runtime without /latent/team answers 404: the team is simply not there.
   if (response.status === 404) return { mode: 'unavailable', reason: 'This latent runtime has no agent team.' };
   if (!response.ok) throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
+  // W3: on a calibrated kind of task the team may decline; no answer exists to pass on.
+  if (body?.mode === 'abstained') return { mode: 'abstained', reason: word(body.reason) ?? 'low-confidence', receipt: cleanTeamReceipt(body.receipt) };
   if (body?.mode !== 'latent-team' || typeof body.answer !== 'string') {
     throw new LatentError(502, 'The latent runtime returned an unexpected team response.');
   }

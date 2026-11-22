@@ -24,6 +24,7 @@ Notes for operators:
   Set a separate task model there, or each task runs a full team pass and holds the slot.
 """
 import json
+import re
 import threading
 import time
 import uuid
@@ -33,7 +34,9 @@ from latent_team.guard import Guard
 from . import ApiError
 
 MODEL_ID = "ctm-latent-team"
-TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens", "secrets", "clearance"})
+TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens", "secrets", "clearance", "task"})
+ABSTAINED = ("The latent team declined to answer: on this kind of task its confidence was below the calibrated "
+             "threshold, so no answer is released.")
 MAX_SECRETS, SECRET_CHARS = 16, (8, 512)
 PROJECT = "local"   # one project per runtime today; the gateway refuses spans of any other
 MAX_QUESTION_CHARS = 8000
@@ -132,7 +135,8 @@ class TeamService:
                                             max_seconds=TIME_CAP_SECONDS, clearance=clearance))
         return gateway
 
-    def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public"):
+    def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public",
+            task=None):
         from latent_team.gateway import GatewayError, Span
         gateway = self.gateway(steps, max_new_tokens, secrets, clearance)
         try:
@@ -148,11 +152,14 @@ class TeamService:
             # A caller that gave up while waiting for the slot gets no GPU work.
             if gone is not None and gone():
                 raise ApiError(499, GONE)
-            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway])[0]
+            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway],
+                                     **({"task": task} if task else {}))[0]
         finally:
             self._slot.release()
         # Fail closed: the supervisor's hold leaves as an error, so no client can take it
         # for an answer, and nothing of the squad's text goes with it.
+        if outcome.decision["action"] == "abstain":   # W3: declining is an outcome, not an error
+            return None, outcome, gateway.admission.text
         if outcome.decision["action"] != "release" or outcome.answer is None:
             raise ApiError(409, HELD.format(reason=outcome.decision["reason"]))
         return outcome.answer, outcome, gateway.admission.text
@@ -185,8 +192,14 @@ class TeamService:
         clearance = body.get("clearance", "public")
         if clearance not in ("public", "sensitive"):
             raise ApiError(400, "clearance must be public or sensitive.")
+        task = body.get("task")
+        if task is not None and (not isinstance(task, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", task)):
+            raise ApiError(400, "task must be a short lower-case name, such as gsm8k-arithmetic.")
         answer, outcome, _ = self.run(question, steps, limit, gone, origin="request", secrets=secrets,
-                                   clearance=clearance)
+                                      clearance=clearance, task=task)
+        if answer is None:   # abstained: no model text leaves
+            return {"mode": "abstained", "answer": None, "answerVerified": False,
+                    "reason": outcome.decision["reason"], "receipt": self.receipt(outcome)}
         return {"mode": "latent-team", "answer": answer, "answerVerified": False, "receipt": self.receipt(outcome)}
 
     # ------------------------------------------------------------ OpenAI API
@@ -219,6 +232,8 @@ class TeamService:
         # origin is lost: it is untrusted as a whole (docs/watchdog-security.md, "The gateway").
         answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat",
                                              secrets=declared_secrets(body))
+        if answer is None:   # abstained (W3): a fixed sentence, never model text
+            answer = ABSTAINED
         completion = outcome.tokens
         finish = "length" if completion >= limit else "stop"
         prompt = self.prompt_tokens(admitted)   # what the model read, placeholders and all

@@ -67,6 +67,10 @@ class Receipt:
     generated_tokens: list = field(default_factory=list)  # per question, text tokens only
     latent_vectors: int = 0               # per question, latent steps across subagents
     seconds: float = 0.0                  # wall time for the batch
+    # W3, only when asked for (scores=True): per question, {"pieces": the decoded text of
+    # each generated token, "logprobs": each token's log-probability}. Kept in memory for
+    # the confidence score; never part of a receipt.
+    details: list = None
 
     def as_dict(self):
         return {"system": self.system, "latentSteps": self.latent_steps, "generatedTokens": self.generated_tokens,
@@ -285,8 +289,10 @@ class LatentTeam:
         return out.past_key_values, full
 
     def decode(self, memory, memory_mask, prompts, max_new_tokens, first=True, hide=None, temperature=0.0,
-               generator=None):
-        """Text decoding of a batch on top of the memory. Returns (texts, token counts).
+               generator=None, scores=False):
+        """Text decoding of a batch on top of the memory. Returns (texts, token counts), and
+        with scores=True (W3) a third item: per row {"pieces", "logprobs"} of the generated
+        tokens, the log-probability of each chosen token from the same logits.
 
         Greedy by default; temperature > 0 samples (C15's vote baseline) with `generator`.
         Tokens stay on the GPU until the end; the only per-step sync is the all-done check.
@@ -303,8 +309,14 @@ class LatentTeam:
         batch = ids.shape[0]
         eos = torch.tensor(sorted(self.eos), device=self.device)
         done = torch.zeros(batch, dtype=torch.bool, device=self.device)
-        steps = []
+        steps, chosen = [], []
+
+        def logprob(logits, ids):
+            return torch.log_softmax(logits.float(), dim=-1).gather(-1, ids[:, None])[:, 0]
+
         next_ids = pick(out.logits[:, -1])
+        if scores:
+            chosen.append(logprob(out.logits[:, -1], next_ids))
         for index in range(max_new_tokens):
             done = done | torch.isin(next_ids, eos)
             if bool(done.all()):
@@ -316,15 +328,24 @@ class LatentTeam:
             out, full = self.forward(memory, full, ids=step, hide=hide)
             memory = out.past_key_values
             next_ids = pick(out.logits[:, -1])
+            if scores:
+                chosen.append(logprob(out.logits[:, -1], next_ids))
         if not steps:
-            return [""] * batch, [0] * batch
+            empty = [""] * batch, [0] * batch
+            return (*empty, [{"pieces": [], "logprobs": []} for _ in range(batch)]) if scores else empty
         grid = torch.stack(steps, dim=1).tolist()
         tokens = [[t for t in row if t >= 0] for row in grid]
         texts = [self.tokenizer.decode(t, skip_special_tokens=True).strip() for t in tokens]
-        return texts, [len(t) for t in tokens]
+        if not scores:
+            return texts, [len(t) for t in tokens]
+        values = torch.stack(chosen[:len(steps)], dim=1).tolist()
+        details = [{"pieces": [self.tokenizer.decode([t]) for t in row_tokens],
+                    "logprobs": [v for t, v in zip(row_grid, row_values) if t >= 0]}
+                   for row_tokens, row_grid, row_values in zip(tokens, grid, values)]
+        return texts, [len(t) for t in tokens], details
 
-    def generate(self, prompts, max_new_tokens):
-        return self.decode(None, None, prompts, max_new_tokens)
+    def generate(self, prompts, max_new_tokens, scores=False):
+        return self.decode(None, None, prompts, max_new_tokens, scores=scores)
 
     def working_memory(self, questions, steps, mode, grad_agents=None):
         """The three latent subagents in turn: the memory the solver reads.
@@ -438,7 +459,7 @@ class LatentTeam:
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
     def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False, agents=3,
-                   views=None, solver_questions=None, sealed=False, watch=None):
+                   views=None, solver_questions=None, sealed=False, watch=None, scores=False):
         """The latent team. agents, views, solver_questions and sealed are C15's: the number of
         thinking agents (chain_roles), what each sees, what the solver sees (default: the
         question) and whether earlier prompts are hidden (chain). The defaults are the
@@ -460,14 +481,17 @@ class LatentTeam:
             if watch is not None:
                 watch.turn_start(len(roles), memory, mask)
             solver = questions if solver_questions is None else solver_questions
-            answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in solver],
-                                          max_new_tokens, first=False, hide=hide)
+            decoded = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in solver],
+                                  max_new_tokens, first=False, hide=hide, scores=scores)
+            answers, counts = decoded[0], decoded[1]
             self._sync()
         finally:
             if watch is not None:
                 watch.detach()
         names = {"soft": "latent_mas", "aligned": "latent_aligned", "random": "latent_random"}
         receipt = Receipt(names[mode], steps, counts, steps * len(roles), time.perf_counter() - start)
+        if scores:
+            receipt.details = decoded[2]
         return answers, receipt
 
     @torch.no_grad()
@@ -498,11 +522,14 @@ class LatentTeam:
         return answers, Receipt("text_mas", 0, totals, 0, time.perf_counter() - start)
 
     @torch.no_grad()
-    def single(self, questions, max_new_tokens=512):
+    def single(self, questions, max_new_tokens=512, scores=False):
         start = time.perf_counter()
-        answers, counts = self.generate([SINGLE_PROMPT.format(question=q) for q in questions], max_new_tokens)
+        decoded = self.generate([SINGLE_PROMPT.format(question=q) for q in questions], max_new_tokens, scores=scores)
         self._sync()
-        return answers, Receipt("single", 0, counts, 0, time.perf_counter() - start)
+        receipt = Receipt("single", 0, decoded[1], 0, time.perf_counter() - start)
+        if scores:
+            receipt.details = decoded[2]
+        return decoded[0], receipt
 
     @torch.no_grad()
     def sample(self, questions, samples, temperature=0.7, max_new_tokens=512, rows=96, seed=0):
