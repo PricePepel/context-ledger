@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
+import { createSwarm } from './swarm.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 
@@ -20,6 +21,11 @@ const staticFiles = new Map([
   ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
+  // The swarm demo (card S1), also a fixed list.
+  ['/swarm', ['swarm/index.html', 'text/html']],
+  ['/swarm/', ['swarm/index.html', 'text/html']],
+  ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
+  ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
 ]);
 
 class HttpError extends Error {
@@ -101,6 +107,14 @@ const latentUrl = () => process.env.LATENT_URL ?? defaultLatentUrl;
 const port = Number(process.env.PORT ?? 4317);
 const database = process.env.CONTEXT_LEDGER_DB ?? '.context-ledger/ledger.sqlite';
 const store = openStore(database);
+// Card S1: SWARM_URLS names local model servers; a bad value stops the start, like a bad database.
+let swarm;
+try {
+  swarm = createSwarm();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 // A fresh API token at each start, in a file next to the database named for the port
 // (ADR-10; <database>.<port>.token), written only once the port is ours: a second
@@ -300,6 +314,15 @@ const routes = [
   { method: 'POST', path: '/api/latent/team', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'A latent team run');
     return latentTeam(input, { latentUrl: latentUrl() });
+  } },
+  { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
+    const input = await readJson(request, origin, 'Starting a swarm run');
+    return { run: swarm.start(input) };
+  } },
+  { method: 'GET', pattern: idPattern('/api/swarm/runs'), handler: ({ params: [id] }) => {
+    const run = swarm.snapshot(id);
+    return run ? { run } : undefined;
   } },
   { method: 'POST', path: '/api/rooms', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Opening a room');
