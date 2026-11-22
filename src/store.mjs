@@ -155,13 +155,15 @@ function transcriptParser(provider) {
   const messages = [];
   // The count covers every skipped line; only the first few line numbers are kept.
   const skipped = { count: 0, lines: [] };
+  // Card I3: the agent message on the previous readable record, if there was one.
+  let previousAgent = null;
   const skip = line => {
+    // Card I3: records on either side of a skipped line are not adjacent.
+    previousAgent = null;
     skipped.count += 1;
     if (skipped.lines.length < skippedLinesShown) skipped.lines.push(line);
   };
   const uuids = new Set();
-  // Card I3: the agent message on the previous readable record, if there was one.
-  let previousAgent = null;
   let readable = 0;
   let line = 0;
   let bytes = 0;
@@ -514,13 +516,14 @@ export function openStore(path) {
    * imported again. Its ID stays, and every turn it had is matched by line, role and text
    * and keeps its key, an l:<line> key from the version 3 copy included, so graphs that
    * cite it hold. A session whose turns would change in any other way is left as it is.
-   * False when the session is gone, checked under the write lock.
+   * Returns the session's summary, read under the write lock, or undefined when the
+   * session is gone.
    */
   function addAgentTurns(id, messages, searchText) {
     database.exec('BEGIN IMMEDIATE');
     let pending = true;
     try {
-      if (!getSummary.get(id)) return false;
+      if (!getSummary.get(id)) return undefined;
       const old = readMessages(id);
       const atLine = new Map(messages.map(message => [message.line, message]));
       const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
@@ -535,9 +538,10 @@ export function openStore(path) {
           refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
         }
       }
+      const summary = getSummary.get(id);
       database.exec('COMMIT');
       pending = false;
-      return true;
+      return summary;
     } finally {
       if (pending) database.exec('ROLLBACK');
     }
@@ -546,7 +550,8 @@ export function openStore(path) {
   function save(id, provider, name, project, { messages, skipped }) {
     const title = titleFor(messages);
     const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
-    if (getSummary.get(id) && addAgentTurns(id, messages, searchText)) return withSkipped(getSummary.get(id), skipped);
+    const stored = getSummary.get(id) && addAgentTurns(id, messages, searchText);
+    if (stored) return withSkipped(stored, skipped);
 
     database.exec('BEGIN IMMEDIATE');
     let pending = true;

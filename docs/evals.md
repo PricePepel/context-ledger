@@ -4540,3 +4540,9 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
   - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
   - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
   - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+- **Codex review of the rework, round 2:** no high findings; two medium and two low, fixed with tests:
+  - (medium) `ledger redact` scanned message text but not agent paths, which the hand-off prints in headings. Paths are now scanned and redacted too.
+  - (medium) A session deleted right after the re-import committed made the import return nothing. The summary is now read under the same lock.
+  - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
+  - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
+  - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
