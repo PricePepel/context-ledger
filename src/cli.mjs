@@ -473,8 +473,9 @@ function redactionLine(findings, sessionId) {
   const source = findings.some(finding => finding.line === null);
   const where = [lines ? `${lines} transcript ${lines === 1 ? 'line' : 'lines'}` : '', source ? 'the source name' : '']
     .filter(Boolean).join(' and ');
-  return `Redacted: ${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${where}, ` +
-    'each replaced by [REDACTED <kind>]. ' +
+  // A marker can cover several values that sat together, so the count is of replacements.
+  return `Redacted: ${findings.length} ${findings.length === 1 ? 'replacement' : 'replacements'} in ${where}, ` +
+    'each a [REDACTED <kind>] marker. ' +
     `Run npm run ledger -- redact ${sessionId} to see where. Read handoff.md before you send it.`;
 }
 

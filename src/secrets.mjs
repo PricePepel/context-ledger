@@ -392,8 +392,9 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// What one candidate adds to the copy search is capped, in five budgets (its span, its
-// quoted part, the values after names inside it, its key-like words, and decoded forms),
+// What one candidate adds to the copy search is capped, with a budget for each kind of
+// entry (its span, its quoted part, the values after names inside it, its key-like
+// words) and one more for each kind's decoded forms,
 // so one long finding cannot fill the heap; a longer value is still found by its first
 // characters and its first inner values.
 const maxCopyLength = 512;
@@ -402,11 +403,13 @@ const leadingQuotes = /^["'`]+/u;
 
 /**
  * Where a value could end: the end of each word, trailing punctuation left out, and just
- * before each quote or separator, so text with no spaces (JSON) has boundaries too.
+ * before each quote or separator, so text with no spaces (JSON, a query string) has
+ * boundaries too.
  */
+const separators = /["'`,;&|()<>[\]{}]/gu;
 function wordEnds(value) {
   const ends = [...value.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
-  for (const match of value.matchAll(/["'`,;]/gu)) ends.push(match.index);
+  for (const match of value.matchAll(separators)) ends.push(match.index);
   return ends;
 }
 
@@ -419,13 +422,15 @@ function wordEnds(value) {
  * as a key does; its quoted part; and each of these decoded, when it holds an escape.
  */
 function copyEntries(text, candidate) {
-  const budget = { span: maxCopyLength, quoted: maxCopyLength, named: maxCopyLength, words: maxCopyLength, decoded: maxCopyLength };
+  // A budget per kind of entry, and one more per kind for its decoded forms.
+  const budget = new Map();
   const entries = [];
   const add = (value, pool) => {
-    if (budget[pool] <= 0 || value.length < minCopyLength) return;
-    const kept = value.slice(0, budget[pool]);
-    budget[pool] -= kept.length;
-    entries.push({ value: kept, ends: [...wordEnds(kept), kept.length] });
+    const left = budget.get(pool) ?? maxCopyLength;
+    if (left <= 0 || value.length < minCopyLength) return;
+    const kept = value.slice(0, left);
+    budget.set(pool, left - kept.length);
+    entries.push({ value: kept, ends: [...wordEnds(kept), kept.length], pool });
   };
   const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
   add(span, 'span');
@@ -447,14 +452,14 @@ function copyEntries(text, candidate) {
     add(span.slice(from, open ? Math.min(quotedEnd(span, from, open), stop) : stop), 'named');
   });
   for (const match of span.matchAll(/\S+/gu)) {
-    for (const piece of match[0].split(/["'`,;]+/u)) {
+    for (const piece of match[0].split(new RegExp(separators.source + '+', 'u'))) {
       const bare = piece.replace(leadingQuotes, '').replace(trailingPunctuation, '');
       if (mixed(bare)) add(bare, 'words');
     }
   }
   // Each text is decoded once, and its decoded words count as written ones do.
-  for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), 'decoded');
-  return entries;
+  for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), entry.pool + ' decoded');
+  return entries.map(({ value, ends }) => ({ value, ends }));
 }
 
 /**

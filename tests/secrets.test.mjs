@@ -867,3 +867,17 @@ test('P4d review 7: a quoted value after a further name in JSON, and many names 
     { role: 'assistant', line: 2, text: 'Copied violetorchid today.' },
   ]), 'Copied [REDACTED assigned-secret] today.');
 });
+
+test('P4d review 8: a decoded value after a long span, and a value in a query string', () => {
+  const BS = String.fromCodePoint(92);
+  const value = ['violetorchid', 'mapleforest', 'indigomeadow', 'lavenderwillow', 'junipercedar'].join('');
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + 'a'.repeat(437) + ' token="' + BS + 'u0076' + value.slice(1) + '"' },
+    { role: 'assistant', line: 2, text: value },
+  ]), '[REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=violetorchid&user=alice' },
+    { role: 'assistant', line: 2, text: 'violetorchid' },
+  ]), '[REDACTED assigned-secret]');
+});

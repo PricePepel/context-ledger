@@ -1120,8 +1120,8 @@ test('P4d: handoff --sign signs the redacted hand-off and records the count', as
   assert.equal(JSON.parse(report.stdout).count, manifest.redaction.findings);
 
   // The sender sees counts and where to look, never a value.
-  assert.ok(context.signed.stdout.includes('Redacted: 5 possible secrets in 3 transcript lines and the source name, ' +
-    `each replaced by [REDACTED <kind>]. Run npm run ledger -- redact ${context.secret.id} to see where.`), context.signed.stdout);
+  assert.ok(context.signed.stdout.includes('Redacted: 5 replacements in 3 transcript lines and the source name, ' +
+    `each a [REDACTED <kind>] marker. Run npm run ledger -- redact ${context.secret.id} to see where.`), context.signed.stdout);
   assertNoSecret(context.signed.stdout + context.signed.stderr, 'the --sign output');
   // Not even a masked preview: the summary has counts only.
   for (const prefix of ['AKIA', 'ghp_', 'gho_', 'Zx9q']) assert.ok(!context.signed.stdout.includes(prefix), prefix);
