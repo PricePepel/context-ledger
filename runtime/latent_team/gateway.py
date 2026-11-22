@@ -462,7 +462,10 @@ class Gateway:
             if span.origin not in REQUEST_ORIGINS and span.id not in named:
                 left_out += 1
                 continue
-            if span.path is not None and self.secret_path(span.path):
+            if span.origin == "file" and not (isinstance(span.path, str) and span.path):
+                # A file without its source path could be any file (review W2-16).
+                raise GatewayError("malformed", f"file span {span.id!r} has no source path")
+            if span.path is not None and (self.secret_path(span.path) or self.secret_path(_resolved(span.path))):
                 refused += 1
                 continue
             own = Label(ORIGIN_TRUST[span.origin], "sensitive" if span.sensitive else "public", owner)
@@ -544,9 +547,9 @@ class Gateway:
         marker, placeholder or restoration authorised (review W2-11, W2-12). A finding is
         judged by the values it identified, where they lie in the text (the whole finding
         where a value cannot be placed): a value inside the allowed ranges is authorised; a
-        value that overlaps a value put back is authorised except where it reaches outside
-        it with a word character (a sentence's full stop is not a credential, more text is);
-        any other value is not, whatever its characters (a value of only punctuation too).
+        value that overlaps a value put back is authorised only inside it, save a single full
+        stop that ends the value (a sentence's); any other part, whatever its characters, is
+        not (review W2-16: "!?" after a value put back changes the credential).
         values: a set that receives the text of each part not authorised (review W2-14)."""
         out = []
         for finding in self._scan_all(self.masked(text)):
@@ -565,7 +568,7 @@ class Gateway:
             for a, b, value in places:
                 outside = _subtract((a, b), allowed)
                 if any(x < b and a < y for x, y in put_back):
-                    outside = [(x, y) for x, y in outside if re.search(r"\w", text[x:y])]
+                    outside = [(x, y) for x, y in outside if not (y == b and text[x:y] == ".")]
                 out += outside
                 if values is not None and outside:
                     # The parts not authorised, and the value as the scanner identified it, so
@@ -692,6 +695,10 @@ class ToolGate:
         if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v, collapsed=True)
                                     for v in outbound):
             return "placeholder"
+        # A credential can first appear in the call itself (review W2-16): the shared scanner
+        # reads what an uncleared tool would be sent.
+        if not tool.cleared and any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound):
+            return "secret"
         return "allowed"
 
     def submit(self, call, send):
@@ -746,6 +753,15 @@ def _replace(text, ranges, marker, keeps):
         return position + delta
 
     return "".join(pieces), markers, [[(moved(a), moved(b)) for a, b in keep] for keep in keeps]
+
+
+def _resolved(path):
+    """A path with its links resolved, when it names a file on this machine; else as given."""
+    import os
+    try:
+        return os.path.realpath(path) if os.path.exists(path) else path
+    except (OSError, ValueError):
+        return path
 
 
 def redaction_marker(kind, values):

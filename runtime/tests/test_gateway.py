@@ -46,7 +46,7 @@ class LabelTest(unittest.TestCase):
                              Span("notes", "file", "Totals: 3, 4.", path="notes/totals.md")], named={"notes"})
         self.assertEqual(admission.label, Label("untrusted", "public", "proj-a"))
         self.assertEqual(gateway().admit([Span("request", "request", "2+2?")]).label.trust, "user")
-        sensitive = gateway().admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True)],
+        sensitive = gateway().admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True, path="diary.md")],
                                     named={"diary"})
         self.assertEqual(sensitive.label.sensitivity, "sensitive")
 
@@ -56,7 +56,7 @@ class LabelTest(unittest.TestCase):
 
     def test_two_projects_never_share_a_memory(self):
         with self.assertRaises(GatewayError) as raised:
-            gateway().admit([Span("request", "request", "q"), Span("other", "file", "x", owner="proj-b")])
+            gateway().admit([Span("request", "request", "q"), Span("other", "file", "x", owner="proj-b", path="other.md")])
         self.assertEqual(raised.exception.reason, "cross-project")
         with self.assertRaises(GatewayError):
             Label("user", "public", "proj-a").join(Label("user", "public", "proj-b"))
@@ -132,7 +132,7 @@ class PlaceholderTest(unittest.TestCase):
         value = "Demo" + "Value42"
         g = gateway()
         admission = g.admit([Span("request", "request", f"password={value}" + chr(10) + f"again {value}"),
-                             Span("note", "file", f"copy {value}")], named={"note"})
+                             Span("note", "file", f"copy {value}", path="note.md")], named={"note"})
         self.assertNotIn(value, admission.text)
         released = OutputGate(g).release(f"It is {value}")
         self.assertNotIn(value, released.text)
@@ -165,7 +165,7 @@ class PlaceholderTest(unittest.TestCase):
         # Review W2-3: two named spans that only make a key once joined.
         key = "wJal" * 10
         admission = gateway().admit([Span("request", "request", "set aws_secret_access_key="),
-                                     Span("rest", "file", key)], named={"rest"})
+                                     Span("rest", "file", key, path="rest.md")], named={"rest"})
         self.assertNotIn(key, admission.text)
 
     def test_round3_a_value_inside_the_gateways_own_text_fails_closed(self):
@@ -205,7 +205,7 @@ class PlaceholderTest(unittest.TestCase):
                          "budget", "the budget belongs to the run, not to one gate")
         self.assertEqual(sent, [{"id": 7}])
         with self.assertRaises(GatewayError) as raised:
-            gateway().admit([Span("request", "request", "q"), Span("notes", "file", "a"), Span("notes", "file", "b")],
+            gateway().admit([Span("request", "request", "q"), Span("notes", "file", "a", path="notes.md"), Span("notes", "file", "b", path="notes.md")],
                             named={"notes"})
         self.assertEqual(raised.exception.reason, "duplicate-span")
 
@@ -722,6 +722,36 @@ class ToolGateTest(unittest.TestCase):
         released = OutputGate(g).release(answer)
         self.assertFalse(released.safe and "paper-harbor" in released.text, released.text)
 
+    def test_round16_a_credential_first_in_a_tool_call_is_not_sent(self):
+        # Review W2-16 finding 1.
+        lookup = Tool("lookup", outside_effect=False, arguments=(Argument("q", required=False),))
+        g = gateway(tools=(lookup,))
+        g.admit([Span("request", "request", "Hello")])
+        sent = []
+        result = ToolGate(g).submit({"name": "lookup", "arguments": {"q": "password=paper-harbor"}},
+                                    lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, result.reason, sent), (False, "secret", []))
+
+    def test_round16_punctuation_that_extends_a_restored_credential_is_redacted(self):
+        # Review W2-16 finding 2: the assignment and its value are both put back, then "!?".
+        g = gateway(declared=["password=paper-harbor"], clearance="sensitive")
+        g.admit([Span("request", "request", "password=paper-harbor")])
+        token = next(t for t in g._values if g._values[t] == "password=paper-harbor")
+        released = OutputGate(g).release(token + "!?")
+        self.assertNotIn("!?", released.text)
+        self.assertTrue(released.safe)
+        # A sentence's full stop after a value put back stays.
+        g = gateway(declared=["harbor-slate-42"], clearance="sensitive")
+        g.admit([Span("request", "request", "my code is harbor-slate-42")])
+        token = next(iter(g._values))
+        self.assertEqual(OutputGate(g).release("Your code is " + token + ".").text, "Your code is harbor-slate-42.")
+
+    def test_round16_a_file_span_needs_its_source_path(self):
+        # Review W2-16 finding 3.
+        with self.assertRaises(GatewayError) as raised:
+            gateway().admit([Span("request", "request", "q"), Span("env", "file", "KEY=x")], named={"env"})
+        self.assertEqual(raised.exception.reason, "malformed")
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
@@ -745,10 +775,10 @@ class ToolGateTest(unittest.TestCase):
 class OutputLabelTest(unittest.TestCase):
     def test_a_sensitive_memory_needs_a_cleared_output(self):
         g = gateway()
-        g.admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True)], named={"diary"})
+        g.admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True, path="diary.md")], named={"diary"})
         self.assertTrue(OutputGate(g).label_broken())
         g = gateway(clearance="sensitive")
-        g.admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True)], named={"diary"})
+        g.admit([Span("request", "request", "q"), Span("diary", "file", "x", sensitive=True, path="diary.md")], named={"diary"})
         self.assertFalse(OutputGate(g).label_broken())
 
 
