@@ -662,6 +662,13 @@ class Watch:
         texts = [sum(c["kind"] == "ids" for c in by_phase.get(i, [])) for i in thinkers]
         budget_ok = all(n == self.steps for n in latent) and all(n == 2 for n in texts) and \
             len(solver_calls) <= self.max_new_tokens and (self.time_cap is None or seconds <= self.time_cap)
+        # The decode calls must account for the tokens reported (LatentTeam.decode): every
+        # appended step but the last is fed back, and the last is fed too unless the token
+        # budget ended the loop. So a decode that stops calling the model early, or reports
+        # tokens it never produced, fails here.
+        longest = max((int(c) for c in counts), default=0)
+        fed = longest - 1 if longest == self.max_new_tokens else longest
+        budget_ok &= len(solver_calls) == 1 + max(fed, 0)
         tokens = torch.tensor([int(c) for c in counts], device=device)
         budgets = (tokens <= self.max_new_tokens) & (every if budget_ok else none)
 

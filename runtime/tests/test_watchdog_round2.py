@@ -160,5 +160,67 @@ class RoundTwoTest(unittest.TestCase):
         self.assertEqual(Reference.from_bytes(buffer.getvalue(), weights_hash="a" * 64).meta["weightsHash"], "a" * 64)
 
 
+@unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the watchdog")
+class RoundThreeTest(unittest.TestCase):
+    """W1, review round 3 (Codex): one regression test per finding."""
+
+    def flag_thresholds(self, team):
+        from latent_team.watchdog import team_weights
+        spec = {"edges": [0.0] * 9, "flag": float("-inf")}
+        return {"id": "w1-tiny-1", "model": "tiny", "weightsHash": team_weights(team)[0], "mode": "soft",
+                "topK": 16, "temperature": 1.0, "steps": STEPS, "degenerate": spec}
+
+    def test_a_fallback_from_a_model_changed_during_the_audits_is_held(self):
+        from latent_team.guard import Guard
+        team = tiny_team()
+        single = team.single
+
+        def changing(*args, **kwargs):
+            with torch.no_grad():
+                next(team.model.parameters()).mul_(1.0)
+            return single(*args, **kwargs)
+
+        thresholds = self.flag_thresholds(team)
+        team.single = changing
+        outcomes = Guard(team, thresholds=thresholds, sample=lambda: False).run(QUESTIONS, steps=STEPS,
+                                                                                 max_new_tokens=TOKENS)
+        self.assertEqual({(o.decision["action"], o.decision["reason"], o.answer) for o in outcomes},
+                         {("hold", "fallback-failed", None)})
+
+    def test_a_decode_that_reports_tokens_it_never_made(self):
+        team = tiny_team()
+        decode = team.decode
+
+        def short(memory, memory_mask, prompts, max_new_tokens, **kwargs):
+            texts, _ = decode(memory, memory_mask, prompts, 1, **kwargs)
+            return texts, [TOKENS - 1] * len(texts)
+
+        team.decode = short
+        _, results, _ = run(team)
+        self.assertTrue(all(not v for v in results["checks"]["budgets"]))
+
+    def test_a_zero_step_run_replays_as_a_match(self):
+        from latent_team.guard import Guard
+        from latent_team.watchdog import Watch
+        team = tiny_team()
+        watch = Watch(team, QUESTIONS, steps=0, max_new_tokens=TOKENS, keep_memory=True)
+        answers, receipt = team.latent_mas(QUESTIONS, steps=0, max_new_tokens=TOKENS, watch=watch)
+        watch.finish(answers, receipt.generated_tokens, receipt.seconds)
+        words, _, _ = Guard(team, thresholds=None).audit(QUESTIONS, 0, TOKENS, watch, answers, tolerance=0.0)
+        self.assertEqual({w["replay"] for w in words}, {"match"})
+
+    def test_a_failing_audit_stage_holds_instead_of_crashing(self):
+        from latent_team.guard import Guard
+        team = tiny_team()
+
+        def failing(*args, **kwargs):
+            raise RuntimeError("CUDA error")
+
+        team.single = failing
+        outcomes = Guard(team, thresholds=None).run(QUESTIONS, steps=STEPS, max_new_tokens=TOKENS, audit=True)
+        self.assertEqual({(o.decision["action"], o.decision["reason"], o.answer) for o in outcomes},
+                         {("hold", "runtime-error", None)})
+
+
 if __name__ == "__main__":
     unittest.main()

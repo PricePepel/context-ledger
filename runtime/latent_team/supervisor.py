@@ -34,7 +34,7 @@ REPORT_PROBLEMS = ("report-missing", "report-unsigned", "report-malformed", "rep
                    "report-unknown-squad", "report-replayed", "report-late")
 REASONS = reports.EXACT_CHECKS + ("label-rule",) + REPORT_PROBLEMS + (
     "statistical-flag", "weak-signals", "audit-disagrees", "low-confidence", "quote-failed", "uncalibrated", "passed",
-    "fallback-failed", "watchdog-error")
+    "fallback-failed", "watchdog-error", "runtime-error")
 
 # A score bucket at or above WEAK_BUCKET is a weak signal (bucket 6 is the clean 95th
 # percentile, 8 the 99th: watchdog.bucket). WEAK_SUM weak signals in one run, across all
@@ -117,7 +117,7 @@ class Run:
         disagree = any(a["replay"] == "mismatch" or a["solverAlone"] == "disagree" for a in audits)
         if flagged or sum(weak.values()) >= WEAK_SUM or disagree:            # row 4
             suspects = set(flagged) | {s for s, n in weak.items() if n}
-            spans = Counter(span for s in suspects for span in self.squads[s])
+            spans = Counter(span for s in suspects for span in set(self.squads[s]))   # distinct squads per span
             quarantined = tuple(sorted(span for span, n in spans.items() if n >= 2))
             reason = "statistical-flag" if flagged else "weak-signals" if sum(weak.values()) >= WEAK_SUM \
                 else "audit-disagrees"

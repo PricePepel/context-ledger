@@ -222,6 +222,11 @@ class SupervisorTest(unittest.TestCase):
         _, alone = self.decide({"scores__distance": WEAK_BUCKET})
         self.assertEqual(alone.action, "release", "one weak signal in one squad is not enough")
 
+    def test_one_squad_never_quarantines_a_span_alone(self):
+        run = self.supervisor.open_run({"squad-0": ("request", "request")})
+        run.submit(reports.sign(clean_report(run.run_id, flags__distance=True), run.key))
+        self.assertEqual(run.decide().quarantined, ())
+
     def test_rows_three_to_eight_in_order(self):
         _, decision = self.decide(tool_refusals=1, calibrated=True)
         self.assertEqual((decision.action, decision.marks), ("release", ("tool-refused",)))

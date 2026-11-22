@@ -132,10 +132,11 @@ class Guard:
         replay_answers, replay_receipt = team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens,
                                                          watch=again)
         replay_results = again.finish(replay_answers, replay_receipt.generated_tokens, replay_receipt.seconds)
-        measured["replaySeconds"] = time.perf_counter() - started
         top_a, top_b = watch.top_tokens(), again.top_tokens()
         if top_a.shape == top_b.shape and top_a.numel():
             same_top = (top_a == top_b).float().mean(-1)
+        elif top_a.shape == top_b.shape and steps == 0:   # no latent step planned: nothing to differ
+            same_top = torch.ones(rows, device=team.device)
         else:
             same_top = torch.zeros(rows, device=team.device)
         # Every hand-off, as each recipient received it: a change made before one hand-off
@@ -157,6 +158,9 @@ class Guard:
         replay = ["match" if same_answer[r] and same_top[r] == 1 and not mask_differs[r] and replay_clean[r]
                   and bool(torch.isfinite(diff[r]).all()) and bool((diff[r] <= tolerance).all()) else "mismatch"
                   for r in range(rows)]
+        team._sync()
+        measured["replaySeconds"] = time.perf_counter() - started   # the comparisons included
+        measured["replayRows"] = rows
         again.drop()
 
         mismatched = ["not-run"] * rows
@@ -169,6 +173,7 @@ class Guard:
                                        max_new_tokens, first=False)
             team._sync()
             measured["mismatchedSeconds"] = time.perf_counter() - started
+            measured["mismatchedRows"] = rows
             measured["mismatchedAnswers"] = other
             mismatched = ["unchanged" if (predicted_number(o) == predicted_number(a) and predicted_number(a) is not None)
                           or o == a else "changed" for o, a in zip(other, answers)]
@@ -191,21 +196,31 @@ class Guard:
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
                            keep_memory=True)
+        started = time.monotonic()
         try:
-            return self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch)
+            return self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started)
+        except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
+            return [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
             watch.drop()
 
-    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch):
+    def _held(self, steps, reason, tokens=0, vectors=0, seconds=0.0):
+        return Outcome(answer=None, decision=Decision("hold", reason).as_dict(), checks={}, audits={},
+                       statistical={}, scores={}, system="latent_mas", tokens=int(tokens), latent_steps=steps,
+                       latent_vectors=vectors, seconds=seconds)
+
+    def _over(self, started):
+        return self.time_cap is not None and time.monotonic() - started > self.time_cap
+
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started):
+        from .watchdog import weights_state
         rows = len(questions)
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
         try:
             results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
         except Exception:   # noqa: BLE001 - the watchdog could not check this run: hold it
-            return [Outcome(answer=None, decision=Decision("hold", "watchdog-error").as_dict(), checks={}, audits={},
-                            statistical={}, scores={}, system="latent_mas", tokens=int(receipt.generated_tokens[r]),
-                            latent_steps=steps, latent_vectors=receipt.latent_vectors, seconds=receipt.seconds)
-                    for r in range(rows)]
+            return [self._held(steps, "watchdog-error", receipt.generated_tokens[r], receipt.latent_vectors,
+                               receipt.seconds) for r in range(rows)]
         held = [not all(results["checks"][name][r] for name in results["checks"]) for r in range(rows)]
         flagged = False
         if thresholds is not None:
@@ -213,7 +228,7 @@ class Guard:
                 spec = thresholds.get(name)
                 values = results["raw"][name]
                 flagged |= spec is not None and any(v is not None and v >= spec["flag"] for v in values)
-        do_audit = (self.sample() if audit is None else audit) or flagged
+        do_audit = ((self.sample() if audit is None else audit) or flagged) and not self._over(started)
         words, alone, measured = [{}] * rows, None, {}
         if do_audit and not all(held):
             tolerance = (thresholds or {}).get("replayTolerance", REPLAY_TOLERANCE)
@@ -242,9 +257,12 @@ class Guard:
                 texts, tokens = [alone[r] for r in fallback_rows], [measured["aloneTokens"][r] for r in fallback_rows]
                 seconds = measured["aloneSeconds"]
             fallback = {r: (t, n) for r, t, n in zip(fallback_rows, texts, tokens)}
+            # The fallback must come from the model the watchdog cleared: version counters only
+            # grow, so equal state now means no weight changed since the run began.
+            same_model = weights_state(self.team.model) == watch.weight_state
             for r, text, count in zip(fallback_rows, texts, tokens):
-                within = isinstance(text, str) and 0 <= int(count) <= max_new_tokens and \
-                    (self.time_cap is None or seconds <= self.time_cap)
+                within = isinstance(text, str) and 0 <= int(count) <= max_new_tokens and same_model and \
+                    (self.time_cap is None or seconds <= self.time_cap) and not self._over(started)
                 decisions[r] = runs[r].after_fallback(within_limits=within)
 
         outcomes = []

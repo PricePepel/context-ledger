@@ -73,6 +73,17 @@ def write(path, data):
     print(f"wrote {path}", flush=True)
 
 
+REFERENCE_SPLIT = {"model": MODEL, "block": 2, "seed": SEED, "steps": STEPS, "batch": BATCH, "mode": "soft"}
+
+
+def check_reference_split(reference):
+    """The reference must be the block-2 build of the pinned setting (block 0 sets thresholds,
+    block 1 is scored)."""
+    wrong = {k: reference.meta.get(k) for k, v in REFERENCE_SPLIT.items() if reference.meta.get(k) != v}
+    if wrong:
+        raise SystemExit(f"the reference was not built on the pinned split and setting: {wrong}")
+
+
 def checked_reference(args, team, thresholds):
     """The reference the threshold set names: its bytes hashed and loaded once, and built on
     these weights. A run with no matching threshold set or reference refuses to start."""
@@ -83,7 +94,13 @@ def checked_reference(args, team, thresholds):
         blob = handle.read()
     if hashlib.sha256(blob).hexdigest() != thresholds["distance"]["reference"]:
         raise SystemExit("the reference file is not the one the threshold set names")
-    return Reference.from_bytes(blob, device=team.device, weights_hash=team_weights(team)[0])
+    measured = thresholds.get("measuredOn", {})
+    if (measured.get("block"), measured.get("seed"), measured.get("count"), thresholds["distance"].get("referenceBlock")) \
+            != (0, SEED, COUNT, 2):
+        raise SystemExit("the threshold set was not fitted on the pinned split (block 0, reference block 2)")
+    reference = Reference.from_bytes(blob, device=team.device, weights_hash=team_weights(team)[0])
+    check_reference_split(reference)
+    return reference
 
 
 def flagged(raw, thresholds):
@@ -96,12 +113,23 @@ def flagged(raw, thresholds):
         for name in ("degenerate", "distance"):
             spec, value = thresholds.get(name), raw[name][row]
             if spec is None or value is None:
-                flags.append(False)
+                flags.append(None)   # not measured: neither a catch nor a miss
                 continue
             flags.append(value >= spec["flag"])
             weak += bucket(value, spec["edges"]) >= WEAK_BUCKET
         out.append((flags[0], flags[1], weak))
     return out
+
+
+def catch(flags, which):
+    """{rate, measured, unmeasured} of one score (0, 1) or of the supervisor's rule ("rule")
+    over the rows where it was measured."""
+    if which == "rule":
+        values = [None if f[0] is None and f[1] is None else bool(f[0] or f[1] or f[2] >= 2) for f in flags]
+    else:
+        values = [f[which] for f in flags]
+    measured = [v for v in values if v is not None]
+    return {"rate": rate(measured), "measured": len(measured), "unmeasured": len(values) - len(measured)}
 
 
 def clean_batch(team, guard, chunk, thresholds, reference, tolerance):
@@ -131,7 +159,8 @@ def clean_batch(team, guard, chunk, thresholds, reference, tolerance):
             "legibilityError": float(watch.legibility_error[r]),
         })
     timing = {"teamSeconds": receipt.seconds, "replaySeconds": measured["replaySeconds"],
-              "mismatchedSeconds": measured.get("mismatchedSeconds"), "aloneSeconds": measured["aloneSeconds"],
+              "replayRows": measured["replayRows"], "mismatchedSeconds": measured.get("mismatchedSeconds"),
+              "mismatchedRows": measured.get("mismatchedRows"), "aloneSeconds": measured["aloneSeconds"],
               "rows": len(chunk), "wall": time.perf_counter() - started}
     watch.drop()
     return rows, timing
@@ -174,14 +203,18 @@ def summarize_clean(rows, timings, thresholds=None):
                         thresholds)
         wrong = [not r["teamCorrect"] for r in rows]
         out["statistical"] = {
-            "falseAlarm": {"degenerate": rate(f[0] for f in flags), "distance": rate(f[1] for f in flags),
-                           "supervisorRule": rate(f[0] or f[1] or f[2] >= 2 for f in flags)},
-            "aurocWrongAnswer": {"degenerate": auroc([r["degenerate"] for r in rows], wrong),
-                                 "distance": auroc([r["distance"] for r in rows], wrong)},
+            "falseAlarm": {"degenerate": catch(flags, 0), "distance": catch(flags, 1),
+                           "supervisorRule": catch(flags, "rule")},
+            "aurocWrongAnswer": {name: auroc([r[name] for r in rows if r[name] is not None],
+                                             [w for r, w in zip(rows, wrong) if r[name] is not None])
+                                 for name in ("degenerate", "distance")},
             "wrongAnswers": sum(wrong)}
-    total_rows = sum(t["rows"] for t in timings)
-    out["secondsPerQuestion"] = {k: round(sum(t[k] or 0 for t in timings) / total_rows, 3)
-                                 for k in ("teamSeconds", "replaySeconds", "mismatchedSeconds", "aloneSeconds")}
+    out["secondsPerQuestion"] = {}
+    for key, rows_key in (("teamSeconds", "rows"), ("replaySeconds", "replayRows"),
+                          ("mismatchedSeconds", "mismatchedRows"), ("aloneSeconds", "rows")):
+        audited = sum(t.get(rows_key) or 0 for t in timings if t.get(key) is not None)
+        out["secondsPerQuestion"][key] = round(sum(t[key] for t in timings if t.get(key) is not None) / audited, 3) \
+            if audited else None
     return out
 
 
@@ -219,6 +252,7 @@ def part_thresholds(args, team, block):
         blob = handle.read()
     reference_digest = hashlib.sha256(blob).hexdigest()
     reference = Reference.from_bytes(blob, device=team.device, weights_hash=team_weights(team)[0])
+    check_reference_split(reference)
     guard = Guard(team, thresholds=None)
     rows, timings = [], []
     for chunk in batches(block(0)):
@@ -300,8 +334,8 @@ def part_score(args, team, block):
         summary["faults"][name] = {
             "questions": len(fault_items), "caughtByAnExactCheck": caught, "namedCheck": NAMED[name],
             "caughtByTheNamedCheck": named, "failures": failures,
-            "statisticalCatch": {"degenerate": rate(f[0] for f in stat), "distance": rate(f[1] for f in stat),
-                                 "supervisorRule": rate(f[0] or f[1] or f[2] >= 2 for f in stat)},
+            "statisticalCatch": {"degenerate": catch(stat, 0), "distance": catch(stat, 1),
+                                 "supervisorRule": catch(stat, "rule")},
             "secondsPerQuestion": round(seconds / len(fault_items), 3)}
         print(name, json.dumps(summary["faults"][name]), flush=True)
         write(os.path.join(args.out, "block1-summary.json"), summary)
