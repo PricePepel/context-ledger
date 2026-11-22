@@ -4653,3 +4653,7 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 
 - `tests/signed-review-head.test.mjs` 9/9. It covers signing recording the chain and verify showing it; `--bundle` passing as the ledger grows; a ledger cut short failing against the bundle while passing alone; a bundle with the wrong key, or a changed head (signature broken), not trusted; a signed count that does not match the head's position; a version 1 bundle verifying and reporting no head; an empty chain; a broken chain never signed, with nothing written; and option conflicts.
 - `tests/sign.test.mjs` now expects version 2 with `reviews`, and refuses a version 3 manifest, version 2 without `reviews`, version 1 with `reviews`, and malformed `reviews` (a count with the empty head, no events with a head, a negative count, an uppercase head, an extra key).
+- **Codex review, round 1:** no high; one medium and two low, fixed with tests:
+  - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
+  - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
+  - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.

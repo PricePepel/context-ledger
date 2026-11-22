@@ -189,3 +189,32 @@ test('P3b: --bundle and --head do not combine, and --fingerprint needs --bundle'
   const lone = await run(['reviews', 'verify', '--fingerprint', context.fingerprint], context.env);
   assert.match(lone.stderr, /--fingerprint goes with --bundle\./u);
 });
+
+test('P3b review: a changed handoff.md under a valid signature is not trusted for its head', async t => {
+  const context = await ledger(t);
+  const bundle = await sign(context);
+  const { appendFileSync } = await import('node:fs');
+  appendFileSync(join(bundle, 'handoff.md'), 'one more line\n');
+  const result = await run(['reviews', 'verify', '--bundle', bundle, '--fingerprint', context.fingerprint], context.env);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /File changed: handoff\.md/u);
+  assert.match(result.stderr, /The signed hand-off did not verify, so its review head is not trusted\./u);
+  assert.equal(result.stdout, '');
+});
+
+test('P3b review: reviews verify reads the ledger read-only and never migrates it', async t => {
+  const context = await ledger(t);
+  const bundle = await sign(context);
+  const raw = new DatabaseSync(context.database);
+  raw.exec('PRAGMA user_version = 6;');
+  raw.close();
+  const result = await run(['reviews', 'verify', '--bundle', bundle, '--fingerprint', context.fingerprint], context.env);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /older schema.*then verify again/su);
+  const check = new DatabaseSync(context.database, { readOnly: true });
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+  check.close();
+  const missing = await run(['reviews', 'verify'], { CONTEXT_LEDGER_DB: join(context.folder, 'none.sqlite') });
+  assert.match(missing.stderr, /No ledger database\./u);
+  assert.equal(existsSync(join(context.folder, 'none.sqlite')), false);
+});

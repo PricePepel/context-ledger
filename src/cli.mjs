@@ -410,6 +410,51 @@ async function openCurrentStore(databasePath, upgradeHint) {
   }
 }
 
+/**
+ * Card P3b review: the review chain, read on the same read-only connection that checks the
+ * schema, so a file swapped in between can never be migrated or read instead.
+ */
+async function readReviewChain(databasePath, trustedHead) {
+  try {
+    await lstat(databasePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
+    throw new Error('Cannot open the ledger database.');
+  }
+  const { DatabaseSync } = await import('node:sqlite');
+  const { schemaVersion } = await import('./migrate.mjs');
+  const { mountReviews } = await import('./reviews.mjs');
+  let database;
+  try {
+    database = new DatabaseSync(databasePath, { readOnly: true });
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  try {
+    let version;
+    try {
+      version = database.prepare('PRAGMA user_version').get().user_version;
+    } catch {
+      throw new Error('Cannot open the ledger database.');
+    }
+    if (version > schemaVersion) {
+      throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+        'Use that version or another CONTEXT_LEDGER_DB.');
+    }
+    if (version < schemaVersion) {
+      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+        'to upgrade it, then verify again.');
+    }
+    try {
+      return mountReviews(database, () => undefined).verifyReviews(trustedHead);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+  } finally {
+    database.close();
+  }
+}
+
 async function readLedgerSession(databasePath, sessionId) {
   const store = await openCurrentStore(databasePath, 'sign');
   try {
@@ -446,15 +491,7 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
     signed = bundle.reviews;
     trustedHead = signed.head;
   }
-  const store = await openCurrentStore(ledgerDatabasePath(), 'verify');
-  let result;
-  try {
-    result = store.verifyReviews(trustedHead);
-  } catch {
-    throw new Error('Cannot read the ledger database.');
-  } finally {
-    store.close();
-  }
+  const result = await readReviewChain(ledgerDatabasePath(), trustedHead);
   if (result.brokenAt !== undefined) {
     throw new Error(`Review chain broken at event ${result.brokenAt}: it does not match the events before it.`);
   }
