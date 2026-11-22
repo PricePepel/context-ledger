@@ -594,6 +594,46 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn(tail, released.text)
         self.assertTrue(released.safe)
 
+    def test_round11_a_second_assignment_on_a_line_has_its_value_known(self):
+        # Review W2-11 finding 1: the copy comes first, on its own line.
+        text = "Copy: harbor-slate-42" + chr(10) + 'password="synthetic-first", api_key="harbor-slate-42"'
+        admission = gateway().admit([Span("request", "request", text)])
+        self.assertNotIn("harbor-slate-42", admission.text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("harbor-slate-42", released.text)
+        self.assertTrue(released.safe)
+
+    def test_round11_a_backslash_split_from_its_n_is_still_the_value(self):
+        # Review W2-11 finding 2: a display shows the declared value, a backslash and an n.
+        bs = chr(92)
+        value = "harbor" + bs + "nslate-42"
+        copy = "harbor" + bs + chr(0x200B) + "nslate-42"
+        g = gateway(declared=[value])
+        admission = g.admit([Span("request", "request", "say " + copy)])
+        self.assertNotIn(copy, admission.text)
+        released = OutputGate(g).release("it is " + copy)
+        self.assertNotIn(copy, released.text)
+        self.assertTrue(released.safe)
+
+    def test_round11_a_credential_formed_by_restoring_is_redacted(self):
+        # Review W2-11 finding 3: a cleared output puts back the declared "password=" right
+        # before the model's own text; the credential that forms is not authorised.
+        g = gateway(declared=["password="], clearance="sensitive")
+        admission = g.admit([Span("request", "request", "set password= now")])
+        token = next(t for t in g._values)
+        released = OutputGate(g).release(token + "harbor-slate-42")
+        self.assertTrue(released.restored)
+        self.assertNotIn("harbor-slate-42", released.text)
+        self.assertIn("password=", released.text)
+        self.assertTrue(released.safe)
+        # a value put back on its own, and a sentence around it, stay as they are
+        g = gateway(declared=["harbor-slate-42"], clearance="sensitive")
+        g.admit([Span("request", "request", "my code is harbor-slate-42")])
+        token = next(t for t in g._values)
+        released = OutputGate(g).release("Your code is " + token + ".")
+        self.assertEqual(released.text, "Your code is harbor-slate-42.")
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

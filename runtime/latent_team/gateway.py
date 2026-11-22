@@ -233,13 +233,16 @@ def canon(text, drop=False, decode=True):
 def canon_ranges(text, values):
     """Original ranges of text where either canonical form holds the same form of a value: of
     the value with its escapes decoded, and of the value as written, so a value holding a
-    backslash is found in a JSON-quoted copy too."""
+    backslash is found in a JSON-quoted copy too; the text is read both ways as well."""
     out = []
     for drop in (False, True):
-        canonical, spans = canon(text, drop)
-        for value in values:
-            targets = {canon(value, drop)[0].strip(), canon(value, drop, decode=False)[0].strip()}
-            for target in targets - {""}:
+        targets = {t for value in values
+                   for t in (canon(value, drop)[0].strip(), canon(value, drop, decode=False)[0].strip()) if t}
+        # The text is read with its escapes decoded and as written too, so a backslash split
+        # from what follows it by an invisible character is not taken for an escape.
+        for decode in (True, False):
+            canonical, spans = canon(text, drop, decode)
+            for target in targets:
                 at = canonical.find(target)
                 while at != -1:
                     out.append((spans[at][0], spans[at + len(target) - 1][1]))
@@ -492,10 +495,39 @@ class Gateway:
     def restore(self, text):
         """Placeholders put back, in one pass. Only for an output or tool cleared to receive
         them: declared values and scanner findings alike."""
+        return self.restore_tracked(text)[0]
+
+    def restore_tracked(self, text):
+        """restore(), with the (start, end) of every value put back, in the restored text."""
         if not self._values:
-            return text
+            return text, []
         pattern = re.compile("|".join(re.escape(token) for token in self._values))
-        return pattern.sub(lambda match: self._values[match.group(0)], text)
+        pieces, put_back, at, length = [], [], 0, 0
+        for match in pattern.finditer(text):
+            before, value = text[at:match.start()], self._values[match.group(0)]
+            pieces += [before, value]
+            put_back.append((length + len(before), length + len(before) + len(value)))
+            length += len(before) + len(value)
+            at = match.end()
+        pieces.append(text[at:])
+        return "".join(pieces), put_back
+
+    def unauthorised(self, text, allowed):
+        """The parts of text's scanner findings (every view) outside the allowed ranges that
+        hold a word character: a credential the values put back form with the text around
+        them, which no restoration authorised."""
+        out = []
+        for finding in self._scan_all(text):
+            at, end = finding["start"], finding["end"]
+            for a, b in sorted(allowed):
+                if b <= at or a >= end:
+                    continue
+                if a > at:
+                    out.append((at, a))
+                at = max(at, b)
+            if at < end:
+                out.append((at, end))
+        return self._merge([(a, b) for a, b in out if re.search(r"\w", text[a:b])])
 
     def holds_placeholder(self, text):
         return any(token in text for token in self._values)
@@ -693,7 +725,26 @@ class OutputGate:
         # release is refused (safe = False) and the guard holds the run.
         safe = not any(value in text for value in found) and not canon_ranges(text, found) and \
             not (uncleared and gateway.holds_value(text, collapsed=True))
-        restored = False
+        restored, count = False, len(merged)
         if not uncleared and gateway.holds_placeholder(text):
-            text, restored = gateway.restore(text), True
-        return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)
+            # The values put back are authorised; a credential they form with the model's own
+            # text around them is not (review W2-11): that text is redacted, and the result is
+            # checked again with the values put back and the markers allowed.
+            text, allowed = gateway.restore_tracked(text)
+            restored = True
+            extra = gateway.unauthorised(text, allowed)
+            if extra:
+                marker = redaction_marker("secret", checked | set(gateway._values.values()))
+                pieces, kept, at, length = [], [], 0, 0
+                for start, end in extra:
+                    before = text[at:start]
+                    kept += [(a - at + length, b - at + length) for a, b in allowed if at <= a and b <= start]
+                    pieces += [before, marker]
+                    kept.append((length + len(before), length + len(before) + len(marker)))
+                    length += len(before) + len(marker)
+                    at = end
+                kept += [(a - at + length, b - at + length) for a, b in allowed if a >= at]
+                text = "".join(pieces) + text[at:]
+                count += len(extra)
+                safe = safe and not gateway.unauthorised(text, kept)
+        return Release(text, ("redacted",) if count else (), count, restored, safe)

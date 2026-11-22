@@ -23,6 +23,14 @@ function codePoints(text, index) {
   return [...text.slice(0, index)].length;
 }
 
+test('W2: a second assignment on a line has its value listed, the span unchanged (review W2-11)', () => {
+  const value = 'harbor'.concat('-slate-42');
+  const text = `password="synthetic-first", api_key="${value}"`;
+  const [finding] = findSecrets(text, { values: true });
+  assert.ok(finding.values.includes(value), finding.values.join(' '));
+  assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
+});
+
 test('W2: a finding lists the value it identified, only when asked (review W2-8)', () => {
   const value = 'harbor'.concat('-slate-42');
   const [finding] = findSecrets(`Authorization: Bearer ${value}`, { values: true });

@@ -4685,3 +4685,13 @@ Codex confirmed round 9's fixes (the escaped private key, the markers, the share
 - (low) Eval 10's wording understated what the comparison sees: a same-size overwrite through a tracked handle changes the content digest. The claim now says what is seen and what is not (a change undone before the comparison, a file native code opens, writes and closes within the run outside the folders, and off Linux a pre-opened handle outside them).
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 541 passed and 10 skipped, `npx playwright test` 32 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the squad, gateway and shared-rule tests (76) all passed.
+
+### W2 review, round 11 (2026-11-22, Codex, read-only, of PR #71 at c4afc9b)
+
+Codex confirmed round 10's fixes (the JSON-quoted backslash value and the zero-width space in a key body). Its findings, each fixed with a regression test:
+
+- (high) A free-text finding covered the rest of its line and the scan resumed after it, so a second assignment on the line (`password="synthetic-first", api_key="..."`) never had its own value recorded, and a bare copy of that value elsewhere reached the model and a public answer. After a quoted value that closes before the line end, both scanners now look for the next lead right after it; the redaction spans are unchanged (the shared conformance cases still pass), only more values are known.
+- (high) A copy of a declared value holding a backslash and an n, with a zero-width space between them, was read as an escape of the zero-width space, so no form matched what a display shows. The text, like each value, is now read both with its escapes decoded and as written, in both languages; a shared case covers it.
+- (medium) In a cleared output, the scan ran before the placeholders were put back, so a value put back (`password=`) could form a credential with the model's own text after it. The output gate now scans the restored text in every view: the parts of a finding outside the values put back that hold a word character are redacted, and the result is checked again with the values put back and the markers allowed. A value put back inside an ordinary sentence is left as it is.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 542 passed and 10 skipped, `npx playwright test` 32 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the squad, gateway and shared-rule tests (79) all passed.

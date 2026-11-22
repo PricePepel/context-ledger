@@ -209,8 +209,12 @@ function lineTails(text) {
       const value = judgedValue(text, start, end, quote);
       if (!value || isPlaceholder(value)) continue;
       found.push({ kind: rule.kind, start, end, prefix: 0, value });
-      // The rest of the line is already covered, so the next lead is looked for after it.
-      pattern.lastIndex = Math.max(pattern.lastIndex, end);
+      // The rest of the line is already covered. After a quoted value that closes before the
+      // line end, the next lead is looked for right after it, so another assignment on the
+      // line has its own value read (review W2-11); its span ends at the same line end, so
+      // the merged spans do not change. Otherwise the next lead is looked for after the line.
+      const closed = Boolean(quote) && start + value.length < end;
+      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? start + value.length + 1 : end);
     }
   }
   return found;
@@ -451,18 +455,19 @@ function canonical(text, drop, decode = true) {
  * The original [start, end) ranges of text where either canonical form holds the same
  * form of one of values: an escaped, spaced or invisibly split copy of a value. Each value
  * is looked for with its escapes decoded and as written, so a value holding a backslash is
- * found in a JSON-quoted copy too.
+ * found in a JSON-quoted copy too; the text is read both ways as well.
  */
 export function canonicalRanges(text, values) {
   const out = [];
   if (typeof text !== 'string' || !text) return out;
   for (const drop of [false, true]) {
-    const { flat, spans, charOfUnit } = canonical(text, drop);
-    for (const value of values) {
-      if (typeof value !== 'string') continue;
-      const targets = new Set([canonical(value, drop).flat.trim(), canonical(value, drop, false).flat.trim()]);
+    const targets = new Set(values.filter(value => typeof value === 'string')
+      .flatMap(value => [canonical(value, drop).flat.trim(), canonical(value, drop, false).flat.trim()]).filter(Boolean));
+    // The text is read with its escapes decoded and as written too, so a backslash split from
+    // what follows it by an invisible character is not taken for an escape.
+    for (const decode of [true, false]) {
+      const { flat, spans, charOfUnit } = canonical(text, drop, decode);
       for (const target of targets) {
-        if (!target) continue;
         for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
           out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
         }

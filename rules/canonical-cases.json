@@ -292,6 +292,40 @@
       ]
     },
     {
+      "name": "a backslash split from its n by an invisible character is not an escape",
+      "text": [
+        "x harbor",
+        {
+          "char": 92
+        },
+        {
+          "char": 8203
+        },
+        "nslate-42 y"
+      ],
+      "values": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          {
+            "char": 8203
+          },
+          "nslate-42"
+        ]
+      ]
+    },
+    {
       "name": "nothing to find",
       "text": [
         "nothing here"
