@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { handoffMarkdown, turnHeading } from '../src/handoff.mjs';
+import { redactSession } from '../src/secrets.mjs';
 import { openStore } from '../src/store.mjs';
 import { startMcp } from './mcp-client.mjs';
 
@@ -334,6 +335,8 @@ test('I3: schema version 6 keeps every version 5 row, and stores agent paths in 
   // An agent row needs both paths, and only an agent row has them.
   assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json) VALUES (?, 9, 9, 'agent', '\"x\"', 'l:9', '\"/root\"')").run(agent.id), /CHECK/u);
   assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json, recipient_json) VALUES (?, 9, 9, 'user', '\"x\"', 'l:9', '\"/a\"', '\"/b\"')").run(agent.id), /CHECK/u);
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json) VALUES (?, 9, 9, 'user', '\"x\"', 'l:9', '\"/a\"')").run(agent.id), /CHECK/u);
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, recipient_json) VALUES (?, 9, 9, 'assistant', '\"x\"', 'l:9', '\"/b\"')").run(agent.id), /CHECK/u);
   // The trigger for builds from before versions still gives a session they insert its rows.
   check.prepare("INSERT INTO sessions (id, provider, source, title, message_count, messages, search_text) VALUES ('old', 'codex', 'o.jsonl', 't', 1, ?, 't')")
     .run(JSON.stringify([{ role: 'user', text: 'Old build turn.', line: 1 }]));
@@ -437,4 +440,73 @@ test('I3 review 3: a session deleted after the duplicate check is imported again
   DatabaseSync.prototype.exec = realExec;
   assert.equal(again.id, id);
   assert.equal(store.get(id).messages.length, 2);
+});
+
+test('I3 review 4: a key format in an agent path is redacted in the hand-off', () => {
+  const store = openStore(':memory:');
+  // A synthetic GitHub token shape, built so no literal key sits in the source.
+  const token = 'ghp_' + 'A1b2C3d4E5'.repeat(3) + 'F6g7H8i9J0';
+  const { summary } = importCodex(store, [
+    codexLine('user', 'Audit Norma.'),
+    agentLine(`/root/${token}`, `/root/${token}`, [{ type: 'input_text', text: 'Norma is clean.' }]),
+  ]);
+  const { session, findings } = redactSession(store.get(summary.id));
+  assert.equal(findings.length, 2);
+  assert.ok(findings.every(finding => finding.line === 2 && finding.kind === 'github-token'));
+  const markdown = handoffMarkdown(session);
+  assert.equal(markdown.includes(token), false);
+  assert.ok(markdown.includes('## agent /root/\\[REDACTED github-token\\] to /root/\\[REDACTED github-token\\] · line 2'));
+});
+
+test('I3 review 4: a session deleted right after the re-import commits still returns its summary', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-i3-after-'));
+  const path = join(directory, 'ledger.sqlite');
+  const stores = [];
+  t.after(async () => { for (const store of stores) store.close(); await rm(directory, { recursive: true, force: true }); });
+  const transcript = [codexLine('user', 'Plan Mensa.'), agentLine('/root/worker', '/root', [{ type: 'input_text', text: 'Mensa is ready.' }])].join('\n');
+  const store = openStore(path);
+  const other = openStore(path);
+  stores.push(store, other);
+  const { id } = store.importTranscript({ provider: 'codex', source: 'mensa.jsonl', transcript });
+  const realExec = DatabaseSync.prototype.exec;
+  let armed = false;
+  t.after(() => { DatabaseSync.prototype.exec = realExec; });
+  DatabaseSync.prototype.exec = function exec(sql) {
+    if (sql === 'BEGIN IMMEDIATE') armed = true;
+    const result = realExec.call(this, sql);
+    if (armed && sql === 'COMMIT') {
+      armed = false;
+      DatabaseSync.prototype.exec = realExec;
+      other.deleteSession(id);
+    }
+    return result;
+  };
+  const again = store.importTranscript({ provider: 'codex', source: 'mensa.jsonl', transcript });
+  DatabaseSync.prototype.exec = realExec;
+  assert.equal(again.id, id);
+  assert.equal(again.messageCount, 2);
+});
+
+test('I3 review 4: deliveries on either side of an unreadable line are not one pair', () => {
+  const store = openStore(':memory:');
+  const text = 'Ursa is clean.';
+  const { messages } = importCodex(store, [
+    codexLine('user', 'Audit Ursa.'),
+    agentLine('/root/worker', '/root', [{ type: 'input_text', text }]),
+    '{not json',
+    JSON.stringify({ type: 'inter_agent_communication', payload: { author: '/root/worker', recipient: '/root', content: text } }),
+  ]);
+  assert.deepEqual(messages.map(message => [message.role, message.line]), [['user', 1], ['agent', 2], ['agent', 4]]);
+});
+
+test('I3 review 5: deliveries on either side of a blank line are not one pair', () => {
+  const store = openStore(':memory:');
+  const text = 'Lynx is clean.';
+  const { messages } = importCodex(store, [
+    codexLine('user', 'Audit Lynx.'),
+    agentLine('/root/worker', '/root', [{ type: 'input_text', text }]),
+    '   ',
+    JSON.stringify({ type: 'inter_agent_communication', payload: { author: '/root/worker', recipient: '/root', content: text } }),
+  ]);
+  assert.deepEqual(messages.map(message => [message.role, message.line]), [['user', 1], ['agent', 2], ['agent', 4]]);
 });

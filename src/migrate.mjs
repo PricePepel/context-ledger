@@ -347,7 +347,8 @@ export function migrate(database, bootstrap = () => {}) {
             key TEXT NOT NULL,
             author_json TEXT,
             recipient_json TEXT,
-            CHECK ((role = 'agent') = (author_json IS NOT NULL AND recipient_json IS NOT NULL)),
+            CHECK (CASE WHEN role = 'agent' THEN author_json IS NOT NULL AND recipient_json IS NOT NULL
+              ELSE author_json IS NULL AND recipient_json IS NULL END),
             UNIQUE (session_id, key),
             UNIQUE (session_id, seq)
           ) STRICT;
