@@ -5016,3 +5016,13 @@ Codex confirmed round 19's fixes (`; export`, `&&`, the tool deadline, `O_TRUNC`
 - (medium) Eval 10 relied on the audit sampler, so a write made only during a replay or a fallback could go unseen. Both its runs now include, inside the measured window, an audited request whose solver alone disagrees, and assert that the replay ran and the run fell back.
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 612 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 128 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (419) passed.
+
+### W2 review, round 21 (2026-11-22, Codex, read-only, of PR #71 at 7998e5f)
+
+Codex confirmed round 20's fixes (spaced shell operators, combined tool fields, the deadline after the output gate, eval 10's audited fallback). Its findings, each fixed with a regression test:
+
+- (high) Shell operators with no space before them (`password=paper-harbor>result.txt`, `...& sleep 1`, `...<input.txt`) kept the password's head unknown and its bare copy visible. `freeText.valueHeadEnd` now ends a head at those operators with or without a space. So that a password with an operator in it (`a&bcdefgh`) cannot make every short head a secret, a head becomes a value only from four characters (`freeText.valueHeadMin`); the whole value is a value whatever its length.
+- (high) A cleared tool with an outside effect could be sent a credential that first appears in its own arguments, from untrusted memory: untrusted input, sensitive data and an outside effect are all three parts of the rule of two. Such a call is now refused (`rule-of-two`) whether or not the tool is cleared.
+- (medium) A run whose budget was spent before inference (the slot wait, admission) still ran the squad, and an answer could cross the deadline during cleanup. The guard now holds before any inference when the budget is spent, and checks the deadline again after cleanup, at the release boundary (`deadline`). Fake-clock tests assert no model call for an expired budget and a hold when cleanup crosses it. A round-2 test that gave the gateway a budget of a billionth of a second now sees the hold before inference (`deadline`) instead of the watchdog's budget check.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 612 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 129 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (422) passed.

@@ -333,7 +333,8 @@ class LabelEvalTest(unittest.TestCase):
         gateway.admit([Span("request", "request", "q")])
         [outcome] = Guard(team, thresholds=None, sample=lambda: False).run(["unused"], steps=STEPS,
                                                                             max_new_tokens=TOKENS, gateways=[gateway])
-        self.assertEqual((outcome.decision["action"], outcome.decision["reason"]), ("hold", "budgets"))
+        # Since review W2-21 the spent budget holds the run before any inference.
+        self.assertEqual((outcome.decision["action"], outcome.decision["reason"]), ("hold", "deadline"))
 
     def test_a_role_template_cannot_complete_a_declared_value(self):
         # Review W2-6 finding 3: the planner's "Question: " would complete the declared value.
@@ -394,6 +395,41 @@ class LabelEvalTest(unittest.TestCase):
                 [outcome] = guard.run(["unused"], steps=STEPS, max_new_tokens=TOKENS, gateways=[gateway])
             self.assertEqual(outcome.answer, None, late)
             self.assertEqual(outcome.decision["action"], "hold", late)
+
+    def test_an_expired_budget_runs_no_model_and_cleanup_counts(self):
+        # Review W2-21 finding 3: expired before inference, and past the deadline in cleanup.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        from latent_team.watchdog import Watch
+        team = text_team()
+        for late in ("before", "cleanup"):
+            now = [1000.0]
+            gateway = Gateway("proj-a")
+            gateway.clock = lambda: now[0]
+            gateway.fix_permissions(Permissions(max_seconds=60.0))
+            gateway.admit([Span("request", "request", "2+2?")])
+            guard = Guard(team, thresholds=None, sample=lambda: False)
+            guard.clock = lambda: now[0]
+            calls = []
+            latent = team.latent_mas
+            drop = Watch.drop
+
+            def counted(*args, **kwargs):
+                calls.append(1)
+                return latent(*args, **kwargs)
+
+            def slow_drop(watch):
+                if late == "cleanup":
+                    now[0] += 120.0
+                return drop(watch)
+
+            if late == "before":
+                now[0] += 120.0
+            with mock.patch.object(team, "latent_mas", counted), mock.patch.object(Watch, "drop", slow_drop):
+                [outcome] = guard.run(["unused"], steps=STEPS, max_new_tokens=TOKENS, gateways=[gateway])
+            self.assertEqual((outcome.answer, outcome.decision["action"], outcome.decision["reason"]),
+                             (None, "hold", "deadline"), late)
+            self.assertEqual(len(calls), 0 if late == "before" else 1, late)
 
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span

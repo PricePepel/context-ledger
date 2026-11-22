@@ -280,6 +280,8 @@ function lineTails(text, otherLeads = []) {
 // Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
 // and "x && ..." name the value x (review W2-19).
 const headEnd = new RegExp(secretRules.freeText.valueHeadEnd, 'u');
+// A shorter head is not a value of its own, so "a&b" never makes every "a" a secret.
+const headMin = secretRules.freeText.valueHeadMin;
 
 function spanValues(text, members) {
   const out = new Set();
@@ -292,7 +294,7 @@ function spanValues(text, members) {
         out.add(core);
         const cut = headEnd.exec(core);
         const head = cut ? core.slice(0, cut.index).replace(/[ \t,;]+$/u, '') : '';
-        if (head && !isPlaceholder(head)) out.add(head);
+        if (head.length >= headMin && !isPlaceholder(head)) out.add(head);
       }
       if (tail) {
         out.add(text.slice(candidate.start, candidate.valueEnd));

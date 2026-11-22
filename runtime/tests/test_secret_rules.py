@@ -63,7 +63,9 @@ class EveryAssignmentTest(unittest.TestCase):
         # Review W2-19.
         for text in ("password=paper-harbor; export aws_secret_access_key=" + "A" * 40,
                      "password=paper-harbor && api_key=" + "synthetic-second", "password=paper-harbor > result.txt",
-                     "password=paper-harbor & sleep 1", "password=paper-harbor 2>> errors.log"):
+                     "password=paper-harbor & sleep 1", "password=paper-harbor 2>> errors.log",
+                     "password=paper-harbor>result.txt", "password=paper-harbor& sleep 1",
+                     "password=paper-harbor<input.txt"):
             [finding] = secret_scan.find_secrets(text, values=True)
             self.assertIn("paper-harbor", finding["values"], text)
 
