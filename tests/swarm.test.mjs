@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { createSwarm, median, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
+import { baselineSeed, createSwarm, median, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
 import { causes, combine, incidents, isCorrect, isVerified, parseAnswer, systemPrompt } from '../src/swarm-task.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -136,7 +136,7 @@ test('a simulated run finishes, says it is simulated and reports no GPU numbers'
 });
 
 /** A local OpenAI-compatible stand-in that answers from the report, counting concurrent requests. */
-async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => '', reply, onComplete = () => {}, delayMs = 15 }) {
+async function fakeModelServer(t, { model, failFor = new Set(), failFrom = Infinity, metrics = () => '', reply, onComplete = () => {}, delayMs = 15 }) {
   const state = { active: 0, peak: 0, calls: 0, prompts: [] };
   const server = createServer(async (request, response) => {
     if (request.url === '/v1/models') return response.end(JSON.stringify({ data: [{ id: model }] }));
@@ -152,9 +152,10 @@ async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => 
     state.active -= 1;
     const report = input.messages[1].content.replace(/^Report: /u, '');
     const id = Number(/^Incident (\d+)/u.exec(report)[1]);
-    if (failFor.has(id)) { response.statusCode = 500; return response.end('{}'); }
+    if (failFor.has(id) || state.calls >= failFrom) { response.statusCode = 500; return response.end('{}'); }
     onComplete();
-    if (reply) return response.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+    const text = typeof reply === 'function' ? reply(state.calls) : reply;
+    if (text) return response.end(JSON.stringify({ choices: [{ message: { content: text } }] }));
     const truth = incidents(id, 7)[id - 1].truth;
     const quote = report.split('. ').find(part => part.includes(' minutes after '));
     response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ...truth, quote: `${quote}.` }) } }],
@@ -324,24 +325,33 @@ test('S1b review: the warm-up is not timed, each server gets its own median, and
   assert.equal(median([4, 1, 3, 2]), 2.5);
   assert.equal(median([3, 1, 2]), 2);
   // The first request to each server is slow (cold); only the later ones are timed.
-  const cold = (fast, coldMs) => { let calls = 0; return () => (calls++ === 0 ? coldMs : fast); };
-  const a = await fakeModelServer(t, { model: 'fast', delayMs: cold(20, 800) });
-  const b = await fakeModelServer(t, { model: 'slow', delayMs: cold(120, 800) });
-  const swarm = createSwarm({ env: { SWARM_URLS: `${a.url},${b.url}` } });
+  // Round 2: distinct timings, two timed runs, so only the right samples give this median:
+  // warm-up 800 ms (untimed), then 40 and 160 ms (median 100); with the warm-up in, it would be 160 or 420.
+  const script = times => { let calls = 0; return () => times[Math.min(calls++, times.length - 1)]; };
+  const a = await fakeModelServer(t, { model: 'fast', delayMs: script([800, 40, 160, 15]) });
+  const b = await fakeModelServer(t, { model: 'slow', delayMs: script([800, 300, 500, 15]) });
+  const swarm = createSwarm({ env: { SWARM_URLS: `${a.url},${b.url}`, SWARM_BASELINE_RUNS: '2' } });
   const { id } = swarm.start({ agents: 4, mode: 'live' });
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
   const [fast, slow] = run.baseline.perServer;
-  assert.ok(fast.ms < 400 && slow.ms < 600, 'the 800 ms warm-up is not in the median');
-  assert.ok(slow.ms > fast.ms + 50, 'each server has its own median');
+  assert.ok(Math.abs(fast.ms - 100) < 45, `fast median ${fast.ms} ms is the mean of 40 and 160`);
+  assert.ok(Math.abs(slow.ms - 400) < 60, `slow median ${slow.ms} ms is the mean of 300 and 500`);
+  assert.deepEqual(run.baseline.perServer.map(entry => entry.answered), [2, 2]);
   // Agents 1 and 3 ran on the fast server, 2 and 4 on the slow one.
   assert.ok(Math.abs(run.oneAfterAnotherMs - (2 * fast.ms + 2 * slow.ms)) <= 4);
-  // The timed requests read other reports than the warm-up, like agents do.
-  const reportsSeen = a.state.prompts.slice(0, 4).map(messages => /^Report: Incident (\d+)/u.exec(messages[1].content)[1]);
-  assert.deepEqual(reportsSeen, ['1', '2', '3', '4']);
+  // The timed requests read other reports than the warm-up, like agents do, and (round 2)
+  // none of the baseline prompts is a prompt the run sends.
+  const baselinePrompts = a.state.prompts.slice(0, 3).map(messages => messages[1].content);
+  assert.equal(new Set(baselinePrompts).size, 3);
+  const runPrompts = new Set([...a.state.prompts.slice(3), ...b.state.prompts.slice(3)].map(messages => messages[1].content));
+  assert.equal(runPrompts.size, 4);
+  for (const prompt of baselinePrompts) assert.ok(!runPrompts.has(prompt), 'the baseline never primes a run prompt');
+  assert.notEqual(baselineSeed, 7);
 });
 
 test('S1b review: a baseline reply with no usable answer is not timed, and failed agents add nothing to the speed-up', async t => {
-  const empty = await fakeModelServer(t, { model: 'm', reply: 'no json here' });
+  // Round 2: the warm-up answers properly and the second timed reply is unusable.
+  const empty = await fakeModelServer(t, { model: 'm', reply: call => (call === 3 ? 'no json here' : undefined) });
   const swarm = createSwarm({ env: { SWARM_URLS: empty.url } });
   const first = swarm.start({ agents: 2, mode: 'live' }).id;
   const unusable = await until(() => (['done', 'failed'].includes(swarm.snapshot(first).state) ? swarm.snapshot(first) : null));
@@ -355,6 +365,15 @@ test('S1b review: a baseline reply with no usable answer is not timed, and faile
   assert.equal(run.counts.failed, 4);
   assert.equal(run.answeredForSpeedup, 4);
   assert.ok(Math.abs(run.oneAfterAnotherMs - 4 * run.baseline.perServer[0].ms) <= 2, 'only the four answers count');
+
+  // Round 2: a valid baseline, then every agent fails: no speed-up, and the run is a failure.
+  const dies = await fakeModelServer(t, { model: 'm', failFrom: 5 });
+  const swarm3 = createSwarm({ env: { SWARM_URLS: dies.url } });
+  const third = swarm3.start({ agents: 3, mode: 'live' }).id;
+  const dead = await until(() => (swarm3.snapshot(third).state === 'failed' ? swarm3.snapshot(third) : null));
+  assert.ok(dead.baseline, 'the four baseline requests worked');
+  assert.equal(dead.oneAfterAnotherMs, null);
+  assert.equal(dead.speedup, null);
 });
 
 test('S1b: if the solo baseline fails the run still goes on, with no speed-up', async t => {

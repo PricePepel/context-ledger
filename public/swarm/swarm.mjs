@@ -103,7 +103,7 @@ function renderStats(run) {
   const solo = run.baseline?.perServer ?? [];
   const measured = run.baseline?.measuredAt ? new Date(run.baseline.measuredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const soloNote = solo.length
-    ? `${run.answeredForSpeedup} answers × ${solo.map(entry => seconds(entry.ms)).join(' / ')} per agent alone, warm (median of ${run.baseline.runs}, ${run.baseline.reused ? 'reused from' : 'measured at'} ${measured})`
+    ? `${solo.map(entry => `${entry.answered} × ${seconds(entry.ms)}${solo.length > 1 ? ` (${entry.model})` : ''}`).join(' + ')} per agent alone, warm (median of ${run.baseline.runs}, ${run.baseline.reused ? 'reused from' : 'measured at'} ${measured})`
     : 'one agent alone was not timed';
   const tokensPerSecond = run.elapsedMs > 0 ? run.tokensOut / (run.elapsedMs / 1000) : null;
   const metrics = run.metrics;

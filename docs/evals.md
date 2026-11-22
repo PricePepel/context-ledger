@@ -4618,6 +4618,13 @@ The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divid
 - (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
 - (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
 
+**Codex review, round 2** (of 497612e): the round 1 fixes are correct. Fixed with tests:
+
+- (medium) The baseline used the run's seed, so it sent the first agents' exact prompts before the run and a prefix cache could serve them faster, inflating the speed-up. The baseline now reads reports from its own seed (`baselineSeed`), and a test checks no baseline prompt is a run prompt.
+- (low) With several servers the note multiplied the total answer count by every server's time. Each server now shows its own answers × solo time (`perServer[].answered` in the API).
+- (low) The warm-up test could pass with the warm-up included: it now uses distinct timings and two timed runs, so only the right samples give the expected median.
+- (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
+
 Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
 
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)

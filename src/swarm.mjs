@@ -10,6 +10,9 @@ export const maxRuns = 5;
 export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
 const metricsEveryMs = 500;
+// Card S1b round 2: the solo baseline reads reports from its own seed, so it never sends
+// a run's exact prompts ahead of the run (a prefix cache would then serve them faster).
+export const baselineSeed = 1_000_003;
 
 /** The median: the middle value, or the mean of the two middle values for an even count. */
 export function median(values) {
@@ -220,7 +223,7 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   async function soloBaseline(servers) {
     const key = JSON.stringify(servers);
     if (baselineCache?.key === key) return { ...baselineCache.value, reused: true };
-    const reports = incidents(baselineRuns + 1, 7);
+    const reports = incidents(baselineRuns + 1, baselineSeed);
     const usable = async (report, server) => {
       if (!parseAnswer((await liveAgent(null, null, report, server)).reply)) throw new Error('no usable answer');
     };
@@ -331,7 +334,8 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
       models: run.models, concurrency,
       elapsedMs: Math.round(elapsed),
       phase: run.phase,
-      baseline: run.baseline && { perServer: run.baseline.perServer.map(entry => ({ model: entry.model, ms: Math.round(entry.ms) })),
+      baseline: run.baseline && { perServer: run.baseline.perServer.map((entry, index) => ({ model: entry.model, ms: Math.round(entry.ms),
+          answered: answered.filter(agent => agent.index % run.baseline.perServer.length === index).length })),
         runs: run.baseline.runs, measuredAt: run.baseline.measuredAt, reused: run.baseline.reused },
       oneAfterAnotherMs: oneAfterAnother === null ? null : Math.round(oneAfterAnother),
       speedup: oneAfterAnother !== null && elapsed > 0 ? oneAfterAnother / elapsed : null,
