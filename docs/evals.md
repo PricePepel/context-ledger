@@ -4657,3 +4657,4 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
   - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
   - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
   - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.
+- **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
