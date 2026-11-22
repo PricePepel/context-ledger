@@ -111,3 +111,49 @@ test('P2c review: a graph opened while a decision is in flight keeps working but
   await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Approved by Leo Park');
 });
 
+
+test('P3: a person edits a node label; the edit is kept as an event and shown as text', async ({ page, request, baseURL }) => {
+  const marker = `p3-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  const field = port.getByLabel('Corrected label');
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue(`Use ${hostile} port 4317`);
+  await field.fill(`Port 4317 ${hostile} from Friday`);
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port).toContainText('Edited by Mira (self-asserted)');
+  await expect(port.locator('.edited-label .node-label')).toHaveText(`Port 4317 ${hostile} from Friday`);
+  await expect(port).toHaveAttribute('data-state', 'edited');
+  await expect(port.getByLabel('Corrected label')).toHaveCount(0);
+  expect(await page.locator('#review-nodes img').count()).toBe(0);
+  // The graph's own label is unchanged.
+  await expect(port.locator(':scope > .node-label')).toHaveText(`Use ${hostile} port 4317`);
+
+  // A later approval replaces the edit in the fold; both stay in the chain.
+  await port.getByRole('button', { name: 'Approve' }).click();
+  await expect(port).toContainText('Approved by Mira (self-asserted)');
+  await expect(port.locator('.edited-label')).toHaveCount(0);
+  const response = await request.get(`/api/graphs/${graph.id}`, { headers: { origin: baseURL } });
+  const { graph: stored } = await response.json();
+  expect(stored.reviews.map(review => review.decision)).toEqual(['approve']);
+  expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
+});
+
+test('P3: Cancel closes the edit field without recording anything', async ({ page, request, baseURL }) => {
+  const marker = `p3-cancel-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const notes = page.locator('#review-nodes li[data-node="notes"]');
+  await notes.getByRole('button', { name: 'Edit' }).click();
+  await notes.getByRole('button', { name: 'Cancel' }).click();
+  await expect(notes.getByLabel('Corrected label')).toHaveCount(0);
+  await expect(notes).toContainText('Not reviewed');
+});

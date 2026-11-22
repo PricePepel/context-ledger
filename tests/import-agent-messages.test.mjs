@@ -321,7 +321,8 @@ test('I3: schema version 6 keeps every version 5 row, and stores agent paths in 
 
   const check = new DatabaseSync(path);
   stores.push(check);
-  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+  // P3 added version 7 on top; the file goes to the newest version.
+  assert.ok(check.prepare('PRAGMA user_version').get().user_version >= 6);
   assert.deepEqual(check.prepare('SELECT role, author_json AS author, recipient_json AS recipient FROM messages WHERE session_id = ? ORDER BY seq').all(agent.id)
     .map(row => ({ ...row })), [
     { role: 'user', author: null, recipient: null },

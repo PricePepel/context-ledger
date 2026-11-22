@@ -16,6 +16,7 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- handoff <session-id> [--sign <new-folder>]\n' +
   '       npm run ledger -- keygen\n' +
   '       npm run ledger -- verify <folder> [--fingerprint <fingerprint>]\n' +
+  '       npm run ledger -- reviews verify\n' +
   '       npm run ledger -- redact <session-id> [--json | --text]\n' +
   '       npm run ledger -- delete <session-id>\n' +
   '       npm run ledger -- graph publish <packet.json>\n' +
@@ -40,6 +41,8 @@ function options(args, spec) {
 function command(argv) {
   const [action, ...args] = argv;
   if (action === 'keygen' && args.length === 0) return { action };
+  // Card P3: check the chain of review events in the ledger database.
+  if (action === 'reviews' && args.length === 1 && args[0] === 'verify') return { action: 'reviews-verify' };
   if (action === 'verify') {
     const { values, positionals } = options(args, { fingerprint: { type: 'string' } });
     if (positionals.length === 1) {
@@ -347,7 +350,8 @@ async function verifyCommand(dir, fingerprint) {
 // Read one session straight from the ledger database, in this process (design ADR-2: one
 // core behind CLI, HTTP and MCP). Signing never asks whatever answers on PORT for the
 // content it signs.
-async function readLedgerSession(databasePath, sessionId) {
+/** Opens the ledger database only if it is already at this build's schema; never creates or migrates it. */
+async function openCurrentStore(databasePath, upgradeHint) {
   try {
     await lstat(databasePath);
   } catch (error) {
@@ -379,15 +383,18 @@ async function readLedgerSession(databasePath, sessionId) {
   }
   if (version < schemaVersion) {
     throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
-      'to upgrade it, then sign again.');
+      `to upgrade it, then ${upgradeHint} again.`);
   }
   const { openStore } = await import('./store.mjs');
-  let store;
   try {
-    store = openStore(databasePath);
+    return openStore(databasePath);
   } catch {
     throw new Error('Cannot open the ledger database.');
   }
+}
+
+async function readLedgerSession(databasePath, sessionId) {
+  const store = await openCurrentStore(databasePath, 'sign');
   try {
     let session;
     try {
@@ -400,6 +407,24 @@ async function readLedgerSession(databasePath, sessionId) {
   } finally {
     store.close();
   }
+}
+
+// Card P3: recompute the chain of review events. A broken chain is an error, and its
+// first bad event is named by number only, never by what it says.
+async function reviewsVerifyCommand() {
+  const store = await openCurrentStore(ledgerDatabasePath(), 'verify');
+  let result;
+  try {
+    result = store.verifyReviews();
+  } catch {
+    throw new Error('Cannot read the ledger database.');
+  } finally {
+    store.close();
+  }
+  if (result.brokenAt !== undefined) {
+    throw new Error(`Review chain broken at event ${result.brokenAt}: it does not match the events before it.`);
+  }
+  console.log(`Review chain verified: ${result.events} ${result.events === 1 ? 'event' : 'events'}.\nHead: ${result.head}`);
 }
 
 async function signCommand(sessionId, signDir) {
@@ -460,6 +485,10 @@ async function main() {
   }
   if (action === 'verify') {
     await verifyCommand(dir, fingerprint);
+    return;
+  }
+  if (action === 'reviews-verify') {
+    await reviewsVerifyCommand();
     return;
   }
   if (action === 'handoff' && signDir !== undefined) {

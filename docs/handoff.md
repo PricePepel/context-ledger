@@ -609,3 +609,9 @@ Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global ins
 PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
 
 Next owner: any later schema step goes after version 6. If the `messages` table is rebuilt again, recreate the `sessions_messages` trigger.
+
+## Current checkpoint — P3 review events (2026-11-21)
+
+Branch `ruslan/p3-review-events`, stacked on I3 (#34) because its schema step is version 7. Review decisions are append-only, hash-chained events in `review_events` (ADR-17). The browser review section has Approve, Edit and Reject, and `ledger reviews verify` checks the chain. P2c's rows are migrated. Merge I3 first, then this.
+
+Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 prototype (#52) keeps its own decisions in browser storage. Wiring it to `POST /api/graphs/<id>/reviews` is a choice for Ali.

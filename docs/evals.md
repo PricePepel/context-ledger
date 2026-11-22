@@ -4559,3 +4559,9 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 
 - `node --test tests/*.test.mjs`, `npm run -s test:graph`, `npx playwright test` and the runtime Python checks pass, with the cases above in `tests/review-events.test.mjs` and the review browser spec.
 - No new dependency.
+
+### P3 results (2026-11-21)
+
+- `tests/review-events.test.mjs` 9/9: events and the fold, a changed node starting unreviewed, edit labels and fixed-word errors, the append-only triggers, verify naming the first rewritten event, `checkChain` on seq, prev and label, two stores on one file keeping one chain, a version 6 file with P2c rows migrating in decision order, and `ledger reviews verify` (count and head, a broken event named by number only, an older file left unmigrated, usage).
+- `tests/e2e/node-review.spec.mjs` 5/5, with an edit saved and shown as text beside the unchanged graph label, then replaced by an approval, and Cancel recording nothing.
+- The P2c tests now expect the new decision list, the edit label in the key list and the version 7 table.

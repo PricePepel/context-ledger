@@ -246,13 +246,13 @@ const routes = [
     return { graph: graph.packet.version === 3 ? { ...graph, reviews: store.graphReviews(id) } : graph };
   } },
   { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
-    // People approve or reject nodes in the browser. The request must carry a browser's
+    // People approve, edit or reject nodes in the browser (P2c, P3). The request must carry a browser's
     // sign-in cookie (the CLI and the MCP adapter hold only the bearer token) and a
     // browser's Sec-Fetch-Site, which page scripts cannot forge. That keeps agent clients
     // out; it does not prove who clicked: a program running as the person can still sign
     // in as a browser does (ADR-10 trusts the OS user; P2c review).
     if (!auth.signedIn(request) || request.headers['sec-fetch-site'] !== 'same-origin') {
-      throw new HttpError(403, 'Nodes are approved or rejected by people in the browser, signed in.');
+      throw new HttpError(403, 'Nodes are reviewed by people in the browser, signed in.');
     }
     const input = await readJson(request, origin, 'A node review');
     const reviews = store.reviewNode(id, input);

@@ -81,6 +81,8 @@ Threads from T3 Code v0.1.10 can be imported from a copy of its database that yo
 
 To send a hand-off someone can check, create a key once with `npm run --silent ledger -- keygen` (it prints the key fingerprint; give that to the receiver out of band), then sign into a new folder with `npm run --silent ledger -- handoff SESSION_ID --sign FOLDER`. The receiver runs `npm run --silent ledger -- verify FOLDER --fingerprint "FINGERPRINT"`, or checks it with OpenSSL alone. Signing does not redact the transcript text. See [signed hand-offs](docs/signed-handoff.md).
 
+Approve, edit or reject the nodes of a version 3 graph in the browser app's review section. Each decision is kept as an append-only review event, chained by hash. `npm run --silent ledger -- reviews verify` recomputes the chain and prints its length and head hash, or the first event that does not match.
+
 ## Data and scope
 
 The server binds to IPv4 loopback and stores data in `.context-ledger/ledger.sqlite`. Set `PORT` or `CONTEXT_LEDGER_DB` to override those defaults. The database contains transcript text. Back it up or remove it as needed when the app is stopped.
