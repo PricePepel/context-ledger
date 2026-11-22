@@ -1118,7 +1118,7 @@ test('P4d: handoff --sign signs the redacted hand-off and records the count', as
 
   const checked = await run(['verify', context.secretDir, '--fingerprint', context.fingerprint]);
   assert.equal(checked.code, 0, checked.stderr);
-  assert.ok(checked.stdout.includes('Redaction: 5 values replaced, by context-ledger-secrets/1'), checked.stdout);
+  assert.ok(checked.stdout.includes('Redaction: 5 replacements, by context-ledger-secrets/1'), checked.stdout);
   assert.equal(checked.stderr, '');
   assertNoSecret(checked.stdout, 'the verify output');
 });
@@ -1133,7 +1133,7 @@ test('P4d: a clean session is signed unchanged and says the checks found nothing
   assert.equal(readFileSync(join(again, 'handoff.md'), 'utf8'), plain.stdout);
   const checked = await run(['verify', again, '--fingerprint', context.fingerprint]);
   assert.equal(checked.code, 0, checked.stderr);
-  assert.ok(checked.stdout.includes('Redaction: 0 values replaced, by context-ledger-secrets/1'), checked.stdout);
+  assert.ok(checked.stdout.includes('Redaction: 0 replacements, by context-ledger-secrets/1'), checked.stdout);
 });
 
 test('P4d: there is no option to sign without redaction', async t => {

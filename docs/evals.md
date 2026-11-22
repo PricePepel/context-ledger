@@ -4526,6 +4526,12 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
   - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
   - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
+- **Codex review, round 4** (of c940dcc):
+  - (high) A JSON `"Bearer …"` value was searched for without its quote, because the quote stands before `Bearer`, not the value. An all-letter value with JSON after it was then never matched. Fixed: the scanner hands its quote to the copy search.
+  - (medium) Each candidate looked up its finding from the start of the message: 40,000 findings in one message took 3.8 s. Fixed with one walk over both lists, which are sorted by start.
+  - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
+  - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
+  - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

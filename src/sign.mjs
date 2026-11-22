@@ -2,7 +2,7 @@
 // (JCS) manifest of file names, sizes and SHA-256 hashes. The key fingerprint is
 // SHA-256 of the public key's SubjectPublicKeyInfo DER bytes, checked out of band.
 // Version 2 (card P4d) adds `redaction`: the hand-off was redacted by the secret scanner
-// before signing, and how many values it replaced.
+// before signing, and how many replacements it made.
 import {
   createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify,
 } from 'node:crypto';
@@ -380,7 +380,7 @@ async function checkCurrentAccountOnly(path, ino, hooks) {
 
 /**
  * Build the bundle in memory: file bytes by name, manifest bytes and signature. markdown
- * must already be redacted; findings is how many values the scanner replaced in it.
+ * must already be redacted; findings is how many replacements the scanner made in it.
  */
 export function buildBundle({ sessionId, markdown, findings, privateKey, now = new Date() }) {
   if (!/^[a-f0-9]{64}$/.test(sessionId)) throw new Error('Invalid session ID.');

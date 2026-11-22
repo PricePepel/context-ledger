@@ -347,7 +347,7 @@ async function verifyCommand(dir, fingerprint) {
   const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
   // The scanner name passed an exact check, so it is printed as it is.
   const redacted = redaction === null ? 'not recorded (a version 1 bundle)'
-    : `${redaction.findings} ${redaction.findings === 1 ? 'value' : 'values'} replaced, by ${redaction.scanner}`;
+    : `${redaction.findings} ${redaction.findings === 1 ? 'replacement' : 'replacements'}, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
     '\nRedaction: ' + redacted + '\nKey fingerprint: ' + signer);
   if (redaction === null) {

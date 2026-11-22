@@ -212,7 +212,8 @@ function lineTails(text) {
       const end = lineEnd;
       const value = judgedValue(text, start, end, quote);
       if (!value || isPlaceholder(value)) continue;
-      found.push({ kind: rule.kind, start, end, prefix: 0 });
+      // The quote is kept for the copy search (P4d): it may stand before Bearer, not the value.
+      found.push({ kind: rule.kind, start, end, prefix: 0, quote });
       // The rest of the line is already covered, so the next lead is looked for after it.
       pattern.lastIndex = Math.max(pattern.lastIndex, end);
     }
@@ -391,8 +392,9 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// What one value adds to the copy search is capped, so one long finding cannot fill the
-// heap; a longer value is still found by its first characters and its key-like words.
+// What one candidate adds to the copy search is capped, across all its entries, so one
+// long finding cannot fill the heap; a longer value is still found by its first
+// characters and its first key-like words.
 const maxCopyLength = 512;
 const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
 const leadingQuotes = /^["'`]+/u;
@@ -406,27 +408,30 @@ const leadingQuotes = /^["'`]+/u;
  * own. A text with an escape is also searched for decoded.
  */
 function copyEntries(text, candidate) {
-  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
-  const ends = [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
-  const entries = [{ value: span, ends: [...ends, span.length] }];
-  for (const match of text.slice(candidate.start, candidate.end).matchAll(/\S+/gu)) {
-    const bare = match[0].replace(leadingQuotes, '').replace(trailingPunctuation, '');
-    if (mixed(bare)) entries.push({ value: bare.slice(0, maxCopyLength), ends: [Math.min(bare.length, maxCopyLength)] });
-  }
-  const quote = candidate.start > 0 ? text[candidate.start - 1] : '';
-  if (/["'`]/u.test(quote)) {
+  let budget = maxCopyLength;
+  const entries = [];
+  const add = (value, ends) => {
+    if (budget <= 0 || value.length < minCopyLength) return;
+    const kept = value.slice(0, budget);
+    budget -= kept.length;
+    entries.push({ value: kept, ends: [...ends.filter(length => length <= kept.length), kept.length] });
+  };
+  // The quote the scanner saw (it can stand before Bearer), else the character before.
+  const before = candidate.start > 0 ? text[candidate.start - 1] : '';
+  const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
+  if (quote) {
     const close = quotedEnd(text, candidate.start, quote);
-    if (close <= candidate.end) {
-      const raw = text.slice(candidate.start, Math.min(close, candidate.start + maxCopyLength));
-      entries.push({ value: raw, ends: [raw.length] });
-    }
+    if (close <= candidate.end) add(text.slice(candidate.start, close), []);
+  }
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
+  add(span, [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length));
+  for (const match of span.matchAll(/\S+/gu)) {
+    const bare = match[0].replace(leadingQuotes, '').replace(trailingPunctuation, '');
+    if (mixed(bare)) add(bare, []);
   }
   for (const entry of [...entries]) {
     if (!entry.value.includes('\\')) continue;
-    for (const length of entry.ends) {
-      const plain = decoded(entry.value.slice(0, length));
-      entries.push({ value: plain, ends: [plain.length] });
-    }
+    for (const length of entry.ends) add(decoded(entry.value.slice(0, length)), []);
   }
   return entries;
 }
@@ -534,10 +539,14 @@ export function redactSession(session) {
   // into findings, so a key inside a longer finding keeps its own boundaries.
   const entries = [];
   fields.forEach((field, index) => {
-    if (!found[index].length) return;
-    for (const candidate of [...candidates(field.text), ...found[index]]) {
-      const kind = found[index].find(finding => finding.start <= candidate.start && candidate.start < finding.end)?.kind ?? candidate.kind;
-      for (const entry of copyEntries(field.text, candidate)) entries.push({ ...entry, kind });
+    const spans = found[index];
+    if (!spans.length) return;
+    // Both lists sorted by start: each candidate takes the kind of the finding holding it.
+    let at = 0;
+    for (const candidate of [...candidates(field.text), ...spans].sort((a, b) => a.start - b.start)) {
+      while (at < spans.length - 1 && spans[at].end <= candidate.start) at += 1;
+      const holder = spans[at].start <= candidate.start && candidate.start < spans[at].end ? spans[at] : candidate;
+      for (const entry of copyEntries(field.text, candidate)) entries.push({ ...entry, kind: holder.kind });
     }
   });
   const copiesIn = entries.length ? copyMatcher(entries) : () => [];

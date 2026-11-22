@@ -804,3 +804,27 @@ test('P4d review 3: one very long finding adds a bounded amount to the copy sear
   // A trie node per character of the whole value took about 290 MiB in Codex's run.
   assert.ok(grown < 64, `${grown} MiB`);
 });
+
+test('P4d review 4: a quoted Bearer value, many findings in one message and many key-like words in one stay bounded', () => {
+  const m = (line, text) => ({ role: 'user', line, text });
+  const quoted = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    m(1, '"Authorization": "Bearer SYNTHETIC-PHRASE","note":"example"'), m(2, 'Copied SYNTHETIC-PHRASE'),
+  ] }).session;
+  assert.equal(quoted.messages[1].text, 'Copied [REDACTED bearer-token]');
+
+  const lines = Array.from({ length: 40000 }, (_, index) => 'password=z' + index.toString(36).padStart(7, '0')).join('\n');
+  let started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [m(1, lines)] });
+  let seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, 40000);
+  // Looking each candidate's finding up from the start took about 3.8 s in Codex's run.
+  assert.ok(seconds < 3, `${seconds} s`);
+
+  const words = Array.from({ length: 10000 }, (_, index) => index.toString(36).padStart(6, '0') + 'Ab' + 'x'.repeat(91)).join(' ');
+  const before = process.memoryUsage().heapUsed;
+  const wide = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [m(1, 'password=' + words)] });
+  const grown = (process.memoryUsage().heapUsed - before) / 2 ** 20;
+  assert.equal(wide.findings.length, 1);
+  // An entry per key-like word took about 220 MiB in Codex's run; the budget is per candidate.
+  assert.ok(grown < 64, `${grown} MiB`);
+});
