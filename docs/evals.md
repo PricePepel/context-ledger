@@ -5054,3 +5054,11 @@ One high-severity finding and no medium one; Codex confirmed round 23's fixes (`
 - (high, fixed) A shell environment assignment before a command (`PASSWORD=paper-harbor printf done`) kept the command in the value, so the password's bare copy, before the line, reached the model and a public answer. A value that starts right after `=` now also gives its first word, up to a space or tab, as a value of its own, in both scanners (`freeText.valueWordAbout` in the shared rules); spans are unchanged, and two shared value cases cover it (an assignment before a command, a subshell).
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (428) passed.
+
+### W2 review, round 25 (2026-11-22, Codex, read-only, of PR #71 at 85db893)
+
+One high-severity finding and no medium one; Codex confirmed round 24's fix for a plain shell assignment.
+
+- (high, fixed) Shell quote concatenation (`PASSWORD=pa'per-harbor' printf done`, which the shell reads as `paper-harbor`) left the joined word unknown and its bare copy visible. Both scanners now also read an assignment's first word as the shell reads it, statically: quoted and unquoted parts joined, single quotes literal, a backslash escaping the next character (inside double quotes only before a double quote, backslash, dollar or backtick), ending at an unquoted space, tab or operator, nothing expanded. Two shared value cases cover single and double quotes.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (429) passed.

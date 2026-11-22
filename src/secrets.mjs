@@ -286,6 +286,53 @@ const shortValue = secretRules.freeText.shortValue;
 // ASCII only, so no runtime's Unicode tables decide (review W2-23).
 const isWord = character => /^[A-Za-z0-9_]$/u.test(character);
 
+const wordStop = new Set([' ', '\t', ';', '&', '|', '<', '>', '(', ')']);
+
+/**
+ * The first shell word of text, read statically as the shell reads it (review W2-25): quoted
+ * and unquoted parts joined, single quotes literal, a backslash escaping the next character
+ * (inside double quotes only before a double quote, backslash, dollar or backtick), ending at
+ * an unquoted space, tab or operator. Nothing is expanded. null when a quote does not close.
+ * runtime/latent_team/secret_scan.py has the same reader.
+ */
+function shellWord(text) {
+  const backslash = String.fromCodePoint(92);
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (wordStop.has(c)) break;
+    if (c === backslash && i + 1 < text.length) {
+      out += text[i + 1];
+      i += 2;
+    } else if (c === "'") {
+      const close = text.indexOf("'", i + 1);
+      if (close === -1) return null;
+      out += text.slice(i + 1, close);
+      i = close + 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      let part = '';
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === backslash && j + 1 < text.length && ('"$`' + backslash).includes(text[j + 1])) {
+          part += text[j + 1];
+          j += 2;
+        } else {
+          part += text[j];
+          j += 1;
+        }
+      }
+      if (j >= text.length) return null;
+      out += part;
+      i = j + 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
 function spanValues(text, members) {
   const out = new Set();
   let tail = true;
@@ -303,6 +350,9 @@ function spanValues(text, members) {
         if (candidate.start > 0 && text[candidate.start - 1] === '=') {
           const word = core.split(/[ \t]/u, 1)[0].replace(/[,;]+$/u, '');
           if (word && word !== core && !isPlaceholder(word)) out.add(word);
+          // and as the shell reads it, quotes joined (review W2-25)
+          const read = shellWord(core);
+          if (read && read !== core && !isPlaceholder(read)) out.add(read);
         }
       }
       if (tail) {
