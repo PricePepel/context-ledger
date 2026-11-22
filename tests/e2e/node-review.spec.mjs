@@ -157,6 +157,8 @@ test('P3: Cancel closes the edit field without recording anything', async ({ pag
   await notes.getByRole('button', { name: 'Edit' }).click();
   await notes.getByRole('button', { name: 'Cancel' }).click();
   await expect(notes.getByLabel('Corrected label')).toHaveCount(0);
+  // P3 review 11: focus goes back to the node's Edit button.
+  await expect(notes.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
   await expect(notes).toContainText('Not reviewed');
 });
 

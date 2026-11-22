@@ -556,6 +556,8 @@ function editForm(node, hash, review) {
     editingNode = null;
     editDrafts.delete(node.id);
     renderReview(reviewGraph);
+    // Back to the node's Edit button, so a keyboard user keeps their place.
+    reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] button[data-decision="edit"]`)?.focus();
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
