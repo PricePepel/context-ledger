@@ -4669,3 +4669,32 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 - **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
 - **Codex review, round 12:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).
+
+## P3b — review head in signed hand-offs (defined 2026-11-22, before implementation)
+
+P3's review chain shows a change in the middle, but a chain cut short at its end still checks, and `--head` needs a head someone kept. P4a's signed hand-off is the natural place to keep one: the sender's key signs it. Synthetic sessions, keys and names only.
+
+### What is tested and the expected result
+
+- **Manifest version 2.** `ledger handoff <id> --sign <folder>` writes manifest version 2, which adds `reviews`: `{ "events": <count>, "head": "<64 hex>" }`, the ledger's review chain at signing time (64 zeros and 0 for an empty chain). It is in the signed JCS bytes, so changing it breaks the signature.
+- **No signing over a broken chain.** If `ledger reviews verify` would report a break, signing refuses, names the event by number, and writes nothing.
+- **Verify shows it.** `ledger verify <folder>` checks the `reviews` shape (a safe non-negative integer, and 64 lowercase hex, which is the genesis hash exactly when events is 0) and prints "Review chain at signing: N events, head H". Version 1 bundles still verify, unchanged, and say they carry no review head. Any other version is refused.
+- **Check a ledger against a bundle.** `ledger reviews verify --bundle <folder> [--fingerprint <fp>]` first verifies the bundle as `ledger verify` does, with the same problems listed on failure, then checks the ledger's chain against the signed head. The check passes when the head is in the chain and the event count at the head matches. It fails when events up to the head were removed or rewritten, and when the bundle has no review head (version 1). `--bundle` and `--head` cannot be combined.
+- **OpenSSL path unchanged.** The OpenSSL commands in docs/signed-handoff.md still verify a version 2 bundle.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/sign.test.mjs` and `tests/review-events.test.mjs`.
+- No new dependency. docs/signed-handoff.md describes version 2.
+
+### P3b results (2026-11-22)
+
+- `tests/signed-review-head.test.mjs` 9/9. It covers signing recording the chain and verify showing it; `--bundle` passing as the ledger grows; a ledger cut short failing against the bundle while passing alone; a bundle with the wrong key, or a changed head (signature broken), not trusted; a signed count that does not match the head's position; a version 1 bundle verifying and reporting no head; an empty chain; a broken chain never signed, with nothing written; and option conflicts.
+- `tests/sign.test.mjs` now expects version 2 with `reviews`, and refuses a version 3 manifest, version 2 without `reviews`, version 1 with `reviews`, and malformed `reviews` (a count with the empty head, no events with a head, a negative count, an uppercase head, an extra key).
+- **Codex review, round 1:** no high; one medium and two low, fixed with tests:
+  - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
+  - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
+  - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.
+- **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
+- **Codex review, round 3:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).

@@ -244,9 +244,11 @@ test('handoff --sign writes exactly the hand-off, the key, a canonical manifest 
   assert.equal(canonicalJson(manifest), manifestBytes.toString('utf8'));
   assert.ok(!manifestBytes.toString('utf8').endsWith('\n'));
   assert.deepEqual(Object.keys(manifest).sort(),
-    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'session', 'version']);
+    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'reviews', 'session', 'version']);
   assert.equal(manifest.format, 'context-ledger-signed-handoff');
-  assert.equal(manifest.version, 1);
+  // Card P3b: version 2 records the review chain; this ledger has no reviews yet.
+  assert.equal(manifest.version, 2);
+  assert.deepEqual(manifest.reviews, { events: 0, head: '0000000000000000000000000000000000000000000000000000000000000000' });
   assert.equal(manifest.algorithm, 'Ed25519');
   assert.equal(manifest.session, sessionId);
   assert.match(manifest.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
@@ -419,7 +421,15 @@ test('verify refuses a correctly signed manifest that is not canonical', async t
 
   const shapes = {
     'extra key': { ...manifest, note: 'x' },
-    'other version': { ...manifest, version: 2 },
+    'other version': { ...manifest, version: 3 },
+    // Card P3b: version 2 needs a review head of the right shape; version 1 has none.
+    'version 2 without reviews': (({ reviews, ...rest }) => rest)(manifest),
+    'version 1 with reviews': { ...manifest, version: 1 },
+    'reviews with a count but the empty head': { ...manifest, reviews: { events: 2, head: '0000000000000000000000000000000000000000000000000000000000000000' } },
+    'reviews with no events but a head': { ...manifest, reviews: { events: 0, head: 'a'.repeat(64) } },
+    'reviews with a negative count': { ...manifest, reviews: { events: -1, head: 'a'.repeat(64) } },
+    'reviews with an uppercase head': { ...manifest, reviews: { events: 1, head: 'A'.repeat(64) } },
+    'reviews with an extra key': { ...manifest, reviews: { events: 1, head: 'a'.repeat(64), note: 'x' } },
     'bad file name': { ...manifest, files: [{ ...manifest.files[0], name: '../handoff.md' }] },
     'envelope listed': { ...manifest, files: [...manifest.files, { ...manifest.files[0], name: 'manifest.sig' }] },
     'bad date': { ...manifest, created_at: '2026-02-30T00:00:00.000Z' },
