@@ -4818,3 +4818,31 @@ After round 2 one scorer check was fixed: an hours table that reads "Tue Closed"
 - **Read by eye, not scored:** builders in every condition invented copy the client never gave (tasting notes, "Casco Bay", "cancel any time", home delivery). One note-built site left "PLACEHOLDER" text where the note had no about-us copy.
 - **Outcome:** on this job, with Claude Sonnet and an 11k-token chat, all three hand-offs produce equally correct sites once the builder reads the ledger briefing whole, and the ledger hand-off costs more because a first agent publishes the graph. The claim we can make from D4 is narrow: the published graph kept all 15 requirements and every change, with replaced decisions marked, in every one of six runs. A quality gain is untested where it is most likely: chats too long to read whole, smaller builder models, or many builders reusing one graph.
 - **The pitch page** (sites side by side, both rounds, these limits) is built from these reports without editing the sites.
+
+### Codex review (2026-11-22) and the final scoring
+
+A read-only Codex review found eight issues, all addressed; the scorer changes have regression tests in `tests/roaster.test.mjs` (13 tests).
+
+1. *(high)* The runner logged tool calls but did not stop or flag protocol departures. Fixed: every ledger tool an agent is not given is now disallowed outright (`--disallowedTools`), and each run reports its deviations. The logs show **every round 2 `ledger` builder called `context_for` twice**, both times for the whole graph with no question, against the instruction to call once. The second call adds tokens and time to the `ledger` figures; it does not change what the builder saw.
+2. *(medium)* The scorer could award points a site did not earn: a menu item without a price could borrow the next item's price, `$4.50` passed as `$4`, any `$18` on the page passed the Bean Club, the address passed without "Maine", and a colour or font named only in a comment passed. Fixed: prices are read per menu row, the Bean Club price must follow its name, the address needs Maine, and colour and font must appear in a CSS declaration or colour attribute with comments removed.
+3. *(medium)* Hours and ruled-out checks: "Closed on Tues." missed, adjacent rows could combine, "15 pm" could match the old "5 pm", "7 am-3 pm daily" escaped the old-hours check, a non-breaking hyphen hid "gluten-free", and "Start your pickup order" escaped the ordering check. All fixed. The wholesale check now follows the eval's own wording, a wholesale *section* (a heading, link or form); a passing mention is reported separately.
+4. *(medium)* The round 2 write-up overstated: the round 1 cause was observed only in the diagnostic replay (runs 2 and 3 are consistent with it, not proven), the note averages exclude the failed build, and the wholesale count did not match the eval's definition. Corrected below.
+5. *(medium)* Windows quoting and timeouts: `--model` and the temporary path now must be plain characters before they reach `cmd.exe`; a timeout closes the child's pipes after the grace period; ledger HTTP calls time out after 30 s.
+6. *(medium)* HTML extraction could merge two documents and fell back to raw output when the CLI gave no final result. Now exactly one document is accepted, there is no fallback, and a failed build keeps the end of its reply for diagnosis.
+7. *(low)* The disclosure counted four sites changed by the Tuesday fix; it was five. Superseded by the full rescoring below.
+8. *(low)* Agent text printed to the terminal was not escaped. Runner output now escapes control and format characters; the saved sites stay as the agents wrote them and are shown only in sandboxed frames.
+
+**Found while checking item 1:** each `chat` builder called `session_read` once. The chat comes in pages, and the 150 chatter exchanges sit after every requirement, so a builder that reads only the first page still sees all 15 requirements. That made the `chat` baseline easier than a long chat with requirements spread through it would be; a fair long-chat test needs the requirements interleaved with the chatter.
+
+**Final scores** (every saved site rescored with the reviewed scorer; requirement counts are unchanged from the round 2 table, and the ledger's ruled-out count drops from 1 to 0 because both hits were a one-line wholesale mention, not a section):
+
+| Round | Condition | Requirements met | Stale | Ruled out | Wholesale mentioned | Builder input tokens, mean of built sites | Hand-off time, mean of built sites | Cost, mean of built sites |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void | | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed (413 s) | 0 | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+**Gates, round 2, final:** the first gate passes on the eval's wording (the ledger met as many requirements as the note in every run the note completed, with no stale or ruled-out items), but only as a tie: no condition was better than another on correctness. The second gate fails (37,446 against 36,847 builder input tokens). D4 shows no quality or cost advantage for the ledger hand-off on this job. What it does show: the published graph kept all 15 requirements and every change, with replaced decisions marked, in all six graphs.

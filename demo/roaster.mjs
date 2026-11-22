@@ -97,58 +97,99 @@ export function roasterTranscript(extra = 0) {
 
 const fold = text => text.toLowerCase().replace(/\s+/gu, ' ');
 
-/** Visible text and the CSS of an HTML page, folded to lower case with spaces collapsed. */
+// Block-level ends become " | " so a check never reads across two rows, items or paragraphs.
+// Table cells and inline elements do not, so "Tue | Closed" stays one row: "tue closed".
+const blockEnd = /<\/(li|tr|p|div|h[1-6]|section|article|header|footer|ul|ol|table|nav|figure|blockquote)>|<br\s*\/?>/giu;
+
+/** Visible body text, CSS and attribute values of a page, each folded to lower case. */
 export function pageParts(html) {
-  const styles = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/giu)].map(match => match[1]).join(' ')
-    + ' ' + [...html.matchAll(/style\s*=\s*"([^"]*)"/giu)].map(match => match[1]).join(' ');
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/giu, ' ')
-    .replace(/<style[\s\S]*?<\/style>/giu, ' ')
-    .replace(/<[^>]+>/gu, ' ')
+  const bare = html.replace(/<!--[\s\S]*?-->/gu, ' ');
+  const css = [...bare.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/giu)].map(match => match[1])
+    .concat([...bare.matchAll(/style\s*=\s*"([^"]*)"/giu)].map(match => match[1]))
+    .join(' ').replace(/\/\*[\s\S]*?\*\//gu, ' ');
+  const attributes = [...bare.matchAll(/\b(fill|stroke|color|stop-color|href)\s*=\s*"([^"]*)"/giu)].map(match => match[2]).join(' ');
+  const text = bare
+    .replace(/<head[\s\S]*?<\/head>/giu, ' ').replace(/<title[\s\S]*?<\/title>/giu, ' ')
+    .replace(/<script[\s\S]*?<\/script>/giu, ' ').replace(/<style[\s\S]*?<\/style>/giu, ' ')
+    .replace(blockEnd, ' | ').replace(/<[^>]+>/gu, ' ')
     .replace(/&nbsp;/gu, ' ').replace(/&amp;/gu, '&').replace(/&#36;|&dollar;/gu, '$')
     .replace(/&ndash;|&mdash;|&#8211;|&#8212;/gu, '-').replace(/&quot;|&#34;/gu, '"').replace(/&#39;|&rsquo;|&apos;/gu, "'");
-  return { text: fold(text), css: fold(styles), all: fold(html) };
+  return { text: fold(text), css: fold(css), attributes: fold(attributes), html: fold(bare) };
 }
 
-const price = (item, amount) => new RegExp(`${item}[^$]{0,80}\\$\\s?${amount.replace('.', '\\.')}\\b`, 'u');
-const closeAt = '(15:00|15\\.00|3\\s?(:00)?\\s?(pm|p\\.m\\.))';
+const menu = ['espresso', 'cortado', 'oat latte', 'cold brew'];
+
+/**
+ * The price shown for a menu item: the first "$" amount after the item's name, unless another
+ * menu item starts a new row or block in between (so an item without a price cannot borrow
+ * the next one's). A description that mentions "espresso" mid-sentence does not end the item.
+ */
+function priceOf(text, item) {
+  const others = menu.filter(name => name !== item);
+  for (const match of text.matchAll(new RegExp(`\\b${item}\\b`, 'gu'))) {
+    const rest = text.slice(match.index + item.length, match.index + item.length + 200);
+    const dollar = rest.indexOf('$');
+    const between = rest.slice(0, Math.max(dollar, 0));
+    // Another item starts a new row when its name opens a block as a short label ("| cold brew $"
+    // or "| cold brew |"), not when a description sentence begins with it ("| espresso cut with…").
+    const label = name => new RegExp(`\\|\\s*${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
+    // between ends where the price starts, so the "$" is put back for the label test.
+    if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
+    const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
+    if (amount) return Number(amount[1]);
+  }
+  return null;
+}
+const priced = (item, amount) => p => priceOf(p.text, item) === amount;
+const day = String.raw`\btues?(day)?s?\b`;
 
 /** The client's final word: 15 requirements, each a test on the page. */
 export const requirements = [
   ['Business name Tidewater Roast Co.', p => p.text.includes('tidewater roast co')],
   ['Tagline "Roasted slow, poured fresh."', p => p.text.includes('roasted slow, poured fresh')],
-  ['Address 41 Harbor Lane, Portland, Maine', p => p.text.includes('41 harbor lane') && p.text.includes('portland')],
-  ['Closes at 15:00', p => new RegExp(closeAt, 'u').test(p.text)],
-  // "Tue Closed" in an hours table counts too (scorer fix after D4 round 2, applied to every site).
-  ['Closed on Tuesdays', p => /closed[^.|]{0,40}\btue(sday)?s?\b|\btue(sday)?s?\b[^.|]{0,20}closed/u.test(p.text)],
-  ['Brand colour terracotta #C65D3B', p => p.all.includes('#c65d3b')],
-  ['Headings in Fraunces', p => p.all.includes('fraunces')],
-  ['Espresso $3.25', p => price('espresso', '3.25').test(p.text)],
-  ['Cortado $4.00', p => new RegExp('cortado[^$]{0,80}\\$\\s?4(\\.00)?\\b', 'u').test(p.text)],
-  ['Oat latte $5.25', p => price('oat latte', '5.25').test(p.text)],
-  ['Cold brew $4.75', p => price('cold brew', '4.75').test(p.text)],
+  ['Address 41 Harbor Lane, Portland, Maine', p => p.text.includes('41 harbor lane') && p.text.includes('portland') && p.text.includes('maine')],
+  ['Closes at 15:00', p => /(?<![\d:])(15:00|15\.00|3\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
+  // "Tue Closed" in an hours table counts (scorer fix after round 2, applied to every site).
+  ['Closed on Tuesdays', p => new RegExp(`closed[^.|]{0,40}${day}|${day}[^.|]{0,20}closed`, 'u').test(p.text)],
+  // Applied, not just mentioned: in a CSS declaration or a colour attribute, comments removed.
+  ['Brand colour terracotta #C65D3B', p => /[:\s,(]#c65d3b\b/u.test(p.css) || p.attributes.includes('#c65d3b')],
+  ['Headings in Fraunces', p => /(font(-family)?|--[\w-]+)\s*:[^;}]*fraunces/u.test(p.css)],
+  ['Espresso $3.25', priced('espresso', 3.25)],
+  ['Cortado $4.00', priced('cortado', 4)],
+  ['Oat latte $5.25', priced('oat latte', 5.25)],
+  ['Cold brew $4.75', priced('cold brew', 4.75)],
   ['Features the Harbor Fog blend', p => p.text.includes('harbor fog')],
-  ['Bean Club, $18 a month', p => /bean club/u.test(p.text) && /\$\s?18\b/u.test(p.text)],
+  ['Bean Club, $18 a month', p => /bean club[^$]{0,300}\$\s?18(?![\d.])/u.test(p.text)],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
-  ['Email hello@tidewater.example', p => p.all.includes('hello@tidewater.example')],
+  ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],
 ];
 
 /** Replaced values that should be gone. */
 export const stale = [
-  ['Old colour forest green #2F5D50', p => p.all.includes('#2f5d50')],
-  ['Old closing time 17:00', p => /17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.)/u.test(p.text)],
+  ['Old colour forest green #2F5D50', p => p.css.includes('#2f5d50') || p.attributes.includes('#2f5d50')],
+  ['Old closing time 17:00', p => /(?<![\d:])(17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
   // "Fresh every day" is fine; only the old opening pattern counts.
-  ['Old hours "open every day"', p => /open (every day|daily|7 days a week|seven days)|every day,? (from )?7/u.test(p.text)],
-  ['Old oat latte price $5.00', p => price('oat latte', '5.00').test(p.text) || /oat latte[^$]{0,80}\$\s?5\b(?!\.)/u.test(p.text)],
+  ['Old hours "open every day"', p => /open (every day|daily|7 days a week|seven days)|every day,? (from )?7|(am|pm|:00)\s*,?\s*(daily|every day)/u.test(p.text)],
+  ['Old oat latte price $5.00', p => priceOf(p.text, 'oat latte') === 5],
 ];
 
 /** Things the client ruled out. */
 export const forbidden = [
-  ['A wholesale section', p => p.text.includes('wholesale')],
+  // The eval rules out a wholesale section: a heading, link or form about it. A passing mention
+  // is reported separately (see scoreSite), not counted here.
+  ['A wholesale section', p => /<h[1-6][^>]*>[^<]*wholesale|<a\b[^>]*>[^<]*wholesale|<form\b[\s\S]*?wholesale[\s\S]*?<\/form>/u.test(p.html)],
   // The client said never to say it anywhere, so any mention counts.
-  ['Says gluten-free', p => /gluten[\s-]?free/u.test(p.text)],
-  ['Online ordering', p => /order online|online order|order ahead|order now/u.test(p.text)],
+  ['Says gluten-free', p => /gluten[\s\p{Pd}]?free/u.test(p.text)],
+  ['Online ordering', p => /order online|online order|order ahead|order now|pick-?up order|start (your|an) order/u.test(p.text)],
 ];
+
+/** The one HTML document in an agent's reply, or '' when there is none or more than one. */
+export function htmlOf(reply) {
+  const starts = [...reply.matchAll(/<!doctype html/giu)].map(match => match.index);
+  if (starts.length !== 1) return '';
+  const end = reply.toLowerCase().lastIndexOf('</html>');
+  return end > starts[0] ? reply.slice(starts[0], end + 7) : '';
+}
 
 export function scoreSite(html) {
   const parts = pageParts(html);
@@ -161,6 +202,7 @@ export function scoreSite(html) {
     missed: req.filter(r => !r.hit).map(r => r.name),
     stale: old.filter(r => r.hit).map(r => r.name),
     forbidden: bad.filter(r => r.hit).map(r => r.name),
+    mentions: parts.text.includes('wholesale') ? ['Mentions wholesale'] : [],
   };
 }
 
