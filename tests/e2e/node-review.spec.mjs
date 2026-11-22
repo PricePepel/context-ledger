@@ -14,7 +14,7 @@ async function publishV3(request, baseURL, marker) {
   const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'claude', source: `${marker}.jsonl`, transcript } });
   expect(imported.ok(), await imported.text()).toBe(true);
   const { session } = await imported.json();
-  const packet = label => ({ version: 3, sessionId: session.id, party: 'leo', edges: [], nodes: [
+  const packet = label => ({ version: 3, sessionId: session.id, party: 'reviewer-leo', edges: [], nodes: [
     { id: 'port', kind: 'decision', label, evidence: [{ message: `u:${uuid(1)}` }] },
     { id: 'notes', kind: 'goal', label: `Notes for ${marker}`, evidence: [{ message: `u:${uuid(2)}` }] },
   ] });
