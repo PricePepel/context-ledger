@@ -148,6 +148,40 @@ class TeamServiceTest(unittest.TestCase):
                                                       {"role": "user", "content": "2+2?"}]})
         self.assertEqual(guard.gateways[0].admission.label.trust, "untrusted", "the chat route is untrusted as a whole")
 
+    def test_w2_a_long_chat_is_cut_after_the_gateway(self):
+        # Review W2-1 finding 5: a declared value across the cut never reaches the squad in part.
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        filler = "word " * 900
+        text = filler[:1990] + canary + filler + canary + " end"
+        service.chat({"model": MODEL_ID, "secrets": [canary], "messages": [{"role": "user", "content": text}]})
+        read = self.team.calls[-1][0]
+        self.assertLessEqual(len(read), 8000 + 64)
+        for size in (8, 12, 20, 36):
+            for start in range(0, len(canary) - size + 1, 4):
+                self.assertNotIn(canary[start:start + size], read)
+
+    def test_w2_the_guard_keeps_to_one_project_and_to_the_fixed_budgets(self):
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        gateways = []
+        for project in ("proj-a", "proj-b"):
+            g = Gateway(project)
+            g.fix_permissions(Permissions())
+            g.admit([Span("request", "request", "q")])
+            gateways.append(g)
+        guard = Guard(self.team, thresholds=None)
+        with self.assertRaises(ValueError):
+            guard.run(["q", "q"], steps=3, max_new_tokens=6, gateways=gateways)
+        tight = Gateway("proj-a")
+        tight.fix_permissions(Permissions(max_steps=2))
+        tight.admit([Span("request", "request", "q")])
+        with self.assertRaises(ValueError):
+            guard.run(["q"], steps=3, max_new_tokens=6, gateways=[tight])
+        self.assertEqual(self.team.calls, [], "nothing ran")
+
     def test_w2_bad_declarations_are_refused(self):
         for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
                      {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},

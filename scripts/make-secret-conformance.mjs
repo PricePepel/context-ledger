@@ -96,6 +96,10 @@ const cases = [
   { name: 'kelvin sign folds to k in a lead', text: ['aws_secret_access_', { char: 0x212a }, 'ey=', fake.awsSecret] },
   { name: 'no-break spaces around the equals sign', text: ['aws_secret_access_key', { char: 0xa0 }, '=', { char: 0xa0 }, fake.awsSecret] },
   { name: 'a dotted capital i is no word character', text: [{ char: 0x130 }, 'token=abcd', '1234xyz'] },
+  { name: 'a dotless i does not fold into a stand-in', text: ['token=opt', { char: 0x131 }, 'onal'] },
+  { name: 'a dotted capital i does not fold into a lead', text: ['AP', { char: 0x130 }, '_KEY=abcd', '1234xyz'] },
+  { name: 'a dotless i does not fold into a lead', text: ['pass', 'word', ' ', 'p', { char: 0x131 }, 'n=abc', '123Def'] },
+  { name: 'upper case lead and stand-in', text: ['PASSWORD=CHANGEME', { char: 10 }, 'TOKEN: Abc123', 'Def456'] },
 ];
 
 function expand(parts) {

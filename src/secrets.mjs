@@ -134,7 +134,7 @@ const nameKeywords = secretRules.freeText.nameKeywords.join('|');
  */
 const freeTextLeads = [
   { kind: 'bearer-token', lead: new RegExp(secretRules.freeText.bearerLead, 'giu') },
-  { kind: 'assigned-secret', lead: new RegExp(`\\b(?:[A-Za-z0-9]{1,32}[_.-])?(?:${nameKeywords})\\b["']?[ \\t]*[:=][ \\t]*`, 'giu') },
+  { kind: 'assigned-secret', lead: new RegExp(secretRules.freeText.assignedLead.replace('{keywords}', nameKeywords), 'giu') },
 ];
 
 const placeholderPatterns = secretRules.placeholders.patterns.map(({ pattern, flags = '' }) => new RegExp(pattern, `${flags}u`));
@@ -216,18 +216,20 @@ function lineTails(text) {
   return found;
 }
 
-/** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty. */
+/** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty (rules: jwt). */
+const jwtRule = secretRules.jwt;
+
 function jwts(text) {
   const found = [];
-  const start = /\beyJ[A-Za-z0-9_-]{8}/gu;
+  const start = new RegExp(jwtRule.start, 'gu');
   for (let match = start.exec(text); match; match = start.exec(text)) {
     const headerEnd = runEnd(text, match.index, base64url);
     let end = headerEnd;
-    if (text[end] === '.' && text.startsWith('eyJ', end + 1)) {
+    if (text[end] === '.' && text.startsWith(jwtRule.segment, end + 1)) {
       const payloadEnd = runEnd(text, end + 1, base64url);
-      if (payloadEnd - (end + 1) >= 11 && text[payloadEnd] === '.') {
+      if (payloadEnd - (end + 1) >= jwtRule.payloadMin && text[payloadEnd] === '.') {
         end = runEnd(text, payloadEnd + 1, base64url);
-        found.push({ kind: 'jwt', start: match.index, end, prefix: 3 });
+        found.push({ kind: 'jwt', start: match.index, end, prefix: jwtRule.prefix });
       }
     }
     start.lastIndex = Math.max(start.lastIndex, end);
@@ -241,11 +243,15 @@ function jwts(text) {
  * label when it comes next. An unfinished block ends at the first line that cannot belong
  * to it, so it never swallows prose or a later block.
  */
+const keyRule = secretRules.privateKey;
+const keyHeader = new RegExp(keyRule.header, 'u');
+const keyBody = new RegExp(keyRule.body, 'u');
+
 function privateKeys(text) {
   const found = [];
-  const begin = /-----BEGIN ((?:[A-Z0-9]{1,16} ){0,3})PRIVATE KEY-----/gu;
+  const begin = new RegExp(keyRule.begin, 'gu');
   for (let match = begin.exec(text); match; match = begin.exec(text)) {
-    const endLine = `-----END ${match[1]}PRIVATE KEY-----`;
+    const endLine = keyRule.end.replace('{label}', match[1]);
     // Spaces or tabs after the BEGIN marker belong to it only when a line break follows them;
     // otherwise prose on the same line is left as it was.
     const markerEnd = match.index + match[0].length;
@@ -266,11 +272,11 @@ function privateKeys(text) {
         end = trimmed;
         break;
       }
-      if (/^[A-Za-z-]{1,32}: \S/u.test(line)) {
+      if (keyHeader.test(line)) {
         blankAllowed = true;
       } else if (line === '' && blankAllowed) {
         blankAllowed = false;
-      } else if (/^[A-Za-z0-9+/=]+$/u.test(line)) {
+      } else if (keyBody.test(line)) {
         blankAllowed = false;
       } else {
         break;

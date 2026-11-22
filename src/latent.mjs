@@ -646,8 +646,9 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
 // (docs/m2c-latent-team.md on leo/m2c-latent-team). Planner, critic and refiner
 // think in latent space on one open model and hand their KV working memory on; only
 // the solver writes text. The answer is model prose: one line, unverified.
-// W2: secrets the caller declares are replaced by placeholders before the model reads any
-// text, and come back in the answer only with clearance "sensitive" (the runtime's gateway).
+// W2: secrets the caller declares, and anything the runtime's scanner finds, are replaced by
+// placeholders before the model reads any text, and come back in the answer only with
+// clearance "sensitive" (the runtime's gateway).
 const teamFields = ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance'];
 const teamRoles = new Set(['planner', 'critic', 'refiner', 'solver']);
 

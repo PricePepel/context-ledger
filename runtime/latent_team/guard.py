@@ -199,6 +199,15 @@ class Guard:
             from .gateway import OutputGate, Span
             if len(gateways) != len(questions):
                 raise ValueError("one gateway per question")
+            # The rows of a batch share one memory object, so one batch is one project.
+            if len({g.project for g in gateways}) > 1:
+                raise ValueError("one batch never mixes projects: their memories would share tensors")
+            # The gateway's budgets were fixed before any data was read; the run keeps to them.
+            for g in gateways:
+                p = g.permissions
+                if steps > p.max_steps or max_new_tokens > p.max_new_tokens or \
+                        (self.time_cap is not None and self.time_cap > p.max_seconds):
+                    raise ValueError("the run asks for more than the gateway's fixed budgets")
             admitted = [g.admission if g.admission is not None else g.admit([Span("request", "request", q)])
                         for g, q in zip(gateways, questions)]
             questions = [a.text for a in admitted]

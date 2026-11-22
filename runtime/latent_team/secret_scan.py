@@ -46,48 +46,107 @@ _SPACES = "".join(re.escape(chr(code)) for code in QUOTE_SPACE_CODE_POINTS)
 def _escapes(ignore_case):
     """JavaScript's \\w and \\b word characters: ASCII letters, digits and _, and with the i
     flag also the two characters that fold into them, U+017F and U+212A (ECMAScript's
-    Canonicalize with simple case folding). The class is read with case folding off, so
-    Python's wider IGNORECASE (which also folds U+0130 and U+0131) cannot widen it."""
+    Canonicalize with simple case folding)."""
     word = "0-9A-Za-z_" + (chr(0x17F) + chr(0x212A) if ignore_case else "")
-    w = f"(?-i:[{word}])"
-    return ({"d": "[0-9]", "D": "[^0-9]", "w": w, "W": f"(?-i:[^{word}])",
+    w = f"[{word}]"
+    return ({"d": "[0-9]", "D": "[^0-9]", "w": w, "W": f"[^{word}]",
              "s": "[" + _SPACES + "]", "S": "[^" + _SPACES + "]",
              "b": f"(?:(?<={w})(?!{w})|(?<!{w})(?={w}))", "B": f"(?:(?<={w})(?={w})|(?<!{w})(?!{w}))"},
             {"d": "0-9", "w": word, "s": _SPACES})
 
 
+# Under JavaScript's iu flags a character matches a letter when both fold to the same
+# character. For the ASCII letters that is the letter's other case, plus U+017F LONG S for s
+# and U+212A KELVIN SIGN for k, and nothing else: so the folding is written into the pattern
+# and Python compiles it without IGNORECASE (whose folding is wider: it also maps U+0130 and
+# U+0131 to i).
+_EXTRA = {"s": chr(0x17F), "k": chr(0x212A)}
+
+
+def _variants(character):
+    if not character.isascii() or not character.isalpha():
+        return re.escape(character) if character in "\\]^-[" else character
+    lower = character.lower()
+    return lower + lower.upper() + _EXTRA.get(lower, "")
+
+
+def _fold_class(body):
+    """A class body with every ASCII letter, single or in a range, given its folded forms."""
+    out, extra, index = [], set(), 0
+    negated = body.startswith("^")
+    if negated:
+        index = 1
+    while index < len(body):
+        if body[index] == BACKSLASH and index + 1 < len(body):
+            out.append(body[index:index + 2])
+            index += 2
+            continue
+        low = body[index]
+        if index + 2 < len(body) and body[index + 1] == "-" and body[index + 2] != BACKSLASH:
+            high = body[index + 2]
+            out.append(f"{low}-{high}")
+            for code in range(ord(low), ord(high) + 1):
+                letter = chr(code)
+                if letter.isascii() and letter.isalpha():
+                    extra.add(letter.swapcase())
+                    extra.update(_EXTRA.get(letter.lower(), ""))
+            index += 3
+            continue
+        out.append(low if not (low.isascii() and low.isalpha()) else "")
+        if low.isascii() and low.isalpha():
+            extra.update(_variants(low))
+        index += 1
+    # The folded letters go first, so none can join a "-" at the end of the class into a range.
+    return ("^" if negated else "") + "".join(sorted(extra)) + "".join(out)
+
+
 def _python_pattern(pattern, ignore_case=False):
     """A JavaScript u-flag pattern rewritten so Python's re reads it the same way."""
     _OUTSIDE, _INSIDE = _escapes(ignore_case)
-    out, in_class, index = [], False, 0
+    out, index = [], 0
     while index < len(pattern):
         character = pattern[index]
         if character == BACKSLASH and index + 1 < len(pattern):
             escaped = pattern[index + 1]
-            if in_class and escaped in _INSIDE:
-                out.append(_INSIDE[escaped])
-            elif in_class and escaped in "DWS":
-                raise ValueError(f"a negated class escape inside a class is not supported: {pattern!r}")
-            elif not in_class and escaped in _OUTSIDE:
+            if escaped in _OUTSIDE:
                 out.append(_OUTSIDE[escaped])
             else:
                 out.append(pattern[index:index + 2])
             index += 2
             continue
-        if character == "[" and not in_class:
-            in_class = True
-        elif character == "]" and in_class:
-            in_class = False
-        elif character == "$" and not in_class:
-            character = BACKSLASH + "Z"
-        out.append(character)
+        if character == "[":
+            close, body = index + 1, []
+            while close < len(pattern) and pattern[close] != "]":
+                if pattern[close] == BACKSLASH and close + 1 < len(pattern):
+                    escaped = pattern[close + 1]
+                    if escaped in _INSIDE:
+                        body.append(_INSIDE[escaped])
+                    elif escaped in "DWS":
+                        raise ValueError(f"a negated class escape inside a class is not supported: {pattern!r}")
+                    else:
+                        body.append(pattern[close:close + 2])
+                    close += 2
+                    continue
+                body.append(pattern[close])
+                close += 1
+            text = "".join(body)
+            if not text or text == "^":
+                raise ValueError(f"an empty or ']'-first class is not supported: {pattern!r}")
+            out.append("[" + (_fold_class(text) if ignore_case else text) + "]")
+            index = close + 1
+            continue
+        if character == "$":
+            out.append(BACKSLASH + "Z")
+        elif ignore_case and character.isascii() and character.isalpha():
+            out.append("[" + _variants(character) + "]")
+        else:
+            out.append(character)
         index += 1
     return "".join(out)
 
 
 def _compile(pattern, flags=""):
-    ignore_case = "i" in flags
-    return re.compile(_python_pattern(pattern, ignore_case), re.IGNORECASE if ignore_case else 0)
+    return re.compile(_python_pattern(pattern, "i" in flags))
 
 
 class _Class:
@@ -118,8 +177,7 @@ _free = RULES["freeText"]
 FREE_TEXT = [
     {"kind": "bearer-token", "lead": _compile(_free["bearerLead"], "i")},
     {"kind": "assigned-secret",
-     "lead": _compile("\\b(?:[A-Za-z0-9]{1,32}[_.-])?(?:" + "|".join(_free["nameKeywords"]) + ")\\b[\"']?[ \\t]*[:=][ \\t]*",
-                      "i")},
+     "lead": _compile(_free["assignedLead"].replace("{keywords}", "|".join(_free["nameKeywords"])), "i")},
 ]
 _holders = RULES["placeholders"]
 PLACEHOLDERS = [_compile(p["pattern"], p.get("flags", "")) for p in _holders["patterns"]]
@@ -129,8 +187,12 @@ _OPENS_FIELD = _compile("^[^:=]*[\"'`]\\s{0,8}[:=]")
 _QUOTE_BEFORE_BEARER = _compile("([\"'])[ \\t]*Bearer", "i")
 
 
-_HEADER = _compile("^[A-Za-z-]{1,32}: \\S")
-_BASE64_LINE = _compile("^[A-Za-z0-9+/=]+$")
+JWT = RULES["jwt"]
+KEY = RULES["privateKey"]
+_JWT_START = _compile(JWT["start"])
+_KEY_BEGIN = _compile(KEY["begin"])
+_HEADER = _compile(KEY["header"])
+_BASE64_LINE = _compile(KEY["body"])
 
 
 def _at(text, index):
@@ -262,31 +324,31 @@ def line_tails(text):
 
 def jwts(text):
     found, position = [], 0
-    pattern = _compile("\\beyJ[A-Za-z0-9_-]{8}")
+    pattern = _JWT_START
     while True:
         match = pattern.search(text, position)
         if match is None:
             break
         position = match.end()
         end = run_end(text, match.start(), BASE64URL)
-        if _at(text, end) == "." and text.startswith("eyJ", end + 1):
+        if _at(text, end) == "." and text.startswith(JWT["segment"], end + 1):
             payload_end = run_end(text, end + 1, BASE64URL)
-            if payload_end - (end + 1) >= 11 and _at(text, payload_end) == ".":
+            if payload_end - (end + 1) >= JWT["payloadMin"] and _at(text, payload_end) == ".":
                 end = run_end(text, payload_end + 1, BASE64URL)
-                found.append({"kind": "jwt", "start": match.start(), "end": end, "prefix": 3})
+                found.append({"kind": "jwt", "start": match.start(), "end": end, "prefix": JWT["prefix"]})
         position = max(position, end)
     return found
 
 
 def private_keys(text):
     found, position = [], 0
-    begin = _compile("-----BEGIN ((?:[A-Z0-9]{1,16} ){0,3})PRIVATE KEY-----")
+    begin = _KEY_BEGIN
     while True:
         match = begin.search(text, position)
         if match is None:
             break
         position = match.end()
-        end_line = f"-----END {match.group(1)}PRIVATE KEY-----"
+        end_line = KEY["end"].replace("{label}", match.group(1))
         marker_end = match.end()
         padded = run_end(text, marker_end, _Class("[ \\t]"))
         end = padded if _at(text, padded) == "\n" or (_at(text, padded) == "\r" and _at(text, padded + 1) == "\n") \

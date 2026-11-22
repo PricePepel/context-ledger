@@ -5,13 +5,16 @@ The gateway runs before the squad reads anything and decides what it may see and
 - Labels by origin, not by content. Each input span carries its trust (the user's own
   request, or untrusted), its sensitivity (declared by the project or the user) and its
   owner (the project). Origin labels are exact; content scanners are not.
-- Need to know. Spans the task does not name never enter the memory. A path the shared
-  secret-file rule (rules/latent-rules.json) marks secret is refused even when named.
-- Placeholders. Declared secrets, and anything the shared secret scanner finds
-  (secret_scan.py, rules/secret-rules.json), are replaced by opaque tokens before the
-  model sees any text. The gateway keeps the map and puts values back in code, only for
-  an output or tool cleared to receive them. A token carries a random part made for the
-  run, so input text cannot forge one.
+- Need to know. Only the run's own request enters by default; any other span enters only
+  when the task names it. A path the shared secret-file rule (rules/latent-rules.json)
+  marks secret is refused even when named.
+- Placeholders. Declared secrets, anything the shared secret scanner finds
+  (secret_scan.py, rules/secret-rules.json) in any admitted span, and every other
+  occurrence of those values, are replaced by opaque tokens in one pass on the original
+  text, before the model sees any of it. The gateway keeps the map and puts values back
+  in code, only for an output or tool cleared to receive them. A token carries 128 random
+  bits made for the run, and input that holds the reserved "[[secret-" is neutralised, so
+  no input can forge or collide with one. A fragment of a value is not recognised.
 - One label for the whole memory: the strictest label of anything admitted, because
   every later agent attends to everything before it.
 - Permissions before data. Allowed tools, their argument rules and every budget are
@@ -20,10 +23,13 @@ The gateway runs before the squad reads anything and decides what it may see and
   outside effect. With all three, the tools are switched off for that run.
 - No reuse across projects. Every span and the memory belong to one project.
 
-The tool gate checks every tool call against those permissions and the memory's label
-before it is sent; a refused call has no effect. The output gate scans the final text,
-puts placeholders back by the output's clearance, and reports a broken label rule (a
-sensitive memory with an output not cleared for it), which the supervisor holds on.
+The tool gate checks every tool call, on the arguments as they would be sent (after
+placeholders are put back for a cleared tool), against those permissions and the memory's
+label; a sensitive memory may reach only cleared tools, and an uncleared tool never gets a
+known value or a placeholder. A refused call has no effect. The output gate replaces every
+known value an uncleared answer holds, scans the final text, puts placeholders back by the
+output's clearance, and reports a broken label rule (a sensitive memory with an output not
+cleared for it), which the supervisor holds on.
 
 Today's routes have no files and no tools. /latent/team's question is the caller's own
 request; the OpenAI-compatible chat route flattens system text, earlier turns and the new
@@ -43,6 +49,7 @@ SENSITIVITY = ("public", "sensitive")
 ORIGIN_TRUST = {"request": "user", "chat": "untrusted", "system": "untrusted", "history": "untrusted",
                 "file": "untrusted", "tool-result": "untrusted", "web": "untrusted"}
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._:-]{0,95}\Z")
+REQUEST_ORIGINS = ("request", "chat")   # the run's own request: always admitted
 
 
 class GatewayError(ValueError):
@@ -139,6 +146,12 @@ class Admission:
 
 
 class Gateway:
+    # A placeholder is [[secret-<n>-<32 hex>]]: 128 random bits made for the run. Input text
+    # that already holds the reserved opening "[[secret-" is neutralised before anything
+    # else, so no input can carry, forge or collide with a token.
+    RESERVED = "[[secret-"
+    NEUTRAL = "[(secret-"
+
     def __init__(self, project, declared_secrets=(), scanner=secret_scan.find_secrets, secret_path=None):
         self.project = _identifier(project, "project")
         self.declared = tuple(sorted({s for s in declared_secrets if isinstance(s, str) and s}, key=len,
@@ -151,9 +164,9 @@ class Gateway:
                 return is_secret_path([part for part in path.replace(chr(92), "/").split("/") if part])
         self.secret_path = secret_path
         self.permissions = None
-        self.nonce = secrets.token_hex(4)
+        self.nonce = secrets.token_hex(16)
         self._values = {}           # placeholder token -> value; never stored, never returned
-        self._count = 0
+        self._tokens = {}           # value -> placeholder token
         self.admission = None
 
     # ------------------------------------------------------------ before the squad reads
@@ -168,47 +181,63 @@ class Gateway:
         return permissions
 
     def _placeholder(self, value):
-        for token, known in self._values.items():
-            if known == value:
-                return token
-        self._count += 1
-        token = f"[[secret-{self._count}-{self.nonce}]]"
-        self._values[token] = value
-        return token
+        if value not in self._tokens:
+            token = f"[[secret-{len(self._tokens) + 1}-{self.nonce}]]"
+            self._tokens[value] = token
+            self._values[token] = value
+        return self._tokens[value]
 
-    def _hide(self, text):
-        """Declared secrets, then scanner findings, replaced by placeholders. Returns (text, count)."""
-        count = 0
-        for value in self.declared:
-            if value in text:
-                count += text.count(value)
-                text = text.replace(value, self._placeholder(value))
-        findings = self.scanner(self.masked(text))
-        if findings:
-            out, at = [], 0
-            for finding in findings:
-                out.append(text[at:finding["start"]] + self._placeholder(text[finding["start"]:finding["end"]]))
-                at = finding["end"]
-                count += 1
-            text = "".join(out) + text[at:]
-        return text, count
+    @staticmethod
+    def _merge(ranges):
+        merged = []
+        for start, end in sorted(r for r in ranges if r[1] > r[0]):
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return merged
 
-    def masked(self, text):
-        """text with every placeholder token turned into x's of the same length, so a scan
-        neither flags a token nor lets one hide a real secret next to it."""
-        for token in self._values:
-            text = text.replace(token, "x" * len(token))
-        return text
+    def _occurrences(self, text, values):
+        ranges = []
+        for value in values:
+            at = text.find(value)
+            while at != -1:
+                ranges.append((at, at + len(value)))
+                at = text.find(value, at + 1)
+        return ranges
 
-    def admit(self, spans, named=None):
-        """Admit the spans the task names (the request always), label them and build the
-        memory's text. named: the ids of the spans the task names; None names every span."""
+    def _hide_all(self, texts):
+        """Every span's declared secrets and scanner findings, then every other occurrence of
+        any value found anywhere, replaced in one pass per span on the original text, with
+        overlapping ranges merged. Returns (texts, count of ranges replaced)."""
+        texts = [t.replace(self.RESERVED, self.NEUTRAL) for t in texts]
+        known = set(self.declared)
+        for text in texts:   # the scanner reads each original text before anything is replaced
+            known.update(text[f["start"]:f["end"]] for f in self.scanner(text))
+        known = sorted((v for v in known if v), key=len, reverse=True)
+        out, count = [], 0
+        for text in texts:
+            ranges = self._merge([(f["start"], f["end"]) for f in self.scanner(text)] +
+                                 self._occurrences(text, known))
+            pieces, at = [], 0
+            for start, end in ranges:
+                pieces.append(text[at:start] + self._placeholder(text[start:end]))
+                at = end
+            out.append("".join(pieces) + text[at:])
+            count += len(ranges)
+        return out, count
+
+    def admit(self, spans, named=()):
+        """Admit the run's own request and the spans the task names, label them and build the
+        memory's text. named: the ids of the other spans the task names; a span that is not
+        named never enters (need to know)."""
         if self.permissions is None:
             raise GatewayError("permissions-not-fixed", "fix the permissions before reading any span")
         if self.admission is not None:
             raise GatewayError("admitted", "one admission per run")
-        label, kept, texts = None, [], []
-        left_out = refused = placeholders = 0
+        label, kept, chosen = None, [], []
+        left_out = refused = 0
+        named = set(named or ())
         for span in spans:
             _identifier(span.id, "span id")
             if span.origin not in ORIGIN_TRUST:
@@ -216,20 +245,19 @@ class Gateway:
             owner = span.owner if span.owner is not None else self.project
             if owner != self.project:
                 raise GatewayError("cross-project", f"span {span.id} belongs to {owner}")
-            if span.origin != "request" and named is not None and span.id not in named:
+            if span.origin not in REQUEST_ORIGINS and span.id not in named:
                 left_out += 1
                 continue
             if span.path is not None and self.secret_path(span.path):
                 refused += 1
                 continue
-            text, hidden = self._hide(span.text)
-            placeholders += hidden
             own = Label(ORIGIN_TRUST[span.origin], "sensitive" if span.sensitive else "public", owner)
             label = own if label is None else label.join(own)
             kept.append(span.id)
-            texts.append(text)
+            chosen.append(span.text)
         if label is None:
             raise GatewayError("empty", "nothing was admitted")
+        texts, placeholders = self._hide_all(chosen)
         tools = tuple(self.permissions.tools)
         outside = any(t.outside_effect for t in tools)
         off = label.trust == "untrusted" and label.sensitivity == "sensitive" and outside
@@ -238,16 +266,53 @@ class Gateway:
         self.admission = Admission("\n\n".join(texts), label, tools, tuple(kept), left_out, refused, placeholders, off)
         return self.admission
 
+    def fit(self, limit, marker):
+        """Cut the admitted text to `limit` characters, keeping its head and tail, never inside
+        a placeholder. Runs after admission, so no secret can straddle the cut."""
+        text = self.admission.text
+        if len(text) <= limit:
+            return text
+        head = (limit - len(marker)) // 4
+        tail = len(text) - (limit - len(marker) - head)
+        for token in self._values:
+            at = text.find(token)
+            while at != -1:
+                if at < head < at + len(token):
+                    head = at
+                if at < tail < at + len(token):
+                    tail = at + len(token)
+                at = text.find(token, at + 1)
+        self.admission.text = text[:head] + marker + text[tail:]
+        return self.admission.text
+
     # ------------------------------------------------------------ after the squad
     def restore(self, text):
-        """Placeholders put back. Only for an output or tool cleared to receive them. Newest
-        first: a later placeholder's value can hold an earlier token."""
-        for token, value in reversed(list(self._values.items())):
-            text = text.replace(token, value)
-        return text
+        """Placeholders put back, in one pass. Only for an output or tool cleared to receive
+        them: declared values and scanner findings alike."""
+        if not self._values:
+            return text
+        pattern = re.compile("|".join(re.escape(token) for token in self._values))
+        return pattern.sub(lambda match: self._values[match.group(0)], text)
 
     def holds_placeholder(self, text):
         return any(token in text for token in self._values)
+
+    def holds_value(self, text):
+        """Does text hold any known secret value itself (declared or found)?"""
+        return any(value in text for value in self._tokens)
+
+    def hide_values(self, text):
+        """Every known value in text replaced by its placeholder (longest first)."""
+        for value in sorted(self._tokens, key=len, reverse=True):
+            text = text.replace(value, self._tokens[value])
+        return text
+
+    def masked(self, text):
+        """text with every placeholder token turned into x's of the same length, so a scan
+        neither flags a token nor lets one hide a real secret next to it."""
+        for token in self._values:
+            text = text.replace(token, "x" * len(token))
+        return text
 
 
 @dataclass
@@ -258,7 +323,8 @@ class ToolResult:
 
 
 class ToolGate:
-    """Every tool call is checked before it is sent; a refused call never reaches `send`."""
+    """Every tool call is checked before it is sent, on the arguments that would be sent; a
+    refused call never reaches `send`."""
 
     def __init__(self, gateway):
         if gateway.admission is None:
@@ -288,6 +354,14 @@ class ToolGate:
                 return False
         return True
 
+    def _final(self, tool, arguments):
+        """The arguments as they would be sent: placeholders put back only for a cleared tool."""
+        if not isinstance(arguments, dict):
+            return arguments
+        if not tool.cleared:
+            return dict(arguments)
+        return {k: self.gateway.restore(v) if isinstance(v, str) else v for k, v in arguments.items()}
+
     def check(self, call):
         """The reason word a call would be refused for, or "allowed"."""
         name = call.get("name") if isinstance(call, dict) else None
@@ -296,15 +370,15 @@ class ToolGate:
             return "tools-off"
         if tool is None:
             return "not-allowed"
-        arguments = call.get("arguments", {})
-        if not self._arguments(tool, arguments):
+        final = self._final(tool, call.get("arguments", {}))
+        if not self._arguments(tool, final):   # the rules apply to what is sent, after restoring
             return "argument-rule"
         if self.calls >= self.permissions.max_tool_calls:
             return "budget"
-        if self.admission.label.sensitivity == "sensitive" and tool.outside_effect and not tool.cleared:
-            return "label"
-        if not tool.cleared and any(isinstance(v, str) and self.gateway.holds_placeholder(v)
-                                    for v in arguments.values()):
+        if self.admission.label.sensitivity == "sensitive" and not tool.cleared:
+            return "label"   # read-only or not: a call can carry what the memory holds
+        strings = [v for v in final.values() if isinstance(v, str)]
+        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v) for v in strings):
             return "placeholder"
         return "allowed"
 
@@ -315,10 +389,7 @@ class ToolGate:
             return ToolResult(False, reason)
         self.calls += 1
         tool = self.permissions.tool(call["name"])
-        arguments = dict(call.get("arguments", {}))
-        if tool.cleared:
-            arguments = {k: self.gateway.restore(v) if isinstance(v, str) else v for k, v in arguments.items()}
-        return ToolResult(True, "sent", send(call["name"], arguments))
+        return ToolResult(True, "sent", send(call["name"], self._final(tool, call.get("arguments", {}))))
 
 
 @dataclass
@@ -343,14 +414,19 @@ class OutputGate:
         return self.admission.label.sensitivity == "sensitive" and self.clearance != "sensitive"
 
     def release(self, text):
-        """Scan first (on the text as the model wrote it), then put placeholders back only
-        for a cleared output, so a cleared value is never redacted by its own scan."""
-        findings = self.gateway.scanner(self.gateway.masked(text))
-        marks = ()
+        """For an output not cleared: every known value (declared or found) the text holds
+        itself is replaced by its placeholder, then the scanner redacts what else it finds.
+        For a cleared output: the scan runs on the text as the model wrote it, then the
+        placeholders are put back, so a cleared value is never redacted by its own scan."""
+        gateway, redactions, marks = self.gateway, 0, ()
+        if self.clearance != "sensitive" and gateway.holds_value(text):
+            text, redactions, marks = gateway.hide_values(text), 1, ("redacted",)
+        findings = gateway.scanner(gateway.masked(text))
         if findings:
             text = secret_scan.redact_text(text, findings)
-            marks += ("redacted",)
+            redactions += len(findings)
+            marks = ("redacted",)
         restored = False
-        if self.clearance == "sensitive" and self.gateway.holds_placeholder(text):
-            text, restored = self.gateway.restore(text), True
-        return Release(text, marks, len(findings), restored)
+        if self.clearance == "sensitive" and gateway.holds_placeholder(text):
+            text, restored = gateway.restore(text), True
+        return Release(text, marks, redactions, restored)
