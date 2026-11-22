@@ -431,6 +431,37 @@ class LabelEvalTest(unittest.TestCase):
                              (None, "hold", "deadline"), late)
             self.assertEqual(len(calls), 0 if late == "before" else 1, late)
 
+    def test_no_fresh_fallback_after_the_deadline(self):
+        # Review W2-22 finding 3: the squad ends past the gateway's budget and falls back; the
+        # solver alone must not run.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        from latent_team.supervisor import Decision, Run
+        team = text_team()
+        now = [1000.0]
+        gateway = Gateway("proj-a")
+        gateway.clock = lambda: now[0]
+        gateway.fix_permissions(Permissions(max_seconds=60.0))
+        gateway.admit([Span("request", "request", "2+2?")])
+        guard = Guard(team, thresholds=None, sample=lambda: False)
+        guard.clock = lambda: now[0]
+        latent, single, calls = team.latent_mas, team.single, []
+
+        def late_squad(*args, **kwargs):
+            out = latent(*args, **kwargs)
+            now[0] += 120.0
+            return out
+
+        def counted_single(*args, **kwargs):
+            calls.append(1)
+            return single(*args, **kwargs)
+
+        with mock.patch.object(team, "latent_mas", late_squad), mock.patch.object(team, "single", counted_single), \
+                mock.patch.object(Run, "_decide", lambda run, *a: Decision("fallback", "statistical-flag")):
+            [outcome] = guard.run(["unused"], steps=STEPS, max_new_tokens=TOKENS, gateways=[gateway])
+        self.assertEqual(calls, [], "the solver alone never ran")
+        self.assertEqual((outcome.answer, outcome.decision["action"]), (None, "hold"))
+
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
         from latent_team.guard import Guard

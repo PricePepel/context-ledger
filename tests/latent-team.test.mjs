@@ -112,7 +112,9 @@ test('W2: a marker never writes a value back (review W2-9)', async () => {
     [{ question: 'q', secrets: ['REDACTED'] }, 'the REDACTED word', 'REDACTED']]) {
     const result = await latentTeam(input, { fetchImpl: fakeRuntime(200, { ...ok, answer }) });
     assert.equal(result.mode, 'latent-team');
-    assert.ok(!result.answer.includes(value), result.answer);
+    // A short value (under four code points) counts as a whole token only (review W2-22).
+    const pattern = [...value].length < 4 ? new RegExp(`(?<![\\p{L}\\p{N}_])${value}(?![\\p{L}\\p{N}_])`, 'u') : null;
+    assert.ok(pattern ? !pattern.test(result.answer) : !result.answer.includes(value), result.answer);
   }
 });
 

@@ -244,9 +244,11 @@ def canon_ranges(text, values):
         for decode in (True, False):
             canonical, spans = canon(text, drop, decode)
             for target in targets:
+                short = secret_scan.short_value(target)
                 at = canonical.find(target)
                 while at != -1:
-                    out.append((spans[at][0], spans[at + len(target) - 1][1]))
+                    if not short or secret_scan.at_token(canonical, at, at + len(target)):   # rules: shortValue
+                        out.append((spans[at][0], spans[at + len(target) - 1][1]))
                     at = canonical.find(target, at + 1)
     return out
 
@@ -378,9 +380,11 @@ class Gateway:
     def _occurrences(self, text, values):
         ranges = []
         for value in values:
+            short = secret_scan.short_value(value)
             at = text.find(value)
             while at != -1:
-                ranges.append((at, at + len(value)))
+                if not short or secret_scan.at_token(text, at, at + len(value)):   # rules: shortValue
+                    ranges.append((at, at + len(value)))
                 at = text.find(value, at + 1)
         return ranges
 
@@ -591,7 +595,7 @@ class Gateway:
         whether or not it has a placeholder of its own? collapsed=True also compares with runs
         of whitespace folded to one space, as a client printing the answer on one line does."""
         values = [v for v in self._egress if v] + [s for v in self.declared for s in spellings(v)]
-        if any(value in text for value in values):
+        if self._occurrences(text, values):   # a short value as a whole token (rules: shortValue)
             return True
         if collapsed:   # escaped, spaced or invisibly split copies, as a reader may see them
             return bool(canon_ranges(text, values))
@@ -856,7 +860,7 @@ class OutputGate:
         # found, whatever its length, may be in it in any form, and for an output not cleared
         # no known value either, not even one a marker and its neighbours spell. Such a
         # release is refused (safe = False) and the guard holds the run.
-        safe = not any(value in text for value in found) and not canon_ranges(text, found) and \
+        safe = not gateway._occurrences(text, found) and not canon_ranges(text, found) and \
             not (uncleared and gateway.holds_value(text, collapsed=True))
         restored, count, put_back = False, len(merged), []
         if not uncleared and gateway.holds_placeholder(text):
