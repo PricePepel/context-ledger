@@ -4783,3 +4783,19 @@ The question an investor asks: when one agent hands a job to another, does the l
 | Reported, not gated | `ledger` against `chat` on requirements and stale items, and end-to-end time for all three. Earlier rehearsals found the graph briefing as accurate as the raw transcript (18/18 and 12/12), so we expect no accuracy gain over `chat`; the claim there is tokens and time, not quality. |
 
 Not covered, and named so nobody reads more into a pass: one job, one client chat we wrote ourselves, one model family, three runs each, and design quality is judged by eye, not scored. The sites shown in the pitch are the actual outputs of these runs, unedited.
+
+### Round 1 (2026-11-22): result as run
+
+| Condition | Requirements met (runs 1, 2, 3) | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) |
+| --- | --- | --- | --- | --- | --- |
+| `chat` | 15, 14, 15 | 0 | 0 | 57,577 | 148 s |
+| `ledger` | 15, 10, 10 | 0 | 1 (a wholesale section) | 41,865 | 236 s |
+| `notes` | void: all three builds failed | | | | |
+
+- **`notes` is void because of a harness bug.** The builder ran without `--strict-mcp-config`, so `claude -p` loaded the operator's own MCP servers and the request failed on context length. It also gave that agent tools it should not have had. Fixed in the runner: every agent now gets `--strict-mcp-config` with this run's config (an empty one for the note reader and its builder).
+- **`ledger` failed the first gate's spirit, and the cause is the builder's reading, not the graph.** All three published graphs held all 15 requirements, with every replaced decision marked and linked by `supersedes`. Replaying run 4 (a diagnostic run with tool calls logged): the builder called `context_for` for the whole graph and then a second time with a question ("business name menu prices hours address contact subscription"). The scoped briefing correctly said "5 more left out", and the builder built from it, inventing a colour and fonts and copying a replaced hours node. Runs 2 and 3 missed the same five items (tagline, Tuesday closing, colour, font, Harbor Fog), which fits the same pattern. Product finding, new Backlog card G9c: a scoped briefing should name what it left out, not only count it.
+- **Tokens:** the `ledger` builder read 27% fewer input tokens than `chat`; both include about 30k tokens of Claude Code's own prompt per turn, so the gap in the handed-over text itself is larger (the meter estimates 10,898 tokens of chat against about 800 of briefing).
+
+### Round 2 (defined 2026-11-22, after round 1 and before running it)
+
+Same chat, scorer, model and 3 runs per condition, with two changes: the harness fix above for every agent, and the `ledger` builder prompt says to call `context_for` exactly once, with no question, and that current decisions are those not marked "(replaced)". The `chat` and `notes` prompts are unchanged. The gates are unchanged. Round 1 stays recorded as run; round 2 is reported beside it, not instead of it.
