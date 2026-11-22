@@ -47,6 +47,10 @@ Leo works in Claude Code and Ali works in Codex. Their agents never see each oth
 - **How we built it:** two people, each with their own agent. The agents coordinated all day through typed handoff packets in a separate repo, and CI rejected malformed ones. Every feature has an eval written before the code ([docs/evals.md](docs/evals.md)) and an independent review.
 - **Tests on `main`** (17ecef0, Windows, measured 2026-11-16): node 139 of 140 (1 skipped), Python runtime 131 run (24 skipped: 21 need torch, 3 need symlink rights). Playwright lists 13 tests; it last passed 13 of 13 in cycle 10.
 
+## Swarm demo
+
+`/swarm/` runs up to 200 agents at once on local open models (any OpenAI-compatible server such as vLLM, named in `SWARM_URLS`, loopback only), shows each agent working, checks each agent's quote against its source and combines the answers. Without a model server it offers a labelled simulation. See [docs/swarm-demo.md](docs/swarm-demo.md).
+
 ## Run locally
 
 Requires Node.js 22.14 or later.
