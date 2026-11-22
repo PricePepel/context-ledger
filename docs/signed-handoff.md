@@ -2,7 +2,13 @@
 
 A signed hand-off is a folder that lets the person who receives a session hand-off check two things: that no byte changed after it was signed, and that it was signed by the sender's key. It follows ADR-9 of the design: a raw Ed25519 signature over a manifest in RFC 8785 canonical JSON (JCS), with the key fingerprint passed out of band. The format is open, and checking a bundle needs either `ledger verify` or OpenSSL 3 alone.
 
-Signing does not redact anything. The bundle holds the same Markdown as `npm run ledger -- handoff <session-id>`, so read it before you send it. The secret scanner and the redaction diff are card P4b.
+Signing redacts first (card P4d). Before it signs, `--sign` runs the secret scanner that `npm run ledger -- redact <session-id>` reports from (cards P4b and P4c) over the source name and every message, and replaces each value it finds with `[REDACTED <kind>]`. The signed `handoff.md` is that redacted hand-off; for a session with no findings it is byte for byte what `npm run ledger -- handoff <session-id>` prints. There is no option to sign without redaction. The manifest records that the scanner ran and how many values it replaced.
+
+What redaction does not promise:
+
+- **The scanner is a heuristic.** It finds known key formats, and the rest of a line after an `Authorization: Bearer` header or a secret-like name followed by `:` or `=` (such as `password=`). A value that continues onto the next line, a secret in prose, and formats it does not know are not found. Read `handoff.md` before you send it; `redact <session-id>` shows where each finding is, and `redact <session-id> --text` shows the redacted hand-off.
+- **A false positive is removed too.** Text that only looks like a credential is replaced, and the bundle cannot be made to keep it.
+- **The count is the sender's.** `redaction` in the manifest is what the sender's ledger reports, signed by the sender's key. It tells the receiver which checks ran, not that the text is free of secrets. A transcript that already held the literal text `[REDACTED aws-access-key-id]` reads the same as a replaced value.
 
 ## For the sender
 
@@ -35,8 +41,8 @@ Signing does not redact anything. The bundle holds the same Markdown as `npm run
 
 | File | What it is |
 | --- | --- |
-| `handoff.md` | The hand-off Markdown, byte for byte what `ledger handoff <session-id>` prints. |
-| `manifest.json` | RFC 8785 canonical JSON, with no trailing newline: `format` (`context-ledger-signed-handoff`), `version` (1), `algorithm` (`Ed25519`), `created_at` (UTC, milliseconds), `session`, `public_key` (base64 of the key's SubjectPublicKeyInfo DER bytes) and `files`, which lists the name, byte size and SHA-256 of every content file (today only `handoff.md`). |
+| `handoff.md` | The redacted hand-off Markdown: what `ledger handoff <session-id>` prints, with each value the scanner found replaced by `[REDACTED <kind>]`. |
+| `manifest.json` | RFC 8785 canonical JSON, with no trailing newline: `format` (`context-ledger-signed-handoff`), `version` (2), `algorithm` (`Ed25519`), `created_at` (UTC, milliseconds), `session`, `public_key` (base64 of the key's SubjectPublicKeyInfo DER bytes), `files`, which lists the name, byte size and SHA-256 of every content file (today only `handoff.md`), and `redaction`, exactly `scanner` (the scanner and its rule version, today `context-ledger-secrets/1`) and `findings` (how many values it replaced). Version 1 bundles, signed before P4d, have no `redaction` and were not redacted. |
 | `manifest.sig` | The 64-byte raw Ed25519 signature over the exact bytes of `manifest.json`. |
 | `public-key.pem` | The same public key as `public_key`, as PEM, for OpenSSL. |
 
@@ -48,7 +54,9 @@ The fingerprint is the SHA-256 of the public key's SubjectPublicKeyInfo DER byte
 npm run ledger -- verify <folder> --fingerprint "<fingerprint from the sender>"
 ```
 
-It exits 0 only when every check passes: the manifest is canonical JCS in the expected format (version 1 lists exactly one file, `handoff.md`), the signature matches the manifest, the key matches the fingerprint, `public-key.pem` holds exactly the PEM of the manifest key, `handoff.md` has its listed size and hash, and the folder holds only these four regular files (no symlink, subfolder or other file). Otherwise it prints what failed and exits 1. Without `--fingerprint` it still checks everything else, but warns that the key was not checked: anyone can make a bundle that is consistent with a key of their own.
+It exits 0 only when every check passes: the manifest is canonical JCS in the expected format (version 2, or version 1 from before P4d; each lists exactly one file, `handoff.md`, and version 2 has exactly the `redaction` record above, with a known scanner and a whole, non-negative count), the signature matches the manifest, the key matches the fingerprint, `public-key.pem` holds exactly the PEM of the manifest key, `handoff.md` has its listed size and hash, and the folder holds only these four regular files (no symlink, subfolder or other file). Otherwise it prints what failed and exits 1. Without `--fingerprint` it still checks everything else, but warns that the key was not checked: anyone can make a bundle that is consistent with a key of their own.
+
+It also prints the redaction record, for example `Redaction: 4 values replaced, by context-ledger-secrets/1`. For a version 1 bundle it prints `Redaction: not recorded (a version 1 bundle)` and warns on stderr that the hand-off was not checked for secrets. A bundle with a scanner name this build does not know (one made by a later build) is refused; verify it with that build.
 
 What `verify` does not cover:
 
@@ -69,7 +77,7 @@ openssl dgst -sha256 handoff.md
 1. The first command prints the key fingerprint (for example `SHA2-256(stdin)= fd788b7d...`). It must equal the fingerprint the sender gave you, ignoring spaces. If it does not, stop: the bundle was not signed by that sender. If `openssl pkey` prints an error (say `public-key.pem` is missing), most shells still run the second half of the pipe and print the hash of empty input, `e3b0c442...b855`, which never matches a real fingerprint.
 2. The second must print `Signature Verified Successfully`. It proves that `manifest.json` is exactly what the key holder signed.
 3. The third prints the SHA-256 of `handoff.md`. It must equal the `sha256` given for `handoff.md` in the `files` list of `manifest.json`. Do the same for any other file the list names.
-4. Open `manifest.json` in a text editor. Check that `format` is `context-ledger-signed-handoff`, `version` is 1, and `files` lists exactly one entry, `handoff.md`, whose `bytes` matches the file's size. Check that the folder holds exactly four regular files with these exact names (`handoff.md`, `manifest.json`, `manifest.sig`, `public-key.pem`), and no symlink or subfolder. A file that is not listed is not covered by the signature.
+4. Open `manifest.json` in a text editor. Check that `format` is `context-ledger-signed-handoff`, `version` is 2 (with `redaction` naming the scanner and the number of values it replaced) or 1 (an older bundle that was not redacted), and `files` lists exactly one entry, `handoff.md`, whose `bytes` matches the file's size. Check that the folder holds exactly four regular files with these exact names (`handoff.md`, `manifest.json`, `manifest.sig`, `public-key.pem`), and no symlink or subfolder. A file that is not listed is not covered by the signature.
 
 All four steps are needed: each command alone proves less than it seems to. Step 2 passes for a bundle re-signed with someone else's key, which only step 1 catches. Step 2 also passes when `handoff.md` was changed, which only step 3 catches.
 

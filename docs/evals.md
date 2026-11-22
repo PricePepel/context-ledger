@@ -4473,7 +4473,7 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 ## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
 
-Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 14. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 15. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
 
 | Eval | Expected |
 | --- | --- |

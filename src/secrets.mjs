@@ -11,6 +11,13 @@
 // - Each pattern resumes after the whole value it found, so long runs are scanned once.
 // - Overlapping candidates merge into one span, labelled with the most specific kind.
 
+/**
+ * The scanner's name and rule version, as a signed hand-off records it (P4d). Change the
+ * number whenever a rule is added, removed or changed, so a receiver can tell which
+ * checks a bundle was redacted with.
+ */
+export const scannerName = 'context-ledger-secrets/1';
+
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
 const base64url = /[A-Za-z0-9_-]/u;

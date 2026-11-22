@@ -330,14 +330,21 @@ async function importT3(args) {
 }
 
 async function verifyCommand(dir, fingerprint) {
-  const { problems, files, createdAt, session, fingerprint: signer } = await verifyBundle(dir, { fingerprint });
+  const { problems, files, createdAt, session, fingerprint: signer, redaction } = await verifyBundle(dir, { fingerprint });
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
     throw new Error('Verification failed.');
   }
   const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
+  // The scanner name passed an exact check, so it is printed as it is.
+  const redacted = redaction === null ? 'not recorded (a version 1 bundle)'
+    : `${redaction.findings} ${redaction.findings === 1 ? 'value' : 'values'} replaced, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
-    '\nKey fingerprint: ' + signer);
+    '\nRedaction: ' + redacted + '\nKey fingerprint: ' + signer);
+  if (redaction === null) {
+    console.error('Warning: this bundle was signed before hand-offs were redacted. ' +
+      'Its hand-off was not checked for secrets; read it with care before you pass it on.');
+  }
   if (fingerprint === undefined) {
     console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
       'and run verify again with --fingerprint.');
@@ -406,9 +413,23 @@ async function signCommand(sessionId, signDir) {
   // Load the key first, so a missing key fails before anything is read or written.
   const privateKey = await loadSigningKey(signingKeyPath());
   const session = await readLedgerSession(ledgerDatabasePath(), sessionId);
-  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(session) + '\n', privateKey });
+  // Card P4d: what is signed is always the redacted hand-off; there is no way to opt out.
+  const { session: redacted, findings } = redactSession(session);
+  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(redacted) + '\n', findings: findings.length, privateKey });
   await writeBundle(signDir, bundle);
-  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
+  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\n' + redactionLine(findings, sessionId) +
+    '\nKey fingerprint: ' + bundle.fingerprint);
+}
+
+/** The sender's summary of what signing redacted: counts only, never a value or preview. */
+function redactionLine(findings, sessionId) {
+  if (findings.length === 0) {
+    return 'Redacted: nothing; the secret checks found no value. They cannot find every secret, so read handoff.md before you send it.';
+  }
+  const lines = new Set(findings.map(finding => finding.line ?? 'source')).size;
+  return `Redacted: ${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${lines} ` +
+    `${lines === 1 ? 'line' : 'lines'}, each replaced by [REDACTED <kind>]. ` +
+    `Run npm run ledger -- redact ${sessionId} to see where. Read handoff.md before you send it.`;
 }
 
 // The hand-off renderer keeps ZWNJ, ZWJ and tabs; the redaction view escapes every format
