@@ -4587,3 +4587,4 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
 - **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.
 - **Codex review, round 8:** one low, fixed with a test: edit labels were limited to 500 UTF-16 units while graph labels allow 500 code points, so a label with emoji could not be kept. Both count code points now, and the browser field has no maxLength (which counts UTF-16 units).
+- **Codex review, round 9:** one low, fixed with a test: an edit label of only invisible characters (a zero-width space, say) was accepted. Edit labels now follow the version 3 graph label patterns: something visible, and no control, separator or bidi control.

@@ -18,6 +18,10 @@ export const reviewerRule = 'reviewer must be your name: 1 to 64 visible charact
 export const labelRule = 'An edit needs label: the corrected label, 1 to 500 characters of well-formed text on one line.';
 // The browser edits a label in a one-line field, so a label keeps no line break.
 const lineBreak = /[\n\r\v\f\u0085\p{Zl}\p{Zp}]/u;
+// The two patterns of a version 3 graph label (schemas/semantic-graph-v3.schema.json):
+// something visible, and no control, separator or bidi control.
+const visibleLabel = /[^\s\p{C}\p{M}ᅟᅠㅤﾠ⠀]/u;
+const plainLabel = /^[^\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]*$/u;
 /** The prev of the first event. */
 export const genesis = '0'.repeat(64);
 
@@ -178,7 +182,7 @@ export function mountReviews(database, readGraph) {
       if (typeof reviewer !== 'string' || !reviewerPattern.test(reviewer) || !/\S/u.test(reviewer)) throw new InputError(reviewerRule);
       if (decision === 'edit') {
         // Counted in code points, as graph labels are, so any graph label can be kept as an edit.
-        if (typeof label !== 'string' || label.length < 1 || [...label].length > 500 || !label.isWellFormed() || !/\S/u.test(label) || lineBreak.test(label)) {
+        if (typeof label !== 'string' || label.length < 1 || [...label].length > 500 || !label.isWellFormed() || !visibleLabel.test(label) || !plainLabel.test(label) || lineBreak.test(label)) {
           throw new InputError(labelRule);
         }
       } else if (label !== undefined) {

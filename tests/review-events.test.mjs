@@ -79,7 +79,9 @@ test('P3: edits carry a label; approve and reject do not; errors never echo a va
   const refused = (input, message) => assert.throws(() => store.reviewNode(graph.id, input),
     error => error instanceof InputError && error.message === message, JSON.stringify(input));
   const secret = 'synthetic-value-9q';
-  for (const label of [undefined, '', '   ', 'x'.repeat(501), String.fromCodePoint(0xd800), 7, 'Port\n7100', 'Port\r7100', `Port${String.fromCodePoint(0x2028)}7100`]) {
+  for (const label of [undefined, '', '   ', 'x'.repeat(501), String.fromCodePoint(0xd800), 7, 'Port\n7100', 'Port\r7100', `Port${String.fromCodePoint(0x2028)}7100`,
+    // P3 review 9: the graph's label rule: something visible, and no control or bidi control.
+    String.fromCodePoint(0x200b), String.fromCodePoint(0x3164), `Port ${String.fromCodePoint(0x202e)}7100`]) {
     refused({ ...base, decision: 'edit', label }, labelRule);
   }
   refused({ ...base, decision: 'approve', label: secret }, 'Only an edit carries a label.');
@@ -246,15 +248,25 @@ test('P3: ledger reviews verify prints the count and head, and names a broken ev
   assert.match(usage.stderr, /reviews verify/u);
 });
 
-test('P3 review: an edit label with a NUL is kept whole, and the chain still verifies', () => {
-  const store = openStore(':memory:');
+test('P3 review: an edit label with a NUL is refused, and stored labels keep every character', async t => {
+  // Round 1 stored labels as JSON so a NUL could not break the chain; round 9 refuses
+  // controls in labels, as graph labels do. Stored text is still JSON, so a label
+  // written by another build with a NUL reads back whole.
+  const { path, keep } = await fileStore(t, 'ledger-p3-nul-label-');
+  const store = keep(openStore(path));
   const { graph, hash } = setup(store);
   const label = `Corrected${String.fromCodePoint(0)}suffix`;
-  const reviews = store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label, reviewer: 'Mira' });
-  assert.equal(reviews[0].label, label);
+  assert.throws(() => store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label, reviewer: 'Mira' }),
+    error => error instanceof InputError && error.message === labelRule);
+  const head = store.verifyReviews().head;
+  const event = { seq: 1, prev: head, sessionId: graph.packet.sessionId, party: 'mira', nodeId: 'port', nodeSha256: hash('port'),
+    decision: 'edit', label, reviewer: 'Mira', decidedAt: '2026-11-21T00:00:00.000Z' };
+  event.hash = eventHash(event);
+  const raw = keep(new DatabaseSync(path));
+  raw.prepare(`INSERT INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label_json, reviewer, decided_at)
+    VALUES (1, ?, ?, ?, 'mira', 'port', ?, 'edit', ?, 'Mira', ?)`).run(event.prev, event.hash, event.sessionId, event.nodeSha256, JSON.stringify(label), event.decidedAt);
   assert.equal(store.graphReviews(graph.id)[0].label, label);
   assert.equal(store.verifyReviews().brokenAt, undefined);
-  store.close();
 });
 
 test('P3 review: a trusted head is found in the chain, or reported missing after the end is cut', () => {
