@@ -4539,13 +4539,4 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
   - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
   - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
   - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
-  -  18/18; TAP version 13
-1..0
-# tests 0
-# suites 0
-# pass 0
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 9.4567 544/544.
+  - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
