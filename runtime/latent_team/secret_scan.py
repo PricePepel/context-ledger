@@ -8,12 +8,14 @@ value really ends, and overlapping candidates merge into one span labelled with 
 specific kind. It only reports and replaces; it never stores, prints or sends a value.
 
 JavaScript's u-flag patterns are rewritten before Python compiles them, as the H4 grader
-(runtime/tests/grade.py) does: \\b becomes a lookaround on ASCII word characters (as in
-JavaScript), \\s and \\S use JavaScript's whitespace list (rules/latent-rules.json), and a
-case-insensitive pattern folds case as Python's Unicode IGNORECASE does, so U+017F LONG S
-matches s and U+212A KELVIN SIGN matches k, as JavaScript's i does. One difference is left:
-with i, Python also folds U+0130 and U+0131 (dotted and dotless i), JavaScript does not.
-Offsets count code points where JavaScript counts UTF-16 units.
+(runtime/tests/grade.py) does: \\b and \\w use JavaScript's word characters exactly (ASCII,
+plus U+017F LONG S and U+212A KELVIN SIGN under i), \\s and \\S use JavaScript's whitespace
+list (rules/latent-rules.json), and a case-insensitive pattern folds case as Python's
+Unicode IGNORECASE does, so LONG S matches s and KELVIN SIGN matches k, as JavaScript's i
+does. One difference is left: inside a letter class such as [A-Za-z] under i, Python also
+matches U+0130 and U+0131 (dotted capital and dotless i), JavaScript does not; no rule's
+outcome in the shared cases depends on it. Offsets count code points where JavaScript
+counts UTF-16 units.
 
 Standard library only.
 """
@@ -38,19 +40,25 @@ def _load(path=RULES_PATH):
                            "context-ledger checkout, which has rules/secret-rules.json.") from None
 
 
-_WORD = "0-9A-Za-z_"
 _SPACES = "".join(re.escape(chr(code)) for code in QUOTE_SPACE_CODE_POINTS)
-_OUTSIDE = {
-    "d": "[0-9]", "D": "[^0-9]", "w": "[" + _WORD + "]", "W": "[^" + _WORD + "]",
-    "s": "[" + _SPACES + "]", "S": "[^" + _SPACES + "]",
-    "b": f"(?:(?<=[{_WORD}])(?![{_WORD}])|(?<![{_WORD}])(?=[{_WORD}]))",
-    "B": f"(?:(?<=[{_WORD}])(?=[{_WORD}])|(?<![{_WORD}])(?![{_WORD}]))",
-}
-_INSIDE = {"d": "0-9", "w": _WORD, "s": _SPACES}
 
 
-def _python_pattern(pattern):
+def _escapes(ignore_case):
+    """JavaScript's \\w and \\b word characters: ASCII letters, digits and _, and with the i
+    flag also the two characters that fold into them, U+017F and U+212A (ECMAScript's
+    Canonicalize with simple case folding). The class is read with case folding off, so
+    Python's wider IGNORECASE (which also folds U+0130 and U+0131) cannot widen it."""
+    word = "0-9A-Za-z_" + (chr(0x17F) + chr(0x212A) if ignore_case else "")
+    w = f"(?-i:[{word}])"
+    return ({"d": "[0-9]", "D": "[^0-9]", "w": w, "W": f"(?-i:[^{word}])",
+             "s": "[" + _SPACES + "]", "S": "[^" + _SPACES + "]",
+             "b": f"(?:(?<={w})(?!{w})|(?<!{w})(?={w}))", "B": f"(?:(?<={w})(?={w})|(?<!{w})(?!{w}))"},
+            {"d": "0-9", "w": word, "s": _SPACES})
+
+
+def _python_pattern(pattern, ignore_case=False):
     """A JavaScript u-flag pattern rewritten so Python's re reads it the same way."""
+    _OUTSIDE, _INSIDE = _escapes(ignore_case)
     out, in_class, index = [], False, 0
     while index < len(pattern):
         character = pattern[index]
@@ -78,7 +86,8 @@ def _python_pattern(pattern):
 
 
 def _compile(pattern, flags=""):
-    return re.compile(_python_pattern(pattern), re.IGNORECASE if "i" in flags else 0)
+    ignore_case = "i" in flags
+    return re.compile(_python_pattern(pattern, ignore_case), re.IGNORECASE if ignore_case else 0)
 
 
 class _Class:

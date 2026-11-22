@@ -48,6 +48,18 @@ test('W1: the watchdog decision passes as words only, and a hold has no answer',
   assert.deepEqual(strange, { mode: 'held', reason: 'unknown' });
 });
 
+test('W2: declared secrets and the clearance pass to the runtime, checked first', async () => {
+  const calls = [];
+  const secret = 'cnry'.concat('0123456789abcdef');
+  await latentTeam({ question: `keep ${secret}`, secrets: [secret], clearance: 'sensitive' }, { fetchImpl: fakeRuntime(200, ok, calls) });
+  assert.deepEqual(calls[0].body, { question: `keep ${secret}`, secrets: [secret], clearance: 'sensitive' });
+  for (const input of [{ question: 'q', secrets: 'abcdefgh' }, { question: 'q', secrets: ['short'] }, { question: 'q', secrets: [7] },
+    { question: 'q', secrets: Array(17).fill('abcdefgh') }, { question: 'q', clearance: 'top' }]) {
+    await assert.rejects(latentTeam(input, { fetchImpl: fakeRuntime(200, ok, calls) }), InputError, JSON.stringify(input));
+  }
+  assert.equal(calls.length, 1);
+});
+
 test('bad requests never reach the runtime', async () => {
   const calls = [];
   for (const input of [{}, { question: ' ' }, { question: 'x'.repeat(8001) }, { question: 'q', latentSteps: 81 },

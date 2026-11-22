@@ -41,7 +41,10 @@ class FakeGuard:
     def __init__(self, team, action="release", reason="uncalibrated"):
         self.team, self.action, self.reason = team, action, reason
 
-    def run(self, questions, steps, max_new_tokens):
+    def run(self, questions, steps, max_new_tokens, gateways=None):
+        if gateways is not None:   # the squad reads what the gateway admitted
+            questions = [g.admission.text for g in gateways]
+        self.gateways = gateways
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens)
         checks = dict(CHECKS)
         answer, system, marks, action = answers[0], "latent_mas", ["uncalibrated"], self.action
@@ -58,7 +61,8 @@ class FakeGuard:
                         statistical={"degenerate": "measured", "distance": "measured"},
                         scores={"degenerate": 2, "distance": 3}, system=system, tokens=receipt.generated_tokens[0],
                         latent_steps=receipt.latent_steps, latent_vectors=receipt.latent_vectors,
-                        seconds=receipt.seconds)]
+                        seconds=receipt.seconds,
+                        gateway=dict(gateways[0].admission.receipt(), redactions=0) if gateways else {})]
 
 
 class TeamServiceTest(unittest.TestCase):
@@ -129,6 +133,26 @@ class TeamServiceTest(unittest.TestCase):
             for leaf in leaves(receipt[name]):
                 self.assertTrue(isinstance(leaf, (bool, str)) or (type(leaf) is int and 0 <= leaf <= 9),
                                 (name, leaf))
+
+    def test_w2_declared_secrets_never_reach_the_squad_and_labels_follow_origin(self):
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        result = service({"question": f"My code is {canary}. Repeat it.", "secrets": [canary]})
+        self.assertNotIn(canary, self.team.calls[-1][0], "the squad reads a placeholder")
+        self.assertNotIn(canary, json.dumps(result))
+        self.assertEqual(result["receipt"]["gateway"]["label"], {"trust": "user", "sensitivity": "public"})
+        self.assertEqual(result["receipt"]["gateway"]["placeholders"], 1)
+        service.chat({"model": MODEL_ID, "messages": [{"role": "system", "content": "be kind"},
+                                                      {"role": "user", "content": "2+2?"}]})
+        self.assertEqual(guard.gateways[0].admission.label.trust, "untrusted", "the chat route is untrusted as a whole")
+
+    def test_w2_bad_declarations_are_refused(self):
+        for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
+                     {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},
+                     {"question": "q", "secrets": [12345678]}, {"question": "q", "clearance": "top"}]:
+            self.assertEqual(self.status(self.service, body), 400, body)
 
     def test_bad_team_requests(self):
         for body in [{}, {"question": " "}, {"question": "q", "latentSteps": 81}, {"question": "q", "latentSteps": True},

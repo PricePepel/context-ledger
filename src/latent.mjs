@@ -646,7 +646,9 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
 // (docs/m2c-latent-team.md on leo/m2c-latent-team). Planner, critic and refiner
 // think in latent space on one open model and hand their KV working memory on; only
 // the solver writes text. The answer is model prose: one line, unverified.
-const teamFields = ['question', 'latentSteps', 'maxNewTokens'];
+// W2: secrets the caller declares are replaced by placeholders before the model reads any
+// text, and come back in the answer only with clearance "sensitive" (the runtime's gateway).
+const teamFields = ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance'];
 const teamRoles = new Set(['planner', 'critic', 'refiner', 'solver']);
 
 function checkTeam(input) {
@@ -662,6 +664,14 @@ function checkTeam(input) {
   }
   if (maxNewTokens !== undefined && (!Number.isInteger(maxNewTokens) || maxNewTokens < 1 || maxNewTokens > 1024)) {
     throw new InputError('maxNewTokens must be an integer from 1 to 1024.');
+  }
+  const { secrets, clearance } = input;
+  if (secrets !== undefined && (!Array.isArray(secrets) || secrets.length > 16
+    || !secrets.every(value => typeof value === 'string' && value.length >= 8 && value.length <= 512))) {
+    throw new InputError('secrets must be a list of at most 16 strings of 8 to 512 characters.');
+  }
+  if (clearance !== undefined && clearance !== 'public' && clearance !== 'sensitive') {
+    throw new InputError('clearance must be public or sensitive.');
   }
   return Object.fromEntries(teamFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 }

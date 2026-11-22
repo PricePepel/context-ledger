@@ -150,12 +150,20 @@ export const latentTeam = ['latent_team', {
       question: { type: 'string', minLength: 1, maxLength: 8000, description: 'A self-contained question for the team.' },
       latentSteps: { type: 'integer', minimum: 0, maximum: 80, default: 40, description: 'Latent thinking steps per subagent.' },
       maxNewTokens: { type: 'integer', minimum: 1, maximum: 1024, default: 512, description: 'Upper bound on the answer length.' },
+      secrets: {
+        type: 'array', maxItems: 16, items: { type: 'string', minLength: 8, maxLength: 512 },
+        description: 'Values in the question that are secret. The team never sees them: each is replaced by a placeholder first.',
+      },
+      clearance: {
+        type: 'string', enum: ['public', 'sensitive'], default: 'public',
+        description: 'Whether declared secrets may come back in the answer (sensitive) or stay as placeholders (public).',
+      },
     },
     required: ['question'],
     additionalProperties: false,
   },
   async run(args) {
-    checkArguments(args, ['question', 'latentSteps', 'maxNewTokens']);
+    checkArguments(args, ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance']);
     const data = await ledger('/api/latent/team', { body: JSON.stringify(args), timeoutMs: 200_000 });
     if (data?.mode === 'unavailable') {
       return { content: [text(briefingText(`${data.reason ?? 'The latent team is unavailable.'} Answer the question yourself.`))] };

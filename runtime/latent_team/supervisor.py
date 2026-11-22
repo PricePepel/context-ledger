@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from . import reports
 
 ACTIONS = ("hold", "fallback", "abstain", "release")
-MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated")
+MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated", "redacted")
 REPORT_PROBLEMS = ("report-missing", "report-unsigned", "report-malformed", "report-other-run",
                    "report-unknown-squad", "report-replayed", "report-late")
 REASONS = reports.EXACT_CHECKS + ("label-rule",) + REPORT_PROBLEMS + (

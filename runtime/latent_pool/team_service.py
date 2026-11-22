@@ -6,7 +6,12 @@ refiner in latent space on the local model; the solver writes the reply. Only te
 leaves the process. Replies are model output, not checked facts.
 
 Every run goes through the W1 guard (latent_team/guard.py): a code watchdog checks each
-hand-off and signs a number-only report, and a code supervisor decides. A hold returns
+hand-off and signs a number-only report, and a code supervisor decides. Before the squad
+reads anything, the W2 gateway (latent_team/gateway.py) labels the input by origin and
+replaces declared secrets and scanner findings with placeholders; /latent/team's question
+is the caller's own request, while the chat route's flattened conversation is untrusted as
+a whole. Neither route has tools. The output gate scans every answer and puts declared
+values back only when the request is cleared to receive them. A hold returns
 HTTP 409 with the reason and no answer, on both routes, before any byte of an answer is
 sent. A fallback answer comes from the solver alone and is marked in the receipt. No
 thought record, vector or per-step value is ever part of a response.
@@ -27,7 +32,9 @@ from latent_team.guard import Guard
 from . import ApiError
 
 MODEL_ID = "ctm-latent-team"
-TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens"})
+TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens", "secrets", "clearance"})
+MAX_SECRETS, SECRET_CHARS = 16, (8, 512)
+PROJECT = "local"   # one project per runtime today; the gateway refuses spans of any other
 MAX_QUESTION_CHARS = 8000
 MAX_STEPS = 80
 MAX_NEW_TOKENS = 1024
@@ -50,6 +57,17 @@ def _int(body, name, default, low, high):
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
         raise ApiError(400, f"{name} must be an integer from {low} to {high}.")
     return value
+
+
+def declared_secrets(body):
+    """W2: values the caller declares secret ("secrets", also accepted as an extension field on
+    the chat route). Each is replaced by a placeholder before the model sees any text."""
+    secrets = body.get("secrets", [])
+    low, high = SECRET_CHARS
+    if not isinstance(secrets, list) or len(secrets) > MAX_SECRETS or not all(
+            isinstance(s, str) and low <= len(s) <= high for s in secrets):
+        raise ApiError(400, f"secrets must be a list of at most {MAX_SECRETS} strings of {low} to {high} characters.")
+    return secrets
 
 
 def _text_content(content):
@@ -100,14 +118,26 @@ class TeamService:
                                                            reference=reference_from_env(team))
         self._slot = threading.Lock()
 
-    def run(self, question, steps, max_new_tokens, gone=None):
+    def gateway(self, steps, max_new_tokens, secrets=(), clearance="public"):
+        """A gateway for one run, its permissions fixed before any span is read: no tools,
+        the run's budgets, and the output's clearance."""
+        from latent_team.gateway import Gateway, Permissions
+        gateway = Gateway(PROJECT, declared_secrets=secrets)
+        gateway.fix_permissions(Permissions(tools=(), max_tool_calls=0, max_steps=steps, max_new_tokens=max_new_tokens,
+                                            max_seconds=TIME_CAP_SECONDS, clearance=clearance))
+        return gateway
+
+    def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public"):
+        from latent_team.gateway import Span
+        gateway = self.gateway(steps, max_new_tokens, secrets, clearance)
+        gateway.admit([Span(origin, origin, question)])
         if not self._slot.acquire(timeout=self.slot_wait):
             raise ApiError(503, BUSY)
         try:
             # A caller that gave up while waiting for the slot gets no GPU work.
             if gone is not None and gone():
                 raise ApiError(499, GONE)
-            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens)[0]
+            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway])[0]
         finally:
             self._slot.release()
         # Fail closed: the supervisor's hold leaves as an error, so no client can take it
@@ -122,7 +152,8 @@ class TeamService:
                 "latentVectors": outcome.latent_vectors, "generatedTokens": outcome.tokens,
                 "seconds": round(outcome.seconds, 3), "decision": dict(outcome.decision),
                 "checks": dict(outcome.checks), "audits": dict(outcome.audits),
-                "statistical": dict(outcome.statistical), "scores": dict(outcome.scores)}
+                "statistical": dict(outcome.statistical), "scores": dict(outcome.scores),
+                "gateway": dict(outcome.gateway)}
 
     def prompt_tokens(self, question):
         tokenizer = getattr(self.team, "tokenizer", None)
@@ -140,7 +171,12 @@ class TeamService:
             raise ApiError(400, f"question must be 1 to {MAX_QUESTION_CHARS} characters.")
         steps = _int(body, "latentSteps", self.steps, 0, MAX_STEPS)
         limit = _int(body, "maxNewTokens", 512, 1, MAX_NEW_TOKENS)
-        answer, outcome = self.run(question, steps, limit, gone)
+        secrets = declared_secrets(body)
+        clearance = body.get("clearance", "public")
+        if clearance not in ("public", "sensitive"):
+            raise ApiError(400, "clearance must be public or sensitive.")
+        answer, outcome = self.run(question, steps, limit, gone, origin="request", secrets=secrets,
+                                   clearance=clearance)
         return {"mode": "latent-team", "answer": answer, "answerVerified": False, "receipt": self.receipt(outcome)}
 
     # ------------------------------------------------------------ OpenAI API
@@ -169,7 +205,9 @@ class TeamService:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ApiError(400, "max_tokens must be a positive integer.")
         limit = min(limit, MAX_NEW_TOKENS)
-        answer, outcome = self.run(question, self.steps, limit, gone)
+        # The flattened conversation mixes system text, history and the new message, so its
+        # origin is lost: it is untrusted as a whole (docs/watchdog-security.md, "The gateway").
+        answer, outcome = self.run(question, self.steps, limit, gone, origin="chat", secrets=declared_secrets(body))
         completion = outcome.tokens
         finish = "length" if completion >= limit else "stop"
         prompt = self.prompt_tokens(question)

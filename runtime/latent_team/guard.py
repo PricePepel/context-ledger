@@ -46,6 +46,7 @@ class Outcome:
     latent_vectors: int
     seconds: float
     extra: dict = field(default_factory=dict)
+    gateway: dict = field(default_factory=dict)  # W2: the run's label and the gateway's counts
 
 
 def agreement(a, b):
@@ -186,8 +187,21 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None):
-        """One guarded batch. audit: True or False forces the audits; None samples them."""
+    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None):
+        """One guarded batch. audit: True or False forces the audits; None samples them.
+
+        gateways (W2): one gateway.Gateway per question, its permissions fixed. Each admits the
+        question's spans before the squad reads anything, and the squad reads the admitted text
+        (placeholders in place of secrets); every answer released passes that gateway's output
+        gate, and a broken label rule holds the run. Without gateways the questions are read
+        as given (the eval)."""
+        if gateways is not None:
+            from .gateway import OutputGate, Span
+            if len(gateways) != len(questions):
+                raise ValueError("one gateway per question")
+            admitted = [g.admission if g.admission is not None else g.admit([Span("request", "request", q)])
+                        for g, q in zip(gateways, questions)]
+            questions = [a.text for a in admitted]
         thresholds = self.thresholds(steps)
         reference = reference if reference is not None else self.reference
         if thresholds is None or not thresholds.get("distance"):
@@ -197,12 +211,17 @@ class Guard:
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
                            keep_memory=True)
         started = time.monotonic()
+        gates = None if gateways is None else [OutputGate(g) for g in gateways]
         try:
-            return self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started)
+            outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates)
         except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
-            return [self._held(steps, "runtime-error") for _ in range(rows)]
+            outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
             watch.drop()
+        if gates is not None:
+            for outcome, gateway in zip(outcomes, gateways):
+                outcome.gateway = dict(gateway.admission.receipt(), redactions=outcome.gateway.get("redactions", 0))
+        return outcomes
 
     def _held(self, steps, reason, tokens=0, vectors=0, seconds=0.0):
         return Outcome(answer=None, decision=Decision("hold", reason).as_dict(), checks={}, audits={},
@@ -212,7 +231,7 @@ class Guard:
     def _over(self, started):
         return self.time_cap is not None and time.monotonic() - started > self.time_cap
 
-    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started):
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None):
         from .watchdog import weights_state
         rows = len(questions)
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
@@ -242,7 +261,8 @@ class Guard:
                 envelope = None
             if envelope is not None:
                 runs[row].submit(envelope)
-            decisions.append(runs[row].decide(calibrated=False))
+            broken = gates is not None and gates[row].label_broken()
+            decisions.append(runs[row].decide(calibrated=False, label_broken=broken))
         fallback_rows = [r for r, d in enumerate(decisions) if d.action == "fallback"]
         fallback = {}
         if fallback_rows:
@@ -275,8 +295,17 @@ class Guard:
                 # Only a release carries an answer: a hold, and an abstention (W3), give none.
                 answer = answers[row] if decision.action == "release" else None
                 system, tokens = "latent_mas", receipt.generated_tokens[row]
+            redactions = 0
+            if answer is not None and gates is not None:
+                # The output gate: the scanner over the final text, then placeholders put back
+                # only for a cleared output. A fallback answer passes it too.
+                released = gates[row].release(answer)
+                answer, redactions = released.text, released.redactions
+                if released.marks:
+                    decision = Decision(decision.action, decision.reason, decision.marks + released.marks,
+                                        decision.quarantined)
             outcomes.append(Outcome(
-                answer=answer, decision=decision.as_dict(),
+                answer=answer, decision=decision.as_dict(), gateway={"redactions": redactions},
                 checks=dict(report["checks"]) if report else {n: bool(results["checks"][n][row])
                                                               for n in results["checks"]},
                 audits=dict(report["audits"]) if report else {}, statistical=dict(report["statistical"]) if report else {},
