@@ -196,6 +196,17 @@ class Guard:
         from .watchdog import team_weights
         return load_calibration(self.team.model_name, team_weights(self.team)[0], steps, task)
 
+    def rendered(self, question):
+        """Every prompt a guarded run can give the model for one question, as the chat template
+        renders it: each role's turn, the solver's, and the solver alone's (audits, fallback)."""
+        from .chat_turns import first_turn
+        from .team import LATENT_PROMPTS, ROLES, SINGLE_PROMPT
+        tokenizer, turns = self.team.tokenizer, self.team.turns
+        texts = [first_turn(tokenizer, LATENT_PROMPTS[ROLES[0]].format(question=question))]
+        texts += [turns.later(LATENT_PROMPTS[role].format(question=question)) for role in ROLES[1:] + ("solver",)]
+        texts.append(first_turn(tokenizer, SINGLE_PROMPT.format(question=question)))
+        return texts
+
     def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None, task=None):
         """One guarded batch. audit: True or False forces the audits; None samples them.
 
@@ -219,6 +230,15 @@ class Guard:
             admitted = [g.admission if g.admission is not None else g.admit([Span("request", "request", q)])
                         for g, q in zip(gateways, questions)]
             questions = [a.text for a in admitted]
+            unsafe = []
+            for row, (g, question) in enumerate(zip(gateways, questions)):
+                try:
+                    for text in self.rendered(question):
+                        g.check_rendered(text)
+                except Exception:   # noqa: BLE001 - a prompt that would carry a known value is never run
+                    unsafe.append(row)
+            if unsafe:
+                return [self._held(steps, "unsafe-render") for _ in questions]
         thresholds = self.thresholds(steps)
         reference = reference if reference is not None else self.reference
         if thresholds is None or not thresholds.get("distance"):

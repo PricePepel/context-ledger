@@ -196,6 +196,14 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(raised.exception.status, 400)
         self.assertNotIn(canary, raised.exception.message)
 
+    def test_w2_the_chat_route_keeps_a_padded_declaration_hidden(self):
+        # Review W2-6 finding 2: the route trims messages before the gateway sees them.
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        service.chat({"model": MODEL_ID, "secrets": [" harbor-slate-42 "],
+                      "messages": [{"role": "user", "content": " harbor-slate-42 "}]})
+        self.assertNotIn("harbor-slate-42", self.team.calls[-1][0])
+
     def test_w2_bad_declarations_are_refused(self):
         for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
                      {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},

@@ -266,6 +266,32 @@ class PlaceholderTest(unittest.TestCase):
         rules[0] = Argument("to", pattern=".*")
         self.assertEqual(ToolGate(g).check({"name": "send_email", "arguments": {"to": "other"}}), "argument-rule")
 
+    def test_round6_an_escaped_emoji_is_the_same_value_as_a_literal_one(self):
+        # Review W2-6 finding 1: an escaped surrogate pair, and a literal copy elsewhere.
+        bs = chr(92)
+        escaped = "harbor" + bs + "uD83D" + bs + "uDE00" + "slate42"
+        literal = "harbor" + chr(0x1F600) + "slate42"
+        g = gateway()
+        admission = g.admit([Span("request", "request", f'password="{escaped}"' + chr(10) + f"copy {literal}")])
+        self.assertNotIn(literal, admission.text)
+        self.assertNotIn(literal, OutputGate(g).release(f"it is {literal}").text)
+
+    def test_round6_a_padded_declaration_matches_its_trimmed_copy(self):
+        g = gateway(declared=["  harbor-slate-42 "])
+        self.assertNotIn("harbor-slate-42", g.admit([Span("request", "request", "say harbor-slate-42")]).text)
+
+    def test_round6_permissions_read_their_rules_once_and_check_types(self):
+        # Review W2-6 finding 5: a one-shot iterator of rules, and a clearance given as text.
+        tool = Tool("send_email", outside_effect=False, arguments=iter([Argument("to")]))
+        g = Gateway("proj-a")
+        g.fix_permissions(Permissions(tools=(tool,), max_tool_calls=2))
+        g.admit([Span("request", "request", "q")])
+        self.assertEqual(ToolGate(g).check({"name": "send_email", "arguments": {}}), "argument-rule")
+        with self.assertRaises(GatewayError):
+            Gateway("proj-a").fix_permissions(Permissions(tools=(Tool("t", outside_effect=False, cleared="false"),)))
+        with self.assertRaises(GatewayError):
+            Gateway("proj-a").fix_permissions(Permissions(tools=(Tool("t", False, (Argument("a", kind="float"),)),)))
+
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
         secret = canary()
