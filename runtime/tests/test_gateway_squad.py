@@ -346,8 +346,19 @@ class NothingOnDiskTest(unittest.TestCase):
             "from tests.test_gateway_squad import text_team\n"
             "from latent_pool.team_service import MODEL_ID, TeamService\n"
             "service = TeamService(text_team(), steps=3)\n"
+            "import hashlib\n"
             "def listing():\n"
-            "    return sorted(os.path.join(r, n) for r, d, f in os.walk(os.getcwd()) for n in f + d)\n"
+            "    out = {}\n"
+            "    for r, d, f in os.walk(os.getcwd()):\n"
+            "        for n in d:\n"
+            "            out[os.path.join(r, n)] = 'dir'\n"
+            "        for n in f:\n"
+            "            with open(os.path.join(r, n), 'rb') as h:\n"
+            "                out[os.path.join(r, n)] = hashlib.sha256(h.read()).hexdigest()\n"
+            "    return out\n"
+            "held = open(os.path.join(os.getcwd(), 'held-open.txt'), 'a')\n"
+            "held.write('before')\n"
+            "held.flush()\n"
             "before = listing()\n"
             "writes = []\n"
             "def hook(event, args):\n"
@@ -364,13 +375,19 @@ class NothingOnDiskTest(unittest.TestCase):
             "service({'question': 'Keep cnry0123456789abcdef0123456789abcdef safe.', "
             "'secrets': ['cnry0123456789abcdef0123456789abcdef'], 'latentSteps': 3, 'maxNewTokens': 6})\n"
             "service.chat({'model': MODEL_ID, 'max_tokens': 6, 'messages': [{'role': 'user', 'content': '2+2?'}]})\n"
-            "run_writes, added = list(writes), sorted(set(listing()) - set(before))\n"
+            "after = listing()\n"
+            "run_writes = list(writes)\n"
+            "added = sorted(k for k in after if before.get(k) != after[k]) + sorted(k for k in before if k not in after)\n"
+            "held.write('during')\n"
+            "held.flush()\n"
+            "control_handle = listing()[os.path.join(os.getcwd(), 'held-open.txt')] != after[os.path.join(os.getcwd(), 'held-open.txt')]\n"
             "probe = os.path.join(os.getcwd(), 'existing.txt')\n"
             "fd = os.open(probe, os.O_WRONLY | os.O_APPEND | os.O_CREAT)\n"
             "os.write(fd, b'x')\n"
             "os.close(fd)\n"
             "control = [w for w in writes if w[1].endswith('existing.txt')]\n"
-            "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control)}))\n")
+            "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control), "
+            "'handle': control_handle}))\n")
         with tempfile.TemporaryDirectory() as folder:
             env = dict(os.environ, HOME=folder, USERPROFILE=folder, TMPDIR=folder, TEMP=folder, TMP=folder,
                        PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime)
@@ -380,6 +397,8 @@ class NothingOnDiskTest(unittest.TestCase):
             report = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertEqual((report["writes"], report["added"]), ([], []))
             self.assertGreater(report["control"], 0, "the hook sees a numeric-flag write (positive control)")
+            self.assertTrue(report["handle"], "a write through a handle opened earlier changes the content "
+                                              "comparison (positive control)")
 
 if __name__ == "__main__":
     unittest.main()

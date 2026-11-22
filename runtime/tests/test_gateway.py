@@ -162,6 +162,43 @@ class PlaceholderTest(unittest.TestCase):
                                      Span("rest", "file", key)], named={"rest"})
         self.assertNotIn(key, admission.text)
 
+    def test_round3_a_value_inside_the_gateways_own_text_fails_closed(self):
+        # Review W2-3 findings 1 and 2: a declared value that the placeholder format or the
+        # redaction marker would carry.
+        with self.assertRaises(GatewayError) as raised:
+            gateway(declared=["secret-1"]).admit([Span("request", "request", "my secret-1 is here")])
+        self.assertEqual(raised.exception.reason, "unsafe-render")
+        g = gateway(declared=["[REDACTED secret]", "other" + "Value77"])
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("it is otherValue77")
+        self.assertFalse(released.safe, "the marker the gate wrote is a declared value: refuse")
+
+    def test_round3_the_reserved_opening_inside_a_value_is_still_hidden(self):
+        # Review W2-3 finding 3: discovery runs on the original text.
+        value = "demo[[secret-abc"
+        g = gateway(declared=[value], clearance="sensitive")
+        admission = g.admit([Span("request", "request", f"key {value} end")])
+        self.assertNotIn(value, admission.text)
+        self.assertNotIn("demo[(secret-abc", admission.text)
+        self.assertIn(value, OutputGate(g).release(admission.text).text, "and restores for a cleared output")
+
+    def test_round3_numbers_budgets_and_duplicate_ids(self):
+        # Review W2-3 findings 4, 5 and 7.
+        lookup = Tool("lookup", outside_effect=False, arguments=(Argument("id", kind="integer", low=0, high=10 ** 9),))
+        g = gateway(tools=(lookup,), declared=["12345678"], calls=1)
+        g.admit([Span("request", "request", "id 12345678")])
+        self.assertEqual(ToolGate(g).check({"name": "lookup", "arguments": {"id": 12345678}}), "placeholder")
+        sent = []
+        first, second = ToolGate(g), ToolGate(g)
+        self.assertTrue(first.submit({"name": "lookup", "arguments": {"id": 7}}, lambda n, a: sent.append(a)).sent)
+        self.assertEqual(second.submit({"name": "lookup", "arguments": {"id": 8}}, lambda n, a: sent.append(a)).reason,
+                         "budget", "the budget belongs to the run, not to one gate")
+        self.assertEqual(sent, [{"id": 7}])
+        with self.assertRaises(GatewayError) as raised:
+            gateway().admit([Span("request", "request", "q"), Span("notes", "file", "a"), Span("notes", "file", "b")],
+                            named={"notes"})
+        self.assertEqual(raised.exception.reason, "duplicate-span")
+
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
         secret = canary()
@@ -280,6 +317,14 @@ class ToolGateTest(unittest.TestCase):
         _, gate = self.gate([Span("request", "request", "my diary: x", sensitive=True)], tools=(SEARCH,))
         self.assertEqual(gate.submit({"name": "search_notes", "arguments": {"query": "x"}}, self.send).reason, "label")
         self.assertEqual(self.sent, [])
+
+    def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
+        # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
+        # the rule of two's three) may call a tool cleared for sensitive data, never another.
+        _, gate = self.gate([Span("request", "request", "my diary: x", sensitive=True)], tools=(SEND, VAULT))
+        self.assertEqual(gate.submit({"name": "send_email", "arguments": {"to": "ann@example.test", "body": "x"}},
+                                     self.send).reason, "label")
+        self.assertTrue(gate.submit({"name": "vault_write", "arguments": {"value": "x"}}, self.send).sent)
 
     def test_a_placeholder_reaches_only_a_cleared_tool_and_only_restored(self):
         secret = canary()

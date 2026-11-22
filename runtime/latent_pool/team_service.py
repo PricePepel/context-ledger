@@ -133,9 +133,12 @@ class TeamService:
         return gateway
 
     def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public"):
-        from latent_team.gateway import Span
+        from latent_team.gateway import GatewayError, Span
         gateway = self.gateway(steps, max_new_tokens, secrets, clearance)
-        gateway.admit([Span(origin, origin, question)])
+        try:
+            gateway.admit([Span(origin, origin, question)])
+        except GatewayError as error:   # fail closed: the squad reads nothing it could not clear
+            raise ApiError(400, f"The gateway refused the input ({error.reason}).") from None
         # The cut of an oversized conversation comes after the gateway, so no secret can
         # straddle it, and it never splits a placeholder.
         gateway.fit(MAX_QUESTION_CHARS, FIT_MARKER)

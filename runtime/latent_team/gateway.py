@@ -168,6 +168,7 @@ class Gateway:
         self._values = {}           # placeholder token -> value; never stored, never returned
         self._tokens = {}           # value -> placeholder token
         self._egress = set()        # every declared value and original finding: never out uncleared
+        self.tool_calls = 0         # the run's tool budget is counted here, whatever gate sends
         self.admission = None
 
     # ------------------------------------------------------------ before the squad reads
@@ -214,7 +215,6 @@ class Gateway:
         all found on the original text, merged where they overlap and replaced in one pass.
         Returns (text, count of ranges replaced). Every declared value and original finding
         also joins the egress set the output and tool gates check, placeholder or not."""
-        texts = [t.replace(self.RESERVED, self.NEUTRAL) for t in texts]
         joined, offsets, at = separator.join(texts), [], 0
         for text in texts:
             offsets.append(at)
@@ -227,10 +227,21 @@ class Gateway:
         known = sorted((v for v in self._egress if v), key=len, reverse=True)
         merged = self._merge(ranges + self._occurrences(joined, known))
         pieces, at = [], 0
-        for start, end in merged:
-            pieces.append(joined[at:start] + self._placeholder(joined[start:end]))
+        for start, end in merged:   # the reserved opening is neutralised in literal text only
+            pieces.append(joined[at:start].replace(self.RESERVED, self.NEUTRAL) + self._placeholder(joined[start:end]))
             at = end
-        return "".join(pieces) + joined[at:], len(merged)
+        rendered = "".join(pieces) + joined[at:].replace(self.RESERVED, self.NEUTRAL)
+        # Verify what the model will read: no known value may survive, not even inside a
+        # placeholder or the neutralised text the gateway wrote itself.
+        if self.holds_value(self.masked_out(rendered)) or self.holds_value(rendered):
+            raise GatewayError("unsafe-render", "a known value is still in the text the model would read")
+        return rendered, len(merged)
+
+    def masked_out(self, text):
+        """text without its placeholder tokens (for checking what else it holds)."""
+        for token in self._values:
+            text = text.replace(token, "")
+        return text
 
     def admit(self, spans, named=()):
         """Admit the run's own request and the spans the task names, label them and build the
@@ -243,6 +254,9 @@ class Gateway:
         label, kept, chosen = None, [], []
         left_out = refused = 0
         named = set(named or ())
+        ids = [span.id for span in spans]
+        if len(ids) != len(set(ids)):   # need to know is by id: an id must name one span
+            raise GatewayError("duplicate-span", "span ids must be unique")
         for span in spans:
             _identifier(span.id, "span id")
             if span.origin not in ORIGIN_TRUST:
@@ -378,12 +392,12 @@ class ToolGate:
         final = self._final(tool, call.get("arguments", {}))
         if not self._arguments(tool, final):   # the rules apply to what is sent, after restoring
             return "argument-rule"
-        if self.calls >= self.permissions.max_tool_calls:
+        if self.gateway.tool_calls >= self.permissions.max_tool_calls:
             return "budget"
         if self.admission.label.sensitivity == "sensitive" and not tool.cleared:
             return "label"   # read-only or not: a call can carry what the memory holds
-        strings = [v for v in final.values() if isinstance(v, str)]
-        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v) for v in strings):
+        outbound = [v if isinstance(v, str) else str(v) for v in final.values()]   # an integer is sent as text too
+        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v) for v in outbound):
             return "placeholder"
         return "allowed"
 
@@ -393,6 +407,7 @@ class ToolGate:
             self.refused += 1
             return ToolResult(False, reason)
         self.calls += 1
+        self.gateway.tool_calls += 1   # reserved on the run before anything is sent
         tool = self.permissions.tool(call["name"])
         return ToolResult(True, "sent", send(call["name"], self._final(tool, call.get("arguments", {}))))
 
@@ -403,6 +418,7 @@ class Release:
     marks: tuple = ()
     redactions: int = 0
     restored: bool = False
+    safe: bool = True             # False: a known value is still in an uncleared output
 
 
 class OutputGate:
@@ -441,4 +457,8 @@ class OutputGate:
         restored = False
         if self.clearance == "sensitive" and gateway.holds_placeholder(text):
             text, restored = gateway.restore(text), True
-        return Release(text, ("redacted",) if merged else (), len(merged), restored)
+        # Verify the text that would leave: for an output not cleared, no known value may be
+        # in it, not even one the redaction itself wrote. Such a release is refused (safe =
+        # False) and the guard holds the run.
+        safe = self.clearance == "sensitive" or not gateway.holds_value(text)
+        return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)

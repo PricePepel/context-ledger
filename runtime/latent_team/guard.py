@@ -316,7 +316,9 @@ class Guard:
                 # only for a cleared output. A fallback answer passes it too.
                 released = gates[row].release(answer)
                 answer, redactions = released.text, released.redactions
-                if released.marks:
+                if not released.safe:   # the output gate could not clear the text: nothing leaves
+                    answer, decision = None, Decision("hold", "output-unsafe", decision.marks, decision.quarantined)
+                elif released.marks:
                     decision = Decision(decision.action, decision.reason, decision.marks + released.marks,
                                         decision.quarantined)
             outcomes.append(Outcome(
