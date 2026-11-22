@@ -4846,3 +4846,18 @@ A read-only Codex review found eight issues, all addressed; the scorer changes h
 | 2 | `ledger` | 15, 15, 15 | 0 | 0 | 1 | 37,446 | 249 s | $0.47 |
 
 **Gates, round 2, final:** the first gate passes on the eval's wording (the ledger met as many requirements as the note in every run the note completed, with no stale or ruled-out items), but only as a tie: no condition was better than another on correctness. The second gate fails (37,446 against 36,847 builder input tokens). D4 shows no quality or cost advantage for the ledger hand-off on this job. What it does show: the published graph kept all 15 requirements and every change, with replaced decisions marked, in all six graphs.
+
+### Round 3 (defined 2026-11-22, after the Codex review and before running it)
+
+Rounds 1 and 2 put all the chatter after the last requirement, so a builder reading the chat found everything on the first `session_read` page. Round 3 tests the case where the ledger could help, with the scorer, the brief and the client's final requirements unchanged:
+
+- **Long chat with the requirements spread through it.** 800 chatter exchanges, spread evenly over the nine gaps between requirement exchanges (`roasterTranscript(800, { interleave: true })`). The chat runs to about five `session_read` pages, and the changes (colour, hours, oat latte price, the dropped wholesale page and order button) come pages after the values they replace.
+- **A smaller builder.** Every builder runs on Haiku (`--builder-model haiku`). The note writer and the graph publisher stay on Sonnet, as in rounds 1 and 2.
+- **One hand-off, several builders.** In `notes` and `ledger` the first agent runs once, and its note or graph feeds all three builders (`--reuse`). In `chat` each of the three builders reads the chat.
+
+**Gates, fixed before the run:**
+
+1. Correctness: the `ledger` builders meet at least as many requirements on average as the `chat` and `notes` builders, with no more stale or ruled-out items in total than either, **and** they are strictly better than `chat` on requirements met or on stale plus ruled-out items. A tie does not pass this round.
+2. Cost: the whole `ledger` condition (one publish plus three builders) costs less than the whole `chat` condition (three builders).
+
+A failed first agent fails its whole condition; nothing is rerun. Deviations are reported beside the runs, as in round 2.

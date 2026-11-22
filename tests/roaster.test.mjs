@@ -122,3 +122,19 @@ test('review: a description that starts with another item\'s name does not end t
   const borrowed = good.replace('<li>Oat latte <b>$5.25</b></li><li>Cold brew $4.75</li>', '<li><h3>Oat latte</h3></li><li><h3>Cold brew</h3><span>$5.25</span></li>');
   assert.ok(scoreSite(borrowed).missed.includes('Oat latte $5.25'));
 });
+
+// Round 3 of D4: chatter spread between the requirements.
+test('an interleaved chat keeps every requirement turn, in order, with chatter between them', () => {
+  assert.equal(roasterTranscript(0, { interleave: true }), roasterTranscript(0));
+  const plain = roasterTranscript(800).split('\n');
+  const spread = roasterTranscript(800, { interleave: true }).split('\n');
+  assert.equal(spread.length, plain.length);
+  const chatterTexts = new Set(roasterTranscript(16).split('\n').slice(roasterTranscript(0).split('\n').length));
+  const requirementTurns = lines => lines.filter(line => !chatterTexts.has(line));
+  assert.deepEqual(requirementTurns(spread), requirementTurns(plain));
+  // The colour change and the last word sit far from the start, not in the first few hundred lines.
+  const at = needle => spread.findIndex(line => line.includes(needle));
+  assert.ok(at('#2F5D50') < 200);
+  assert.ok(at('terracotta, #C65D3B') > spread.length / 2);
+  assert.ok(at('Make it warm and welcoming') > spread.length - 200);
+});

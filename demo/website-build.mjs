@@ -3,6 +3,7 @@
 // three ways, and each site is scored against the client's final requirements.
 //
 //   node demo/website-build.mjs [--port 4337] [--runs 3] [--chatter 150] [--model sonnet]
+//     [--builder-model haiku] [--interleave] [--reuse]
 //
 //   chat    the builder reads the whole client chat itself (session_read)
 //   notes   a first agent writes a hand-off note; the builder reads only the note
@@ -30,10 +31,16 @@ const { values: options } = parseArgs({
     runs: { type: 'string', default: '3' },
     chatter: { type: 'string', default: '150' },
     model: { type: 'string', default: 'sonnet' },
+    // Round 3 (D4): a builder model of its own, chatter spread between the requirements, and
+    // one note or graph shared by every builder of its condition.
+    'builder-model': { type: 'string' },
+    interleave: { type: 'boolean', default: false },
+    reuse: { type: 'boolean', default: false },
     'timeout-s': { type: 'string', default: '900' },
     only: { type: 'string' },
   },
 });
+const builderModel = options['builder-model'] ?? options.model;
 const port = Number(options.port);
 const runs = Number(options.runs);
 const chatter = Number(options.chatter);
@@ -45,7 +52,9 @@ if (!Number.isInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 3_600_000)
 const conditions = options.only ? options.only.split(',') : ['chat', 'notes', 'ledger'];
 if (!conditions.every(c => ['chat', 'notes', 'ledger'].includes(c))) throw new Error('--only takes chat, notes and ledger.');
 // The model name reaches cmd.exe on Windows, so it is restricted to plain characters.
-if (!/^[\w.:-]{1,64}$/u.test(options.model)) throw new Error('--model takes letters, digits, ".", ":" and "-" only.');
+for (const model of [options.model, builderModel]) {
+  if (!/^[\w.:-]{1,64}$/u.test(model)) throw new Error('--model and --builder-model take letters, digits, ".", ":" and "-" only.');
+}
 const origin = `http://127.0.0.1:${port}`;
 // Agent text (errors, replies) can hold control, format or bidi characters: print them escaped.
 const visible = text => String(text).replace(/[\p{Cc}\p{Cf}]/gu, character => (character === '\n' ? '\n' : `\\u{${character.codePointAt(0).toString(16)}}`));
@@ -136,7 +145,7 @@ async function api(path, body) {
 const ledgerTools = ['context_for', 'graph_diff', 'graph_list', 'graph_publish', 'graph_read', 'graph_schema', 'latent_read',
   'latent_team', 'latent_transfer', 'room_list', 'room_open', 'room_read', 'session_read', 'session_search'];
 
-async function askClaude(prompt, tools, work) {
+async function askClaude(prompt, tools, work, model = options.model) {
   // Paths reach cmd.exe on Windows inside double quotes, where % and " would still be special.
   if (/[%"^&|<>]/u.test(work)) throw new Error(`The temporary folder ${work} has characters the Windows shell treats specially.`);
   const config = join(work, 'claude-mcp.json');
@@ -146,7 +155,7 @@ async function askClaude(prompt, tools, work) {
   const empty = join(work, 'no-mcp.json');
   await writeFile(empty, JSON.stringify({ mcpServers: {} }));
   // stream-json records every tool call, so the report shows exactly what each agent read.
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', options.model, '--no-session-persistence',
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--no-session-persistence',
     // No built-in tools, and only this run's MCP config (none for the note reader): the agent
     // sees its prompt and what the listed ledger tools return, never the user's own MCP servers.
     '--tools', '', '--strict-mcp-config', '--mcp-config', tools.length ? config : empty];
@@ -226,48 +235,63 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = join(root, 'demo', 'out', 'website', stamp);
   await mkdir(outDir, { recursive: true });
-  const report = { startedAt: new Date().toISOString(), model: options.model, chatter, runs, rows: [] };
+  const report = { startedAt: new Date().toISOString(), model: options.model, builderModel, chatter, interleave: options.interleave,
+    reuse: options.reuse, runs, rows: [] };
   let ledger;
   try {
     log(`== Start a fresh ledger on ${origin}`);
     ledger = await startLedger(join(work, 'ledger.sqlite'));
-    const { session } = await api('/api/import', { provider: 'claude', source: 'roaster-chat.jsonl', transcript: roasterTranscript(chatter) });
+    const { session } = await api('/api/import', { provider: 'claude', source: 'roaster-chat.jsonl', transcript: roasterTranscript(chatter, { interleave: options.interleave }) });
     report.messages = session.messageCount;
-    log(`client chat: ${session.messageCount} messages (${chatter} extra exchanges of chatter)`);
+    log(`client chat: ${session.messageCount} messages (${chatter} extra exchanges of chatter${options.interleave ? ', spread between the requirements' : ''}), builders on ${builderModel}`);
 
+    // With --reuse the first agent of notes and ledger runs once and every builder shares its
+    // note or graph; its cost is counted once, on the first row (shared: true on the others).
+    const shared = {};
+    const firstAgent = async (condition, make) => {
+      if (!options.reuse) return { first: await make(), shared: false };
+      if (!shared[condition]) shared[condition] = await make();
+      return { first: shared[condition], shared: shared[condition].used++ > 0 };
+    };
     for (let index = 1; index <= runs; index += 1) {
       for (const condition of conditions) {
-        const row = { run: index, condition, first: null, builder: null };
+        const row = { run: index, condition, first: null, builder: null, shared: false };
         if (condition === 'chat') {
-          row.builder = await askClaude(prompts.chat(session.id), ['session_read'], work);
+          row.builder = await askClaude(prompts.chat(session.id), ['session_read'], work, builderModel);
         } else if (condition === 'notes') {
-          row.first = await askClaude(prompts.note(session.id), ['session_read'], work);
+          ({ first: row.first, shared: row.shared } = await firstAgent(condition, async () =>
+            ({ ...(await askClaude(prompts.note(session.id), ['session_read'], work)), used: 0 })));
           row.note = row.first.reply;
-          if (row.first.ok) row.builder = await askClaude(prompts.notes(row.first.reply), [], work);
+          if (row.first.ok) row.builder = await askClaude(prompts.notes(row.first.reply), [], work, builderModel);
         } else {
-          row.first = await askClaude(prompts.publish(session.id), ['session_read', 'graph_schema', 'graph_publish'], work);
-          row.graphId = [...row.first.reply.matchAll(hexId)].at(-1)?.[0] ?? null;
+          ({ first: row.first, shared: row.shared } = await firstAgent(condition, async () => {
+            const made = await askClaude(prompts.publish(session.id), ['session_read', 'graph_schema', 'graph_publish'], work);
+            return { ...made, used: 0, graphId: [...made.reply.matchAll(hexId)].at(-1)?.[0] ?? null };
+          }));
+          row.graphId = row.first.graphId;
           if (row.first.ok && row.graphId) {
             const { context } = await api(`/api/graphs/${row.graphId}/context`);
             row.briefing = context?.text ?? null;
             row.meter = context?.meter ?? null;
-            row.builder = await askClaude(prompts.ledger(row.graphId), ['context_for'], work);
+            row.builder = await askClaude(prompts.ledger(row.graphId), ['context_for'], work, builderModel);
           }
         }
         const html = row.builder?.ok ? htmlOf(row.builder.reply) : '';
         row.ok = Boolean(html);
         // Runs that stray are kept and scored, and the deviation is reported beside them.
         row.deviations = deviations(condition, 'builder', row.builder?.toolCalls ?? []);
+        // How many chat pages the agent that read the chat asked for (round 3 spreads the chat over several).
+        row.pagesRead = ((condition === 'chat' ? row.builder : row.first)?.toolCalls ?? []).filter(call => call.name.endsWith('session_read')).length;
         // A reply that yields no page is kept (truncated) so a failed build can be explained.
         if (row.builder && !html) row.failedReplyTail = row.builder.reply.slice(-2000);
         row.score = html ? scoreSite(html) : null;
-        row.totalMs = (row.first?.ms ?? 0) + (row.builder?.ms ?? 0);
+        row.totalMs = (row.shared ? 0 : row.first?.ms ?? 0) + (row.builder?.ms ?? 0);
         if (html) await writeFile(join(outDir, `run${index}-${condition}.html`), html);
         const brief = row.builder ? { ...row.builder, reply: undefined } : null;
-        report.rows.push({ ...row, first: row.first ? { ...row.first, reply: undefined } : null, builder: brief });
+        report.rows.push({ ...row, first: row.first ? { ...row.first, reply: undefined, used: undefined } : null, builder: brief });
         const s = row.score;
         log(`run ${index} ${condition.padEnd(6)} ${s ? `${s.requirements}/${s.of} requirements, stale ${s.stale.length}, forbidden ${s.forbidden.length}` : 'FAILED ' + (row.first?.error ?? row.builder?.error ?? 'no HTML').slice(0, 160)}` +
-          `, builder input ${row.builder?.tokens.input ?? '-'} tokens, total ${Math.round(row.totalMs / 1000)} s` +
+          `, chat pages read ${row.pagesRead}, builder input ${row.builder?.tokens.input ?? '-'} tokens, total ${Math.round(row.totalMs / 1000)} s` +
           (row.deviations.length ? `, DEVIATED: ${row.deviations.join('; ')}` : '') +
           (s && (s.missed.length || s.stale.length || s.forbidden.length) ? `\n     missed: ${s.missed.join('; ') || '-'} | stale: ${s.stale.join('; ') || '-'} | forbidden: ${s.forbidden.join('; ') || '-'}` : ''));
         await writeFile(join(outDir, 'report.json'), JSON.stringify(report, null, 2));
@@ -280,7 +304,9 @@ async function main() {
       const mean = values => (values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0);
       log(`${condition.padEnd(6)} ${good.length}/${rows.length} built, requirements ${good.map(r => r.score.requirements).join(', ')} of 15, ` +
         `stale ${good.reduce((n, r) => n + r.score.stale.length, 0)}, forbidden ${good.reduce((n, r) => n + r.score.forbidden.length, 0)}, ` +
-        `builder input ${mean(good.map(r => r.builder.tokens.input))} tokens, total ${mean(good.map(r => r.totalMs)) / 1000} s`);
+        `builder input ${mean(good.map(r => r.builder.tokens.input))} tokens, total ${mean(good.map(r => r.totalMs)) / 1000} s, ` +
+        // Whole-condition cost: every builder, and each first agent once even when shared.
+        `cost $${rows.reduce((n, r) => n + (r.builder?.costUsd ?? 0) + (r.shared ? 0 : r.first?.costUsd ?? 0), 0).toFixed(2)}`);
     }
   } finally {
     report.finishedAt = new Date().toISOString();

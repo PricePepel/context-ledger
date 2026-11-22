@@ -42,12 +42,25 @@ const chatter = [
     'For a simple page the risk is small. Most hosts restart it automatically, and nothing is lost because the page is just a file.'],
 ];
 
-/** The client chat. extra appends chatter at the end, after every requirement. */
-export function roasterTranscript(extra = 0) {
+// The nine places in the chat where chatter sits between requirements.
+const gaps = 9;
+
+/**
+ * The client chat. extra adds chatter exchanges: by default all at the end, after every
+ * requirement; with interleave they are spread evenly over the nine gaps between
+ * requirements, so a long chat puts its later changes on later pages (D4 round 3).
+ */
+export function roasterTranscript(extra = 0, { interleave = false } = {}) {
   const turns = [];
   const say = (user, assistant) => turns.push(turn('user', user), turn('assistant', assistant));
   let next = 0;
-  const filler = (count = 1) => { for (let i = 0; i < count; i += 1) say(...chatter[next++ % chatter.length]); };
+  let gap = 0;
+  const share = () => (interleave ? Math.floor((extra * (gap + 1)) / gaps) - Math.floor((extra * gap) / gaps) : 0);
+  const filler = (count = 1) => {
+    const total = count + share();
+    gap += 1;
+    for (let i = 0; i < total; i += 1) say(...chatter[next++ % chatter.length]);
+  };
 
   say('Hi! I own a small coffee roaster and café and I need a one-page website. The business is called Tidewater Roast Co.',
     'Happy to help. A one-page site for Tidewater Roast Co. I will keep a list of everything you decide as we go.');
@@ -91,7 +104,8 @@ export function roasterTranscript(extra = 0) {
   filler(2);
   say('I think that is everything. Make it warm and welcoming, like walking into the café.',
     'Understood. A warm, welcoming page that feels like the café.');
-  for (let index = 0; index < extra; index += 1) say(...chatter[index % chatter.length]);
+  if (gap !== gaps) throw new Error(`The chat has ${gap} chatter gaps, not ${gaps}.`);
+  if (!interleave) for (let index = 0; index < extra; index += 1) say(...chatter[index % chatter.length]);
   return turns.join('\n');
 }
 
