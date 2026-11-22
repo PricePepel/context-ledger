@@ -611,3 +611,18 @@ Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and 
 
 - **Next owner:** run it live on the laptop GPU once the M2b-S training (branch `claude/m2b-scale`) frees it: one 7B server, then two models. Record wall time, tokens per second, KV-cache use and prefix-cache hit rate at 25, 50 and 100 agents in the eval log.
 - Then add the latent lane: a second pass where agents hand a compacted cache instead of text, once M2b-S and Attention Matching pass.
+
+## Current checkpoint — G9b scoped briefing says what it left out (2026-11-21)
+
+Branch `claude/g9b-scoped-state`. Read the G9b section of [the eval log](evals.md). Found while rehearsing the investor demo from a clean install: a `context_for` briefing scoped to a question said `open questions: none` when the graph had an open question the question did not match, and a live agent told Ali that Leo needed nothing from him.
+
+- Each state list in a scoped briefing names the shown items, then counts the rest (`1 left out`, `port; 1 more left out`). The scope line ends with `call context_for without a question for the whole graph` whenever a node is not shown. Unscoped briefings are unchanged.
+- A budget now tries the full briefing first, since the hint makes a cut briefing longer.
+- Live re-run: 3 of 3 runs no longer say Leo needs nothing.
+- **Next owner:** in every live run the agent's first `context_for` call passed `budget` without `question` and was refused. Consider accepting a budget alone (cut the whole briefing), as a separate card.
+
+## Current checkpoint — I3 on P1c message rows (2026-11-21)
+
+PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
+
+Next owner: any later schema step goes after version 6. If the `messages` table is rebuilt again, recreate the `sessions_messages` trigger.

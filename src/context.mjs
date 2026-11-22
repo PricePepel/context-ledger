@@ -72,9 +72,9 @@ export function contextText(graph, session, { lookupGraph, scope } = {}) {
   kindOrder.slice(firstVolatile).forEach(nodeSection);
 
   section('state', [
-    `ready actions: ${graph.readyActionIds.join(', ') || 'none'}`,
-    `current decisions: ${graph.currentDecisionIds.join(', ') || 'none'}`,
-    ...(graph.openQuestionIds ? [`open questions: ${graph.openQuestionIds.join(', ') || 'none'}`] : []),
+    `ready actions: ${stateList(graph, 'readyActionIds')}`,
+    `current decisions: ${stateList(graph, 'currentDecisionIds')}`,
+    ...(graph.openQuestionIds ? [`open questions: ${stateList(graph, 'openQuestionIds')}`] : []),
     ...[...targets].sort(compareBy(1)).map(([graphId, name]) => `linked graph ${name}: ${graphId}`),
     // Card G7. In the last section, so the first inferred node cannot move the stable prefix.
     ...(graph.inferredNodeIds?.length
@@ -86,6 +86,17 @@ export function contextText(graph, session, { lookupGraph, scope } = {}) {
     ...(scope ? [scope] : []),
   ]);
   return lines.join('\n') + '\n';
+}
+
+/**
+ * A state list: the shown IDs, then how many a scoped briefing left out (card G9b), so
+ * "none" never stands for "none shown". Only graphWith (src/scope.mjs) sets leftOut.
+ */
+function stateList(graph, key) {
+  const ids = graph[key];
+  const left = graph.leftOut?.[key] ?? 0;
+  if (!left) return ids.join(', ') || 'none';
+  return ids.length ? `${ids.join(', ')}; ${left} more left out` : `${left} left out`;
 }
 
 /**

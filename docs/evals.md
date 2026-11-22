@@ -4529,3 +4529,90 @@ For the investor demo: many small agents work one task at once on the laptop GPU
 - (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
 
 **Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
+
+## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
+
+Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
+
+| Eval | Expected |
+| --- | --- |
+| Counts | In a scoped briefing, each state list (ready actions, current decisions, open questions) names the shown items, then the number it leaves out: `open questions: 1 left out`, `current decisions: port; 1 more left out`. A list with nothing left out reads as before (`none` or the IDs), so an unscoped briefing and a scoped one that shows everything are unchanged. |
+| Budget | The counts hold when the budget, not the question, drops a node. |
+| Way back | When a scoped briefing leaves out any node, its scope line ends with `call context_for without a question for the whole graph`, as the no-match line already does. |
+| No IDs leak | A left-out node's ID, label and links still never appear; only the count does. |
+| Live | The demo question re-run against a live agent no longer gets "Leo needs nothing from you": the agent either reports the open question or says some were left out. |
+
+### G9b results (2026-11-21)
+
+- **Counts, no IDs leak, way back:** `tests/scope.test.mjs` checks `1 left out`, `port; 1 more left out` (rendered), the hint at the end of the scope line, and that no left-out ID or label appears. A scoped briefing that shows every node has the same state section as the unscoped one and no hint. The unscoped golden briefing is unchanged.
+- **Budget:** a question dropped by the budget is counted (`open questions: 1 left out`). Over MCP paging, the reassembled pages match the HTTP briefing byte for byte and carry the count and the hint once.
+- **Live:** Leo's graph from the clean-install rehearsal (8 nodes, published by Claude Sonnet), Ali's prompt sent unchanged to a fresh Claude Sonnet session over MCP, 3 runs on this branch. Before the fix (a08c6e9, 1 run), the agent said Leo needed nothing from Ali. After it: 2 runs named "Who owns the GPU box?", and 1 said one open question was left out of the filtered view. All 3 answered port 4317 and Saturday 17:00. Cost $0.03–0.07 per run. In every run the agent's first call passed a `budget` without a `question` and was refused (`budget needs a question.`); that is a separate usability point, not part of this card.
+- **Suites (Windows, before the review fixes):** node 530 of 540 (10 skipped), graph suite passing.
+
+**Codex review, round 1** (of a2a877d):
+
+- (medium) The whole-graph hint makes a cut briefing longer, so a budget that fits the full briefing could be refused before the full briefing was tried (for example a v1 graph with one goal). The full briefing is now tried first, and the refusal names the smaller of the two sizes. Regression test: every budget the full briefing fits returns it; it fails without the fix.
+- (low) The mixed-list case was checked only on `graphWith`'s data: a rendered test now asserts `current decisions: port; 1 more left out`.
+- (low) The MCP paging fixture matched every node: it now has an unmatched open question, and the test checks the count and hint appear once in the reassembled pages and the question does not.
+- (low) No live result was recorded: recorded above.
+
+**Codex review, round 2** (of 6ad003f): every round 1 fix confirmed, no new production issue. (low) The budget regression never checked the refusal message: the test now asserts that a budget below both sizes names the full briefing's estimate when it is the smaller. Suites after round 1 fixes (Windows): node 532 of 542 (10 skipped), graph suite passing.
+
+## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
+
+Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
+
+### What is tested and the expected result
+
+- **Imported as agent turns.** Either form with plain text imports as a message with role `agent`, its `author` and `recipient`, its line number, and its text exactly as written (envelope included), so a graph can cite it. Only `input_text` blocks count in the first form. One delivery written in both forms on adjacent records (opposite forms, the same original paths and text) is kept once; two identical messages of one form are both kept. A `null` record is skipped, as before.
+- **Encrypted parts stay out.** Encrypted content is never imported, in either form. A message with only encrypted content is skipped, as before.
+- **Old imports gain them.** Importing again a Codex file that was stored before I3 adds its agent turns under the same session ID, keeping every line it had, so graphs that cite it still validate.
+- **Odd paths are bounded.** An author or recipient that is missing, not a string or longer than 200 characters is stored as `unknown`.
+- **Ordinary messages are unchanged.** Codex user and assistant messages, and every Claude Code record, import exactly as before; a Claude Code record that looks like an `agent_message` is still ignored.
+- **Shown with direction.** The browser labels the turn "Agent /root/worker to /root", with control and format characters in the paths shown as escapes. The CLI hand-off and `session_read` head it `## agent /root/worker to /root · line N`, with the paths on one line and every control and format character escaped (zero-width joiners included), Markdown in them shown literally, and `session_read` paging still splits and rejoins such turns exactly.
+- **Searchable.** The text of an agent message is found by session search.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` and `npx playwright test` pass, with the cases above in `tests/import-agent-messages.test.mjs` and the library browser spec.
+- No new dependency. (The rework of 2026-11-21 below adds schema version 6.)
+
+### I3 results (2026-11-17)
+
+- `tests/import-agent-messages.test.mjs` 12/12 and the library browser spec 5/5. Full suites on Windows are listed in the PR.
+- **Codex, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) Codex also saves these messages in its own `inter_agent_communication` rollout record, which was still dropped. Both forms are now read, without encrypted content.
+  - (medium) A Codex file imported before I3 kept its old row on a new import. A new import now refreshes the row when every line it had is still there, keeping the session ID, so graphs that cite it still validate.
+  - (medium) Headings kept U+200C and U+200D and did not escape `~`. Agent paths now use a strict one-line escape, `labelText` in `src/text.mjs`.
+  - (low) `output_text` blocks were accepted in `agent_message`. Only `input_text` counts now.
+  - (low) The paging test did not rejoin a split turn. It now pages a long agent turn with escaped paths and a body that never repeats, rejoins the slices exactly and reads the turn after it.
+- **Codex, round 2:** no high findings; one medium and two low, fixed with tests:
+  - (medium) Two identical messages were merged into one. Now only opposite forms on adjacent records, with the same original paths, are merged.
+  - (low) A `null` record made a Codex import fail. It is skipped again.
+  - (low) The browser showed raw control and format characters in agent paths. They are shown as escapes.
+- **Note:** the refresh can change a graph context's savings estimate for an old session, because the hand-off it measures now includes the agent turns.
+
+### I3 rework on P1c message rows (2026-11-21)
+
+P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user or assistant, so I3 no longer merged. Recommended default, taken under the user's standing instruction: an agent turn is a row of its own with two new columns.
+
+- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author_json` and `recipient_json` columns hold the paths as JSON string literals, like `text_json`; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
+- **Keys.** An agent turn gets a line-hash key like any Codex turn, so a version 3 graph can cite it.
+- **Old imports gain agent turns.** Importing a Codex file again adds its agent turns when the stored session has none, has fewer turns and keeps every key it had. The rows are rewritten in one transaction, and every earlier turn keeps its key.
+- **Tests:** `tests/import-agent-messages.test.mjs` 13/13, including a version 5 file upgraded to version 6 with its rows unchanged, the CHECK on the paths, the legacy copy without agent turns, and the older-build trigger still working. The schema tests in `tests/message-rows.test.mjs` and `tests/node-review.test.mjs` now expect the two new columns and the newest version. The library browser spec has both I3 cases. `labelText` was dropped for main's `terminalLabel`, which escapes the same characters.
+- **Suites (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 539/539, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python 239 run, 66 skipped.
+- **Codex review of the rework, round 1:** no high findings; three medium and one low, fixed with tests:
+  - (medium) A session migrated by the version 3 step has l:<line> keys, so a re-import never matched it. Old turns are now matched by line, role and text and keep their keys.
+  - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
+  - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
+  - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
+  - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+- **Codex review of the rework, round 2:** no high findings; two medium and two low, fixed with tests:
+  - (medium) `ledger redact` scanned message text but not agent paths, which the hand-off prints in headings. Paths are now scanned and redacted too.
+  - (medium) A session deleted right after the re-import committed made the import return nothing. The summary is now read under the same lock.
+  - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
+  - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
+  - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
+- **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
+- **Codex review of the rework, round 4:** no findings.
+- **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).
