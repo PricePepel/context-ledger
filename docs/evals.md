@@ -4587,3 +4587,14 @@ Codex found no regression in the ledger's P4b/P4c scanner and no raw control or 
 - Evals 9 and 10: pass.
 - Shared rules: both scanners agree on all 60 cases; the ledger's P4b and P4c tests pass unchanged.
 
+### W2 review, round 2 (2026-11-22, Codex, read-only, of 854a900)
+
+Codex confirmed the round-1 fixes it could run (token neutralisation, checking restored arguments, the admission default, the shared cases). Its findings, all fixed with a regression test each:
+
+- (high) The output gate replaced known values before scanning, so with `password=` declared a new value after it was released, and masking placeholders with letters removed the word boundary of a credential written right after one. The gate now scans the answer as the model wrote it (placeholders masked with `#`, a stand-in that is no word character), adds the ranges of every known value for an output not cleared, merges them and redacts in one pass.
+- (high) A value covered only by an overlap (`alpha123` and `123omega` declared, `alpha123omega` admitted) or declared but absent from the text had no placeholder of its own, so the gates forgot it. A separate egress set keeps every declared value and original finding; the placeholder map only renders and restores.
+- (high) A credential could form across two admitted spans once joined (`aws_secret_access_key=` ending one, the key starting the next). The assembled text is scanned too, with each span's own findings mapped into it.
+- (medium) A guard with no time cap of its own ignored the gateway's `max_seconds`: the shorter of the two now applies to the watchdog, the audits, the fallback and the release.
+- (medium) Eval 7's positive control covered only the prompt: thought tokens forced to spell a canary are now seen by the same observation, and a canary the solver writes is removed from an uncleared answer and kept in a cleared one. Eval 10's fresh process missed writes opened with numeric flags: it checks them now, with a positive control that appends to a file.
+- (low) The scanner's docstring and the rule file described the superseded case folding.
+
