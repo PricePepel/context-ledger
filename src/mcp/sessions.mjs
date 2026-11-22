@@ -1,5 +1,5 @@
 // Session tools: session_search and session_read.
-import { handoffMarkdown } from '../handoff.mjs';
+import { handoffMarkdown, turnHeading } from '../handoff.mjs';
 import { cutText, maxResultCharacters, resultSize } from '../paging.mjs';
 import { terminalJson } from '../text.mjs';
 import { ToolError, assertProjectRows, briefingText, checkArguments, fromOffsetArgument, hexSchema, isObject, jsonResult, listArguments, maxOffset, optionalProject, projectSchema, requireHex, text, tooLarge } from './common.mjs';
@@ -20,7 +20,7 @@ function sessionPage(session, remaining, fromLine, fromOffset) {
   const keyOf = message => (typeof message.key === 'string' && messageKey.test(message.key) ? ` · key ${message.key}` : '');
   const turnMarkdown = (message, part) => {
     const shown = part ? { ...message, text: message.text.slice(part.start, part.end) } : message;
-    const plainHeading = `\n\n## ${message.role} · line ${message.line}`;
+    const plainHeading = `\n\n${turnHeading(message)}`;
     const turn = handoffMarkdown({ ...session, messages: [shown] }).slice(header.length);
     const heading = turn.startsWith(plainHeading) ? plainHeading + keyOf(message) : plainHeading;
     const keyed = heading + turn.slice(plainHeading.length);
@@ -151,7 +151,9 @@ export const sessionRead = ['session_read', {
     const session = data?.session;
     // Headings are built from role and line, so both must be exactly what the store writes.
     if (!isObject(session) || !Array.isArray(session.messages) || !session.messages.every(message => isObject(message) &&
-        (message.role === 'user' || message.role === 'assistant') && Number.isSafeInteger(message.line) &&
+        (message.role === 'user' || message.role === 'assistant'
+          || (message.role === 'agent' && typeof message.author === 'string' && typeof message.recipient === 'string'))
+        && Number.isSafeInteger(message.line) &&
         message.line >= 1 && typeof message.text === 'string')) {
       throw new ToolError('Context Ledger returned an unexpected session response.');
     }
