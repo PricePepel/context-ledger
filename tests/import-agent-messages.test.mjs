@@ -497,3 +497,15 @@ test('I3 review 4: deliveries on either side of an unreadable line are not one p
   ]);
   assert.deepEqual(messages.map(message => [message.role, message.line]), [['user', 1], ['agent', 2], ['agent', 4]]);
 });
+
+test('I3 review 5: deliveries on either side of a blank line are not one pair', () => {
+  const store = openStore(':memory:');
+  const text = 'Lynx is clean.';
+  const { messages } = importCodex(store, [
+    codexLine('user', 'Audit Lynx.'),
+    agentLine('/root/worker', '/root', [{ type: 'input_text', text }]),
+    '   ',
+    JSON.stringify({ type: 'inter_agent_communication', payload: { author: '/root/worker', recipient: '/root', content: text } }),
+  ]);
+  assert.deepEqual(messages.map(message => [message.role, message.line]), [['user', 1], ['agent', 2], ['agent', 4]]);
+});

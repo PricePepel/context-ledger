@@ -172,7 +172,11 @@ function transcriptParser(provider) {
     add(rawLine) {
       line += 1;
       const value = rawLine.trim();
-      if (!value) return;
+      if (!value) {
+        // Card I3: only records on adjacent lines can be one delivery in two forms.
+        previousAgent = null;
+        return;
+      }
 
       let record;
       try {

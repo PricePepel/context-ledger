@@ -4546,3 +4546,4 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
   - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
   - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
   - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
+- **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
