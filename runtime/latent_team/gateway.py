@@ -502,6 +502,9 @@ class Gateway:
         fitted = text[:head] + marker + text[tail:]
         if self.holds_value(self.masked_out(fitted)):   # the marker must not bring a known value in
             raise GatewayError("unsafe-render", "the cut would put a known value in the text")
+        # The cut can give a credential the word boundary its rule needs (review W2-13).
+        if self.unauthorised(fitted, self._token_ranges(fitted)):
+            raise GatewayError("unsafe-render", "the cut exposes a credential")
         self.admission.text = fitted
         return self.admission.text
 
@@ -583,10 +586,13 @@ class Gateway:
         return self._occurrences(text, values) + canon_ranges(text, values)
 
     def check_rendered(self, text):
-        """Raise GatewayError if a known value appears in text the model would read (a role
-        template around the admitted text could complete one)."""
+        """Raise GatewayError if a known value, or a credential outside the placeholders, is in
+        text the model would read (a role template around the admitted text could complete or
+        expose one, review W2-13)."""
         if self.holds_value(text, collapsed=True) or self.holds_value(self.masked_out(text), collapsed=True):
             raise GatewayError("unsafe-render", "a known value is in the text as the model would read it")
+        if self.unauthorised(text, self._token_ranges(text)):
+            raise GatewayError("unsafe-render", "a credential is exposed in the text as the model would read it")
 
     def masked(self, text):
         """text with every placeholder token turned into #'s of the same length: a stand-in to
@@ -816,4 +822,13 @@ class OutputGate:
             count += len(extra)
             allowed = markers + new_markers + put_back + gateway._token_ranges(text)
             safe = safe and not gateway.unauthorised(text, allowed, put_back)
+        # The last check is of the text that leaves, after every substitution (review W2-13):
+        # no value the scan found, outside the values put back, in any form; and for an output
+        # not cleared, no known value in any form, not even one a marker and its neighbours
+        # spell.
+        if any(not any(a <= s and e <= b for a, b in put_back)
+               for s, e in gateway._occurrences(text, sorted(found, key=len, reverse=True)) + canon_ranges(text, found)):
+            safe = False
+        if uncleared and gateway.holds_value(text, collapsed=True):
+            safe = False
         return Release(text, ("redacted",) if count else (), count, restored, safe)

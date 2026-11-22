@@ -19,6 +19,7 @@ counts UTF-16 units.
 
 Standard library only.
 """
+import bisect
 import json
 import re
 from pathlib import Path
@@ -273,25 +274,31 @@ def line_end_from(text, start):
     return len(text)
 
 
-def judged_value(text, start, end, quote, trimmed=None):
+JUDGED_MAX = RULES["placeholders"]["maxJudged"]
+
+
+def judged_end(text, start, end, quote, trimmed):
+    """Where the value judged for a placeholder ends: inside a quote, at the closing quote
+    when only spaces and tabs come before a delimiter or the line end, else at the line end;
+    a bare value, at the line's end without trailing spaces, tabs, commas and semicolons
+    (trimmed, found once a line)."""
     if quote:
         close = start
         while close < end and text[close] != quote:
             close += 2 if text[close] == BACKSLASH else 1
         if close >= end:
-            return text[start:end]
+            return end
         after = close + 1
         while after < end and text[after] in " \t":
             after += 1
         if after < end and text[after] not in ",;)]}":
-            return text[start:end]
-        return text[start:close]
-    if trimmed is not None:   # the line's end without trailing spaces, tabs, commas and semicolons
-        return text[start:max(start, trimmed)]
-    stop = end
-    while stop > start and text[stop - 1] in " \t,;":
-        stop -= 1
-    return text[start:stop]
+            return end
+        return close
+    return max(start, trimmed)
+
+
+def judged_value(text, start, end, quote, trimmed=None):
+    return text[start:judged_end(text, start, end, quote, _trimmed_end(text, end) if trimmed is None else trimmed)]
 
 
 def _trimmed_end(text, end):
@@ -300,10 +307,21 @@ def _trimmed_end(text, end):
     return end
 
 
+def _placeholder_at(text, start, stop):
+    """Is text[start:stop] only a stand-in? A value longer than maxJudged never is."""
+    return stop - start <= JUDGED_MAX and is_placeholder(text[start:stop])
+
+
 def line_tails(text):
-    found = []
+    """Card P4c: one span per free-text lead, from the value's start to the end of its line.
+    Every lead is read, in source order across all free-text rules, so every assignment on a
+    line has its own value (review W2-11 to W2-13). A candidate keeps offsets, never a copy:
+    value_end, where its judged value ends, and core_end, where its own assignment ends (the
+    next lead of any kind on the line, for a value that is not a closed quote). The spans all
+    end at the line end, so the merged spans do not change."""
+    found, leads = [], []
     for rule in FREE_TEXT:
-        line_end, trimmed, position, previous = -1, -1, 0, None
+        line_end, trimmed, position = -1, -1, 0
         while True:
             match = rule["lead"].search(text, position)
             if match is None:
@@ -321,29 +339,26 @@ def line_tails(text):
                 start += 1
             if start > line_end:
                 line_end = line_end_from(text, start)
-                trimmed, previous = _trimmed_end(text, line_end), None
+                trimmed = _trimmed_end(text, line_end)
             end = line_end
-            if previous is not None:
-                # A bare value runs to the line end; where another assignment begins, the part
-                # before it is a value of its own too (review W2-12).
-                cut = text[previous["start"]:match.start()].rstrip(" \t,;")
-                if cut and cut != previous["value"] and not is_placeholder(cut):
-                    previous["parts"].append(cut)
-                previous = None
-            value = judged_value(text, start, end, quote, None if quote else trimmed)
-            if not value or is_placeholder(value):
+            leads.append(match.start())
+            value_end = judged_end(text, start, end, quote, trimmed)
+            if value_end <= start or _placeholder_at(text, start, value_end):
                 continue
-            # The redaction span runs to the line end; the value itself is the judged part
-            # (inside its quotes, without trailing punctuation), kept for the gateway.
-            candidate = {"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value": value, "parts": []}
-            found.append(candidate)
-            # The next lead is looked for right after a quoted value that closes before the line
-            # end, else right after this lead, so every assignment on the line has its own value
-            # read (review W2-11, W2-12). Every span still ends at the line end, so the merged
-            # spans do not change.
-            closed = bool(quote) and start + len(value) < end
-            previous = None if quote else candidate
-            position = max(position, start + len(value) + 1 if closed else start)
+            closed = bool(quote) and value_end < end
+            found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value_end": value_end,
+                          "closed": closed})
+            # After a closed quote, the next lead is looked for after it; otherwise right after
+            # this lead.
+            position = max(position, value_end + 1 if closed else start)
+    leads.sort()
+    for candidate in found:
+        stop = candidate["value_end"]
+        if not candidate["closed"]:
+            at = bisect.bisect_right(leads, candidate["start"])
+            if at < len(leads) and leads[at] < stop:
+                stop = leads[at]
+        candidate["core_end"] = stop
     return found
 
 
@@ -456,6 +471,24 @@ def candidates(text):
     return found
 
 
+def _span_values(text, members):
+    """The values a merged span's candidates identified, each bounded: a free-text
+    candidate's own assignment, the first one's whole judged tail, and any other candidate's
+    value or text."""
+    out, tail = set(), True
+    for candidate in members:
+        if "core_end" in candidate:
+            core = text[candidate["start"]:candidate["core_end"]].rstrip(" \t,;")
+            if core and not _placeholder_at(text, candidate["start"], candidate["start"] + len(core)):
+                out.add(core)
+            if tail:
+                out.add(text[candidate["start"]:candidate["value_end"]])
+                tail = False
+        else:
+            out.add(candidate.get("value", text[candidate["start"]:candidate["end"]]))
+    return {v for v in out if v}
+
+
 def find_secrets(text, values=False):
     """Every span in text that looks like a credential, in text order: [{kind, start, end,
     prefix}], the same spans as src/secrets.mjs. With values=True each span also lists the
@@ -465,22 +498,22 @@ def find_secrets(text, values=False):
         return []
     spans = []
     for candidate in sorted(candidates(text), key=lambda c: (c["start"], c["rank"])):
-        core = {candidate.get("value", text[candidate["start"]:candidate["end"]])} | set(candidate.get("parts", ()))
         if spans and candidate["start"] < spans[-1]["end"]:
             last = spans[-1]
             last["end"] = max(last["end"], candidate["end"])
-            last["values"] |= core
+            last["members"].append(candidate)
             if candidate["rank"] < last["best"]["rank"]:
                 last["best"] = candidate
         else:
-            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate, "values": core})
+            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate,
+                          "members": [candidate]})
     out = []
     for span in spans:
         best = span["best"]
         finding = {"kind": best["kind"], "start": span["start"], "end": span["end"],
                    "prefix": best["prefix"] if best["start"] == span["start"] and best["end"] == span["end"] else 0}
-        if values:
-            finding["values"] = sorted(v for v in span["values"] if v)
+        if values:   # built only when asked for (review W2-13)
+            finding["values"] = sorted(_span_values(text, span["members"]))
         out.append(finding)
     return out
 

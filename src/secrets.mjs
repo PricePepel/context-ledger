@@ -175,21 +175,17 @@ function lineEndFrom(text, from) {
  * comma or semicolon. Every scan stops at end, and the trim is a backward scan, so long
  * runs of spaces cost nothing.
  */
-function judgedValue(text, start, end, quote, trimmed = null) {
+function judgedEnd(text, start, end, quote, trimmed) {
   if (quote) {
     let close = start;
     while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
-    if (close >= end) return text.slice(start, end);
+    if (close >= end) return end;
     let after = close + 1;
     while (after < end && (text[after] === ' ' || text[after] === '\t')) after += 1;
-    if (after < end && !',;)]}'.includes(text[after])) return text.slice(start, end);
-    return text.slice(start, close);
+    if (after < end && !',;)]}'.includes(text[after])) return end;
+    return close;
   }
-  // The line's end without trailing spaces, tabs, commas and semicolons, found once a line.
-  if (trimmed !== null) return text.slice(start, Math.max(start, trimmed));
-  let stop = end;
-  while (stop > start && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
-  return text.slice(start, stop);
+  return Math.max(start, trimmed);
 }
 
 function trimmedEnd(text, end) {
@@ -198,16 +194,27 @@ function trimmedEnd(text, end) {
   return stop;
 }
 
-/** Card P4c: one span per free-text lead, from the value's start to the end of its line. */
+// A value longer than this is never only a stand-in, so judging it stays bounded (rules: placeholders).
+const judgedMax = secretRules.placeholders.maxJudged;
+const placeholderAt = (text, start, stop) => stop - start <= judgedMax && isPlaceholder(text.slice(start, stop));
+
+/**
+ * Card P4c: one span per free-text lead, from the value's start to the end of its line.
+ * Every lead is read, in source order across all free-text rules, so every assignment on a
+ * line has its own value (review W2-11 to W2-13). A candidate keeps offsets, never a copy:
+ * valueEnd, where its judged value ends, and coreEnd, where its own assignment ends (the
+ * next lead of any kind on the line, for a value that is not a closed quote). The spans all
+ * end at the line end, so the merged spans do not change.
+ */
 function lineTails(text) {
   const found = [];
+  const leads = [];
   for (const rule of freeTextLeads) {
     const pattern = new RegExp(rule.lead.source, rule.lead.flags);
     // Leads come in order, so the line end found for one is reused for later leads on the
     // same line: rejected leads never rescan the line.
     let lineEnd = -1;
     let trimmed = -1;
-    let previous = null;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       let start = match.index + match[0].length;
       // An opening quote stays visible; the value starts after it. A quote just before
@@ -217,30 +224,55 @@ function lineTails(text) {
       if (start > lineEnd) {
         lineEnd = lineEndFrom(text, start);
         trimmed = trimmedEnd(text, lineEnd);
-        previous = null;
       }
       const end = lineEnd;
-      if (previous) {
-        // A bare value runs to the line end; where another assignment begins, the part before
-        // it is a value of its own too (review W2-12).
-        const cut = text.slice(previous.start, match.index).replace(/[ \t,;]+$/u, '');
-        if (cut && cut !== previous.value && !isPlaceholder(cut)) previous.parts.push(cut);
-        previous = null;
-      }
-      const value = judgedValue(text, start, end, quote, quote ? null : trimmed);
-      if (!value || isPlaceholder(value)) continue;
-      const candidate = { kind: rule.kind, start, end, prefix: 0, value, parts: [] };
-      found.push(candidate);
-      // The rest of the line is already covered. The next lead is looked for right after a
-      // quoted value that closes before the line end, else right after this lead, so every
-      // assignment on the line has its own value read (review W2-11, W2-12); every span
-      // still ends at the line end, so the merged spans do not change.
-      const closed = Boolean(quote) && start + value.length < end;
-      previous = quote ? null : candidate;
-      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? start + value.length + 1 : start);
+      leads.push(match.index);
+      const valueEnd = judgedEnd(text, start, end, quote, trimmed);
+      if (valueEnd <= start || placeholderAt(text, start, valueEnd)) continue;
+      const closed = Boolean(quote) && valueEnd < end;
+      found.push({ kind: rule.kind, start, end, prefix: 0, valueEnd, closed });
+      // After a closed quote, the next lead is looked for after it; otherwise right after this lead.
+      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? valueEnd + 1 : start);
     }
   }
+  leads.sort((a, b) => a - b);
+  for (const candidate of found) {
+    let stop = candidate.valueEnd;
+    if (!candidate.closed) {
+      let low = 0;
+      let high = leads.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        if (leads[middle] <= candidate.start) low = middle + 1;
+        else high = middle;
+      }
+      if (low < leads.length && leads[low] < stop) stop = leads[low];
+    }
+    candidate.coreEnd = stop;
+  }
   return found;
+}
+
+/**
+ * The values a merged span's candidates identified, each bounded: a free-text candidate's
+ * own assignment, the first one's whole judged tail, and any other candidate's value or text.
+ */
+function spanValues(text, members) {
+  const out = new Set();
+  let tail = true;
+  for (const candidate of members) {
+    if (candidate.coreEnd !== undefined) {
+      const core = text.slice(candidate.start, candidate.coreEnd).replace(/[ \t,;]+$/u, '');
+      if (core && !placeholderAt(text, candidate.start, candidate.start + core.length)) out.add(core);
+      if (tail) {
+        out.add(text.slice(candidate.start, candidate.valueEnd));
+        tail = false;
+      }
+    } else {
+      out.add(candidate.value ?? text.slice(candidate.start, candidate.end));
+    }
+  }
+  return [...out].filter(Boolean);
 }
 
 /** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty (rules: jwt). */
@@ -388,21 +420,21 @@ export function findSecrets(text, { values = false } = {}) {
   const spans = [];
   for (const candidate of candidates(text).sort((a, b) => a.start - b.start || a.rank - b.rank)) {
     const last = spans.at(-1);
-    const core = [candidate.value ?? text.slice(candidate.start, candidate.end), ...(candidate.parts ?? [])];
     if (last && candidate.start < last.end) {
       last.end = Math.max(last.end, candidate.end);
-      core.forEach(value => last.values.add(value));
+      last.members.push(candidate);
       if (candidate.rank < last.best.rank) last.best = candidate;
     } else {
-      spans.push({ start: candidate.start, end: candidate.end, best: candidate, values: new Set(core) });
+      spans.push({ start: candidate.start, end: candidate.end, best: candidate, members: [candidate] });
     }
   }
-  return spans.map(({ start, end, best, values: found }) => ({
+  return spans.map(({ start, end, best, members }) => ({
     kind: best.kind,
     start,
     end,
     prefix: best.start === start && best.end === end ? best.prefix : 0,
-    ...(values ? { values: [...found].filter(Boolean).sort() } : {}),
+    // Built only when asked for (review W2-13).
+    ...(values ? { values: spanValues(text, members).sort() } : {}),
   }));
 }
 
