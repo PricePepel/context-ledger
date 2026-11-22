@@ -209,3 +209,20 @@ test('P3 review 6: clicking Edit again keeps what was typed', async ({ page, req
   await port.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, typed once');
 });
+
+test('P3 review 7: a draft survives editing another node and coming back', async ({ page, request, baseURL }) => {
+  const marker = `p3-switch-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  const notes = page.locator('#review-nodes li[data-node="notes"]');
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317, first draft');
+  await notes.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveCount(0);
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, first draft');
+});

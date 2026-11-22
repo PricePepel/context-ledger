@@ -4585,3 +4585,4 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (medium) With the table rebuilt without its CHECK, a label added to an approval was parsed and then left out of the hash, so the chain still verified. Verify now breaks the chain when a non-edit has a label or an edit has none.
   - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
   - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
+- **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.

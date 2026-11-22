@@ -478,9 +478,10 @@ const reviewNodes = document.querySelector('#review-nodes');
 const reviewSubmit = reviewForm.querySelector('button[type="submit"]');
 const decisionWords = { approve: 'Approved', edit: 'Edited', reject: 'Rejected' };
 const stateOf = { approve: 'agreed', edit: 'edited', reject: 'rejected' };
-// The node whose edit field is open, if any, and what was typed in it.
+// The node whose edit field is open, if any, and what was typed for each node, so a
+// draft survives switching to another node and back.
 let editingNode = null;
-let editDraft = null;
+const editDrafts = new Map();
 let reviewGraph = null;
 let reviewing = false;
 
@@ -519,7 +520,6 @@ function reviewRow(graph, node) {
       // A second click on an open editor keeps what was typed.
       if (editingNode !== node.id) {
         editingNode = node.id;
-        editDraft = null;
         renderReview(graph);
       }
       reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] .edit-label`)?.focus();
@@ -543,10 +543,10 @@ function editForm(node, hash, review) {
   input.className = 'edit-label';
   input.maxLength = 500;
   input.required = true;
-  input.value = editDraft ?? (review?.decision === 'edit' ? review.label : node.label);
+  input.value = editDrafts.get(node.id) ?? (review?.decision === 'edit' ? review.label : node.label);
   // Locked while a decision is being saved, so what is shown is what was sent.
   input.disabled = reviewing;
-  input.addEventListener('input', () => { editDraft = input.value; });
+  input.addEventListener('input', () => { editDrafts.set(node.id, input.value); });
   const save = textElement('button', 'Save edit', 'choice-button');
   save.type = 'submit';
   save.disabled = reviewing;
@@ -554,7 +554,7 @@ function editForm(node, hash, review) {
   cancel.type = 'button';
   cancel.addEventListener('click', () => {
     editingNode = null;
-    editDraft = null;
+    editDrafts.delete(node.id);
     renderReview(reviewGraph);
   });
   form.addEventListener('submit', event => {
@@ -580,7 +580,7 @@ async function loadReview(id) {
   reviewNodes.replaceChildren();
   reviewGraph = null;
   editingNode = null;
-  editDraft = null;
+  editDrafts.clear();
   try {
     const { graph } = await request(`/api/graphs/${id}`);
     if (graph.packet.version !== 3) {
@@ -615,10 +615,8 @@ async function reviewNode(nodeId, nodeSha256, decision, label) {
     });
     reviewing = false;
     if (reviewGraph !== graph) return;
-    if (editingNode === nodeId) {
-      editingNode = null;
-      editDraft = null;
-    }
+    if (editingNode === nodeId) editingNode = null;
+    editDrafts.delete(nodeId);
     renderReview({ ...graph, reviews });
     reviewStatus.textContent = `${decisionWords[decision]} ${nodeId}.`;
   } catch (error) {
