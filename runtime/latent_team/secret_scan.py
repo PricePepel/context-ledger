@@ -320,7 +320,11 @@ def line_tails(text):
             # The redaction span runs to the line end; the value itself is the judged part
             # (inside its quotes, without trailing punctuation), kept for the gateway.
             found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value": value})
-            position = max(position, end)
+            # A quoted value that closes before the line end: the next lead is looked for right
+            # after it, so another assignment on the line has its own value read (review W2-11).
+            # Its span ends at the same line end, so the merged spans do not change.
+            closed = bool(quote) and start + len(value) < end
+            position = max(position, start + len(value) + 1 if closed else end)
     return found
 
 

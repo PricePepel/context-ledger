@@ -14,7 +14,7 @@ async function publishV3(request, baseURL, marker) {
   const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'claude', source: `${marker}.jsonl`, transcript } });
   expect(imported.ok(), await imported.text()).toBe(true);
   const { session } = await imported.json();
-  const packet = label => ({ version: 3, sessionId: session.id, party: 'leo', edges: [], nodes: [
+  const packet = label => ({ version: 3, sessionId: session.id, party: 'reviewer-leo', edges: [], nodes: [
     { id: 'port', kind: 'decision', label, evidence: [{ message: `u:${uuid(1)}` }] },
     { id: 'notes', kind: 'goal', label: `Notes for ${marker}`, evidence: [{ message: `u:${uuid(2)}` }] },
   ] });
@@ -111,3 +111,122 @@ test('P2c review: a graph opened while a decision is in flight keeps working but
   await expect(page.locator('#review-nodes li[data-node="port"]')).toContainText('Approved by Leo Park');
 });
 
+
+test('P3: a person edits a node label; the edit is kept as an event and shown as text', async ({ page, request, baseURL }) => {
+  const marker = `p3-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  const field = port.getByLabel('Corrected label');
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue(`Use ${hostile} port 4317`);
+  await field.fill(`Port 4317 ${hostile} from Friday`);
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port).toContainText('Edited by Mira (self-asserted)');
+  await expect(port.locator('.edited-label .node-label')).toHaveText(`Port 4317 ${hostile} from Friday`);
+  await expect(port).toHaveAttribute('data-state', 'edited');
+  // P3 review 10: focus returns to the node's Edit button after the save.
+  await expect(port.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  await expect(port.getByLabel('Corrected label')).toHaveCount(0);
+  expect(await page.locator('#review-nodes img').count()).toBe(0);
+  // The graph's own label is unchanged.
+  await expect(port.locator(':scope > .node-label')).toHaveText(`Use ${hostile} port 4317`);
+
+  // A later approval replaces the edit in the fold; both stay in the chain.
+  await port.getByRole('button', { name: 'Approve' }).click();
+  await expect(port).toContainText('Approved by Mira (self-asserted)');
+  await expect(port.locator('.edited-label')).toHaveCount(0);
+  const response = await request.get(`/api/graphs/${graph.id}`, { headers: { origin: baseURL } });
+  const { graph: stored } = await response.json();
+  expect(stored.reviews.map(review => review.decision)).toEqual(['approve']);
+  expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
+});
+
+test('P3: Cancel closes the edit field without recording anything', async ({ page, request, baseURL }) => {
+  const marker = `p3-cancel-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const notes = page.locator('#review-nodes li[data-node="notes"]');
+  await notes.getByRole('button', { name: 'Edit' }).click();
+  await notes.getByRole('button', { name: 'Cancel' }).click();
+  await expect(notes.getByLabel('Corrected label')).toHaveCount(0);
+  // P3 review 11: focus goes back to the node's Edit button.
+  await expect(notes.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  await expect(notes).toContainText('Not reviewed');
+});
+
+test('P3 review: a failed save keeps the corrected label the person typed', async ({ page, request, baseURL }) => {
+  const marker = `p3-draft-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317 from Friday, draft');
+  // The first save fails on the network; the field and what was typed stay.
+  await page.route(`**/api/graphs/${graph.id}/reviews`, route => route.abort(), { times: 1 });
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(page.locator('#review-status')).toContainText('Review failed.');
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317 from Friday, draft');
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 from Friday, draft');
+});
+
+test('P3 review 2: the corrected label cannot change while its save is pending', async ({ page, request, baseURL }) => {
+  const marker = `p3-pending-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317 as sent');
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route(`**/api/graphs/${graph.id}/reviews`, async route => { await held; await route.continue(); }, { times: 1 });
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port.getByLabel('Corrected label')).toBeDisabled();
+  release();
+  await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 as sent');
+});
+
+test('P3 review 6: clicking Edit again keeps what was typed', async ({ page, request, baseURL }) => {
+  const marker = `p3-again-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317, typed once');
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, typed once');
+});
+
+test('P3 review 7: a draft survives editing another node and coming back', async ({ page, request, baseURL }) => {
+  const marker = `p3-switch-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  const notes = page.locator('#review-nodes li[data-node="notes"]');
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317, first draft');
+  await notes.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveCount(0);
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, first draft');
+});
