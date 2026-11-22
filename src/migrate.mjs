@@ -331,7 +331,8 @@ export function migrate(database, bootstrap = () => {}) {
       // Card I3: a Codex message between two agents is a turn of its own, with the paths
       // of the agent that sent it and the one it went to. SQLite cannot change a CHECK, so
       // the table is rebuilt with the same rows, and the trigger that names it is recreated.
-      if (!columns(database, 'messages').has('author')) {
+      // The paths are JSON string literals, like text_json, because SQLite cuts a string at a NUL.
+      if (!columns(database, 'messages').has('author_json')) {
         database.exec(`
           DROP TRIGGER IF EXISTS sessions_messages;
           CREATE TABLE messages_v6 (
@@ -342,9 +343,9 @@ export function migrate(database, bootstrap = () => {}) {
             role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'agent')),
             text_json TEXT NOT NULL,
             key TEXT NOT NULL,
-            author TEXT,
-            recipient TEXT,
-            CHECK ((role = 'agent') = (author IS NOT NULL AND recipient IS NOT NULL)),
+            author_json TEXT,
+            recipient_json TEXT,
+            CHECK ((role = 'agent') = (author_json IS NOT NULL AND recipient_json IS NOT NULL)),
             UNIQUE (session_id, key),
             UNIQUE (session_id, seq)
           ) STRICT;

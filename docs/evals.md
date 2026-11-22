@@ -4529,8 +4529,23 @@ Codex multi-agent runs write messages between agents in two forms: `response_ite
 
 P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user or assistant, so I3 no longer merged. Recommended default, taken under the user's standing instruction: an agent turn is a row of its own with two new columns.
 
-- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author` and `recipient` columns hold the paths; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
+- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author_json` and `recipient_json` columns hold the paths as JSON string literals, like `text_json`; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
 - **Keys.** An agent turn gets a line-hash key like any Codex turn, so a version 3 graph can cite it.
 - **Old imports gain agent turns.** Importing a Codex file again adds its agent turns when the stored session has none, has fewer turns and keeps every key it had. The rows are rewritten in one transaction, and every earlier turn keeps its key.
 - **Tests:** `tests/import-agent-messages.test.mjs` 13/13, including a version 5 file upgraded to version 6 with its rows unchanged, the CHECK on the paths, the legacy copy without agent turns, and the older-build trigger still working. The schema tests in `tests/message-rows.test.mjs` and `tests/node-review.test.mjs` now expect the two new columns and the newest version. The library browser spec has both I3 cases. `labelText` was dropped for main's `terminalLabel`, which escapes the same characters.
 - **Suites (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 539/539, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python 239 run, 66 skipped.
+- **Codex review of the rework, round 1:** no high findings; three medium and one low, fixed with tests:
+  - (medium) A session migrated by the version 3 step has l:<line> keys, so a re-import never matched it. Old turns are now matched by line, role and text and keep their keys.
+  - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
+  - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
+  - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
+  -  18/18; TAP version 13
+1..0
+# tests 0
+# suites 0
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9.4567 544/544.

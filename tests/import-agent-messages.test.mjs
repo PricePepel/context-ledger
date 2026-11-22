@@ -322,19 +322,118 @@ test('I3: schema version 6 keeps every version 5 row, and stores agent paths in 
   const check = new DatabaseSync(path);
   stores.push(check);
   assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
-  assert.deepEqual(check.prepare('SELECT role, author, recipient FROM messages WHERE session_id = ? ORDER BY seq').all(agent.id)
+  assert.deepEqual(check.prepare('SELECT role, author_json AS author, recipient_json AS recipient FROM messages WHERE session_id = ? ORDER BY seq').all(agent.id)
     .map(row => ({ ...row })), [
     { role: 'user', author: null, recipient: null },
-    { role: 'agent', author: '/root', recipient: '/root/worker' },
+    { role: 'agent', author: '"/root"', recipient: '"/root/worker"' },
   ]);
   // Builds from before versions read sessions.messages, and know only user and assistant turns.
   const legacy = JSON.parse(check.prepare('SELECT messages FROM sessions WHERE id = ?').get(agent.id).messages);
   assert.deepEqual(legacy.map(message => message.role), ['user']);
   // An agent row needs both paths, and only an agent row has them.
-  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author) VALUES (?, 9, 9, 'agent', '\"x\"', 'l:9', '/root')").run(agent.id), /CHECK/u);
-  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author, recipient) VALUES (?, 9, 9, 'user', '\"x\"', 'l:9', '/a', '/b')").run(agent.id), /CHECK/u);
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json) VALUES (?, 9, 9, 'agent', '\"x\"', 'l:9', '\"/root\"')").run(agent.id), /CHECK/u);
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json, recipient_json) VALUES (?, 9, 9, 'user', '\"x\"', 'l:9', '\"/a\"', '\"/b\"')").run(agent.id), /CHECK/u);
   // The trigger for builds from before versions still gives a session they insert its rows.
   check.prepare("INSERT INTO sessions (id, provider, source, title, message_count, messages, search_text) VALUES ('old', 'codex', 'o.jsonl', 't', 1, ?, 't')")
     .run(JSON.stringify([{ role: 'user', text: 'Old build turn.', line: 1 }]));
   assert.equal(check.prepare("SELECT count(*) AS n FROM messages WHERE session_id = 'old'").get().n, 1);
+});
+
+test('I3 review 3: two deliveries, each written in both forms, stay two turns', () => {
+  const store = openStore(':memory:');
+  const text = 'Vela checks are done.';
+  const rollout = { type: 'inter_agent_communication', payload: { author: '/root/worker', recipient: '/root', content: text } };
+  const { messages } = importCodex(store, [
+    codexLine('user', 'Run the Vela checks twice.'),
+    agentLine('/root/worker', '/root', [{ type: 'input_text', text }]), JSON.stringify(rollout),
+    agentLine('/root/worker', '/root', [{ type: 'input_text', text }]), JSON.stringify(rollout),
+  ]);
+  assert.deepEqual(messages.map(message => [message.role, message.line]), [['user', 1], ['agent', 2], ['agent', 4]]);
+});
+
+test('I3 review 3: a NUL in an agent path is kept, and shown escaped, not cut', async t => {
+  const store = openStore(':memory:');
+  const nul = String.fromCodePoint(0);
+  const { summary, messages } = importCodex(store, [
+    codexLine('user', 'Audit Hydra.'),
+    agentLine(`/root${nul}/child`, '/root', [{ type: 'input_text', text: 'Hydra is clean.' }]),
+  ]);
+  assert.equal(messages[1].author, `/root${nul}/child`);
+  // The escape's backslash is itself escaped for Markdown, as in the source name.
+  assert.match(handoffMarkdown(store.get(summary.id)), /## agent \/root\\\\u0000\/child to \/root · line 2/u);
+});
+
+test('I3 review 3: a session migrated with l: keys gains its agent turns and keeps those keys', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-i3-legacy-'));
+  const path = join(directory, 'ledger.sqlite');
+  const stores = [];
+  t.after(async () => { for (const store of stores) store.close(); await rm(directory, { recursive: true, force: true }); });
+  const transcript = [codexLine('user', 'Plan the Ara release.'), agentLine('/root/worker', '/root', [{ type: 'input_text', text: 'Ara notes are ready.' }]), codexLine('assistant', 'Ship Ara on Tuesday.')].join('\n');
+  const store = openStore(path);
+  stores.push(store);
+  const { id } = store.importTranscript({ provider: 'codex', source: 'ara.jsonl', transcript });
+
+  // As the version 3 step leaves a session it copied: l:<line> keys, and no agent turn.
+  const raw = new DatabaseSync(path);
+  raw.exec('BEGIN');
+  raw.prepare("DELETE FROM messages WHERE session_id = ? AND role = 'agent'").run(id);
+  raw.prepare("UPDATE messages SET seq = 1 WHERE session_id = ? AND line = 3").run(id);
+  raw.prepare("UPDATE messages SET key = 'l:' || line WHERE session_id = ?").run(id);
+  raw.prepare('UPDATE sessions SET message_count = 2 WHERE id = ?').run(id);
+  raw.exec('COMMIT');
+  raw.close();
+
+  assert.equal(store.importTranscript({ provider: 'codex', source: 'ara.jsonl', transcript }).messageCount, 3);
+  const after = store.get(id).messages;
+  assert.deepEqual(after.map(message => [message.line, message.role]), [[1, 'user'], [2, 'agent'], [3, 'assistant']]);
+  assert.equal(after[0].key, 'l:1');
+  assert.equal(after[2].key, 'l:3');
+  assert.match(after[1].key, /^h:[0-9a-f]{32}$/u);
+});
+
+test('I3 review 3: a stored session whose turns differ in text is not rewritten', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-i3-differ-'));
+  const path = join(directory, 'ledger.sqlite');
+  const stores = [];
+  t.after(async () => { for (const store of stores) store.close(); await rm(directory, { recursive: true, force: true }); });
+  const transcript = [codexLine('user', 'Plan Cetus.'), agentLine('/root/worker', '/root', [{ type: 'input_text', text: 'Cetus is ready.' }])].join('\n');
+  const store = openStore(path);
+  stores.push(store);
+  const { id } = store.importTranscript({ provider: 'codex', source: 'cetus.jsonl', transcript });
+  const raw = new DatabaseSync(path);
+  raw.exec('BEGIN');
+  raw.prepare("DELETE FROM messages WHERE session_id = ? AND role = 'agent'").run(id);
+  raw.prepare("UPDATE messages SET text_json = ? WHERE session_id = ?").run(JSON.stringify('Plan something else.'), id);
+  raw.exec('COMMIT');
+  raw.close();
+  store.importTranscript({ provider: 'codex', source: 'cetus.jsonl', transcript });
+  assert.deepEqual(store.get(id).messages.map(message => message.text), ['Plan something else.']);
+});
+
+test('I3 review 3: a session deleted after the duplicate check is imported again, not left half-written', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-i3-gone-'));
+  const path = join(directory, 'ledger.sqlite');
+  const stores = [];
+  t.after(async () => { for (const store of stores) store.close(); await rm(directory, { recursive: true, force: true }); });
+  const transcript = [codexLine('user', 'Plan Lepus.'), agentLine('/root/worker', '/root', [{ type: 'input_text', text: 'Lepus is ready.' }])].join('\n');
+  const store = openStore(path);
+  const other = openStore(path);
+  stores.push(store, other);
+  const { id } = store.importTranscript({ provider: 'codex', source: 'lepus.jsonl', transcript });
+  // Another process deletes the session while this one is between its check and its lock.
+  const realExec = DatabaseSync.prototype.exec;
+  let once = true;
+  t.after(() => { DatabaseSync.prototype.exec = realExec; });
+  DatabaseSync.prototype.exec = function exec(sql) {
+    if (once && sql === 'BEGIN IMMEDIATE') {
+      once = false;
+      DatabaseSync.prototype.exec = realExec;
+      other.deleteSession(id);
+    }
+    return realExec.call(this, sql);
+  };
+  const again = store.importTranscript({ provider: 'codex', source: 'lepus.jsonl', transcript });
+  DatabaseSync.prototype.exec = realExec;
+  assert.equal(again.id, id);
+  assert.equal(store.get(id).messages.length, 2);
 });

@@ -183,7 +183,8 @@ function transcriptParser(provider) {
       const message = messageAt(record, provider, line);
       const agent = message?.role === 'agent' ? { record, message } : null;
       const repeat = agent && bothForms(previousAgent, record, message);
-      previousAgent = agent;
+      // A dropped repeat ends its pair: the record after it starts a new delivery.
+      previousAgent = repeat ? null : agent;
       // A delivery written in both Codex forms, one right after the other, is kept once.
       if (!message || repeat) return;
       bytes += Buffer.byteLength(JSON.stringify(message), 'utf8') + 1;
@@ -437,12 +438,14 @@ export function openStore(path) {
     ON CONFLICT (id) DO NOTHING
   `);
   const insertMessage = database.prepare(`
-    INSERT INTO messages (session_id, seq, line, role, text_json, key, author, recipient) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json, recipient_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const writeRows = (id, messages) => {
     for (const [seq, message] of messages.entries()) {
+      // Paths are JSON string literals, like the text, because SQLite cuts a string at a NUL.
       insertMessage.run(id, seq, message.line, message.role, JSON.stringify(message.text), message.key,
-        message.author ?? null, message.recipient ?? null);
+        message.role === 'agent' ? JSON.stringify(message.author) : null,
+        message.role === 'agent' ? JSON.stringify(message.recipient) : null);
     }
   };
   // Card I3: the copy in sessions.messages, for builds from before versions, leaves agent
@@ -452,12 +455,14 @@ export function openStore(path) {
   const deleteRows = database.prepare('DELETE FROM messages WHERE session_id = ?');
   const refreshSession = database.prepare('UPDATE sessions SET message_count = ?, messages = ?, search_text = ? WHERE id = ?');
   const getSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
-  const selectMessages = database.prepare('SELECT role, text_json, line, key, author, recipient FROM messages WHERE session_id = ? ORDER BY seq');
+  const selectMessages = database.prepare('SELECT role, text_json, line, key, author_json, recipient_json FROM messages WHERE session_id = ? ORDER BY seq');
   // Plain objects, as the JSON column gave. The text is a JSON string literal, because
   // node:sqlite cuts a string at a NUL when reading and replaces lone surrogates when
   // binding; the JSON form keeps every turn exactly as imported.
-  const readMessages = id => selectMessages.all(id).map(({ role, text_json: text, line, key, author, recipient }) => (
-    role === 'agent' ? { role, author, recipient, text: JSON.parse(text), line, key } : { role, text: JSON.parse(text), line, key }));
+  const readMessages = id => selectMessages.all(id).map(({ role, text_json: text, line, key, author_json: author, recipient_json: recipient }) => (
+    role === 'agent'
+      ? { role, author: JSON.parse(author), recipient: JSON.parse(recipient), text: JSON.parse(text), line, key }
+      : { role, text: JSON.parse(text), line, key }));
   const readDetail = id => {
     const row = getSummary.get(id);
     if (row) return { ...row, messages: readMessages(id) };
@@ -506,24 +511,33 @@ export function openStore(path) {
 
   /**
    * Card I3: a Codex file imported before agent messages were read gains them when it is
-   * imported again. Its ID and every turn it had stay, key for key, so graphs that cite it
-   * hold; a session whose turns would change in any other way is left as it is.
+   * imported again. Its ID stays, and every turn it had is matched by line, role and text
+   * and keeps its key, an l:<line> key from the version 3 copy included, so graphs that
+   * cite it hold. A session whose turns would change in any other way is left as it is.
+   * False when the session is gone, checked under the write lock.
    */
   function addAgentTurns(id, messages, searchText) {
-    if (!messages.some(message => message.role === 'agent')) return;
     database.exec('BEGIN IMMEDIATE');
     let pending = true;
     try {
+      if (!getSummary.get(id)) return false;
       const old = readMessages(id);
-      const keys = new Set(messages.map(message => message.key));
-      if (!old.some(message => message.role === 'agent') && old.length < messages.length
-          && old.every(message => keys.has(message.key))) {
-        deleteRows.run(id);
-        writeRows(id, messages);
-        refreshSession.run(messages.length, legacyCopy(messages), searchText, id);
+      const atLine = new Map(messages.map(message => [message.line, message]));
+      const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
+      if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
+          && old.length < messages.length && old.every(same)) {
+        const keyAt = new Map(old.map(message => [message.line, message.key]));
+        const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+        // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
+        if (new Set(merged.map(message => message.key)).size === merged.length) {
+          deleteRows.run(id);
+          writeRows(id, merged);
+          refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
+        }
       }
       database.exec('COMMIT');
       pending = false;
+      return true;
     } finally {
       if (pending) database.exec('ROLLBACK');
     }
@@ -532,11 +546,7 @@ export function openStore(path) {
   function save(id, provider, name, project, { messages, skipped }) {
     const title = titleFor(messages);
     const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
-    const existing = getSummary.get(id);
-    if (existing) {
-      addAgentTurns(id, messages, searchText);
-      return withSkipped(getSummary.get(id), skipped);
-    }
+    if (getSummary.get(id) && addAgentTurns(id, messages, searchText)) return withSkipped(getSummary.get(id), skipped);
 
     database.exec('BEGIN IMMEDIATE');
     let pending = true;

@@ -209,8 +209,8 @@ test('a new file is at schema version 3 with the messages table, its keys and th
     { name: 'text_json', type: 'TEXT', notnull: 1, pk: 0 },
     { name: 'key', type: 'TEXT', notnull: 1, pk: 0 },
     // Card I3 (version 6): an agent turn's paths; null on user and assistant turns.
-    { name: 'author', type: 'TEXT', notnull: 0, pk: 0 },
-    { name: 'recipient', type: 'TEXT', notnull: 0, pk: 0 },
+    { name: 'author_json', type: 'TEXT', notnull: 0, pk: 0 },
+    { name: 'recipient_json', type: 'TEXT', notnull: 0, pk: 0 },
   ]);
   const unique = rows(check, 'PRAGMA index_list(messages)').filter(index => index.unique === 1 && index.origin === 'u')
     .map(index => rows(check, `PRAGMA index_info(${JSON.stringify(index.name)})`).map(column => column.name).join(', ')).sort();
