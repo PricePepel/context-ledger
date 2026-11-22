@@ -205,10 +205,11 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def calibration(self, task, steps, max_new_tokens, thresholds, reference, rows=1, gated=False):
+    def calibration(self, task, steps, max_new_tokens, thresholds, reference, rows=1, gated=False, profile=None):
         """W3: the committed calibration of this kind of task for these weights, measured with
         this policy (steps, token budget, W1's threshold set, the distance reference on or
-        off, questions per call, the gateway in front), or None (uncalibrated). Raises
+        off, questions per call, the gateway in front, the service profile), or None
+        (uncalibrated). Raises
         abstain.CalibrationInvalid for a calibration file there that cannot be trusted."""
         if not task:
             return None
@@ -216,7 +217,7 @@ class Guard:
         from .watchdog import team_weights
         return load_calibration(self.team.model_name, team_weights(self.team)[0], task, steps=steps,
                                 max_new_tokens=max_new_tokens, threshold_set=(thresholds or {}).get("id"),
-                                reference=reference is not None, batch=rows, gated=gated,
+                                reference=reference is not None, batch=rows, gated=gated, profile=profile,
                                 directory=self.calibration_dir or CALIBRATION_DIR)
 
     def rendered(self, question):
@@ -231,14 +232,18 @@ class Guard:
         return texts
 
     def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None, task=None,
-            calibration_override=None):
+            calibration_override=None, profile=None):
         """One guarded batch. audit: True or False forces the audits; None samples them.
 
         gateways (W2): one gateway.Gateway per question, its permissions fixed. Each admits the
         question's spans before the squad reads anything, and the squad reads the admitted text
         (placeholders in place of secrets); every answer released passes that gateway's output
         gate, and a broken label rule holds the run. Without gateways the questions are read
-        as given (the eval)."""
+        as given (the eval).
+
+        task and profile (W3): the kind of task the caller names and the service profile of the
+        request (abstain.service_profile); a calibration applies only to the profile it was
+        measured on."""
         if gateways is not None:
             from .gateway import OutputGate, Span
             if len(gateways) != len(questions):
@@ -274,7 +279,8 @@ class Guard:
         from .abstain import CalibrationInvalid
         try:
             calibration = calibration_override if calibration_override is not None else \
-                self.calibration(task, steps, max_new_tokens, thresholds, reference, rows, gateways is not None)
+                self.calibration(task, steps, max_new_tokens, thresholds, reference, rows, gateways is not None,
+                                 profile=profile)
         except CalibrationInvalid:
             return [self._held(steps, "calibration-invalid") for _ in questions]
         # One deadline for the whole run: the guard's own cap and the gateway's, whichever is

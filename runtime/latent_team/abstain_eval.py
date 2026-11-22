@@ -66,6 +66,14 @@ def plan_items(items, plan, part):
     return out
 
 
+def work_keys(plan, fresh=None):
+    """Every request of a plan, in the order the certification shards take them: request
+    number k belongs to shard k mod the number of shards."""
+    fresh = len(fresh_items()) if fresh is None else fresh
+    return (plan_keys(plan, "propose") + plan_keys(plan, "certify") + plan_keys(plan, "score")
+            + [("fresh", None, position) for position in range(fresh)])
+
+
 def describe(plan, part):
     """Words for one part of a plan, as in "block 0 (60 questions)"."""
     return ", ".join(f"block {block}" + ("" if count is None else f" ({count} questions)")
@@ -90,9 +98,10 @@ GSM8K_TEST = 1319
 
 
 def dataset_identity(items):
-    """The one cached GSM8K snapshot, and a fingerprint of its ordered test questions; stops
-    the run unless there is exactly one snapshot with 1319 distinct questions, so no question
-    can enter two splits (review W3-3)."""
+    """The one cached GSM8K snapshot, and fingerprints of its ordered test questions and of the
+    ordered question and gold pairs (review W3-4: a changed label changes it); stops the run
+    unless there is exactly one snapshot with 1319 distinct questions, so no question can
+    enter two splits (review W3-3)."""
     import glob
     import hashlib
     from .evaluate import HUB
@@ -101,8 +110,10 @@ def dataset_identity(items):
     if len(snapshots) != 1 or len(questions) != GSM8K_TEST or len(set(questions)) != GSM8K_TEST:
         raise SystemExit(f"GSM8K test must be one snapshot of {GSM8K_TEST} distinct questions: "
                          f"{len(snapshots)} snapshots, {len(questions)} rows, {len(set(questions))} distinct")
+    labels = [f"{item['question']}\t{item['gold']!r}" for item in items]
     return {"revision": os.path.basename(snapshots[0]),
-            "fingerprint": hashlib.sha256("\n".join(questions).encode("utf-8")).hexdigest()}
+            "fingerprint": hashlib.sha256("\n".join(questions).encode("utf-8")).hexdigest(),
+            "labels": hashlib.sha256("\n".join(labels).encode("utf-8")).hexdigest()}
 
 
 def block_items(items, block):
@@ -242,6 +253,22 @@ def part_run(args):
     print("run done", json.dumps(seconds), flush=True)
 
 
+def resumed(path, manifest, owned):
+    """The rows a shard saved before, to resume it: only from a file of the same run (every
+    manifest field equal), and only requests this shard owns, each once (review W3-4)."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as handle:
+        before = json.load(handle)
+    if {k: before.get(k) for k in manifest} != manifest:
+        raise SystemExit(f"{path} is of another run")
+    rows = before["rows"]
+    keys = [(r["kind"], r["block"], r["position"]) for r in rows]
+    if len(set(keys)) != len(keys) or not set(keys) <= owned:
+        raise SystemExit(f"{path} holds a request twice, or one this shard does not own")
+    return rows
+
+
 def part_certify(args):
     """Single requests through TeamService, on the certification and scoring blocks and the
     fresh set: what the service returns, graded. --shard k of --shards n takes every n-th
@@ -254,6 +281,14 @@ def part_certify(args):
     sys.path.insert(0, os.path.join(REPO, "runtime"))
     from latent_pool import ApiError
     from latent_pool.team_service import TeamService
+    # One named run of one known commit (review W3-4): every shard of the run is started with
+    # the same --run, from a snapshot with a COMMIT file.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,39}", args.run or ""):
+        raise SystemExit("--run must name this run in letters, digits and hyphens; every shard of it shares the name")
+    commit_path = os.path.join(REPO, "COMMIT")
+    commit = open(commit_path).read().strip() if os.path.exists(commit_path) else ""
+    if not commit:
+        raise SystemExit("no COMMIT file: the run's source revision would be unknown")
     items = gsm8k("test")
     dataset = dataset_identity(items)
     team = LatentTeam(MODEL)
@@ -261,6 +296,12 @@ def part_certify(args):
     team.single(warm, max_new_tokens=8)
     team.latent_mas(warm, steps=2, max_new_tokens=8)
     thresholds = load_thresholds(MODEL, team_weights(team)[0])   # the committed set, as the service loads it
+    # W1's blocks are excluded by number, so W1 must have cut the same split the same way
+    # (review W3-4). Its file records no dataset revision; the GPU machine has held one
+    # snapshot since before W1 ran (docs/evals.md, W3).
+    measured = thresholds.get("measuredOn") or {}
+    if (measured.get("split"), measured.get("seed"), measured.get("count")) != ("test", SEED, COUNT):
+        raise SystemExit("W1's thresholds were not fitted on blocks of this split: its fitted rows are unknown")
     fitted = {thresholds["measuredOn"]["block"], thresholds["distance"]["referenceBlock"]}
     if fitted != set(FITTED_BY_W1) or fitted & set(plan_blocks(args.plan, "certify") + plan_blocks(args.plan, "score")):
         raise SystemExit(f"W1 fitted blocks {sorted(fitted)}: they may not certify or score")
@@ -274,18 +315,15 @@ def part_certify(args):
     work = [("gsm8k", block, position, item) for part in ("propose", "certify", "score")
             for block, position, item in plan_items(items, args.plan, part)]
     work += [("fresh", None, position, item) for position, item in enumerate(fresh_items())]
+    if [(kind, block, position) for kind, block, position, _ in work] != work_keys(args.plan):
+        raise SystemExit("the work list is not the plan's requests in order")
+    owned = {(kind, block, position) for number, (kind, block, position, _) in enumerate(work)
+             if number % args.shards == args.shard}
     path = os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json")
-    manifest = {"plan": args.plan, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"], "reference": True,
-                "fittedByW1": sorted(fitted), "dataset": dataset, "shard": args.shard, "shards": args.shards,
-                "commit": open(os.path.join(REPO, "COMMIT")).read().strip()
-                if os.path.exists(os.path.join(REPO, "COMMIT")) else None}
-    rows = []
-    if os.path.exists(path):   # resume a shard of the same run, never another's
-        with open(path) as handle:
-            before = json.load(handle)
-        if {k: before.get(k) for k in manifest} != manifest:
-            raise SystemExit(f"{path} is of another run")
-        rows = before["rows"]
+    manifest = {"run": args.run, "plan": args.plan, "weightsHash": team_weights(team)[0],
+                "thresholdSet": thresholds["id"], "reference": True, "fittedByW1": sorted(fitted), "dataset": dataset,
+                "shard": args.shard, "shards": args.shards, "commit": commit}
+    rows = resumed(path, manifest, owned)
     done = {(r["kind"], r["block"], r["position"]) for r in rows}
 
     def save(complete):
@@ -444,15 +482,17 @@ def part_analyze(args):
             batched = json.load(handle)
     single = []
     shards = sorted(glob.glob(os.path.join(args.out, "certify-*-of-*.json")))
-    manifests = []
+    manifests, by_shard = [], {}
     for path in shards:
         with open(path) as handle:
             data = json.load(handle)
         if data.get("complete") is not True:
             raise SystemExit(f"{path} is not complete")
         single += data["rows"]
-        manifests.append({k: data.get(k) for k in ("plan", "weightsHash", "thresholdSet", "reference", "fittedByW1",
-                                                  "dataset", "shards", "commit")} | {"shard": data.get("shard")})
+        by_shard[data.get("shard")] = data["rows"]
+        manifests.append({k: data.get(k) for k in ("run", "plan", "weightsHash", "thresholdSet", "reference",
+                                                  "fittedByW1", "dataset", "shards", "commit")}
+                         | {"shard": data.get("shard")})
     # One run (review W3-3): every shard of one manifest, each once, and exactly the expected
     # requests, each once.
     if not manifests or any({k: v for k, v in m.items() if k != "shard"} !=
@@ -461,14 +501,21 @@ def part_analyze(args):
     meta = manifests[0]
     if sorted(m["shard"] for m in manifests) != list(range(meta["shards"])):
         raise SystemExit("the certification shards are incomplete or repeated")
+    if not all(isinstance(meta.get(k), str) and meta[k] for k in ("run", "commit")) or \
+            not isinstance(meta.get("dataset"), dict) or not meta["dataset"].get("labels"):
+        raise SystemExit("the certification shards do not name their run, commit and labelled dataset")
     if batched is not None and (meta["weightsHash"] != batched["weightsHash"] or
                                 meta["thresholdSet"] != batched["thresholdSet"]):
         batched = None   # of another run: not used, even for exploration
-    plan = meta.get("plan") or "full"
-    expected = sorted(plan_keys(plan, "propose") + plan_keys(plan, "certify") + plan_keys(plan, "score")
-                      + [("fresh", None, p) for p in range(len(fresh_items()))], key=str)
-    if sorted(((r["kind"], r["block"], r["position"]) for r in single), key=str) != expected:
+    plan = meta.get("plan")
+    if plan not in PLANS:
+        raise SystemExit("the certification shards name no known plan")
+    order = work_keys(plan)
+    if sorted(((r["kind"], r["block"], r["position"]) for r in single), key=str) != sorted(order, key=str):
         raise SystemExit("the certification requests are not exactly the expected ones, each once")
+    owner = {key: number % meta["shards"] for number, key in enumerate(order)}
+    if any(owner[(r["kind"], r["block"], r["position"])] != shard for shard, rows in by_shard.items() for r in rows):
+        raise SystemExit("a certification shard holds a request another shard owns")   # review W3-4
     gsm = [r for r in single if r["kind"] == "gsm8k"]
     keys = {part: set(plan_keys(plan, part)) for part in ("propose", "certify", "score")}
     part_of = lambda r, part: (r["kind"], r["block"], r["position"]) in keys[part]   # noqa: E731
@@ -491,7 +538,11 @@ def part_analyze(args):
             "certify": round(sum(r["releasedCorrect"] for r in cert) / len(cert), 4),
             "score": round(sum(r["releasedCorrect"] for r in scored) / len(scored), 4)},
         "decisions": {word: sum(r["action"] == word for r in scored) for word in ("release", "hold")},
-        "holdReasons": sorted({r["reason"] for r in single if r["action"] == "hold"}),
+        # By reason and part (review W3-4): deadline holds are counted apart, since the two
+        # shards shared one GPU and one request's length can push another past its deadline.
+        "holdsByReason": {part: {reason: sum(r["action"] == "hold" and r["reason"] == reason for r in rows)
+                                 for reason in sorted({r["reason"] for r in rows if r["action"] == "hold"})}
+                          for part, rows in (("certify", cert), ("score", scored), ("fresh", fresh_all))},
         "singleSeconds": {"median": sorted(seconds)[len(seconds) // 2], "mean": round(sum(seconds) / len(seconds), 2)},
     }
     # Eval 12: the same threshold on the fresh set; nothing to transfer when nothing certified.
@@ -566,9 +617,9 @@ def finish(args, summary, result, threshold, chosen, meta):
     print(json.dumps(summary, indent=1, default=str))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(summary, handle, indent=1, default=str)
-    plan = meta.get("plan") or "full"
+    plan = meta["plan"]
     if args.calibration_dir and result["passed"]:
-        from .abstain import artifact_name, validate
+        from .abstain import artifact_name, service_profile, validate
         os.makedirs(args.calibration_dir, exist_ok=True)
         calibration = {
             "id": "w3-qwen2.5-3b-instruct-gsm8k-1", "task": TASK, "model": MODEL,
@@ -576,10 +627,14 @@ def finish(args, summary, result, threshold, chosen, meta):
             "steps": STEPS, "maxNewTokens": TOKENS, "batch": 1, "gated": True, "grid": GRID,
             "score": "answer-number-logprob", "threshold": threshold, "target": TARGET, "delta": DELTA,
             "certified": True,
-            "measuredOn": {"split": "test", "seed": SEED, "blockSize": COUNT, "plan": meta.get("plan") or "full",
-                           "propose": [list(x) for x in PLANS[meta.get("plan") or "full"]["propose"]],
-                           "certify": [list(x) for x in PLANS[meta.get("plan") or "full"]["certify"]],
-                           "score": [list(x) for x in PLANS[meta.get("plan") or "full"]["score"]],
+            # What the certification ran: /latent/team requests, public clearance, no declared
+            # secrets (review W3-4); and where its evidence came from.
+            "profile": service_profile("request", "public", False),
+            "provenance": {"run": meta["run"], "commit": meta["commit"], "dataset": meta["dataset"]},
+            "measuredOn": {"split": "test", "seed": SEED, "blockSize": COUNT, "plan": plan,
+                           "propose": [list(x) for x in PLANS[plan]["propose"]],
+                           "certify": [list(x) for x in PLANS[plan]["certify"]],
+                           "score": [list(x) for x in PLANS[plan]["score"]],
                            "fittedByW1": list(FITTED_BY_W1),
                            "requests": "single, through TeamService", "date": time.strftime("%Y-%m-%d")},
             "certification": {"threshold": threshold, "released": chosen["released"], "errors": chosen["errors"],
@@ -592,7 +647,8 @@ def finish(args, summary, result, threshold, chosen, meta):
                       f"came from the scores of GSM8K test {describe(plan, 'propose')}, were tested on "
                       f"{describe(plan, 'certify')} at 0.05 / 20 each (Bonferroni over the grid, one-sided "
                       f"Clopper-Pearson) for a 10% error ceiling, and the threshold was scored on {describe(plan, 'score')} "
-                      f"(plan {plan!r}). Void for any other weights, task or policy."),
+                      f"(plan {plan!r}). Void for any other weights, task, policy or service profile "
+                      "(it was measured on /latent/team requests with public clearance and no declared secrets)."),
         }
         validate(calibration, TASK, MODEL)
         with open(os.path.join(args.calibration_dir, artifact_name(TASK, MODEL)), "w") as handle:
@@ -609,6 +665,7 @@ def main():
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--plan", choices=sorted(PLANS), default="full")
+    parser.add_argument("--run", default=None, help="certify: the run's name, shared by its shards")
     args = parser.parse_args()
     args.out = os.path.expanduser(args.out)
     args.w1 = os.path.expanduser(args.w1)

@@ -41,6 +41,19 @@ GRID = 20
 # The one policy W3 certifies (review W3-3): a file must name it exactly, and both pass rules
 # are recomputed with these constants, never with numbers the file supplies.
 POLICY = {"score": "answer-number-logprob", "target": 0.10, "delta": 0.05, "grid": GRID}
+# The service profile a calibration was measured on (review W3-4): the input's origin (a
+# /latent/team request or a flattened chat), the output's clearance, and whether the caller
+# declared secrets. Each changes what the model reads or what the output gate releases, so a
+# calibration applies to its own profile only; any other is uncalibrated.
+PROFILE = re.compile(r"(request|chat)-(public|sensitive)(-declared)?")
+# The certification plans' sizes (abstain_eval.PLANS): proposal, certification and scored
+# questions. A file's counts must fit the plan it names (review W3-4).
+PLAN_SIZES = {"full": (400, 400, 519), "today": (60, 200, 150)}
+
+
+def service_profile(origin, clearance, declared):
+    """The profile word of one service request, as a calibration records it."""
+    return f"{origin}-{clearance}" + ("-declared" if declared else "")
 
 
 class CalibrationInvalid(ValueError):
@@ -100,16 +113,34 @@ def validate(data, task=None, model_name=None):
         raise CalibrationInvalid("batch is not a positive count")
     if not isinstance(data.get("grid"), int) or isinstance(data["grid"], bool) or data["grid"] < 1:
         raise CalibrationInvalid("grid is not a positive count")
+    if not isinstance(data.get("profile"), str) or not PROFILE.fullmatch(data["profile"]):
+        raise CalibrationInvalid("profile is not a service profile")
+    # Where the evidence came from (review W3-4): one named run of one commit, on one dataset.
+    provenance = data.get("provenance")
+    dataset = provenance.get("dataset") if isinstance(provenance, dict) else None
+    if not isinstance(dataset, dict) or not all(isinstance(provenance.get(k), str) and provenance[k]
+                                                for k in ("run", "commit")) or \
+            not all(isinstance(dataset.get(k), str) and dataset[k] for k in ("revision", "fingerprint", "labels")):
+        raise CalibrationInvalid("provenance is missing")
+    measured = data.get("measuredOn")
+    plan = measured.get("plan") if isinstance(measured, dict) else None
+    if not isinstance(plan, str) or plan not in PLAN_SIZES:
+        raise CalibrationInvalid("measuredOn names no known plan")
+    _, certify_size, score_size = PLAN_SIZES[plan]
     # The evidence, recomputed: the certification test of the kept threshold, and eval 11's rule.
     cert = data.get("certification")
     if not isinstance(cert, dict) or not all(_count(cert.get(k)) for k in ("released", "errors")) or \
             cert.get("threshold") != data["threshold"] or cert["errors"] > cert["released"]:
         raise CalibrationInvalid("no certification counts for this threshold")
+    if cert["released"] > certify_size:
+        raise CalibrationInvalid("more certification answers than the plan's certification questions")
     if upper_bound(cert["errors"], cert["released"], POLICY["delta"] / POLICY["grid"]) > POLICY["target"]:
         raise CalibrationInvalid("the certification counts do not pass")
     if not all(_count(held_out.get(k)) for k in ("questions", "released", "errors")) or \
             held_out["errors"] > held_out["released"] or held_out["released"] > held_out["questions"]:
         raise CalibrationInvalid("no held-out counts")
+    if held_out["questions"] != score_size:
+        raise CalibrationInvalid("the held-out questions are not the plan's")
     if not passes(held_out["errors"], held_out["released"], held_out["questions"], POLICY["target"]):
         raise CalibrationInvalid("the held-out counts do not pass")
     return data
@@ -125,12 +156,12 @@ def passes(errors, released, questions, target):
 
 
 def load_calibration(model_name, weights_hash, task, *, steps, max_new_tokens, threshold_set, reference,
-                     batch, gated, directory=CALIBRATION_DIR):
+                     batch, gated, profile=None, directory=CALIBRATION_DIR):
     """The committed calibration for this task and model (the file artifact_name names), when
     it was measured on these weights with this policy: latent steps, the solver's token
     budget, W1's threshold set, the distance reference on or off, the number of questions per
-    guarded call and whether the gateway was in front (the service: one question, gated).
-    None when there is no such file, or it is for other weights or another policy: the run is
+    guarded call, whether the gateway was in front (the service: one question, gated) and the
+    service profile (service_profile: origin, clearance, declared secrets). None when there is no such file, or it is for other weights or another policy: the run is
     then uncalibrated (released, marked so, no ceiling claimed). Raises CalibrationInvalid
     when the file is there but cannot be read or trusted: the guard then holds."""
     if not task:
@@ -144,9 +175,9 @@ def load_calibration(model_name, weights_hash, task, *, steps, max_new_tokens, t
     except (OSError, ValueError) as error:
         raise CalibrationInvalid(f"{os.path.basename(path)} cannot be read") from error
     validate(data, task, model_name)
-    wanted = (weights_hash, steps, max_new_tokens, threshold_set, bool(reference), batch, bool(gated))
+    wanted = (weights_hash, steps, max_new_tokens, threshold_set, bool(reference), batch, bool(gated), profile)
     found = (data["weightsHash"], data["steps"], data["maxNewTokens"], data["thresholdSet"], data["reference"],
-             data["batch"], data["gated"])
+             data["batch"], data["gated"], data["profile"])
     return data if found == wanted else None
 
 

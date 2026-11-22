@@ -145,6 +145,7 @@ class TeamService:
 
     def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public",
             task=None, gateway=None):
+        from latent_team.abstain import service_profile
         from latent_team.gateway import GatewayError, Span
         gateway = gateway if gateway is not None else self.gateway(steps, max_new_tokens, secrets, clearance)
         try:
@@ -160,8 +161,11 @@ class TeamService:
             # A caller that gave up while waiting for the slot gets no GPU work.
             if gone is not None and gone():
                 raise ApiError(499, GONE)
+            # W3: a calibration applies only to the service profile it was measured on (review
+            # W3-4): the route's origin, the clearance and whether secrets were declared.
+            profile = service_profile(origin, gateway.permissions.clearance, bool(gateway.declared))
             outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway],
-                                     **({"task": task} if task else {}))[0]
+                                     **({"task": task, "profile": profile} if task else {}))[0]
         finally:
             self._slot.release()
         # Fail closed: the supervisor's hold leaves as an error, so no client can take it
@@ -235,8 +239,10 @@ class TeamService:
         limit = min(limit, MAX_NEW_TOKENS)
         # Permissions are fixed before any message is read (review W2-16): the gateway exists,
         # its budgets and clearance set, before the conversation is flattened.
-        # W3: "task" is accepted here too, as an extension field like "secrets", so a calibrated
-        # kind of task can abstain on this route (review W3-1); it is checked before any message.
+        # W3: "task" is accepted here too, as an extension field like "secrets" (review W3-1);
+        # it is checked before any message. A calibration applies only to the profile it was
+        # measured on, so this route's runs are uncalibrated unless one was measured on chat
+        # input (W3's was measured on /latent/team requests, review W3-4).
         task = task_name(body)
         gateway = self.gateway(self.steps, limit, declared_secrets(body))
         question = build_question(messages, limit=None)

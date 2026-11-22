@@ -41,10 +41,11 @@ class FakeGuard:
     def __init__(self, team, action="release", reason="uncalibrated"):
         self.team, self.action, self.reason = team, action, reason
 
-    def run(self, questions, steps, max_new_tokens, gateways=None):
+    def run(self, questions, steps, max_new_tokens, gateways=None, task=None, profile=None):
         if gateways is not None:   # the squad reads what the gateway admitted
             questions = [g.admission.text for g in gateways]
         self.gateways = gateways
+        self.calibrated = (task, profile)   # W3: what a calibration would be looked up by
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens)
         checks = dict(CHECKS)
         answer, system, marks, action = answers[0], "latent_mas", ["uncalibrated"], self.action
@@ -63,6 +64,37 @@ class FakeGuard:
                         latent_steps=receipt.latent_steps, latent_vectors=receipt.latent_vectors,
                         seconds=receipt.seconds,
                         gateway=dict(gateways[0].admission.receipt(), redactions=0) if gateways else {})]
+
+
+class ServiceProfileTest(unittest.TestCase):
+    """Review W3-4 finding 2: the guard looks a calibration up by the request's service
+    profile, so one measured on /latent/team public requests never applies to chat input,
+    sensitive clearance or declared secrets."""
+
+    def setUp(self):
+        self.team = FakeTeam()
+        self.guard = FakeGuard(self.team)
+        self.service = TeamService(self.team, slot_wait=0.1, guard=self.guard)
+
+    def test_each_route_names_its_profile(self):
+        base = {"question": "What is 2 + 2?", "latentSteps": 2, "maxNewTokens": 16, "task": "gsm8k-arithmetic"}
+        cases = ((base, "request-public"),
+                 (dict(base, clearance="sensitive"), "request-sensitive"),
+                 (dict(base, secrets=["sk-synthetic-0000000000"]), "request-public-declared"))
+        for body, profile in cases:
+            with self.subTest(profile):
+                self.service(body)
+                self.assertEqual(self.guard.calibrated, ("gsm8k-arithmetic", profile))
+        chat = {"model": MODEL_ID, "max_tokens": 16, "task": "gsm8k-arithmetic",
+                "messages": [{"role": "user", "content": "What is 2 + 2?"}]}
+        self.service.chat(chat)
+        self.assertEqual(self.guard.calibrated, ("gsm8k-arithmetic", "chat-public"))
+        self.service.chat(dict(chat, secrets=["sk-synthetic-0000000000"]))
+        self.assertEqual(self.guard.calibrated, ("gsm8k-arithmetic", "chat-public-declared"))
+
+    def test_no_task_looks_up_nothing(self):
+        self.service({"question": "What is 2 + 2?", "latentSteps": 2, "maxNewTokens": 16})
+        self.assertEqual(self.guard.calibrated, (None, None))
 
 
 class TeamServiceTest(unittest.TestCase):

@@ -108,7 +108,11 @@ def calibration(**changes):
             "reference": True, "steps": 40, "maxNewTokens": 512, "batch": 1, "gated": True, "grid": 20,
             "score": "answer-number-logprob", "threshold": -0.5, "target": 0.1, "delta": 0.05, "certified": True,
             "certification": {"threshold": -0.5, "released": 300, "errors": 6},
-            "heldOut": {"questions": 519, "released": 400, "errors": 30, "passed": True}}
+            "heldOut": {"questions": 519, "released": 400, "errors": 30, "passed": True},
+            "profile": "request-public",
+            "provenance": {"run": "run-1", "commit": "abc1234",
+                           "dataset": {"revision": "r", "fingerprint": "f", "labels": "l"}},
+            "measuredOn": {"plan": "full"}}
     data.update(changes)
     return data
 
@@ -124,7 +128,8 @@ class LoadTest(unittest.TestCase):
                 name = abstain.artifact_name("gsm8k-arithmetic", "m") if name == "a.json" else name
                 with open(os.path.join(folder, name), "w", encoding="utf-8") as handle:
                     handle.write(text if isinstance(text, str) else json.dumps(text))
-            wanted = dict(steps=40, max_new_tokens=512, threshold_set="t-1", reference=True, batch=1, gated=True)
+            wanted = dict(steps=40, max_new_tokens=512, threshold_set="t-1", reference=True, batch=1, gated=True,
+                          profile="request-public")
             wanted.update(settings)
             return abstain.load_calibration("m", "w", "gsm8k-arithmetic", directory=folder, **wanted)
 
@@ -177,6 +182,165 @@ class LoadTest(unittest.TestCase):
         for data in loose:
             with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
                 self.load({"a.json": data})
+
+    def test_a_calibration_applies_to_its_service_profile_only(self):
+        # Review W3-4 finding 2: chat input, sensitive clearance and declared secrets change
+        # what the model reads or what the gate releases; none of them was measured.
+        for profile in ("chat-public", "request-sensitive", "request-public-declared", "chat-sensitive-declared",
+                        None):
+            with self.subTest(profile):
+                self.assertIsNone(self.load({"a.json": calibration()}, profile=profile))
+        self.assertEqual(abstain.service_profile("request", "public", False), "request-public")
+        self.assertEqual(abstain.service_profile("chat", "sensitive", True), "chat-sensitive-declared")
+        for word in ("", "public", "request-public-", "request-private", True, None):
+            with self.subTest(word), self.assertRaises(abstain.CalibrationInvalid):
+                self.load({"a.json": calibration(profile=word)})
+
+    def test_provenance_and_counts_must_fit_the_plan(self):
+        # Review W3-4 finding 4: the run, commit and labelled dataset are carried, and the
+        # counts must be possible under the plan the file names.
+        dataset = {"revision": "r", "fingerprint": "f", "labels": "l"}
+        bad = [calibration(provenance=None), calibration(provenance={"run": "run-1", "commit": "abc1234"}),
+               calibration(provenance={"run": "", "commit": "abc1234", "dataset": dataset}),
+               calibration(provenance={"run": "run-1", "commit": "abc1234",
+                                       "dataset": {"revision": "r", "fingerprint": "f"}}),
+               calibration(measuredOn=None), calibration(measuredOn={"plan": "tomorrow"}),
+               calibration(measuredOn={"plan": "today"}),   # 519 held-out questions, 300 certification answers
+               calibration(measuredOn={"plan": "today"}, heldOut={"questions": 150, "released": 100, "errors": 8,
+                                                                  "passed": True}),   # 300 > 200 certify
+               calibration(certification={"threshold": -0.5, "released": 401, "errors": 6})]
+        for data in bad:
+            with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
+                self.load({"a.json": data})
+        fits = calibration(measuredOn={"plan": "today"}, certification={"threshold": -0.5, "released": 150, "errors": 2},
+                           heldOut={"questions": 150, "released": 100, "errors": 8, "passed": True})
+        self.assertEqual(self.load({"a.json": fits})["threshold"], -0.5)
+
+    def test_plan_sizes_match_the_driver(self):
+        from latent_team import abstain_eval
+        for plan, sizes in abstain.PLAN_SIZES.items():
+            self.assertEqual(tuple(len(abstain_eval.plan_keys(plan, part)) for part in ("propose", "certify", "score")),
+                             sizes, plan)
+        self.assertEqual(set(abstain.PLAN_SIZES), set(abstain_eval.PLANS))
+
+
+def shard_rows(keys, correct=True):
+    return [{"kind": k, "block": b, "position": p, "action": "release", "reason": "ok", "fallback": False,
+             "confidence": -0.1 - 0.001 * (n % 30), "teamAnswer": True, "releasedCorrect": correct, "seconds": 1.0}
+            for n, (k, b, p) in enumerate(keys)]
+
+
+class RunProvenanceTest(unittest.TestCase):
+    """Review W3-4 finding 1: shards are analysed only as one named run of one commit, each
+    request in the shard that owns it; a resumed shard keeps only its own requests."""
+
+    def manifest(self, shard, **changes):
+        data = {"run": "run-1", "plan": "today", "weightsHash": "w", "thresholdSet": "t-1", "reference": True,
+                "fittedByW1": [0, 2], "dataset": {"revision": "r", "fingerprint": "f", "labels": "l"},
+                "shard": shard, "shards": 2, "commit": "abc1234"}
+        data.update(changes)
+        return data
+
+    def analyse(self, shards, calibration_dir=None):
+        import argparse
+        from latent_team import abstain_eval
+        with tempfile.TemporaryDirectory() as folder:
+            for shard, (manifest, rows) in enumerate(shards):
+                with open(os.path.join(folder, f"certify-{shard}-of-2.json"), "w") as handle:
+                    json.dump(dict(manifest, rows=rows, complete=True), handle)
+            out = calibration_dir if calibration_dir is not None else None
+            args = argparse.Namespace(out=folder, calibration_dir=out)
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                abstain_eval.part_analyze(args)
+            with open(os.path.join(folder, "summary.json")) as handle:
+                return json.load(handle)
+
+    def split(self, keys):
+        return [k for n, k in enumerate(keys) if n % 2 == 0], [k for n, k in enumerate(keys) if n % 2 == 1]
+
+    def test_one_run_is_analysed(self):
+        from latent_team import abstain_eval
+        even, odd = self.split(abstain_eval.work_keys("today"))
+        summary = self.analyse([(self.manifest(0), shard_rows(even)), (self.manifest(1), shard_rows(odd))])
+        self.assertEqual((summary["plan"], summary["certificationQuestions"], summary["scoredQuestions"]),
+                         ("today", 200, 150))
+        self.assertIn("holdsByReason", summary)
+
+    def test_shards_of_two_runs_or_no_provenance_are_refused(self):
+        from latent_team import abstain_eval
+        even, odd = self.split(abstain_eval.work_keys("today"))
+        for first, second in ((self.manifest(0), self.manifest(1, run="run-2")),
+                              (self.manifest(0), self.manifest(1, commit="def5678")),
+                              (self.manifest(0, run=None), self.manifest(1, run=None)),
+                              (self.manifest(0, commit=None), self.manifest(1, commit=None)),
+                              (self.manifest(0, dataset={"revision": "r", "fingerprint": "f"}),
+                               self.manifest(1, dataset={"revision": "r", "fingerprint": "f"}))):
+            with self.subTest((first, second)), self.assertRaises(SystemExit):
+                self.analyse([(first, shard_rows(even)), (second, shard_rows(odd))])
+
+    def test_a_request_in_the_wrong_shard_is_refused(self):
+        from latent_team import abstain_eval
+        even, odd = self.split(abstain_eval.work_keys("today"))
+        even, odd = even[1:], odd + even[:1]   # the same requests, each once, one in the wrong shard
+        with self.assertRaises(SystemExit) as caught:
+            self.analyse([(self.manifest(0), shard_rows(even)), (self.manifest(1), shard_rows(odd))])
+        self.assertIn("another shard owns", str(caught.exception))
+
+    def test_resume_keeps_only_this_runs_own_requests(self):
+        from latent_team import abstain_eval
+        keys = abstain_eval.work_keys("today")
+        owned = {k for n, k in enumerate(keys) if n % 2 == 0}
+        manifest = self.manifest(0)
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "certify-0-of-2.json")
+            self.assertEqual(abstain_eval.resumed(path, manifest, owned), [])
+            mine = [k for n, k in enumerate(keys) if n % 2 == 0][:5]
+            for rows, other, fails in ((shard_rows(mine), {}, False),
+                                       (shard_rows(mine), {"commit": "def5678"}, True),     # another commit
+                                       (shard_rows(mine), {"run": "run-2"}, True),          # another run
+                                       (shard_rows(mine + mine[:1]), {}, True),             # a request twice
+                                       (shard_rows(mine + [keys[1]]), {}, True)):           # shard 1's request
+                with open(path, "w") as handle:
+                    json.dump(dict(manifest, **other, rows=rows, complete=False), handle)
+                with self.subTest(other=other, rows=len(rows)):
+                    if fails:
+                        with self.assertRaises(SystemExit):
+                            abstain_eval.resumed(path, manifest, owned)
+                    else:
+                        self.assertEqual(len(abstain_eval.resumed(path, manifest, owned)), 5)
+
+    def test_the_written_calibration_loads_for_its_profile_only(self):
+        # Review W3-4 findings 2 and 4: the writer's file carries its run, commit, dataset,
+        # plan and profile, and the loader takes it for /latent/team public requests only.
+        from latent_team import abstain_eval
+        even, odd = self.split(abstain_eval.work_keys("today"))
+        with tempfile.TemporaryDirectory() as calibration_dir:
+            summary = self.analyse([(self.manifest(0), shard_rows(even)), (self.manifest(1), shard_rows(odd))],
+                                   calibration_dir=calibration_dir)
+            self.assertTrue(summary["eval11"]["passed"])
+            name = abstain.artifact_name(abstain_eval.TASK, abstain_eval.MODEL)
+            with open(os.path.join(calibration_dir, name)) as handle:
+                written = json.load(handle)
+            self.assertEqual(written["profile"], "request-public")
+            self.assertEqual(written["provenance"]["run"], "run-1")
+            self.assertEqual(written["provenance"]["dataset"]["labels"], "l")
+            self.assertEqual(written["measuredOn"]["plan"], "today")
+            settings = dict(steps=abstain_eval.STEPS, max_new_tokens=abstain_eval.TOKENS, threshold_set="t-1",
+                            reference=True, batch=1, gated=True, directory=calibration_dir)
+            self.assertIsNotNone(abstain.load_calibration(abstain_eval.MODEL, "w", abstain_eval.TASK,
+                                                          profile="request-public", **settings))
+            for profile in ("chat-public", "request-sensitive", "request-public-declared"):
+                self.assertIsNone(abstain.load_calibration(abstain_eval.MODEL, "w", abstain_eval.TASK,
+                                                           profile=profile, **settings))
+            # A file whose counts do not fit its plan is refused, and the run holds.
+            written["heldOut"]["questions"] = 519
+            with open(os.path.join(calibration_dir, name), "w") as handle:
+                json.dump(written, handle)
+            with self.assertRaises(abstain.CalibrationInvalid):
+                abstain.load_calibration(abstain_eval.MODEL, "w", abstain_eval.TASK, profile="request-public",
+                                         **settings)
 
 
 def old_predicted_number(text):
