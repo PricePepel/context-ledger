@@ -635,6 +635,6 @@ Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 
 
 ## Current checkpoint — P3b review head in signed hand-offs (2026-11-22)
 
-Branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
+PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
 
 Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.
