@@ -51,6 +51,13 @@ class Outcome:
     confidence: Optional[float] = None  # W3: the team answer's score when scored, else None
 
 
+def same_graded_number(before, after):
+    """Do two texts grade to the same number, spelled the same?"""
+    from .evaluate import predicted_span
+    a, b = predicted_span(before), predicted_span(after)
+    return a is not None and b is not None and a[0] == b[0] and before[a[1]:a[2]] == after[b[1]:b[2]]
+
+
 def agreement(a, b):
     """'agree' when both texts end in the same number, 'disagree' when they end in different
     ones, 'not-comparable' when either has none."""
@@ -401,6 +408,12 @@ class Guard:
                 elif released.marks:
                     decision = Decision(decision.action, decision.reason, decision.marks + released.marks,
                                         decision.quarantined)
+                # W3: a scored team answer is released on the score of the number it is graded
+                # on; when the gate changed that number (a redaction, a value put back), the
+                # score is of a number no reader sees, so the run abstains (review W3-3).
+                if answer is not None and scored and system == "latent_mas" and \
+                        not same_graded_number(answers[row], answer):
+                    answer, decision = None, Decision("abstain", "number-changed", decision.marks, decision.quarantined)
             outcomes.append(Outcome(
                 answer=answer, decision=decision.as_dict(), gateway={"redactions": redactions},
                 checks=dict(report["checks"]) if report else {n: bool(results["checks"][n][row])

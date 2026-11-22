@@ -49,6 +49,25 @@ PROBE_SCORE = {"threshold": -math.inf}   # score every run, abstain on none
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+GSM8K_TEST = 1319
+
+
+def dataset_identity(items):
+    """The one cached GSM8K snapshot, and a fingerprint of its ordered test questions; stops
+    the run unless there is exactly one snapshot with 1319 distinct questions, so no question
+    can enter two splits (review W3-3)."""
+    import glob
+    import hashlib
+    from .evaluate import HUB
+    snapshots = sorted(glob.glob(os.path.join(HUB, "datasets--openai--gsm8k", "snapshots", "*")))
+    questions = [item["question"] for item in items]
+    if len(snapshots) != 1 or len(questions) != GSM8K_TEST or len(set(questions)) != GSM8K_TEST:
+        raise SystemExit(f"GSM8K test must be one snapshot of {GSM8K_TEST} distinct questions: "
+                         f"{len(snapshots)} snapshots, {len(questions)} rows, {len(set(questions))} distinct")
+    return {"revision": os.path.basename(snapshots[0]),
+            "fingerprint": hashlib.sha256("\n".join(questions).encode("utf-8")).hexdigest()}
+
+
 def block_items(items, block):
     """A block of the seed-0 shuffle; block 6 is the remainder after block 5."""
     from .evaluate import sample_block
@@ -188,6 +207,7 @@ def part_certify(args):
     from latent_pool.team_service import TeamService
     from tests.grade import grade_slice
     items = gsm8k("test")
+    dataset = dataset_identity(items)
     team = LatentTeam(MODEL)
     warm = [item["question"] for item in items[:4]]
     team.single(warm, max_new_tokens=8)
@@ -230,7 +250,9 @@ def part_certify(args):
                   flush=True)
     with open(os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json"), "w") as handle:
         json.dump({"rows": rows, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"],
-                   "reference": True, "fittedByW1": sorted(fitted)}, handle)
+                   "reference": True, "fittedByW1": sorted(fitted), "dataset": dataset, "shard": args.shard,
+                   "shards": args.shards, "commit": open(os.path.join(REPO, "COMMIT")).read().strip()
+                   if os.path.exists(os.path.join(REPO, "COMMIT")) else None}, handle)
     print(f"shard {args.shard} done: {len(rows)} requests", flush=True)
 
 

@@ -275,6 +275,34 @@ class GuardedPathTest(unittest.TestCase):
         released = service({"question": "The answer is 4?", "latentSteps": STEPS, "maxNewTokens": TOKENS})
         self.assertEqual(released["mode"], "latent-team")
 
+    def test_an_answer_whose_graded_number_the_gate_changes_abstains(self):
+        # Review W3-3 finding 4: the score is of 12345678, which the public gate redacts, so
+        # the grader would read 2: the service declines instead of releasing.
+        from latent_team.abstain_eval import PROBE_SCORE
+        from tests.test_gateway_squad import STEPS, TOKENS, quiet_service, text_team
+        team = text_team()
+        decode = team.decode
+
+        def writing(memory, memory_mask, prompts, max_new_tokens, **kwargs):
+            out = decode(memory, memory_mask, prompts, max_new_tokens, **kwargs)
+            texts = ["The answer is 12345678, after 2 steps." for _ in out[0]]
+            if kwargs.get("scores"):
+                pieces = ["The answer is ", "12345678", ", after 2 steps."]
+                return texts, out[1], [{"pieces": pieces, "raw": "".join(pieces), "logprobs": [-0.1, -0.2, -0.1]}
+                                       for _ in texts]
+            return texts, out[1]
+
+        team.decode = writing
+        service = quiet_service(team)
+        service.guard.calibration = lambda task, *args, **kwargs: PROBE_SCORE if task else None
+        body = {"question": "What is it?", "latentSteps": STEPS, "maxNewTokens": TOKENS, "task": "gsm8k-arithmetic"}
+        result = service(dict(body, secrets=["12345678"]))
+        self.assertEqual((result["mode"], result["reason"]), ("abstained", "number-changed"))
+        self.assertEqual(service(body)["mode"], "latent-team", "unchanged by the gate, the answer is released")
+        from latent_team.guard import same_graded_number
+        self.assertTrue(same_graded_number("The answer is 7.", "The answer is 7."))
+        self.assertFalse(same_graded_number("The answer is 1,200.", "The answer is 1200."))
+
     def test_the_eval_scores_through_the_guarded_path_without_abstaining(self):
         # Review W3-1 finding 3: the eval's decisions come from Guard.run itself; its scoring
         # calibration never abstains, and the run's exploratory scores and solver state are
