@@ -432,16 +432,24 @@ function withCopies(text, findings, values) {
 }
 
 /**
- * A copy of the session with its source name and every message redacted, and the
- * findings. Each finding has a line (null for the source name), a kind, a length and a
- * masked preview, never a value. A value found in one place is also removed everywhere
- * else it appears in the session, when it is at least six characters long (P4d).
+ * A copy of the session with its source name, every message and every agent turn's author
+ * and recipient redacted, and the findings. Each finding has a line (null for the source
+ * name), a kind, a length and a masked preview, never a value. A value found in one place
+ * is also removed everywhere else it appears in the session, when it is at least six
+ * characters long (P4d).
  */
 export function redactSession(session) {
-  const fields = [
-    ...(typeof session.source === 'string' ? [{ text: session.source, line: null }] : []),
-    ...session.messages.map(message => ({ text: message.text, line: message.line })),
-  ];
+  const fields = [];
+  if (typeof session.source === 'string') fields.push({ text: session.source, line: null, message: -1, name: 'source' });
+  session.messages.forEach((message, index) => {
+    fields.push({ text: message.text, line: message.line, message: index, name: 'text' });
+    // Card I3: an agent turn's paths are printed in its heading, so they are checked too.
+    if (message.role === 'agent') {
+      for (const name of ['author', 'recipient']) {
+        if (typeof message[name] === 'string') fields.push({ text: message[name], line: message.line, message: index, name });
+      }
+    }
+  });
   const found = fields.map(field => findSecrets(field.text));
   const values = new Map();
   fields.forEach((field, index) => {
@@ -453,19 +461,23 @@ export function redactSession(session) {
   // Longest first, so a value that holds another is matched whole.
   const ordered = [...values].sort((a, b) => b[0].length - a[0].length);
   const findings = [];
-  const redacted = fields.map((field, index) => {
+  let source = session.source;
+  const changed = new Map();
+  fields.forEach((field, index) => {
     const spans = withCopies(field.text, found[index], ordered);
+    if (!spans.length) return;
     for (const span of spans) {
       findings.push({ line: field.line, kind: span.kind, length: span.end - span.start, preview: maskedPreview(field.text, span) });
     }
-    return spans.length ? redactText(field.text, spans) : field.text;
+    const text = redactText(field.text, spans);
+    if (field.message === -1) {
+      source = text;
+      return;
+    }
+    const message = changed.get(field.message) ?? { ...session.messages[field.message] };
+    message[field.name] = text;
+    changed.set(field.message, message);
   });
-  const hasSource = typeof session.source === 'string';
-  const source = hasSource ? redacted[0] : session.source;
-  const offset = hasSource ? 1 : 0;
-  const messages = session.messages.map((message, index) => {
-    const text = redacted[index + offset];
-    return text === message.text ? message : { ...message, text };
-  });
+  const messages = session.messages.map((message, index) => changed.get(index) ?? message);
   return { session: { ...session, source, messages }, findings };
 }

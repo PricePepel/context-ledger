@@ -47,6 +47,10 @@ Leo works in Claude Code and Ali works in Codex. Their agents never see each oth
 - **How we built it:** two people, each with their own agent. The agents coordinated all day through typed handoff packets in a separate repo, and CI rejected malformed ones. Every feature has an eval written before the code ([docs/evals.md](docs/evals.md)) and an independent review.
 - **Tests on `main`** (17ecef0, Windows, measured 2026-11-16): node 139 of 140 (1 skipped), Python runtime 131 run (24 skipped: 21 need torch, 3 need symlink rights). Playwright lists 13 tests; it last passed 13 of 13 in cycle 10.
 
+## Swarm demo
+
+`/swarm/` runs up to 200 agents at once on local open models (any OpenAI-compatible server such as vLLM, named in `SWARM_URLS`, loopback only), shows each agent working, checks each agent's quote against its source and combines the answers. Without a model server it offers a labelled simulation. See [docs/swarm-demo.md](docs/swarm-demo.md).
+
 ## Run locally
 
 Requires Node.js 22.14 or later.
@@ -80,6 +84,8 @@ Replace `SESSION_ID` with an ID from the search results. The handoff is Markdown
 Threads from T3 Code v0.1.10 can be imported from a copy of its database that you make: `npm run --silent ledger -- import-t3 COPY --list`, then without `--list`. Only threads run by Claude Code or Codex are imported. See [Importing T3 Code threads](docs/integrations/t3code-import.md).
 
 To send a hand-off someone can check, create a key once with `npm run --silent ledger -- keygen` (it prints the key fingerprint; give that to the receiver out of band), then sign into a new folder with `npm run --silent ledger -- handoff SESSION_ID --sign FOLDER`. The receiver runs `npm run --silent ledger -- verify FOLDER --fingerprint "FINGERPRINT"`, or checks it with OpenSSL alone. Signing redacts first: each value the secret checks find is replaced by `[REDACTED <kind>]`, and the manifest records how many. The checks cannot find every secret, so read the hand-off before you send it (`npm run --silent ledger -- redact SESSION_ID` shows where they found something). See [signed hand-offs](docs/signed-handoff.md).
+
+Approve, edit or reject the nodes of a version 3 graph in the browser app's review section. Each decision is kept as an append-only review event, chained by hash. `npm run --silent ledger -- reviews verify` recomputes the chain and prints its length and head hash, or the first event that does not match. Events removed from the end would not show, so keep the head it prints and pass it later with `--head <hash>`.
 
 ## Data and scope
 

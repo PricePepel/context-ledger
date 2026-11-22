@@ -675,3 +675,21 @@ test('P4d: a copy that overlaps a finding widens it, and the longer of two value
   const { session: redacted } = redactSession(session);
   assert.equal(redacted.messages[2].text, 'kept [REDACTED assigned-secret] and [REDACTED assigned-secret]');
 });
+
+test('P4d: a found value is also removed from an agent turn\'s author and recipient', () => {
+  const password = ['Pl4y', 'Gr0u', 'nd77'].join('');
+  const session = {
+    id: 'd'.repeat(64), provider: 'codex', source: 'agents.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `db password=${password}` },
+      { role: 'agent', line: 2, author: `/root/${password}`, recipient: '/root/worker', text: 'Synthetic: picked it up.' },
+    ],
+  };
+  const { session: redacted, findings } = redactSession(session);
+  assert.equal(redacted.messages[1].author, '/root/[REDACTED assigned-secret]');
+  assert.equal(redacted.messages[1].recipient, '/root/worker');
+  assert.equal(redacted.messages[1].text, 'Synthetic: picked it up.');
+  assert.ok(!JSON.stringify(redacted).includes(password));
+  assert.deepEqual(findings.map(({ line, kind }) => [line, kind]), [[1, 'assigned-secret'], [2, 'assigned-secret']]);
+  assert.equal(session.messages[1].author, `/root/${password}`, 'the input is not changed');
+});
