@@ -4491,6 +4491,35 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
+
+Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
+
+| Eval | Expected |
+| --- | --- |
+| Counts | In a scoped briefing, each state list (ready actions, current decisions, open questions) names the shown items, then the number it leaves out: `open questions: 1 left out`, `current decisions: port; 1 more left out`. A list with nothing left out reads as before (`none` or the IDs), so an unscoped briefing and a scoped one that shows everything are unchanged. |
+| Budget | The counts hold when the budget, not the question, drops a node. |
+| Way back | When a scoped briefing leaves out any node, its scope line ends with `call context_for without a question for the whole graph`, as the no-match line already does. |
+| No IDs leak | A left-out node's ID, label and links still never appear; only the count does. |
+| Live | The demo question re-run against a live agent no longer gets "Leo needs nothing from you": the agent either reports the open question or says some were left out. |
+
+### G9b results (2026-11-21)
+
+- **Counts, no IDs leak, way back:** `tests/scope.test.mjs` checks `1 left out`, `port; 1 more left out` (rendered), the hint at the end of the scope line, and that no left-out ID or label appears. A scoped briefing that shows every node has the same state section as the unscoped one and no hint. The unscoped golden briefing is unchanged.
+- **Budget:** a question dropped by the budget is counted (`open questions: 1 left out`). Over MCP paging, the reassembled pages match the HTTP briefing byte for byte and carry the count and the hint once.
+- **Live:** Leo's graph from the clean-install rehearsal (8 nodes, published by Claude Sonnet), Ali's prompt sent unchanged to a fresh Claude Sonnet session over MCP, 3 runs on this branch. Before the fix (a08c6e9, 1 run), the agent said Leo needed nothing from Ali. After it: 2 runs named "Who owns the GPU box?", and 1 said one open question was left out of the filtered view. All 3 answered port 4317 and Saturday 17:00. Cost $0.03–0.07 per run. In every run the agent's first call passed a `budget` without a `question` and was refused (`budget needs a question.`); that is a separate usability point, not part of this card.
+- **Suites (Windows, before the review fixes):** node 530 of 540 (10 skipped), graph suite passing.
+
+**Codex review, round 1** (of a2a877d):
+
+- (medium) The whole-graph hint makes a cut briefing longer, so a budget that fits the full briefing could be refused before the full briefing was tried (for example a v1 graph with one goal). The full briefing is now tried first, and the refusal names the smaller of the two sizes. Regression test: every budget the full briefing fits returns it; it fails without the fix.
+- (low) The mixed-list case was checked only on `graphWith`'s data: a rendered test now asserts `current decisions: port; 1 more left out`.
+- (low) The MCP paging fixture matched every node: it now has an unmatched open question, and the test checks the count and hint appear once in the reassembled pages and the question does not.
+- (low) No live result was recorded: recorded above.
+
+**Codex review, round 2** (of 6ad003f): every round 1 fix confirmed, no new production issue. (low) The budget regression never checked the refusal message: the test now asserts that a budget below both sizes names the full briefing's estimate when it is the smaller. Suites after round 1 fixes (Windows): node 532 of 542 (10 skipped), graph suite passing.
+
 ## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
 
 Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
