@@ -191,18 +191,19 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def calibration(self, task, steps, max_new_tokens, thresholds, reference):
+    def calibration(self, task, steps, max_new_tokens, thresholds, reference, rows=1, gated=False):
         """W3: the committed calibration of this kind of task for these weights, measured with
-        these settings (steps, token budget, W1's threshold set, the distance reference on or
-        off), or None (uncalibrated). Raises abstain.CalibrationInvalid for a file that names
-        this task and model but cannot be trusted."""
+        this policy (steps, token budget, W1's threshold set, the distance reference on or
+        off, questions per call, the gateway in front), or None (uncalibrated). Raises
+        abstain.CalibrationInvalid for a calibration file there that cannot be trusted."""
         if not task:
             return None
         from .abstain import CALIBRATION_DIR, load_calibration
         from .watchdog import team_weights
         return load_calibration(self.team.model_name, team_weights(self.team)[0], task, steps=steps,
                                 max_new_tokens=max_new_tokens, threshold_set=(thresholds or {}).get("id"),
-                                reference=reference is not None, directory=self.calibration_dir or CALIBRATION_DIR)
+                                reference=reference is not None, batch=rows, gated=gated,
+                                directory=self.calibration_dir or CALIBRATION_DIR)
 
     def rendered(self, question):
         """Every prompt a guarded run can give the model for one question, as the chat template
@@ -259,7 +260,7 @@ class Guard:
         from .abstain import CalibrationInvalid
         try:
             calibration = calibration_override if calibration_override is not None else \
-                self.calibration(task, steps, max_new_tokens, thresholds, reference)
+                self.calibration(task, steps, max_new_tokens, thresholds, reference, rows, gateways is not None)
         except CalibrationInvalid:
             return [self._held(steps, "calibration-invalid") for _ in questions]
         # One deadline for the whole run: the guard's own cap and the gateway's, whichever is

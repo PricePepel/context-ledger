@@ -34,6 +34,7 @@ Standard library only.
 import json
 import math
 import os
+import re
 
 CALIBRATION_DIR = os.path.join(os.path.dirname(__file__), "calibration")
 GRID = 20
@@ -51,11 +52,25 @@ def _refuse_constant(word):
     raise CalibrationInvalid(f"{word} is not a number")   # NaN, Infinity and -Infinity
 
 
-def validate(data):
-    """Raise CalibrationInvalid unless data is a certified, held-out-passed calibration with a
-    finite threshold and every field the binding needs."""
+def artifact_name(task, model_name):
+    """The one file a calibration for this task and model may be in: its identity is the name,
+    so a file there that cannot be trusted holds the run instead of being skipped."""
+    slug = re.sub(r"[^a-z0-9.]+", "-", model_name.lower()).strip("-")
+    return f"{task}--{slug}.json"
+
+
+def _count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def validate(data, task=None, model_name=None):
+    """Raise CalibrationInvalid unless data is a certified, held-out-passed calibration for this
+    task and model with a finite threshold, every field the binding needs, and evidence whose
+    counts give both pass rules again (review W3-2)."""
     if not isinstance(data, dict):
         raise CalibrationInvalid("not an object")
+    if task is not None and (data.get("task"), data.get("model")) != (task, model_name):
+        raise CalibrationInvalid("the file names another task or model")
     if data.get("certified") is not True:
         raise CalibrationInvalid("not certified")
     held_out = data.get("heldOut")
@@ -72,35 +87,61 @@ def validate(data):
     for name in ("steps", "maxNewTokens"):
         if not isinstance(data.get(name), int) or isinstance(data[name], bool) or data[name] <= 0:
             raise CalibrationInvalid(f"{name} is not a positive count")
-    if not isinstance(data.get("reference"), bool):
-        raise CalibrationInvalid("reference is not a boolean")
+    for name in ("reference", "gated"):
+        if not isinstance(data.get(name), bool):
+            raise CalibrationInvalid(f"{name} is not a boolean")
+    if not isinstance(data.get("batch"), int) or isinstance(data["batch"], bool) or data["batch"] < 1:
+        raise CalibrationInvalid("batch is not a positive count")
+    if not isinstance(data.get("grid"), int) or isinstance(data["grid"], bool) or data["grid"] < 1:
+        raise CalibrationInvalid("grid is not a positive count")
+    # The evidence, recomputed: the certification test of the kept threshold, and eval 11's rule.
+    cert = data.get("certification")
+    if not isinstance(cert, dict) or not all(_count(cert.get(k)) for k in ("released", "errors")) or \
+            cert.get("threshold") != data["threshold"] or cert["errors"] > cert["released"]:
+        raise CalibrationInvalid("no certification counts for this threshold")
+    if upper_bound(cert["errors"], cert["released"], data["delta"] / data["grid"]) > data["target"]:
+        raise CalibrationInvalid("the certification counts do not pass")
+    if not all(_count(held_out.get(k)) for k in ("questions", "released", "errors")) or \
+            held_out["errors"] > held_out["released"] or held_out["released"] > held_out["questions"]:
+        raise CalibrationInvalid("no held-out counts")
+    if not passes(held_out["errors"], held_out["released"], held_out["questions"], data["target"]):
+        raise CalibrationInvalid("the held-out counts do not pass")
     return data
 
 
+def passes(errors, released, questions, target):
+    """Eval 11's rule: error at or under target plus 1.645 standard errors for the number
+    released, and at least half released."""
+    if not released:
+        return False
+    allowance = target + 1.645 * math.sqrt(target * (1 - target) / released)
+    return errors / released <= allowance and released >= questions / 2
+
+
 def load_calibration(model_name, weights_hash, task, *, steps, max_new_tokens, threshold_set, reference,
-                     directory=CALIBRATION_DIR):
-    """The committed calibration for this task, model and weights, measured with these
-    settings (latent steps, the solver's token budget, W1's threshold set and whether the
-    distance reference was on), or None: the run is then uncalibrated (released, marked so,
-    no ceiling claimed). Raises CalibrationInvalid when a file names this task and model but
-    cannot be read or trusted, or when a file cannot be read at all: the guard then holds."""
-    if not task or not os.path.isdir(directory):
+                     batch, gated, directory=CALIBRATION_DIR):
+    """The committed calibration for this task and model (the file artifact_name names), when
+    it was measured on these weights with this policy: latent steps, the solver's token
+    budget, W1's threshold set, the distance reference on or off, the number of questions per
+    guarded call and whether the gateway was in front (the service: one question, gated).
+    None when there is no such file, or it is for other weights or another policy: the run is
+    then uncalibrated (released, marked so, no ceiling claimed). Raises CalibrationInvalid
+    when the file is there but cannot be read or trusted: the guard then holds."""
+    if not task:
         return None
-    for name in sorted(os.listdir(directory)):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(directory, name), encoding="utf-8") as handle:
-                data = json.load(handle, parse_constant=_refuse_constant)
-        except (OSError, ValueError) as error:
-            raise CalibrationInvalid(f"{name} cannot be read") from error
-        if not isinstance(data, dict) or (data.get("task"), data.get("model")) != (task, model_name):
-            continue
-        validate(data)
-        if (data["weightsHash"], data["steps"], data["maxNewTokens"], data["thresholdSet"], data["reference"]) == \
-                (weights_hash, steps, max_new_tokens, threshold_set, bool(reference)):
-            return data
-    return None
+    path = os.path.join(directory, artifact_name(task, model_name))
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle, parse_constant=_refuse_constant)
+    except (OSError, ValueError) as error:
+        raise CalibrationInvalid(f"{os.path.basename(path)} cannot be read") from error
+    validate(data, task, model_name)
+    wanted = (weights_hash, steps, max_new_tokens, threshold_set, bool(reference), batch, bool(gated))
+    found = (data["weightsHash"], data["steps"], data["maxNewTokens"], data["thresholdSet"], data["reference"],
+             data["batch"], data["gated"])
+    return data if found == wanted else None
 
 
 def _binomial_cdf(k, n, p):
@@ -196,7 +237,7 @@ def score_threshold(scores, wrong, threshold, target=0.10):
             "notReleased": n - m, "notReleasedShare": round((n - m) / n, 4) if n else 0.0,
             "errors": k, "error": round(error, 4), "error95": [round(x, 4) for x in wilson(k, m)],
             "allowance": round(allowance, 4), "certified": threshold is not None,
-            "passed": bool(threshold is not None and m and error <= allowance and m >= n / 2)}
+            "passed": bool(threshold is not None and passes(k, m, n, target))}
 
 
 def auroc(scores, labels):

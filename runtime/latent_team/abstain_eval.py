@@ -1,21 +1,28 @@
 """W3 evals 11 to 13 on the GPU (docs/evals.md, "W3").
 
-    python -m latent_team.abstain_eval --part run --out ~/w3 --w1 ~/w1/out     # blocks 0-5, fresh, transfer, probe
-    python -m latent_team.abstain_eval --part analyze --out ~/w3                # evals 11 to 13
+    python -m latent_team.abstain_eval --part run --out ~/w3 --w1 ~/w1/out        # batched (exploratory)
+    python -m latent_team.abstain_eval --part certify --out ~/w3 --shard 0 --shards 2   # single requests
+    python -m latent_team.abstain_eval --part analyze --out ~/w3                   # evals 11 to 13
 
-Pinned setting: W1's, with W1's watchdog, its threshold set (--w1 holds thresholds/ and the
-block-2 reference). GSM8K test (seed 0): block 0 proposes the candidate thresholds, blocks 1
-and 2 certify them, blocks 3 to 5 are scored. Eval 14 (refusals) is not run here.
+Pinned setting: W1's, with W1's watchdog, its committed threshold set and the block-2
+reference. GSM8K test, seed 0, blocks of 200.
 
-Every decision comes from the guarded path the service runs (Guard.run, W1's supervisor
-table, sampled audits, the fallback and its checks), with a calibration that scores each
-run without abstaining; the threshold is applied afterwards to exactly what that path
-released. A sample of block 3 is also run one question at a time, as the service runs, to
-measure whether batched decisions transfer to single requests.
+The claim is about the service as users call it, so it is certified and scored on single
+requests through TeamService itself (the gateway in front, W1's guard and supervisor, the
+sampled audits, the fallback, the deadline and the output gate), graded on the text the
+service returns; every request is its own guarded call, so no two decisions share a batch
+or an audit (review W3-2). Rows used to fit W1's policy are never certified or scored on:
+W1's thresholds come from block 0 and its distance reference from block 2, so blocks 0 and
+2 only propose the candidate thresholds (from the batched run's scores), blocks 1 and 3
+certify them, and blocks 4 and 5 and the 119 questions after block 5 are scored.
+
+The batched run (--part run) is exploratory: it gives the proposal scores, the probe of
+eval 13 and how batched decisions compare with single ones. Eval 14 (refusals) is not run
+here.
 
 Written to --out on this machine only: per-question numbers (decision, correct or not,
-scores) and the probe's aggregate results. No question, answer, thought record, memory or
-hidden state is written: the probe (eval 13) is fitted in memory at the end of the run.
+scores, seconds) and the probe's aggregate results. No question, answer, thought record,
+memory or hidden state is written: the probe is fitted in memory at the end of its run.
 --part analyze prints the aggregate numbers that go into docs/evals.md and writes the
 committed calibration file only when the threshold is certified and passes eval 11.
 """
@@ -23,18 +30,34 @@ import argparse
 import json
 import math
 import os
+import re
 import time
 
 MODEL = "Qwen/Qwen2.5-3B-Instruct"
 TASK = "gsm8k-arithmetic"
 STEPS, TOKENS, BATCH, COUNT, SEED = 40, 512, 32, 200, 0
-PROPOSE, CERTIFY, SCORE = (0,), (1, 2), (3, 4, 5)
-CALIBRATE = PROPOSE + CERTIFY
-TRANSFER = 64           # the first questions of block 3, also run one at a time
-TARGET, DELTA = 0.10, 0.05
+BATCH_BLOCKS = (0, 1, 2, 3, 4, 5)       # the batched, exploratory run
+PROPOSE = (0, 2)                       # candidates only: W1 fitted its thresholds and reference here
+CERTIFY = (1, 3)
+SCORE = (4, 5, 6)                      # 6: the 119 questions after block 5
+FITTED_BY_W1 = (0, 2)
+PROBE_TRAIN, PROBE_TEST = (0, 1, 2), (3, 4, 5)
+TRANSFER_BLOCK, TRANSFER = 3, 64       # batched questions also run one at a time in the batched run
+TARGET, DELTA, GRID = 0.10, 0.05, 20
 JOIN_MARGIN = 0.02
 PROBE_SCORE = {"threshold": -math.inf}   # score every run, abstain on none
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def block_items(items, block):
+    """A block of the seed-0 shuffle; block 6 is the remainder after block 5."""
+    from .evaluate import sample_block
+    if block < 6:
+        return sample_block(items, COUNT, SEED, block)
+    import random
+    shuffled = list(items)
+    random.Random(SEED).shuffle(shuffled)
+    return shuffled[6 * COUNT:]
 
 
 def batches(items, size=BATCH):
@@ -73,6 +96,8 @@ def guarded(guard, questions):
 
 
 def part_run(args):
+    """The batched run (exploratory since review W3-2): proposal scores, the probe, the
+    batched decisions and their transfer to single requests."""
     import torch
     from .evaluate import correct, gsm8k, sample_block
     from .guard import Guard, agreement
@@ -89,7 +114,7 @@ def part_run(args):
     guard = Guard(team, thresholds=thresholds, reference=reference, measure=True, keep_solver_state=True)
     rows, states, seconds = [], [], {"guarded": 0.0, "questions": 0}
     answers_by_index = {}
-    for block in CALIBRATE + SCORE:
+    for block in BATCH_BLOCKS:
         chunked = sample_block(items, COUNT, SEED, block)
         for chunk in batches(chunked):
             questions = [i["question"] for i in chunk]
@@ -104,7 +129,7 @@ def part_run(args):
                            teamAnswer=row["action"] == "release" and not row["fallback"],
                            aloneCorrect=correct(solo, item["gold"]),
                            agree=agreement(released, solo) if released is not None else None)
-                if block == SCORE[0] and len([r for r in rows if r["block"] == block]) < TRANSFER:
+                if block == TRANSFER_BLOCK and len([r for r in rows if r["block"] == block]) < TRANSFER:
                     answers_by_index[len(rows)] = released
                 rows.append(row)
                 states.append(state)
@@ -114,7 +139,7 @@ def part_run(args):
 
     # Batch to single requests: the service runs one question at a time.
     transfer = []
-    score_items = sample_block(items, COUNT, SEED, SCORE[0])
+    score_items = sample_block(items, COUNT, SEED, TRANSFER_BLOCK)
     first = min(answers_by_index)
     for offset, item in enumerate(score_items[:TRANSFER]):
         outcomes, got, _ = guarded(guard, [item["question"]])
@@ -147,6 +172,66 @@ def part_run(args):
                    "seconds": seconds, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"],
                    "reference": reference is not None}, handle)
     print("run done", json.dumps(seconds), flush=True)
+
+
+def part_certify(args):
+    """Single requests through TeamService, on the certification and scoring blocks and the
+    fresh set: what the service returns, graded. --shard k of --shards n takes every n-th
+    question, so shards can share the GPU."""
+    import sys
+    from .evaluate import correct, gsm8k
+    from .team import LatentTeam
+    from .watchdog import load_thresholds, team_weights
+    os.environ["LATENT_WATCH_REFERENCE"] = os.path.join(args.w1, "reference.pt")
+    sys.path.insert(0, os.path.join(REPO, "runtime"))
+    from latent_pool import ApiError
+    from latent_pool.team_service import TeamService
+    from tests.grade import grade_slice
+    items = gsm8k("test")
+    team = LatentTeam(MODEL)
+    warm = [item["question"] for item in items[:4]]
+    team.single(warm, max_new_tokens=8)
+    team.latent_mas(warm, steps=2, max_new_tokens=8)
+    thresholds = load_thresholds(MODEL, team_weights(team)[0])   # the committed set, as the service loads it
+    fitted = {thresholds["measuredOn"]["block"], thresholds["distance"]["referenceBlock"]}
+    if fitted != set(FITTED_BY_W1) or fitted & set(CERTIFY + SCORE):
+        raise SystemExit(f"W1 fitted blocks {sorted(fitted)}: they may not certify or score")
+    service = TeamService(team, steps=STEPS)
+    if service.guard.reference is None:
+        raise SystemExit("the distance reference did not load: the service would run unscreened")
+    # Score every request without abstaining: the threshold is applied afterwards.
+    service.guard.calibration = lambda task, *rest, **kw: PROBE_SCORE if task else None
+    work = [("gsm8k", block, position, item) for block in CERTIFY + SCORE
+            for position, item in enumerate(block_items(items, block))]
+    work += [("fresh", None, position, item) for position, item in enumerate(fresh_items())]
+    rows = []
+    for number, (kind, block, position, item) in enumerate(work):
+        if number % args.shards != args.shard:
+            continue
+        started = time.perf_counter()
+        try:
+            answer, outcome, _ = service.run(item["question"], STEPS, TOKENS, task=TASK)
+            action, reason = outcome.decision["action"], outcome.decision["reason"]
+            fallback, confidence = action == "release" and outcome.system == "single", outcome.confidence
+        except ApiError as error:   # a hold leaves as an error, with its reason in parentheses
+            named = re.search(r"\(([A-Za-z-]{1,40})\)", str(error))
+            answer, action, reason, fallback, confidence = None, "hold", named.group(1) if named else "error", False, None
+        seconds = time.perf_counter() - started
+        released = answer if action == "release" else None
+        if kind == "gsm8k":
+            good = released is not None and correct(released, item["gold"])
+        else:
+            good = released is not None and grade_slice(item["entry"], {"answer": released})["correct"]
+        rows.append({"kind": kind, "block": block, "position": position, "action": action, "reason": reason,
+                     "fallback": fallback, "confidence": confidence, "teamAnswer": action == "release" and not fallback,
+                     "releasedCorrect": good, "seconds": round(seconds, 3)})
+        if len(rows) % 25 == 0:
+            print(f"shard {args.shard}: {len(rows)} done, {sum(r['seconds'] for r in rows) / len(rows):.1f} s each",
+                  flush=True)
+    with open(os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json"), "w") as handle:
+        json.dump({"rows": rows, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"],
+                   "reference": True, "fittedByW1": sorted(fitted)}, handle)
+    print(f"shard {args.shard} done: {len(rows)} requests", flush=True)
 
 
 def released_score(row):
@@ -204,8 +289,8 @@ def run_probe(rows, states, fresh_rows, fresh_states):
     x = torch.stack([states[i] for i in usable]).double()
     y = torch.tensor([not rows[i]["releasedCorrect"] for i in usable])
     blocks = [rows[i]["block"] for i in usable]
-    calibrate = [k for k, b in enumerate(blocks) if b in CALIBRATE]
-    score = [k for k, b in enumerate(blocks) if b in SCORE]
+    calibrate = [k for k, b in enumerate(blocks) if b in PROBE_TRAIN]
+    score = [k for k, b in enumerate(blocks) if b in PROBE_TEST]
     folds = [calibrate[f::5] for f in range(5)]
     best, best_auc, best_oof = None, -1.0, None
     for l2 in (1e-4, 1e-3, 1e-2, 1e-1, 1.0):
@@ -253,102 +338,132 @@ def decide(score, threshold):
     return "released" if score == math.inf or (threshold is not None and score >= threshold) else "abstained"
 
 
+def counts(rows, pairs, threshold):
+    return {"held": sum(r["action"] == "hold" for r in rows),
+            "fallbacksReleased": sum(r["fallback"] for r in rows),
+            "abstained": sum(r["action"] == "release" and not r["fallback"] and decide(p[0], threshold) != "released"
+                             for r, p in zip(rows, pairs))}
+
+
 def part_analyze(args):
-    from .abstain import auroc, choose_threshold, score_threshold
+    import glob
+    from .abstain import auroc, choose_threshold, score_threshold, upper_bound
     with open(os.path.join(args.out, "rows.json")) as handle:
-        data = json.load(handle)
-    rows, fresh = data["gsm8k"], data["fresh"]
-    index = {name: [i for i, r in enumerate(rows) if r["block"] in blocks]
-             for name, blocks in (("propose", PROPOSE), ("certify", CERTIFY), ("score", SCORE))}
-    pairs = [released_score(r) for r in rows]
-    threshold, steps, chosen = choose_threshold([pairs[i][0] for i in index["propose"]],
-                                                [pairs[i][0] for i in index["certify"]],
-                                                [pairs[i][1] for i in index["certify"]], TARGET, DELTA)
-    result = score_threshold([pairs[i][0] for i in index["score"]], [pairs[i][1] for i in index["score"]],
-                             threshold, TARGET)
-    score_rows = [rows[i] for i in index["score"]]
-    result["held"] = sum(r["action"] == "hold" for r in score_rows)
-    result["fallbacksReleased"] = sum(r["fallback"] for r in score_rows)
-    result["abstained"] = sum(decide(pairs[i][0], threshold) == "abstained" or
-                              (rows[i]["action"] == "release" and pairs[i][0] is None) for i in index["score"])
+        batched = json.load(handle)
+    single = []
+    shards = sorted(glob.glob(os.path.join(args.out, "certify-*-of-*.json")))
+    meta = None
+    for path in shards:
+        with open(path) as handle:
+            data = json.load(handle)
+        single += data["rows"]
+        meta = meta or data
+    expected = {int(re.search(r"of-(\d+)", path).group(1)) for path in shards}
+    if len(expected) != 1 or len(shards) != expected.pop():
+        raise SystemExit("the certification shards are incomplete")
+    if meta["weightsHash"] != batched["weightsHash"] or meta["thresholdSet"] != batched["thresholdSet"]:
+        raise SystemExit("the batched and single runs are of different weights or threshold sets")
+    proposal = [released_score(r)[0] for r in batched["gsm8k"] if r["block"] in PROPOSE]
+    gsm = [r for r in single if r["kind"] == "gsm8k"]
+    cert = [r for r in gsm if r["block"] in CERTIFY]
+    scored = [r for r in gsm if r["block"] in SCORE]
+    fresh = [r for r in single if r["kind"] == "fresh"]
+    cert_pairs, score_pairs = [released_score(r) for r in cert], [released_score(r) for r in scored]
+    threshold, steps, chosen = choose_threshold(proposal, [p[0] for p in cert_pairs], [p[1] for p in cert_pairs],
+                                                TARGET, DELTA, GRID)
+    result = score_threshold([p[0] for p in score_pairs], [p[1] for p in score_pairs], threshold, TARGET)
+    result.update(counts(scored, score_pairs, threshold))
+    seconds = [r["seconds"] for r in single]
     summary = {
-        "threshold": threshold, "certification": chosen, "candidates": len(steps), "eval11": result,
+        "threshold": threshold, "certification": chosen, "candidates": len(steps),
+        "certificationQuestions": len(cert), "eval11": result,
         "releasedAccuracyBeforeThreshold": {
-            name: round(sum(rows[i]["releasedCorrect"] for i in idx) / len(idx), 4) for name, idx in index.items()},
-        "aloneAccuracy": {"score": round(sum(r["aloneCorrect"] for r in score_rows) / len(score_rows), 4)},
-        "decisions": {"score": {word: sum(r["action"] == word for r in score_rows) for word in ("release", "hold")}},
-        "seconds": data["seconds"],
+            "certify": round(sum(r["releasedCorrect"] for r in cert) / len(cert), 4),
+            "score": round(sum(r["releasedCorrect"] for r in scored) / len(scored), 4)},
+        "decisions": {word: sum(r["action"] == word for r in scored) for word in ("release", "hold")},
+        "holdReasons": sorted({r["reason"] for r in single if r["action"] == "hold"}),
+        "singleSeconds": {"median": sorted(seconds)[len(seconds) // 2], "mean": round(sum(seconds) / len(seconds), 2)},
     }
-    fresh_pairs = [released_score(r) for r in fresh]
-    summary["eval12"] = score_threshold([p[0] for p in fresh_pairs], [p[1] for p in fresh_pairs], threshold, TARGET)
-    # Batch to single requests (the service's shape), on the first questions of block 3.
-    transfer = data["transfer"]
-    same = sum(decide(released_score(t)[0], threshold) == decide(pairs[t["index"]][0], threshold) for t in transfer)
-    summary["transfer"] = {"questions": len(transfer), "sameAnswer": sum(t["sameAnswer"] for t in transfer),
-                           "sameDecision": same,
-                           "singleReleasedWrong": sum(decide(released_score(t)[0], threshold) == "released" and
-                                                      not t["releasedCorrect"] for t in transfer),
-                           "singleReleased": sum(decide(released_score(t)[0], threshold) == "released"
-                                                 for t in transfer)}
-    summary["eval13"] = data["probe"]
-    # Exploratory (never used for the pass rule): other scores, with the same procedure.
-    exploratory = {}
-    team_score = [i for i in index["score"] if rows[i]["teamAnswer"]]
-    for name in ("meanLogprob", "minLogprob"):
-        alt = [(None, False) if r["action"] != "release" else (math.inf, not r["releasedCorrect"]) if r["fallback"]
-               else (r[name], not r["releasedCorrect"]) for r in rows]
-        t, _, _ = choose_threshold([alt[i][0] for i in index["propose"]], [alt[i][0] for i in index["certify"]],
-                                   [alt[i][1] for i in index["certify"]], TARGET, DELTA)
-        value = auroc([-(rows[i][name] if rows[i][name] is not None else -1e9) for i in team_score],
-                      [not rows[i]["releasedCorrect"] for i in team_score])
-        exploratory[name] = {"heldOutAuroc": None if value is None else round(value, 4),
-                             "calibrated": score_threshold([alt[i][0] for i in index["score"]],
-                                                           [alt[i][1] for i in index["score"]], t, TARGET)}
-    value = auroc([0.0 if rows[i]["agree"] == "agree" else 1.0 for i in team_score],
-                  [not rows[i]["releasedCorrect"] for i in team_score])
-    exploratory["agreeWithSolverAlone"] = {"heldOutAuroc": None if value is None else round(value, 4)}
-    confidence_auroc = auroc([-(rows[i]["confidence"] if rows[i]["confidence"] is not None else -1e9)
-                              for i in team_score], [not rows[i]["releasedCorrect"] for i in team_score])
-    exploratory["confidenceHeldOutAuroc"] = None if confidence_auroc is None else round(confidence_auroc, 4)
-    summary["exploratory"] = exploratory
+    # Eval 12: the same threshold on the fresh set; nothing to transfer when nothing certified.
+    if threshold is None:
+        summary["eval12"] = {"skipped": "no threshold certified"}
+    else:
+        fresh_pairs = [released_score(r) for r in fresh]
+        summary["eval12"] = score_threshold([p[0] for p in fresh_pairs], [p[1] for p in fresh_pairs], threshold, TARGET)
+    fresh_fallbacks = [r for r in fresh if r["fallback"]]
+    summary["eval12Baseline"] = {"questions": len(fresh), "fallbacksReleased": len(fresh_fallbacks),
+                                 "fallbacksWrong": sum(not r["releasedCorrect"] for r in fresh_fallbacks)}
+    # Exploratory: the batched run under the same split, and batched against single decisions.
+    by_block = {}
+    for r in batched["gsm8k"]:
+        by_block.setdefault(r["block"], []).append(r)
+    explore = {}
+    b_cert = [released_score(r) for b in CERTIFY for r in by_block.get(b, [])]
+    b_score = [released_score(r) for b in (4, 5) for r in by_block.get(b, [])]
+    t, _, _ = choose_threshold(proposal, [p[0] for p in b_cert], [p[1] for p in b_cert], TARGET, DELTA, GRID)
+    explore["batchedEval11"] = dict(score_threshold([p[0] for p in b_score], [p[1] for p in b_score], t, TARGET),
+                                    threshold=t, scoredOn="blocks 4 and 5, batched")
+    pairs = [(by_block[r["block"]][r["position"]], r) for r in gsm if r["block"] in by_block]
+    explore["batchedVsSingle"] = {
+        "questions": len(pairs),
+        "sameAction": sum(b["action"] == s["action"] and b["fallback"] == s["fallback"] for b, s in pairs),
+        "sameDecisionUnderThreshold": sum(decide(released_score(b)[0], threshold) == decide(released_score(s)[0], threshold)
+                                          for b, s in pairs),
+        "sameCorrectness": sum(b["releasedCorrect"] == s["releasedCorrect"] for b, s in pairs)}
+    transfer = batched.get("transfer", [])
+    explore["transferInBatchedRun"] = {"questions": len(transfer), "sameAnswer": sum(t["sameAnswer"] for t in transfer)}
+    team_rows = [r for r in scored if r["teamAnswer"]]
+    value = auroc([-(r["confidence"] if r["confidence"] is not None else -1e9) for r in team_rows],
+                  [not r["releasedCorrect"] for r in team_rows])
+    explore["confidenceAurocSingle"] = None if value is None else round(value, 4)
+    explore["probe"] = batched.get("probe")   # eval 13, on the batched run
+    summary["exploratory"] = explore
     print(json.dumps(summary, indent=1, default=str))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(summary, handle, indent=1, default=str)
     if args.calibration_dir and result["passed"]:
+        from .abstain import artifact_name, validate
         os.makedirs(args.calibration_dir, exist_ok=True)
         calibration = {
             "id": "w3-qwen2.5-3b-instruct-gsm8k-1", "task": TASK, "model": MODEL,
-            "weightsHash": data["weightsHash"], "thresholdSet": data["thresholdSet"], "reference": data["reference"],
-            "steps": STEPS, "maxNewTokens": TOKENS, "score": "answer-number-logprob",
-            "threshold": threshold, "target": TARGET, "delta": DELTA, "certified": True,
-            "measuredOn": {"split": "test", "seed": SEED, "propose": list(PROPOSE), "certify": list(CERTIFY),
-                           "score": list(SCORE), "count": COUNT, "batch": BATCH, "date": time.strftime("%Y-%m-%d")},
-            "certification": chosen,
+            "weightsHash": meta["weightsHash"], "thresholdSet": meta["thresholdSet"], "reference": True,
+            "steps": STEPS, "maxNewTokens": TOKENS, "batch": 1, "gated": True, "grid": GRID,
+            "score": "answer-number-logprob", "threshold": threshold, "target": TARGET, "delta": DELTA,
+            "certified": True,
+            "measuredOn": {"split": "test", "seed": SEED, "blockSize": COUNT, "propose": list(PROPOSE),
+                           "certify": list(CERTIFY), "score": list(SCORE), "fittedByW1": list(FITTED_BY_W1),
+                           "requests": "single, through TeamService", "date": time.strftime("%Y-%m-%d")},
+            "certification": {"threshold": threshold, "released": chosen["released"], "errors": chosen["errors"],
+                              "upper": upper_bound(chosen["errors"], chosen["released"], DELTA / GRID)},
             "heldOut": {k: result[k] for k in ("questions", "released", "releasedShare", "errors", "error", "error95",
                                                "passed")},
-            "transfer": summary["transfer"],
-            "about": ("W3 calibration (docs/watchdog-security.md): on this kind of task an answer from the guarded path "
-                      "is released when the log-probability of its graded number reaches the threshold (a fallback "
-                      "answer is released, a held run is not). Candidates were fixed from the scores of GSM8K test "
-                      "block 0, tested on blocks 1 and 2 at 0.05 / 20 each (Bonferroni over the grid, one-sided "
-                      "Clopper-Pearson) for a 10% error ceiling, and the threshold was scored on blocks 3 to 5. Void "
-                      "for any other weights, task or setting."),
+            "about": ("W3 calibration (docs/watchdog-security.md): for single requests through the latent team "
+                      "service on this kind of task, an answer is released when the log-probability of its graded "
+                      "number reaches the threshold (a fallback answer is released, a held run is not). Candidates "
+                      "came from the scores of GSM8K test blocks 0 and 2, were tested on blocks 1 and 3 at 0.05 / 20 "
+                      "each (Bonferroni over the grid, one-sided Clopper-Pearson) for a 10% error ceiling, and the "
+                      "threshold was scored on blocks 4, 5 and the rest of the test set. Void for any other weights, "
+                      "task or policy."),
         }
-        with open(os.path.join(args.calibration_dir, "qwen2.5-3b-instruct-gsm8k.json"), "w") as handle:
+        validate(calibration, TASK, MODEL)
+        with open(os.path.join(args.calibration_dir, artifact_name(TASK, MODEL)), "w") as handle:
             json.dump(calibration, handle, indent=1)
             handle.write("\n")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--part", required=True, choices=("run", "analyze"))
+    parser.add_argument("--part", required=True, choices=("run", "certify", "analyze"))
     parser.add_argument("--out", required=True)
     parser.add_argument("--w1", default=os.path.expanduser("~/w1/out"))
     parser.add_argument("--calibration-dir", default=None)
+    parser.add_argument("--shard", type=int, default=0)
+    parser.add_argument("--shards", type=int, default=1)
     args = parser.parse_args()
     args.out = os.path.expanduser(args.out)
+    args.w1 = os.path.expanduser(args.w1)
     os.makedirs(args.out, exist_ok=True)
-    {"run": part_run, "analyze": part_analyze}[args.part](args)
+    {"run": part_run, "certify": part_certify, "analyze": part_analyze}[args.part](args)
 
 
 if __name__ == "__main__":

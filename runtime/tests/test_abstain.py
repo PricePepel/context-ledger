@@ -105,8 +105,10 @@ class ThresholdTest(unittest.TestCase):
 
 def calibration(**changes):
     data = {"id": "test-1", "task": "gsm8k-arithmetic", "model": "m", "weightsHash": "w", "thresholdSet": "t-1",
-            "reference": True, "steps": 40, "maxNewTokens": 512, "score": "answer-number-logprob",
-            "threshold": -0.5, "target": 0.1, "delta": 0.05, "certified": True, "heldOut": {"passed": True}}
+            "reference": True, "steps": 40, "maxNewTokens": 512, "batch": 1, "gated": True, "grid": 20,
+            "score": "answer-number-logprob", "threshold": -0.5, "target": 0.1, "delta": 0.05, "certified": True,
+            "certification": {"threshold": -0.5, "released": 300, "errors": 6},
+            "heldOut": {"questions": 519, "released": 400, "errors": 30, "passed": True}}
     data.update(changes)
     return data
 
@@ -119,9 +121,10 @@ class LoadTest(unittest.TestCase):
     def load(self, files, **settings):
         with tempfile.TemporaryDirectory() as folder:
             for name, text in files.items():
+                name = abstain.artifact_name("gsm8k-arithmetic", "m") if name == "a.json" else name
                 with open(os.path.join(folder, name), "w", encoding="utf-8") as handle:
                     handle.write(text if isinstance(text, str) else json.dumps(text))
-            wanted = dict(steps=40, max_new_tokens=512, threshold_set="t-1", reference=True)
+            wanted = dict(steps=40, max_new_tokens=512, threshold_set="t-1", reference=True, batch=1, gated=True)
             wanted.update(settings)
             return abstain.load_calibration("m", "w", "gsm8k-arithmetic", directory=folder, **wanted)
 
@@ -133,7 +136,12 @@ class LoadTest(unittest.TestCase):
         self.assertIsNone(self.load({"a.json": calibration()}, reference=False))
         self.assertIsNone(self.load({"a.json": calibration()}, threshold_set="t-2"))
         self.assertIsNone(self.load({"a.json": calibration(weightsHash="other")}))
-        self.assertIsNone(self.load({"a.json": calibration(task="other-task", certified=False)}))
+        # Review W3-2 finding 2: the policy is part of the binding (one question per call,
+        # the gateway in front, as the service runs).
+        self.assertIsNone(self.load({"a.json": calibration()}, batch=32))
+        self.assertIsNone(self.load({"a.json": calibration()}, gated=False))
+        # A file of any other name is not this task's calibration.
+        self.assertIsNone(self.load({"other.json": calibration(certified=False)}))
 
     def test_an_untrustworthy_calibration_for_this_task_raises(self):
         bad = [calibration(certified=False), calibration(heldOut={"passed": False}), calibration(threshold=True),
@@ -148,6 +156,19 @@ class LoadTest(unittest.TestCase):
                 self.load({"a.json": text})
         with self.assertRaises(abstain.CalibrationInvalid):
             self.load({"a.json": "{not json"})
+        # Review W3-2 finding 3: the file is found by its name, so an empty or foreign
+        # payload holds instead of being skipped, and the evidence's counts must pass again.
+        weak = [[], calibration(task="other-task"), calibration(model="other-model"),
+                calibration(certification={"threshold": -0.5}),
+                calibration(certification={"threshold": -0.4, "released": 300, "errors": 6}),
+                calibration(certification={"threshold": -0.5, "released": 300, "errors": 40}),
+                calibration(heldOut={"passed": True}),
+                calibration(heldOut={"questions": 519, "released": 100, "errors": 0, "passed": True}),
+                calibration(heldOut={"questions": 519, "released": 400, "errors": 80, "passed": True}),
+                calibration(threshold=-1e9)]
+        for data in weak:
+            with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
+                self.load({"a.json": data})
 
 
 def old_predicted_number(text):
@@ -226,7 +247,8 @@ class GuardedPathTest(unittest.TestCase):
         from tests.test_gateway_squad import STEPS, TOKENS, Seen, text_team
         team = text_team()
         with tempfile.TemporaryDirectory() as folder:
-            with open(os.path.join(folder, "a.json"), "w", encoding="utf-8") as handle:
+            with open(os.path.join(folder, abstain.artifact_name("gsm8k-arithmetic", team.model_name)), "w",
+                      encoding="utf-8") as handle:
                 json.dump(calibration(model=team.model_name, certified=False), handle)
             guard = Guard(team, thresholds=None, sample=lambda: False, calibration_dir=folder)
             with Seen(team.tokenizer) as seen:
