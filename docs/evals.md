@@ -4630,3 +4630,13 @@ Codex confirmed the round-4 fixes and that the MCP schema omits the new fields. 
 - (medium) Fixed permissions kept the caller's mutable argument list: they are snapshot into immutable, validated rules.
 - (medium) `/latent/team` echoed unknown field names in its 400, which could carry a declared secret: the message is fixed.
 
+### W2 review, round 6 (2026-11-22, Codex, read-only, of PR #71 at 89bb3a5)
+
+Codex confirmed round 5's fixes (the quoted value, whitespace folding, the rule of two, the mutable rules, the unknown field). Its findings, all fixed in bb4bab1 with a regression test each:
+
+- (high) An escaped surrogate pair (an emoji written as two `\u` escapes) decoded to two code points in Python, so a literal copy of the value passed both gates: decoded spellings now combine surrogate pairs.
+- (high) The chat route trims each message before the gateway sees it, so a declaration with padding missed its trimmed copy: every value is known as written, decoded, trimmed and with its whitespace folded.
+- (high) A role template could complete a declared value (`Question: harbor-slate-42` declared, a question starting `harbor-slate-42`): before running, the guard renders every prompt a run can give the model (each role's turn, the solver's, and the solver alone's for audits and the fallback) and holds if one carries a known value (`unsafe-render`); the model never runs.
+- (medium) The ledger's one-line printing could create a credential the runtime's scan could not see (an invisible character between a name and its value becomes a space): for an uncleared output the ledger scans the printed answer with the shared scanner.
+- (medium) A one-shot iterator of argument rules was consumed by the type check and left the snapshot empty, and a clearance given as text became true: rules are read once, and every field's type is checked.
+
