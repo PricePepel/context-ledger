@@ -523,6 +523,48 @@ def at_token(text, start, end):
     return not (start > 0 and _word(text[start - 1])) and not (end < len(text) and _word(text[end]))
 
 
+_WORD_STOP = " \t;&|<>()"
+
+
+def shell_word(text):
+    """The first shell word of text, read statically as the shell reads it (review W2-25):
+    quoted and unquoted parts joined, single quotes literal, a backslash escaping the next
+    character (inside double quotes only before a double quote, backslash, dollar or
+    backtick), ending at an unquoted space, tab or operator. Nothing is expanded. None when a
+    quote does not close. src/secrets.mjs has the same reader."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in _WORD_STOP:
+            break
+        if c == BACKSLASH and i + 1 < n:
+            out.append(text[i + 1])
+            i += 2
+        elif c == "'":
+            close = text.find("'", i + 1)
+            if close == -1:
+                return None
+            out.append(text[i + 1:close])
+            i = close + 1
+        elif c == '"':
+            j, part = i + 1, []
+            while j < n and text[j] != '"':
+                if text[j] == BACKSLASH and j + 1 < n and text[j + 1] in '"$`' + BACKSLASH:
+                    part.append(text[j + 1])
+                    j += 2
+                else:
+                    part.append(text[j])
+                    j += 1
+            if j >= n:
+                return None
+            out.append("".join(part))
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _span_values(text, members):
     """The values a merged span's candidates identified, each bounded: a free-text
     candidate's own assignment, the first one's whole judged tail, and any other candidate's
@@ -545,6 +587,10 @@ def _span_values(text, members):
                     word = re.split(r"[ \t]", core, maxsplit=1)[0].rstrip(",;")
                     if word and word != core and not is_placeholder(word):
                         out.add(word)
+                    # and as the shell reads it, quotes joined (review W2-25)
+                    read = shell_word(core)
+                    if read and read != core and not is_placeholder(read):
+                        out.add(read)
             if tail:
                 out.add(text[candidate["start"]:candidate["value_end"]])
                 tail = False

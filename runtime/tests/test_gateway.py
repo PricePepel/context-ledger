@@ -875,6 +875,20 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn("paper-harbor", released.text)
         self.assertTrue(released.safe)
 
+    def test_round25_shell_quotes_joined_in_an_assignment_word(self):
+        # Review W2-25: the shell joins pa and 'per-harbor' into the password.
+        text = "Copy: paper-harbor" + chr(10) + "PASSWORD=pa'per-harbor' printf done"
+        self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("paper-harbor", released.text)
+        self.assertTrue(released.safe)
+        from latent_team.secret_scan import shell_word
+        bs = chr(92)
+        self.assertEqual(shell_word("pa'per-harbor' printf"), "paper-harbor")
+        self.assertEqual(shell_word('pa"per' + bs + '"-harbor"'), 'paper"-harbor')
+        self.assertEqual(shell_word("a" + bs + " b c"), "a b")
+        self.assertIsNone(shell_word("pa'per"))
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

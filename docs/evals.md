@@ -5055,6 +5055,14 @@ One high-severity finding and no medium one; Codex confirmed round 23's fixes (`
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (428) passed.
 
+### W2 review, round 25 (2026-11-22, Codex, read-only, of PR #71 at 85db893)
+
+One high-severity finding and no medium one; Codex confirmed round 24's fix for a plain shell assignment.
+
+- (high, fixed) Shell quote concatenation (`PASSWORD=pa'per-harbor' printf done`, which the shell reads as `paper-harbor`) left the joined word unknown and its bare copy visible. Both scanners now also read an assignment's first word as the shell reads it, statically: quoted and unquoted parts joined, single quotes literal, a backslash escaping the next character (inside double quotes only before a double quote, backslash, dollar or backtick), ending at an unquoted space, tab or operator, nothing expanded. Two shared value cases cover single and double quotes.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (429) passed.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.

@@ -133,6 +133,8 @@ const valueCases = [
   { name: 'a quoted value with a full stop after it', text: ['password="paper-harbor".'] },
   { name: 'a shell environment assignment before a command', text: ['PASSWORD=paper-harbor printf done'] },
   { name: 'a subshell around an assignment', text: ['(password=paper-harbor)'] },
+  { name: 'shell quotes joined in an assignment word', text: ["PASSWORD=pa'per-harbor' printf done"] },
+  { name: 'double quotes and an escape joined in an assignment word', text: ['PASSWORD=pa"per', { char: 92 }, '"-harbor" printf done'] },
 ];
 
 const out = {
