@@ -46,7 +46,12 @@ function requireSameOrigin(request, origin, operation) {
   if (request.headers.origin !== origin) throw new HttpError(403, `${operation} requires the same origin.`);
 }
 
-async function readJson(request, origin, operation, limit = { bytes: maxRequestBytes, text: '8 MiB' }) {
+async function readJson(request, origin, operation, limit) {
+  return (await readJsonText(request, origin, operation, limit)).value;
+}
+
+/** The parsed body and the text it was parsed from. */
+async function readJsonText(request, origin, operation, limit = { bytes: maxRequestBytes, text: '8 MiB' }) {
   requireSameOrigin(request, origin, operation);
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new HttpError(415, `${operation} requires application/json.`);
@@ -64,7 +69,8 @@ async function readJson(request, origin, operation, limit = { bytes: maxRequestB
   }
 
   try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size)));
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size));
+    return { value: JSON.parse(text), text };
   } catch {
     throw new HttpError(400, `${operation} request must contain valid UTF-8 JSON.`);
   }
@@ -188,9 +194,12 @@ const routes = [
     // session secret it gets back in this origin's storage. A well-formed code is used
     // up whether or not it was still valid. No cookie is set, and any P1e cookie of this
     // port is removed, because browsers send cookies to every port of the host.
-    const input = await readJson(request, origin, 'Signing in', signInLimit);
+    // The body must be exactly what the page sends, JSON.stringify({ code }): JSON.parse
+    // keeps only the last of repeated keys, so any other spelling is refused unread.
+    const { value: input, text } = await readJsonText(request, origin, 'Signing in', signInLimit);
     const keys = input !== null && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : [];
-    const session = keys.length === 1 && keys[0] === 'code' ? auth.redeem(input.code) : undefined;
+    const exact = keys.length === 1 && keys[0] === 'code' && typeof input.code === 'string' && text === JSON.stringify(input);
+    const session = exact ? auth.redeem(input.code) : undefined;
     if (!session) throw new HttpError(401, linkFailure);
     response.setHeader('Set-Cookie', auth.clearOldCookie);
     return { session, expiresInSeconds: sessionLifetimeMs / 1000 };

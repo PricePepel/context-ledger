@@ -278,6 +278,8 @@ test('the browser signs in once with a short-lived code and then sends its sessi
   assert.equal(page.status, 200);
   assert.match(page.headers['content-type'], /^text\/html; charset=utf-8$/u);
   assert.equal(page.headers['set-cookie'], undefined);
+  // Its own subresource requests send no Referer that could carry the code.
+  assert.equal(page.headers['referrer-policy'], 'no-referrer');
   assert.equal(page.body.includes(codeOf(startLink[2])), false, 'the page does not echo the code');
   assert.equal((await redeem(server, codeOf(startLink[2]))).status, 200, 'the start-up code still works after the page load');
 
@@ -325,14 +327,26 @@ test('the browser signs in once with a short-lived code and then sends its sessi
     const again = await raw(port, { method: 'POST', path: '/api/session', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', Origin: origin } });
     assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, JSON.stringify(body));
   }
+  // Repeated or escaped keys, which JSON.parse would fold into one valid code, are refused
+  // too, as is any spelling other than the page's own JSON.stringify({ code }).
+  for (const text of [`{"code":"${second}","code":"${first}"}`, `{"code":"x","code":"${first}"}`, `{"\\u0063ode":"${first}"}`,
+    `{ "code": "${first}" }`, `{"code":"${first}"}\n`, `{"code":"${first.slice(0, 5)}\\u00${first.charCodeAt(5).toString(16)}${first.slice(6)}"}`]) {
+    const again = await raw(port, { method: 'POST', path: '/api/session', body: text, headers: { 'Content-Type': 'application/json', Origin: origin } });
+    assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, text);
+  }
+  assert.equal((await raw(port, { method: 'POST', path: '/api/session', body: '{"code":', headers: { 'Content-Type': 'application/json', Origin: origin } })).status, 400);
   // From another origin, or with no Origin at all, a code is refused and not used up.
   for (const headers of [{ Origin: 'http://127.0.0.1:1' }, { Origin: 'null' }, {}]) {
     const foreign = await raw(port, { method: 'POST', path: '/api/session', body: JSON.stringify({ code: first }), headers: { 'Content-Type': 'application/json', ...headers } });
     assert.deepEqual({ status: foreign.status, body: foreign.body }, { status: 403, body: { error: 'Signing in requires the same origin.' } }, JSON.stringify(headers));
   }
   assert.equal((await raw(port, { method: 'POST', path: '/api/session', body: `{"code":"${first}"}`, headers: { 'Content-Type': 'text/plain', Origin: origin } })).status, 415);
-  const tooBig = await raw(port, { method: 'POST', path: '/api/session', body: JSON.stringify({ code: 'A'.repeat(2048) }), headers: { 'Content-Type': 'application/json', Origin: origin } });
-  assert.deepEqual({ status: tooBig.status, body: tooBig.body }, { status: 413, body: { error: 'Signing in exceeds the 1 KiB request limit.' } });
+  // Over 1 KiB is refused whether the length is declared or the body is streamed in chunks.
+  const big = JSON.stringify({ code: 'A'.repeat(2048) });
+  for (const headers of [{ 'Content-Length': String(Buffer.byteLength(big)) }, { 'Transfer-Encoding': 'chunked' }]) {
+    const tooBig = await raw(port, { method: 'POST', path: '/api/session', body: big, headers: { 'Content-Type': 'application/json', Origin: origin, ...headers } });
+    assert.deepEqual({ status: tooBig.status, body: tooBig.body }, { status: 413, body: { error: 'Signing in exceeds the 1 KiB request limit.' } }, JSON.stringify(headers));
+  }
   for (const code of [first, second]) assert.equal((await redeem(server, code)).status, 200, 'refused attempts used up nothing');
   // Only POST is open: GET /api/session is a guarded route like any other.
   assert.deepEqual((await raw(port, { path: '/api/session' })).body, signIn);

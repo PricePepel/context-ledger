@@ -31,8 +31,14 @@
         return false;
       }
     },
-    /** Drops the stored secret, after the ledger refused it. */
-    forget() {
+    /**
+     * Drops the stored secret after the ledger refused a request, given the headers that
+     * request was sent with: only when storage still holds the secret they carried, so a
+     * late 401 for an old session never signs out a newer one (P1f review).
+     */
+    forget(sentHeaders) {
+      const sent = sentHeaders?.[header];
+      if (sent === undefined || read() !== sent) return;
       try {
         localStorage.removeItem(key);
       } catch {

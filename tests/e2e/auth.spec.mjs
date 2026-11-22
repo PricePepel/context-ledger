@@ -27,10 +27,16 @@ test('a browser without a session is told how to sign in; a one-time link signs 
 
   const path = await mint(request);
   expect(path).not.toContain(await ledgerToken());
+  // The sign-in page's own requests (its script, style and the redemption) carry no Referer.
+  const fromSignIn = [];
+  page.on('request', sent => { if (sent.frame() === page.mainFrame()) fromSignIn.push(sent); });
   await page.goto(baseURL + path);
   await expect(page).toHaveURL(baseURL + '/');
   // A successful search: a count or the empty archive, never an error (specs share one database).
   await expect(page.locator('#search-status')).toHaveText(searchDone);
+  const signInRequests = fromSignIn.filter(sent => ['/login.js', '/session.js', '/styles.css', '/api/session'].includes(new URL(sent.url()).pathname));
+  expect(signInRequests.map(sent => new URL(sent.url()).pathname).sort()).toEqual(expect.arrayContaining(['/api/session', '/login.js', '/session.js']));
+  for (const sent of signInRequests) expect(await sent.headerValue('referer')).toBeNull();
   expect(await visitor.cookies()).toEqual([]);
   const stored = await page.evaluate(key => localStorage.getItem(key), storageKey);
   expect(stored).toMatch(/^[A-Za-z0-9_-]{43}$/u);
@@ -59,7 +65,7 @@ test('a browser without a session is told how to sign in; a one-time link signs 
   await other.close();
 });
 
-test('a page on another local port receives no credential and cannot read the session', async ({ page, baseURL }) => {
+test('a page on another local port receives no credential and cannot read the session', async ({ page, request, baseURL }) => {
   // The fixture signed this page in. Another local program serves a page on its own port.
   await page.goto(baseURL + '/');
   await expect(page.locator('#search-status')).toHaveText(searchDone);
@@ -89,6 +95,27 @@ test('a page on another local port receives no credential and cannot read the se
     }
     // The other origin's storage is its own.
     expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull();
+
+    // Script on that page, in the signed-in browser, can neither read the ledger's data,
+    // nor redeem a code it got hold of, nor reach into a ledger window's storage.
+    const path = await mint(request);
+    const tried = await page.evaluate(async ({ ledger, code, key }) => {
+      const outcome = {};
+      try { outcome.read = (await fetch(ledger + '/api/sessions')).status; } catch { outcome.read = 'blocked'; }
+      try { outcome.redeem = (await fetch(ledger + '/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })).status; } catch { outcome.redeem = 'blocked'; }
+      // A simple request is sent without a preflight; the ledger refuses its Origin unread.
+      await fetch(ledger + '/api/session', { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ code }) }).catch(() => {});
+      const opened = window.open(ledger + '/');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      try { outcome.storage = opened.localStorage.getItem(key); } catch { outcome.storage = 'denied'; }
+      opened.close();
+      return outcome;
+    }, { ledger: baseURL, code: path.slice('/login?code='.length), key: storageKey });
+    expect(tried).toEqual({ read: 'blocked', redeem: 'blocked', storage: 'denied' });
+    // The code was not used up: it still signs in from the ledger's own page.
+    await page.goto(baseURL + path);
+    await expect(page).toHaveURL(baseURL + '/');
+    await expect(page.locator('#search-status')).toHaveText(searchDone);
   } finally {
     other.close();
   }

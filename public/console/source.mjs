@@ -13,8 +13,9 @@ const session = globalThis.ledgerSession;
 
 async function getJson(path) {
   const accept = { Accept: 'application/json' };
-  const response = await fetch(path, { headers: session ? session.headers(accept) : accept, signal: AbortSignal.timeout(requestMs) });
-  if (response.status === 401) session?.forget();
+  const headers = session ? session.headers(accept) : accept;
+  const response = await fetch(path, { headers, signal: AbortSignal.timeout(requestMs) });
+  if (response.status === 401) session?.forget(headers);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
   return body;
