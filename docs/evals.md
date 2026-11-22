@@ -4492,6 +4492,51 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
 
+## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
+
+Run 1 of M2b (Qwen2.5-0.5B to SmolLM2-360M) passed its gate, but both models are far below the 3B–32B range of the SwaT paper (arXiv 2610.15095). This card scales the sender about 8× on the same 16 GB laptop GPU. A 7B pair does not fit in bf16 with the backward pass through the receiver, so 7B waits for quantized-receiver training or a larger GPU.
+
+- **Pair:** `microsoft/Phi-3.5-mini-instruct` (3.8B, Phi-3 architecture, 32 KV heads, LongRoPE) to `Qwen/Qwen2.5-1.5B-Instruct` (Qwen2, 2 KV heads, RoPE base 1e6). Different families, tokenizers and RoPE, large to small like the paper's Gemma3-12B to Qwen3-4B.
+- **Training:** `latent_transfer.train` with `--sender` and `--receiver`, the same two stages as run 1. Batch, mapper size and passage length are set by what fits in 16 GB without spilling to host memory, and recorded with the result.
+- **Eval:** 300 SQuAD v1.1 validation questions (seed 0), greedy, token F1 and containment, conditions `text, closed, swat, zeroed, mismatched, t2t`. `t2t` uses the sender's own chat template; run 1's ChatML prompt is unchanged.
+
+| Gate | Pass when |
+| --- | --- |
+| Carries the passage | `swat` beats `zeroed` and `mismatched` (another item's passage through the same mapper), each with the paired bootstrap 95% interval above zero. The mismatched control comes from the audit in arXiv 2608.04893. |
+| Better than text | `swat` beats `t2t` (the sender's 40-word summary read by the receiver), interval above zero. Budgets are not matched in this card. |
+| Faster than text | Mean `swat` end to end (sender prefill, mapper, receiver answer) is below mean `t2t` end to end (sender writes the summary, receiver answers). |
+| Retention | Reported, with containment beside F1, because stage 2 trains the answer style (run 1's F1 retention of 1.86 was inflated by short answers). |
+
+Not covered here, and named so nobody reads more into a pass: budget-matched compaction (Attention Matching), the fair control of a receiver fine-tuned on the same SQuAD data, and more than one task.
+
+### Result — run 1 (2026-11-22)
+
+Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, stage 2 20,000 steps at batch 2 (QA share 0.7), mapper 100.5M parameters (8 blocks, width 384, 6 heads), passages capped at 256 tokens, seed 0. Stage 2 ran at about 0.54 s per step. Best dev F1 0.8275 (100 held-out dev questions), checkpoint `ade79c34041fd529`. Eval: 300 SQuAD v1.1 validation questions, seed 0, greedy.
+
+| Condition | F1 | Containment | Mean answer words |
+| --- | --- | --- | --- |
+| `text` (receiver reads the passage) | 0.778 | 0.857 | 4.9 |
+| `swat` (receiver reads the mapped sender cache) | **0.872** | 0.853 | 3.1 |
+| `t2t` (receiver reads the sender's summary) | 0.460 | 0.433 | 3.7 |
+| `mismatched` (another item's cache) | 0.153 | 0.087 | 3.2 |
+| `closed` (no passage) | 0.170 | 0.117 | 4.2 |
+| `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
+
+Paired bootstrap 95% intervals (10,000 resamples) for the per-item difference in token F1: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135]. For containment, `swat − text` is −0.003 [−0.047, 0.040]. For latency per item, `text − swat` is 49 ms [15, 85] and `t2t − swat` is 3,240 ms [3,023, 3,473].
+
+Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
+
+| Gate | Result |
+| --- | --- |
+| Carries the passage | **Pass.** Both intervals are far above zero, and the mismatched cache scores near the closed-book floor: the gain depends on supplying the correct passage's cache, not on a generic prior from the mapper. |
+| Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms mean, about 8.6× faster. On this run it was also faster on average than the receiver reading the passage itself (426 vs 475 ms, per-item interval above zero); one machine, one run. |
+| Retention | Reported: F1 retention 1.12 against `text` (interval above zero), while containment shows no detectable difference (−0.003, interval [−0.047, 0.040], so any gap is under 5 points either way). `swat` answers are shorter (3.1 vs 4.9 words), which likely explains part of the F1 edge; these aggregates do not show how much. The claim we make: "finds the answer as often as reading the passage, within 5 points, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+
+Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.
+
+Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
+
 ## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
 
 For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.

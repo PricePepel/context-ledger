@@ -31,10 +31,21 @@ def closed_prompt(question):
     return f"<|im_start|>user\nQuestion: {question.strip()}\nAnswer with a few words.{END}\n<|im_start|>assistant\n"
 
 
-def summary_prompt(passage, words=40):
-    """The T2T baseline's request; pair.sender_generate allows 96 tokens, enough for 40 words."""
-    return (f"<|im_start|>user\nSummarize this passage in at most {words} words. Keep every name, number "
-            f"and date.\n\n{passage.strip()}{END}\n<|im_start|>assistant\n")
+def summary_request(passage, words=40):
+    """The T2T baseline's request text, without any chat template."""
+    return f"Summarize this passage in at most {words} words. Keep every name, number and date.\n\n{passage.strip()}"
+
+
+def summary_prompt(passage, words=40, tokenizer=None):
+    """The T2T baseline's request; pair.sender_generate allows 96 tokens, enough for 40 words.
+
+    Without a tokenizer it is the ChatML prompt run 1 used. A sender with another chat
+    template (Phi-3.5 in the scale-up) passes its tokenizer, so it reads its own format.
+    """
+    if tokenizer is not None:
+        return tokenizer.apply_chat_template([{"role": "user", "content": summary_request(passage, words)}],
+                                             tokenize=False, add_generation_prompt=True)
+    return f"<|im_start|>user\n{summary_request(passage, words)}{END}\n<|im_start|>assistant\n"
 
 
 def _parquet(dataset, pattern):
