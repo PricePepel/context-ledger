@@ -11,8 +11,12 @@ export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
 const metricsEveryMs = 500;
 
-/** The middle value (the lower of the two middle values for an even count). */
-export const median = values => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) / 2)];
+/** The median: the middle value, or the mean of the two middle values for an even count. */
+export function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
 
 /** The model servers from SWARM_URLS: loopback http only, refused at start otherwise. */
 export function swarmUrls(text) {
@@ -208,21 +212,26 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   /**
    * Card S1b: how long one agent takes on each server with nothing else running: one
    * untimed warm-up, then baselineRuns timed requests one at a time, the median kept.
-   * Measured once per ledger process for the same servers and models. Null if any
-   * request fails, and the run goes on without a speed-up.
+   * Each timed request reads a different report than the warm-up, as an agent would, so
+   * only the shared instructions come from the prefix cache. A reply counts only if it
+   * holds an answer an agent would accept. Measured once per ledger process for the same
+   * servers and models. Null if any request fails, and the run goes on without a speed-up.
    */
   async function soloBaseline(servers) {
     const key = JSON.stringify(servers);
     if (baselineCache?.key === key) return { ...baselineCache.value, reused: true };
-    const report = incidents(1, 7)[0];
+    const reports = incidents(baselineRuns + 1, 7);
+    const usable = async (report, server) => {
+      if (!parseAnswer((await liveAgent(null, null, report, server)).reply)) throw new Error('no usable answer');
+    };
     try {
       const perServer = [];
       for (const server of servers) {
-        await liveAgent(null, null, report, server);
+        await usable(reports[0], server);
         const times = [];
-        for (let i = 0; i < baselineRuns; i += 1) {
+        for (const report of reports.slice(1)) {
           const begin = now();
-          await liveAgent(null, null, report, server);
+          await usable(report, server);
           times.push(now() - begin);
         }
         perServer.push({ model: server.model, ms: median(times) });
@@ -311,10 +320,12 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const finished = run.agents.filter(agent => agent.state === 'done' || agent.state === 'failed');
     const sum = key => run.agents.reduce((total, agent) => total + (agent[key] ?? 0), 0);
     const elapsed = run.wallMs ?? (run.state === 'running' ? now() - run.started : 0);
-    // Card S1b: one after another is estimated from each finished agent's server running it
+    // Card S1b: one after another is estimated from each answered agent's server running it
     // alone, not from the agents' own times under load (each request is slower when shared).
+    // Failed agents add nothing, so fast errors cannot raise the speed-up.
     const solo = run.baseline?.perServer;
-    const oneAfterAnother = solo ? finished.reduce((total, agent) => total + solo[agent.index % solo.length].ms, 0) : null;
+    const answered = run.agents.filter(agent => agent.state === 'done');
+    const oneAfterAnother = solo && answered.length ? answered.reduce((total, agent) => total + solo[agent.index % solo.length].ms, 0) : null;
     return {
       id: run.id, mode: run.mode, simulated: run.mode === 'simulated', state: run.state, error: run.error,
       models: run.models, concurrency,
@@ -323,7 +334,8 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
       baseline: run.baseline && { perServer: run.baseline.perServer.map(entry => ({ model: entry.model, ms: Math.round(entry.ms) })),
         runs: run.baseline.runs, measuredAt: run.baseline.measuredAt, reused: run.baseline.reused },
       oneAfterAnotherMs: oneAfterAnother === null ? null : Math.round(oneAfterAnother),
-      speedup: oneAfterAnother !== null && elapsed > 0 && finished.length ? oneAfterAnother / elapsed : null,
+      speedup: oneAfterAnother !== null && elapsed > 0 ? oneAfterAnother / elapsed : null,
+      answeredForSpeedup: answered.length,
       agentMsSum: Math.round(sum('ms')),
       tokensIn: sum('tokensIn'), tokensOut: sum('tokensOut'),
       counts: { total: run.agents.length, finished: finished.length,

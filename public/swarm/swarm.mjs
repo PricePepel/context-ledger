@@ -101,8 +101,9 @@ function renderStats(run) {
   // Card S1b: the speed-up is wall time against one agent run alone on each server
   // (measured by the ledger before the agents start), never the agents' own times under load.
   const solo = run.baseline?.perServer ?? [];
+  const measured = run.baseline?.measuredAt ? new Date(run.baseline.measuredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const soloNote = solo.length
-    ? `${solo.map(entry => seconds(entry.ms)).join(' / ')} per agent alone (median of ${run.baseline.runs})`
+    ? `${run.answeredForSpeedup} answers × ${solo.map(entry => seconds(entry.ms)).join(' / ')} per agent alone, warm (median of ${run.baseline.runs}, ${run.baseline.reused ? 'reused from' : 'measured at'} ${measured})`
     : 'one agent alone was not timed';
   const tokensPerSecond = run.elapsedMs > 0 ? run.tokensOut / (run.elapsedMs / 1000) : null;
   const metrics = run.metrics;

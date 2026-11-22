@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { createSwarm, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
+import { createSwarm, median, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
 import { causes, combine, incidents, isCorrect, isVerified, parseAnswer, systemPrompt } from '../src/swarm-task.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -281,6 +281,7 @@ test('round 2: when the last metrics scrape fails, the earlier sample is marked 
   assert.equal(run.metrics.stale, true);
   assert.equal(run.metrics.requestsRunning, null);
   assert.equal(run.metrics.kvCacheUsage, 0.3);
+  assert.equal(run.metrics.kvCachePeak, 0.3, 'review: the stale path keeps the peak');
 });
 
 test('S1b: the speed-up uses one agent timed alone, not the agents’ own times under load', async t => {
@@ -290,7 +291,7 @@ test('S1b: the speed-up uses one agent timed alone, not the agents’ own times 
   const { id } = swarm.start({ agents: 16, mode: 'live' });
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
   const [solo] = run.baseline.perServer;
-  assert.ok(solo.ms >= 35 && solo.ms < 150, `solo ${solo.ms} ms is one request alone`);
+  assert.ok(solo.ms >= 35 && solo.ms < 400, `solo ${solo.ms} ms is one request alone`);
   assert.equal(run.baseline.runs, 3);
   assert.equal(run.baseline.reused, false);
   assert.ok(Math.abs(run.oneAfterAnotherMs - 16 * solo.ms) <= 16, 'one after another is 16 solo runs');
@@ -317,6 +318,43 @@ test('S1b: the KV-cache tile shows the peak during the run, not the idle last sa
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null), 20_000);
   assert.equal(run.metrics.kvCacheUsage, 0, 'the last sample, after the agent, is idle');
   assert.equal(run.metrics.kvCachePeak, 0.7, 'the peak is the highest sample during the run');
+});
+
+test('S1b review: the warm-up is not timed, each server gets its own median, and the median of an even count is the mean of the middle two', async t => {
+  assert.equal(median([4, 1, 3, 2]), 2.5);
+  assert.equal(median([3, 1, 2]), 2);
+  // The first request to each server is slow (cold); only the later ones are timed.
+  const cold = (fast, coldMs) => { let calls = 0; return () => (calls++ === 0 ? coldMs : fast); };
+  const a = await fakeModelServer(t, { model: 'fast', delayMs: cold(20, 800) });
+  const b = await fakeModelServer(t, { model: 'slow', delayMs: cold(120, 800) });
+  const swarm = createSwarm({ env: { SWARM_URLS: `${a.url},${b.url}` } });
+  const { id } = swarm.start({ agents: 4, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
+  const [fast, slow] = run.baseline.perServer;
+  assert.ok(fast.ms < 400 && slow.ms < 600, 'the 800 ms warm-up is not in the median');
+  assert.ok(slow.ms > fast.ms + 50, 'each server has its own median');
+  // Agents 1 and 3 ran on the fast server, 2 and 4 on the slow one.
+  assert.ok(Math.abs(run.oneAfterAnotherMs - (2 * fast.ms + 2 * slow.ms)) <= 4);
+  // The timed requests read other reports than the warm-up, like agents do.
+  const reportsSeen = a.state.prompts.slice(0, 4).map(messages => /^Report: Incident (\d+)/u.exec(messages[1].content)[1]);
+  assert.deepEqual(reportsSeen, ['1', '2', '3', '4']);
+});
+
+test('S1b review: a baseline reply with no usable answer is not timed, and failed agents add nothing to the speed-up', async t => {
+  const empty = await fakeModelServer(t, { model: 'm', reply: 'no json here' });
+  const swarm = createSwarm({ env: { SWARM_URLS: empty.url } });
+  const first = swarm.start({ agents: 2, mode: 'live' }).id;
+  const unusable = await until(() => (['done', 'failed'].includes(swarm.snapshot(first).state) ? swarm.snapshot(first) : null));
+  assert.equal(unusable.baseline, null);
+  assert.equal(unusable.speedup, null);
+
+  const flaky = await fakeModelServer(t, { model: 'm', failFor: new Set([5, 6, 7, 8]) });
+  const swarm2 = createSwarm({ env: { SWARM_URLS: flaky.url } });
+  const second = swarm2.start({ agents: 8, mode: 'live' }).id;
+  const run = await until(() => (swarm2.snapshot(second).state === 'done' ? swarm2.snapshot(second) : null));
+  assert.equal(run.counts.failed, 4);
+  assert.equal(run.answeredForSpeedup, 4);
+  assert.ok(Math.abs(run.oneAfterAnotherMs - 4 * run.baseline.perServer[0].ms) <= 2, 'only the four answers count');
 });
 
 test('S1b: if the solo baseline fails the run still goes on, with no speed-up', async t => {

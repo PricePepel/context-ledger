@@ -4609,6 +4609,17 @@ The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divid
 | Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
 | Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
 
+**Codex review, round 1** (of ed890ea), each finding fixed with a regression test:
+
+- (medium) Failed agents were credited with a full solo run, so fast errors could raise the speed-up and an all-failed run could still show one. Only agents that answered count now (`answeredForSpeedup` in the API, "N answers ×" on the page).
+- (medium) The baseline timed any HTTP 200, even a reply with no usable answer. Each baseline reply must now pass `parseAnswer`, the check an agent's reply passes; otherwise there is no baseline and no speed-up.
+- (medium) The timed requests read the same report as the warm-up, so they reused more of the prefix cache than agents do, and the page did not say the figure was a warm, possibly reused baseline. Timed requests now read reports 2 to N+1 after a warm-up on report 1, and the page says "per agent alone, warm (median of 3, measured at / reused from HH:MM)".
+- (low) The median of an even count took the lower middle value: it is now the mean of the two middle values.
+- (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
+- (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
+
+Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
