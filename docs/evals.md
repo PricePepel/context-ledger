@@ -4591,3 +4591,5 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 - **Codex review, round 10:** two low, fixed: the label patterns held raw bidi and filler characters, which the editor had turned from escapes. They are \u escapes now, and a scan finds no raw control or format character in src, tests or public. Focus was also lost after a saved edit. It returns to the node's button, with a browser test.
 - **Codex review, round 11:** one low, fixed with a browser test: Cancel removed the focused button. Focus now returns to the node's Edit button.
 - **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
+- **Codex review, round 12:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).
