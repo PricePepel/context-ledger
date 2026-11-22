@@ -241,7 +241,10 @@ class PlaceholderTest(unittest.TestCase):
         # turn into a declared value is not safe to release.
         g = gateway(declared=["harbor slate 42"])
         g.admit([Span("request", "request", "q")])
-        self.assertFalse(OutputGate(g).release("it is harbor  slate" + chr(10) + "42").safe)
+        released = OutputGate(g).release("it is harbor  slate" + chr(10) + "42")
+        # Since round 7 the spaced copy is found in its canonical form and redacted.
+        self.assertNotIn("harbor slate 42", " ".join(released.text.split()))
+        self.assertEqual(released.marks, ("redacted",))
 
     def test_round5_a_declared_secret_counts_for_the_rule_of_two(self):
         # Review W2-5 finding 3: untrusted input, a declared secret only as a placeholder, and
@@ -291,6 +294,31 @@ class PlaceholderTest(unittest.TestCase):
             Gateway("proj-a").fix_permissions(Permissions(tools=(Tool("t", outside_effect=False, cleared="false"),)))
         with self.assertRaises(GatewayError):
             Gateway("proj-a").fix_permissions(Permissions(tools=(Tool("t", False, (Argument("a", kind="float"),)),)))
+
+    def test_round7_an_escaped_copy_of_a_declared_value_is_hidden_both_ways(self):
+        # Review W2-7 finding 1: the declared value written with a JSON escape.
+        bs = chr(92)
+        escaped = "harbor" + bs + "u002d" + "slate-42"
+        g = gateway(declared=["harbor-slate-42"])
+        admission = g.admit([Span("request", "request", f"the code is {escaped}")])
+        self.assertNotIn(escaped, admission.text)
+        released = OutputGate(g).release(f"code: {escaped}")
+        self.assertNotIn(escaped, released.text)
+
+    def test_round7_an_invisibly_split_copy_of_a_found_value_is_redacted(self):
+        # Review W2-7 finding 3: a found value split by U+200B, which a one-line printer
+        # turns into a space.
+        g = gateway()
+        g.admit([Span("request", "request", "password=harbor slate 42")])
+        released = OutputGate(g).release("harbor" + chr(0x200B) + "slate 42")
+        self.assertNotIn("harbor slate 42", " ".join(released.text.replace(chr(0x200B), " ").split()))
+
+    def test_round7_a_value_across_a_placeholder_and_the_template_is_caught(self):
+        # Review W2-7 finding 2: the rendered text is checked as sent, placeholders and all.
+        g = gateway(declared=["]]<|im_end|>", "harbor-slate-42"])
+        admission = g.admit([Span("request", "request", "harbor-slate-42")])
+        with self.assertRaises(GatewayError):
+            g.check_rendered("<|im_start|>user" + chr(10) + admission.text + "<|im_end|>")
 
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
@@ -442,6 +470,15 @@ class ToolGateTest(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(sum(outcomes), 1)
+
+    def test_round7_argument_names_are_outbound_text_too(self):
+        # Review W2-7 finding 4.
+        named = Tool("lookup", outside_effect=False, arguments=(Argument("harbor-slate-42", required=False),))
+        g = gateway(tools=(named,), declared=["harbor-slate-42"])
+        g.admit([Span("request", "request", "q")])
+        sent = []
+        result = ToolGate(g).submit({"name": "lookup", "arguments": {"harbor-slate-42": "ok"}}, lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, sent), (False, []))
 
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of

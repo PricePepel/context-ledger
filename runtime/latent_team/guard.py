@@ -123,7 +123,7 @@ class Guard:
                      reference=reference, time_cap=self.time_cap if time_cap is None else time_cap,
                      key=secrets.token_bytes(32), pinned=self.pinned, **kwargs)
 
-    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance):
+    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance, swap=True):
         """Replay, mismatched memory and solver alone for a batch. Returns (per-row audit words,
         solver-alone answers, measurements for the eval)."""
         import torch
@@ -166,7 +166,7 @@ class Guard:
         again.drop()
 
         mismatched = ["not-run"] * rows
-        if rows >= 2 and watch.handoff is not None:
+        if swap and rows >= 2 and watch.handoff is not None:
             from .team import LATENT_PROMPTS
             started = time.perf_counter()
             with torch.no_grad():   # an audit is inference: no autograd graph through the memory
@@ -303,7 +303,13 @@ class Guard:
         words, alone, measured = [{}] * rows, None, {}
         if do_audit and not all(held):
             tolerance = (thresholds or {}).get("replayTolerance", REPLAY_TOLERANCE)
-            words, alone, measured = self.audit(questions, steps, max_new_tokens, watch, answers, tolerance)
+            # Another row's memory is lent only between rows of the same label, and with gateways
+            # no raw audit text is kept: only the comparison's words.
+            labels = {g.admission.label for g in gates and [gate.gateway for gate in gates] or []}
+            words, alone, measured = self.audit(questions, steps, max_new_tokens, watch, answers, tolerance,
+                                                swap=len(labels) <= 1)
+            if gates is not None:
+                measured.pop("mismatchedAnswers", None)
 
         decisions = []
         for row in range(rows):

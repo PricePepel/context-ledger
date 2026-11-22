@@ -264,6 +264,25 @@ class LabelEvalTest(unittest.TestCase):
                          ("hold", "unsafe-render", None))
         self.assertEqual(seen.prompts, [], "the model never ran")
 
+    def test_measured_audits_keep_no_raw_text_with_gateways(self):
+        # Review W2-7 finding 5: with gateways, the eval's measurements carry no decoded text,
+        # and another row's memory is lent only between rows of one label.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        team = text_team()
+        gateways = []
+        for index, sensitive in enumerate((False, True)):
+            g = Gateway("proj-a")
+            g.fix_permissions(Permissions(clearance="sensitive"))
+            g.admit([Span("request", "request", f"question {index}", sensitive=sensitive)])
+            gateways.append(g)
+        outcomes = Guard(team, thresholds=None, measure=True).run(["a", "b"], steps=STEPS, max_new_tokens=TOKENS,
+                                                                   gateways=gateways, audit=True)
+        for outcome in outcomes:
+            measured = outcome.extra.get("measured", {})
+            self.assertNotIn("mismatchedAnswers", measured)
+            self.assertEqual(outcome.audits.get("mismatchedMemory"), "not-run")
+
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
         from latent_team.guard import Guard

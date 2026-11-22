@@ -117,8 +117,8 @@ def part_run(args):
     for chunk in batches(fresh, 4):
         answers, alone, got, states, _, _ = run_batch(team, guard, [i["question"] for i in chunk], thresholds, reference)
         for item, answer, solo, row in zip(chunk, answers, alone, got):
-            row.update(id=item["id"], teamCorrect=grade_slice(item["entry"], answer, [])["correct"],
-                       aloneCorrect=grade_slice(item["entry"], solo, [])["correct"])
+            row.update(id=item["id"], teamCorrect=grade_slice(item["entry"], {"answer": answer})["correct"],
+                       aloneCorrect=grade_slice(item["entry"], {"answer": solo})["correct"])
             fresh_rows.append(row)
         fresh_features.append(states)
     torch.save({"gsm8k": torch.cat(features), "fresh": torch.cat(fresh_features)}, os.path.join(args.out, "features.pt"))

@@ -40,10 +40,13 @@ Plain code and standard library only. Nothing here is stored.
 import re
 import secrets
 import threading
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
 from . import secret_scan
+
+BACKSLASH = chr(92)
 
 TRUST = ("user", "untrusted")
 SENSITIVITY = ("public", "sensitive")
@@ -144,6 +147,56 @@ class Admission:
     def receipt(self):
         return {"label": self.label.as_dict(), "spans": len(self.spans), "leftOut": self.left_out,
                 "refused": self.refused, "placeholders": self.placeholders, "toolsOff": self.rule_of_two}
+
+
+_BLANK = ("Cc", "Cf", "Zl", "Zp", "Zs")
+
+
+def canon(text):
+    """(canonical text, the original (start, end) of each canonical character).
+
+    The canonical form is how a copy of a value can look after any of the transformations a
+    secret passes through between here and a reader: quoted-string escapes decoded
+    (surrogate pairs joined), and every control, format, separator or space character, and
+    any run of them, read as one space, which is also what the ledger's one-line printing
+    does. Matching known values in this form, with offsets mapped back, finds an escaped,
+    spaced or invisibly split copy of a value."""
+    chars, spans, i, n = [], [], 0, len(text)
+    while i < n:
+        start, character = i, text[i]
+        escape = secret_scan.escape_at(text, i) if character == BACKSLASH else None
+        if escape:
+            character, i = escape[0], i + escape[1]
+            if 0xD800 <= ord(character) <= 0xDBFF:
+                low = secret_scan.escape_at(text, i)
+                if low and 0xDC00 <= ord(low[0]) <= 0xDFFF:
+                    character = chr(0x10000 + ((ord(character) - 0xD800) << 10) + (ord(low[0]) - 0xDC00))
+                    i += low[1]
+        else:
+            i += 1
+        if character.isspace() or unicodedata.category(character) in _BLANK:
+            if chars and chars[-1] == " ":
+                spans[-1] = (spans[-1][0], i)
+                continue
+            character = " "
+        chars.append(character)
+        spans.append((start, i))
+    return "".join(chars), spans
+
+
+def canon_ranges(text, values):
+    """Original ranges of text whose canonical form holds a canonical value."""
+    canonical, spans = canon(text)
+    out = []
+    for value in values:
+        target = canon(value)[0].strip()
+        if not target:
+            continue
+        at = canonical.find(target)
+        while at != -1:
+            out.append((spans[at][0], spans[at + len(target) - 1][1]))
+            at = canonical.find(target, at + 1)
+    return out
 
 
 def fold(text):
@@ -283,7 +336,7 @@ class Gateway:
             for value in finding.get("values", ()):
                 self._egress.update(spellings(value))
         known = sorted((v for v in self._egress if v), key=len, reverse=True)
-        merged = self._merge(ranges + self._occurrences(joined, known))
+        merged = self._merge(ranges + self._occurrences(joined, known) + canon_ranges(joined, known))
         pieces, at = [], 0
         for start, end in merged:   # the reserved opening is neutralised in literal text only
             pieces.append(joined[at:start].replace(self.RESERVED, self.NEUTRAL) + self._placeholder(joined[start:end]))
@@ -387,19 +440,19 @@ class Gateway:
         values = [v for v in self._egress if v] + [s for v in self.declared for s in spellings(v)]
         if any(value in text for value in values):
             return True
-        if collapsed:
-            folded = fold(text)
-            return any(fold(value) and fold(value) in folded for value in values)
+        if collapsed:   # escaped, spaced or invisibly split copies, as a reader may see them
+            return bool(canon_ranges(text, values))
         return False
 
     def value_ranges(self, text):
-        values = set(self._egress) | {s for v in self.declared for s in spellings(v)}
-        return self._occurrences(text, sorted((v for v in values if v), key=len, reverse=True))
+        values = sorted((v for v in set(self._egress) | {s for v in self.declared for s in spellings(v)} if v),
+                        key=len, reverse=True)
+        return self._occurrences(text, values) + canon_ranges(text, values)
 
     def check_rendered(self, text):
         """Raise GatewayError if a known value appears in text the model would read (a role
         template around the admitted text could complete one)."""
-        if self.holds_value(self.masked_out(text), collapsed=True):
+        if self.holds_value(text, collapsed=True) or self.holds_value(self.masked_out(text), collapsed=True):
             raise GatewayError("unsafe-render", "a known value is in the text as the model would read it")
 
     def masked(self, text):
@@ -482,7 +535,8 @@ class ToolGate:
             return "budget"
         if self.admission.label.sensitivity == "sensitive" and not tool.cleared:
             return "label"   # read-only or not: a call can carry what the memory holds
-        outbound = [v if isinstance(v, str) else str(v) for v in final.values()]   # an integer is sent as text too
+        # names travel too, and an integer is sent as text
+        outbound = [tool.name] + [str(k) for k in final] + [v if isinstance(v, str) else str(v) for v in final.values()]
         if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v) for v in outbound):
             return "placeholder"
         return "allowed"

@@ -4640,6 +4640,16 @@ Codex confirmed round 5's fixes (the quoted value, whitespace folding, the rule 
 - (medium) The ledger's one-line printing could create a credential the runtime's scan could not see (an invisible character between a name and its value becomes a space): for an uncleared output the ledger scans the printed answer with the shared scanner.
 - (medium) A one-shot iterator of argument rules was consumed by the type check and left the snapshot empty, and a clearance given as text became true: rules are read once, and every field's type is checked.
 
+### W2 review, round 7 (2026-11-22, Codex, read-only, of PR #71 at 00cf70f)
+
+Codex confirmed round 6's fixes. Its findings were further cases of one family, a copy of a secret transformed on its way to a reader, so they are fixed together, each with a regression test:
+
+- (high) An escaped copy of a declared value (`harbor\u002dslate-42`) reached the model and an uncleared answer, and (high) a found value split by an invisible character (U+200B) became the value once the ledger printed the answer on one line. The gateway now also matches every known value in a **canonical form** of the text (quoted-string escapes decoded, surrogate pairs joined, every control, format, separator or space character and any run of them read as one space, which is also what the ledger's printing does), with offsets mapped back, at admission and at the output gate.
+- (high) The check of the rendered prompts removed placeholders first, so a declared value spanning a placeholder and the chat template (`]]<|im_end|>`) passed: the rendered text is now checked as sent, placeholders included, and without them.
+- (medium) The tool gate checked argument values but not names: the tool's name and every argument name are outbound text too.
+- (medium) With measurements on, the mismatched-memory audit lent one row's memory to another row of a different label and kept the decoded text: with gateways, memory is lent only between rows of one label and no decoded audit text is kept.
+
+After seven rounds the findings have narrowed to transformations of text between the gateway and a reader. That is where a human security review should look first: any new path that changes the answer or the prompt after the gateway (a client's formatting, a template, a tool) must be checked against the canonical form.
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.
