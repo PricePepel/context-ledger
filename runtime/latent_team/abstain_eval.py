@@ -98,6 +98,19 @@ def fresh_items():
             for q in data["questions"]]
 
 
+def grade_fresh(entry, released):
+    """The shared latent grader on a fresh-set answer, or None when Python cannot grade it (one
+    of the shared patterns needs a variable-width look-behind, which Python's re refuses):
+    such a row is ungraded and left out of eval 12, never a crash."""
+    from tests.grade import grade_slice
+    if released is None:
+        return False
+    try:
+        return bool(grade_slice(entry, {"answer": released})["correct"])
+    except ValueError:
+        return None
+
+
 def guarded(guard, questions):
     """The guarded path for a batch: (outcomes, per-row numbers, solver states)."""
     outcomes = guard.run(questions, steps=STEPS, max_new_tokens=TOKENS, calibration_override=PROBE_SCORE)
@@ -172,14 +185,13 @@ def part_run(args):
 
     import sys
     sys.path.insert(0, os.path.join(REPO, "runtime"))
-    from tests.grade import grade_slice
     fresh_rows, fresh_states = [], []
     for chunk in batches(fresh_items(), 4):
         outcomes, got, chunk_states = guarded(guard, [i["question"] for i in chunk])
         for item, outcome, row, state in zip(chunk, outcomes, got, chunk_states):
             released = outcome.answer if row["action"] == "release" else None
             row.update(id=item["id"], teamAnswer=row["action"] == "release" and not row["fallback"],
-                       releasedCorrect=released is not None and grade_slice(item["entry"], {"answer": released})["correct"])
+                       releasedCorrect=grade_fresh(item["entry"], released))
             fresh_rows.append(row)
             fresh_states.append(state)
 
@@ -205,7 +217,6 @@ def part_certify(args):
     sys.path.insert(0, os.path.join(REPO, "runtime"))
     from latent_pool import ApiError
     from latent_pool.team_service import TeamService
-    from tests.grade import grade_slice
     items = gsm8k("test")
     dataset = dataset_identity(items)
     team = LatentTeam(MODEL)
@@ -221,12 +232,33 @@ def part_certify(args):
         raise SystemExit("the distance reference did not load: the service would run unscreened")
     # Score every request without abstaining: the threshold is applied afterwards.
     service.guard.calibration = lambda task, *rest, **kw: PROBE_SCORE if task else None
-    work = [("gsm8k", block, position, item) for block in CERTIFY + SCORE
+    # The proposal blocks run as single requests too, since the batched run that carried them
+    # crashed (its scores would only have proposed candidates anyway).
+    work = [("gsm8k", block, position, item) for block in PROPOSE + CERTIFY + SCORE
             for position, item in enumerate(block_items(items, block))]
     work += [("fresh", None, position, item) for position, item in enumerate(fresh_items())]
+    path = os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json")
+    manifest = {"weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"], "reference": True,
+                "fittedByW1": sorted(fitted), "dataset": dataset, "shard": args.shard, "shards": args.shards,
+                "commit": open(os.path.join(REPO, "COMMIT")).read().strip()
+                if os.path.exists(os.path.join(REPO, "COMMIT")) else None}
     rows = []
+    if os.path.exists(path):   # resume a shard of the same run, never another's
+        with open(path) as handle:
+            before = json.load(handle)
+        if {k: before.get(k) for k in manifest} != manifest:
+            raise SystemExit(f"{path} is of another run")
+        rows = before["rows"]
+    done = {(r["kind"], r["block"], r["position"]) for r in rows}
+
+    def save(complete):
+        temporary = path + ".tmp"
+        with open(temporary, "w") as handle:
+            json.dump(dict(manifest, rows=rows, complete=complete), handle)
+        os.replace(temporary, path)
+
     for number, (kind, block, position, item) in enumerate(work):
-        if number % args.shards != args.shard:
+        if number % args.shards != args.shard or (kind, block, position) in done:
             continue
         started = time.perf_counter()
         try:
@@ -241,18 +273,16 @@ def part_certify(args):
         if kind == "gsm8k":
             good = released is not None and correct(released, item["gold"])
         else:
-            good = released is not None and grade_slice(item["entry"], {"answer": released})["correct"]
+            good = grade_fresh(item["entry"], released)
         rows.append({"kind": kind, "block": block, "position": position, "action": action, "reason": reason,
                      "fallback": fallback, "confidence": confidence, "teamAnswer": action == "release" and not fallback,
                      "releasedCorrect": good, "seconds": round(seconds, 3)})
+        if len(rows) % 10 == 0:
+            save(False)
         if len(rows) % 25 == 0:
             print(f"shard {args.shard}: {len(rows)} done, {sum(r['seconds'] for r in rows) / len(rows):.1f} s each",
                   flush=True)
-    with open(os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json"), "w") as handle:
-        json.dump({"rows": rows, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"],
-                   "reference": True, "fittedByW1": sorted(fitted), "dataset": dataset, "shard": args.shard,
-                   "shards": args.shards, "commit": open(os.path.join(REPO, "COMMIT")).read().strip()
-                   if os.path.exists(os.path.join(REPO, "COMMIT")) else None}, handle)
+    save(True)
     print(f"shard {args.shard} done: {len(rows)} requests", flush=True)
 
 
@@ -370,14 +400,19 @@ def counts(rows, pairs, threshold):
 def part_analyze(args):
     import glob
     from .abstain import auroc, choose_threshold, score_threshold, upper_bound
-    with open(os.path.join(args.out, "rows.json")) as handle:
-        batched = json.load(handle)
+    batched_path = os.path.join(args.out, "rows.json")
+    batched = None
+    if os.path.exists(batched_path):   # exploratory only
+        with open(batched_path) as handle:
+            batched = json.load(handle)
     single = []
     shards = sorted(glob.glob(os.path.join(args.out, "certify-*-of-*.json")))
     manifests = []
     for path in shards:
         with open(path) as handle:
             data = json.load(handle)
+        if data.get("complete") is not True:
+            raise SystemExit(f"{path} is not complete")
         single += data["rows"]
         manifests.append({k: data.get(k) for k in ("weightsHash", "thresholdSet", "reference", "fittedByW1", "dataset",
                                                   "shards", "commit")} | {"shard": data.get("shard")})
@@ -389,17 +424,20 @@ def part_analyze(args):
     meta = manifests[0]
     if sorted(m["shard"] for m in manifests) != list(range(meta["shards"])):
         raise SystemExit("the certification shards are incomplete or repeated")
-    if meta["weightsHash"] != batched["weightsHash"] or meta["thresholdSet"] != batched["thresholdSet"]:
-        raise SystemExit("the batched and single runs are of different weights or threshold sets")
-    expected = sorted([("gsm8k", b, p) for b in CERTIFY + SCORE for p in range(COUNT if b < 6 else GSM8K_TEST - 6 * COUNT)]
+    if batched is not None and (meta["weightsHash"] != batched["weightsHash"] or
+                                meta["thresholdSet"] != batched["thresholdSet"]):
+        batched = None   # of another run: not used, even for exploration
+    expected = sorted([("gsm8k", b, p) for b in PROPOSE + CERTIFY + SCORE
+                       for p in range(COUNT if b < 6 else GSM8K_TEST - 6 * COUNT)]
                       + [("fresh", None, p) for p in range(len(fresh_items()))], key=str)
     if sorted(((r["kind"], r["block"], r["position"]) for r in single), key=str) != expected:
         raise SystemExit("the certification requests are not exactly the expected ones, each once")
-    proposal = [released_score(r)[0] for r in batched["gsm8k"] if r["block"] in PROPOSE]
     gsm = [r for r in single if r["kind"] == "gsm8k"]
+    proposal = [released_score(r)[0] for r in gsm if r["block"] in PROPOSE]
     cert = [r for r in gsm if r["block"] in CERTIFY]
     scored = [r for r in gsm if r["block"] in SCORE]
-    fresh = [r for r in single if r["kind"] == "fresh"]
+    fresh_all = [r for r in single if r["kind"] == "fresh"]
+    fresh = [r for r in fresh_all if r["releasedCorrect"] is not None]   # graded rows only
     cert_pairs, score_pairs = [released_score(r) for r in cert], [released_score(r) for r in scored]
     threshold, steps, chosen = choose_threshold(proposal, [p[0] for p in cert_pairs], [p[1] for p in cert_pairs],
                                                 TARGET, DELTA, GRID)
@@ -422,14 +460,24 @@ def part_analyze(args):
     else:
         fresh_pairs = [released_score(r) for r in fresh]
         summary["eval12"] = score_threshold([p[0] for p in fresh_pairs], [p[1] for p in fresh_pairs], threshold, TARGET)
+    summary["eval12Ungraded"] = len(fresh_all) - len(fresh)
     fresh_fallbacks = [r for r in fresh if r["fallback"]]
     summary["eval12Baseline"] = {"questions": len(fresh), "fallbacksReleased": len(fresh_fallbacks),
                                  "fallbacksWrong": sum(not r["releasedCorrect"] for r in fresh_fallbacks)}
-    # Exploratory: the batched run under the same split, and batched against single decisions.
+    # Exploratory: the batched run under the same split, and batched against single decisions,
+    # when a batched run of these weights finished.
+    explore = {}
+    team_rows = [r for r in scored if r["teamAnswer"]]
+    value = auroc([-(r["confidence"] if r["confidence"] is not None else -1e9) for r in team_rows],
+                  [not r["releasedCorrect"] for r in team_rows])
+    explore["confidenceAurocSingle"] = None if value is None else round(value, 4)
+    if batched is None:
+        explore["batched"] = "not run: no finished batched run of these weights (eval 13's probe ran on it)"
+        summary["exploratory"] = explore
+        return finish(args, summary, result, threshold, chosen, meta)
     by_block = {}
     for r in batched["gsm8k"]:
         by_block.setdefault(r["block"], []).append(r)
-    explore = {}
     b_cert = [released_score(r) for b in CERTIFY for r in by_block.get(b, [])]
     b_score = [released_score(r) for b in (4, 5) for r in by_block.get(b, [])]
     t, _, _ = choose_threshold(proposal, [p[0] for p in b_cert], [p[1] for p in b_cert], TARGET, DELTA, GRID)
@@ -470,6 +518,11 @@ def part_analyze(args):
     explore["agreeWithSolverAlone"] = {"aurocBatched": None if value is None else round(value, 4)}
     explore["probe"] = batched.get("probe")   # eval 13, on the batched run
     summary["exploratory"] = explore
+    return finish(args, summary, result, threshold, chosen, meta)
+
+
+def finish(args, summary, result, threshold, chosen, meta):
+    from .abstain import upper_bound
     print(json.dumps(summary, indent=1, default=str))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(summary, handle, indent=1, default=str)
