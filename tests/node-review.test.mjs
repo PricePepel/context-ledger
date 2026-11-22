@@ -89,11 +89,11 @@ test('P2c: bad reviews are refused in fixed words', () => {
     error => error instanceof InputError && error.message === message, JSON.stringify(input));
   refused({ nodeId: 'nope', nodeSha256: hash, decision: 'approve', reviewer: 'Leo' }, 'Unknown node in this graph.');
   refused({ nodeId, nodeSha256: 'X'.repeat(64), decision: 'approve', reviewer: 'Leo' }, 'nodeSha256 must be a 64-character lowercase hex hash.');
-  refused({ nodeId, nodeSha256: hash, decision: 'edit', reviewer: 'Leo' }, 'decision must be approve or reject.');
+  refused({ nodeId, nodeSha256: hash, decision: 'merge', reviewer: 'Leo' }, 'decision must be approve, edit or reject.');
   for (const reviewer of ['', ' ', 'x'.repeat(65), `Leo${String.fromCodePoint(0x202e)}`, `Le${String.fromCodePoint(10)}o`, 7]) {
     refused({ nodeId, nodeSha256: hash, decision: 'approve', reviewer }, reviewerRule);
   }
-  refused({ nodeId, nodeSha256: hash, decision: 'approve', reviewer: 'Leo', extra: 1 }, 'A review has only nodeId, nodeSha256, decision and reviewer.');
+  refused({ nodeId, nodeSha256: hash, decision: 'approve', reviewer: 'Leo', extra: 1 }, 'A review has only nodeId, nodeSha256, decision, reviewer and, for an edit, label.');
   refused(null, 'A review must be a JSON object.');
   const v2 = store.publishGraph({ version: 2, sessionId: session.id, party: 'ali', nodes: [{ id: 'a', kind: 'goal', label: 'Ship', evidenceLines: [1] }], edges: [] });
   assert.throws(() => store.reviewNode(v2.id, { nodeId: 'a', nodeSha256: hash, decision: 'approve', reviewer: 'Leo' }), /Only version 3 graph nodes are reviewed by hash\./u);
@@ -107,15 +107,16 @@ test('P2c: a version 4 file gains the reviews table in place; the step is versio
   const path = join(directory, 'ledger.sqlite');
   openStore(path).close();
   const raw = new DatabaseSync(path);
-  raw.exec('DROP TABLE node_reviews; PRAGMA user_version = 4;');
+  raw.exec('DROP TABLE IF EXISTS node_reviews; PRAGMA user_version = 4;');
   raw.close();
   // I3 added version 6 on top; the file goes to the newest version.
   assert.ok(schemaVersion >= 5);
   openStore(path).close();
   const check = new DatabaseSync(path);
   assert.equal(check.prepare('PRAGMA user_version').get().user_version, schemaVersion);
-  assert.deepEqual(check.prepare('PRAGMA table_info(node_reviews)').all().map(column => column.name),
-    ['session_id', 'party', 'node_id', 'node_sha256', 'decision', 'reviewer', 'decided_at']);
+  // P3 (version 7) moves P2c's rows into review events and drops node_reviews.
+  assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'node_reviews'").get().n, 0);
+  assert.ok(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'review_events'").get().n === 1);
   check.close();
 });
 
@@ -165,7 +166,7 @@ test('P2c: the review route is for people in the browser; reads carry the decisi
   const signedIn = await fetch(ledger.origin + path, { redirect: 'manual' });
   const cookie = signedIn.headers.get('set-cookie').split(';')[0];
   const browser = { Cookie: cookie, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' };
-  const refusal = { status: 403, body: { error: 'Nodes are approved or rejected by people in the browser, signed in.' } };
+  const refusal = { status: 403, body: { error: 'Nodes are reviewed by people in the browser, signed in.' } };
   assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin }), refusal, 'an agent client');
   // P2c review: the bearer token with a browser's header is still not a browser.
   assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' }), refusal, 'token and header');
