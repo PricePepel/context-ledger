@@ -206,6 +206,6 @@ test('P3 review 6: clicking Edit again keeps what was typed', async ({ page, req
   const port = page.locator('#review-nodes li[data-node="port"]');
   await port.getByRole('button', { name: 'Edit' }).click();
   await port.getByLabel('Corrected label').fill('Port 4317, typed once');
-  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, typed once');
 });
