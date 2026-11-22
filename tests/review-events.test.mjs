@@ -79,7 +79,7 @@ test('P3: edits carry a label; approve and reject do not; errors never echo a va
   const refused = (input, message) => assert.throws(() => store.reviewNode(graph.id, input),
     error => error instanceof InputError && error.message === message, JSON.stringify(input));
   const secret = 'synthetic-value-9q';
-  for (const label of [undefined, '', '   ', 'x'.repeat(501), String.fromCodePoint(0xd800), 7]) {
+  for (const label of [undefined, '', '   ', 'x'.repeat(501), String.fromCodePoint(0xd800), 7, 'Port\n7100', 'Port\r7100', `Port${String.fromCodePoint(0x2028)}7100`]) {
     refused({ ...base, decision: 'edit', label }, labelRule);
   }
   refused({ ...base, decision: 'approve', label: secret }, 'Only an edit carries a label.');
@@ -328,4 +328,17 @@ test('P3 review 2: a damaged label is reported by event number, and an earlier b
   assert.equal(store.graphReviews(graph.id)[0].label, 'Port 7100 second');
   raw.exec("UPDATE review_events SET reviewer = 'Tomas' WHERE seq = 2;");
   assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
+});
+
+test('P3 review 3: a stored label with a lone surrogate is a broken event, named by number', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-surrogate-');
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  for (const label of ['Port 7100 first', 'Port 7100 second']) {
+    store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label, reviewer: 'Mira' });
+  }
+  const raw = keep(new DatabaseSync(path));
+  raw.exec(`DROP TRIGGER review_events_no_update; UPDATE review_events SET label_json = '"\\ud800"' WHERE seq = 2;`);
+  assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
+  assert.equal(store.graphReviews(graph.id)[0].label, 'Port 7100 first');
 });

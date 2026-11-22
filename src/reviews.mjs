@@ -15,7 +15,9 @@ const hashPattern = /^[a-f0-9]{64}$/u;
 // character, and something to show.
 const reviewerPattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,64}$/u;
 export const reviewerRule = 'reviewer must be your name: 1 to 64 visible characters on one line.';
-export const labelRule = 'An edit needs label: the corrected label, 1 to 500 characters of well-formed text.';
+export const labelRule = 'An edit needs label: the corrected label, 1 to 500 characters of well-formed text on one line.';
+// The browser edits a label in a one-line field, so a label keeps no line break.
+const lineBreak = /[\n\r\v\f\u0085\p{Zl}\p{Zp}]/u;
 /** The prev of the first event. */
 export const genesis = '0'.repeat(64);
 
@@ -52,7 +54,7 @@ function fromRow({ labelJson, ...row }) {
   if (labelJson === null) return { ...row };
   try {
     const label = JSON.parse(labelJson);
-    if (typeof label === 'string') return { ...row, label };
+    if (typeof label === 'string' && label.isWellFormed()) return { ...row, label };
   } catch {}
   return { ...row, unreadable: true };
 }
@@ -149,7 +151,7 @@ export function mountReviews(database, readGraph) {
       if (!decisions.includes(decision)) throw new InputError('decision must be approve, edit or reject.');
       if (typeof reviewer !== 'string' || !reviewerPattern.test(reviewer) || !/\S/u.test(reviewer)) throw new InputError(reviewerRule);
       if (decision === 'edit') {
-        if (typeof label !== 'string' || label.length < 1 || label.length > 500 || !label.isWellFormed() || !/\S/u.test(label)) {
+        if (typeof label !== 'string' || label.length < 1 || label.length > 500 || !label.isWellFormed() || !/\S/u.test(label) || lineBreak.test(label)) {
           throw new InputError(labelRule);
         }
       } else if (label !== undefined) {

@@ -4576,3 +4576,6 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (medium) `INSERT OR REPLACE` could still remove the head through the unique hash: a row with the next seq and the head as both prev and hash. The insert trigger now refuses a hash already in the chain.
   - (low) A malformed stored label made verify fail as "Cannot read the ledger database", hiding which event broke and any earlier break. An unreadable label now counts as a broken event, by number, and the fold leaves it out.
   - (low) The edit field stayed editable while a save was pending, so the label shown could differ from the one sent. It is locked until the save finishes.
+- **Codex review, round 3:** two low findings, fixed with tests:
+  - (low) A stored label holding an escaped lone surrogate passed the string check, then made verify throw. It is now an unreadable event, named by number.
+  - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
