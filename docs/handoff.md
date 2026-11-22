@@ -604,6 +604,16 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
+
+## Current checkpoint — G9b scoped briefing says what it left out (2026-11-21)
+
+Branch `claude/g9b-scoped-state`. Read the G9b section of [the eval log](evals.md). Found while rehearsing the investor demo from a clean install: a `context_for` briefing scoped to a question said `open questions: none` when the graph had an open question the question did not match, and a live agent told Ali that Leo needed nothing from him.
+
+- Each state list in a scoped briefing names the shown items, then counts the rest (`1 left out`, `port; 1 more left out`). The scope line ends with `call context_for without a question for the whole graph` whenever a node is not shown. Unscoped briefings are unchanged.
+- A budget now tries the full briefing first, since the hint makes a cut briefing longer.
+- Live re-run: 3 of 3 runs no longer say Leo needs nothing.
+- **Next owner:** in every live run the agent's first `context_for` call passed `budget` without `question` and was refused. Consider accepting a budget alone (cut the whole briefing), as a separate card.
+
 ## Current checkpoint — I3 on P1c message rows (2026-11-21)
 
 PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
