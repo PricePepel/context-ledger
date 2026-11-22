@@ -1,0 +1,26 @@
+name: Clean install
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  clean-install:
+    # Card P5d: a fresh runner is the clean machine. The packed tarball is installed into
+    # an empty prefix and driven through the installed command, outside the checkout.
+    name: clean install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # No npm ci: the check uses only Node built-ins and the tarball's own dependencies.
+      - run: node scripts/clean-install-check.mjs

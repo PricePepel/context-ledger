@@ -138,7 +138,8 @@ test('live mode shows a graph published while the page is open, and renders its 
   });
   expect(published.ok(), await published.text()).toBe(true);
 
-  const node = page.locator('.node', { hasText: 'onerror' });
+  // By its own party, not its label: other e2e tests publish nodes with the same hostile label into the shared database.
+  const node = page.locator(`.node[data-key="party:${party}/hostile"]`);
   await expect(node).toBeVisible({ timeout: 3500 });
   await expect(page.locator(`.office-agent[aria-label*="${party}"]`)).toHaveAttribute('data-state', 'working');
   await expect(page.locator('#activity')).toContainText(`${party} (Codex) published: 1 new`);
