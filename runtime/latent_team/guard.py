@@ -248,11 +248,11 @@ class Guard:
         if fallback_rows:
             # Once, with tools off, inside the same fence: its budget and time are checked
             # before it may be released.
-            started = time.perf_counter()
+            fallback_started = time.perf_counter()
             if alone is None:
                 texts, fallback_receipt = self.team.single([questions[r] for r in fallback_rows],
                                                            max_new_tokens=max_new_tokens)
-                tokens, seconds = fallback_receipt.generated_tokens, time.perf_counter() - started
+                tokens, seconds = fallback_receipt.generated_tokens, time.perf_counter() - fallback_started
             else:
                 texts, tokens = [alone[r] for r in fallback_rows], [measured["aloneTokens"][r] for r in fallback_rows]
                 seconds = measured["aloneSeconds"]

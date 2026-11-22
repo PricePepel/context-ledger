@@ -187,6 +187,14 @@ class RoundThreeTest(unittest.TestCase):
         self.assertEqual({(o.decision["action"], o.decision["reason"], o.answer) for o in outcomes},
                          {("hold", "fallback-failed", None)})
 
+    def test_a_fallback_within_the_deadline_is_released(self):
+        from latent_team.guard import Guard
+        team = tiny_team()
+        outcomes = Guard(team, thresholds=self.flag_thresholds(team), sample=lambda: False, time_cap=600).run(
+            QUESTIONS, steps=STEPS, max_new_tokens=TOKENS)
+        self.assertEqual({(o.decision["action"], o.system) for o in outcomes}, {("release", "single")},
+                         "the deadline is measured on one clock")
+
     def test_a_decode_that_reports_tokens_it_never_made(self):
         team = tiny_team()
         decode = team.decode
