@@ -1,6 +1,6 @@
 // Schema versions of ledger.sqlite, kept in PRAGMA user_version. A file written before
 // versions existed is version 0 and is upgraded in place when a store opens it.
-export const schemaVersion = 5;
+export const schemaVersion = 6;
 
 const userVersion = database => database.prepare('PRAGMA user_version').get().user_version;
 const columns = (database, table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -326,6 +326,41 @@ export function migrate(database, bootstrap = () => {}) {
         ) STRICT;
         PRAGMA user_version = 5;
       `);
+    }
+    if (version < 6) {
+      // Card I3: a Codex message between two agents is a turn of its own, with the paths
+      // of the agent that sent it and the one it went to. SQLite cannot change a CHECK, so
+      // the table is rebuilt with the same rows, and the trigger that names it is recreated.
+      // The paths are JSON string literals, like text_json, because SQLite cuts a string at a NUL.
+      if (!columns(database, 'messages').has('author_json')) {
+        database.exec(`
+          DROP TRIGGER IF EXISTS sessions_messages;
+          CREATE TABLE messages_v6 (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+            seq INTEGER NOT NULL,
+            line INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'agent')),
+            text_json TEXT NOT NULL,
+            key TEXT NOT NULL,
+            author_json TEXT,
+            recipient_json TEXT,
+            CHECK (CASE WHEN role = 'agent' THEN author_json IS NOT NULL AND recipient_json IS NOT NULL
+              ELSE author_json IS NULL AND recipient_json IS NULL END),
+            UNIQUE (session_id, key),
+            UNIQUE (session_id, seq)
+          ) STRICT;
+          INSERT INTO messages_v6 (id, session_id, seq, line, role, text_json, key)
+            SELECT id, session_id, seq, line, role, text_json, key FROM messages;
+          DROP TABLE messages;
+          ALTER TABLE messages_v6 RENAME TO messages;
+          CREATE TRIGGER sessions_messages AFTER INSERT ON sessions
+          WHEN NOT EXISTS (SELECT 1 FROM messages WHERE session_id = NEW.id) BEGIN
+            ${insertRows} ${legacyRows('NEW.id', 'NEW.messages')} ORDER BY m.key;
+          END;
+        `);
+      }
+      database.exec('PRAGMA user_version = 6;');
     }
     database.exec('COMMIT');
   } catch (error) {

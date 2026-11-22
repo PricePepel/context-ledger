@@ -4491,3 +4491,61 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
+
+Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
+
+### What is tested and the expected result
+
+- **Imported as agent turns.** Either form with plain text imports as a message with role `agent`, its `author` and `recipient`, its line number, and its text exactly as written (envelope included), so a graph can cite it. Only `input_text` blocks count in the first form. One delivery written in both forms on adjacent records (opposite forms, the same original paths and text) is kept once; two identical messages of one form are both kept. A `null` record is skipped, as before.
+- **Encrypted parts stay out.** Encrypted content is never imported, in either form. A message with only encrypted content is skipped, as before.
+- **Old imports gain them.** Importing again a Codex file that was stored before I3 adds its agent turns under the same session ID, keeping every line it had, so graphs that cite it still validate.
+- **Odd paths are bounded.** An author or recipient that is missing, not a string or longer than 200 characters is stored as `unknown`.
+- **Ordinary messages are unchanged.** Codex user and assistant messages, and every Claude Code record, import exactly as before; a Claude Code record that looks like an `agent_message` is still ignored.
+- **Shown with direction.** The browser labels the turn "Agent /root/worker to /root", with control and format characters in the paths shown as escapes. The CLI hand-off and `session_read` head it `## agent /root/worker to /root · line N`, with the paths on one line and every control and format character escaped (zero-width joiners included), Markdown in them shown literally, and `session_read` paging still splits and rejoins such turns exactly.
+- **Searchable.** The text of an agent message is found by session search.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` and `npx playwright test` pass, with the cases above in `tests/import-agent-messages.test.mjs` and the library browser spec.
+- No new dependency. (The rework of 2026-11-21 below adds schema version 6.)
+
+### I3 results (2026-11-17)
+
+- `tests/import-agent-messages.test.mjs` 12/12 and the library browser spec 5/5. Full suites on Windows are listed in the PR.
+- **Codex, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) Codex also saves these messages in its own `inter_agent_communication` rollout record, which was still dropped. Both forms are now read, without encrypted content.
+  - (medium) A Codex file imported before I3 kept its old row on a new import. A new import now refreshes the row when every line it had is still there, keeping the session ID, so graphs that cite it still validate.
+  - (medium) Headings kept U+200C and U+200D and did not escape `~`. Agent paths now use a strict one-line escape, `labelText` in `src/text.mjs`.
+  - (low) `output_text` blocks were accepted in `agent_message`. Only `input_text` counts now.
+  - (low) The paging test did not rejoin a split turn. It now pages a long agent turn with escaped paths and a body that never repeats, rejoins the slices exactly and reads the turn after it.
+- **Codex, round 2:** no high findings; one medium and two low, fixed with tests:
+  - (medium) Two identical messages were merged into one. Now only opposite forms on adjacent records, with the same original paths, are merged.
+  - (low) A `null` record made a Codex import fail. It is skipped again.
+  - (low) The browser showed raw control and format characters in agent paths. They are shown as escapes.
+- **Note:** the refresh can change a graph context's savings estimate for an old session, because the hand-off it measures now includes the agent turns.
+
+### I3 rework on P1c message rows (2026-11-21)
+
+P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user or assistant, so I3 no longer merged. Recommended default, taken under the user's standing instruction: an agent turn is a row of its own with two new columns.
+
+- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author_json` and `recipient_json` columns hold the paths as JSON string literals, like `text_json`; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
+- **Keys.** An agent turn gets a line-hash key like any Codex turn, so a version 3 graph can cite it.
+- **Old imports gain agent turns.** Importing a Codex file again adds its agent turns when the stored session has none, has fewer turns and keeps every key it had. The rows are rewritten in one transaction, and every earlier turn keeps its key.
+- **Tests:** `tests/import-agent-messages.test.mjs` 13/13, including a version 5 file upgraded to version 6 with its rows unchanged, the CHECK on the paths, the legacy copy without agent turns, and the older-build trigger still working. The schema tests in `tests/message-rows.test.mjs` and `tests/node-review.test.mjs` now expect the two new columns and the newest version. The library browser spec has both I3 cases. `labelText` was dropped for main's `terminalLabel`, which escapes the same characters.
+- **Suites (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 539/539, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python 239 run, 66 skipped.
+- **Codex review of the rework, round 1:** no high findings; three medium and one low, fixed with tests:
+  - (medium) A session migrated by the version 3 step has l:<line> keys, so a re-import never matched it. Old turns are now matched by line, role and text and keep their keys.
+  - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
+  - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
+  - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
+  - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+- **Codex review of the rework, round 2:** no high findings; two medium and two low, fixed with tests:
+  - (medium) `ledger redact` scanned message text but not agent paths, which the hand-off prints in headings. Paths are now scanned and redacted too.
+  - (medium) A session deleted right after the re-import committed made the import return nothing. The summary is now read under the same lock.
+  - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
+  - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
+  - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
+- **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
+- **Codex review of the rework, round 4:** no findings.
+- **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).

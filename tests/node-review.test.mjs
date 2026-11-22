@@ -109,10 +109,11 @@ test('P2c: a version 4 file gains the reviews table in place; the step is versio
   const raw = new DatabaseSync(path);
   raw.exec('DROP TABLE node_reviews; PRAGMA user_version = 4;');
   raw.close();
-  assert.equal(schemaVersion, 5);
+  // I3 added version 6 on top; the file goes to the newest version.
+  assert.ok(schemaVersion >= 5);
   openStore(path).close();
   const check = new DatabaseSync(path);
-  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, schemaVersion);
   assert.deepEqual(check.prepare('PRAGMA table_info(node_reviews)').all().map(column => column.name),
     ['session_id', 'party', 'node_id', 'node_sha256', 'decision', 'reviewer', 'decided_at']);
   check.close();
