@@ -352,6 +352,34 @@ class RunProvenanceTest(unittest.TestCase):
         self.assertEqual(summary["eval12"], {"skipped": "no threshold certified"})
         self.assertNotIn("skipped", summary["eval12AtPreRegisteredThreshold"])
 
+    def test_eval12_is_at_the_cutoff_that_would_ship(self):
+        # Review W3-7: with holds in the certification the worst case's cutoff (-0.126) is
+        # stricter than the pre-registered count's (-0.128); a fresh answer scored between them
+        # is released at the one and not at the other, and the calibration takes the stricter.
+        from latent_team import abstain_eval
+        rows = []
+        for kind, block, position in abstain_eval.work_keys("today"):
+            level = position % 30
+            rows.append({"kind": kind, "block": block, "position": position, "action": "release", "reason": "ok",
+                         "fallback": False, "confidence": -0.1 - 0.001 * level, "teamAnswer": True,
+                         "releasedCorrect": not (block == 1 and level >= 28), "seconds": 1.0})
+            if kind == "fresh":
+                rows[-1]["confidence"] = -0.127
+        for r in [r for r in rows if r["block"] == 1][:3]:
+            r.update(action="hold", reason="deadline", teamAnswer=False, releasedCorrect=False, confidence=None)
+        even = [r for n, r in enumerate(rows) if n % 2 == 0]
+        odd = [r for n, r in enumerate(rows) if n % 2 == 1]
+        with tempfile.TemporaryDirectory() as calibration_dir:
+            summary = self.analyse([(self.manifest(0), even), (self.manifest(1), odd)], calibration_dir=calibration_dir)
+            name = abstain.artifact_name(abstain_eval.TASK, abstain_eval.MODEL)
+            with open(os.path.join(calibration_dir, name)) as handle:
+                written = json.load(handle)
+        self.assertAlmostEqual(summary["threshold"], -0.128)
+        self.assertAlmostEqual(summary["worstCaseForHolds"]["threshold"], -0.126)
+        self.assertAlmostEqual(written["threshold"], -0.126)
+        self.assertEqual(summary["eval12"]["released"], 0)
+        self.assertEqual(summary["eval12AtPreRegisteredThreshold"]["released"], 8)
+
     def test_no_cutoff_still_counts_scored_holds(self):
         from latent_team import abstain_eval
         scored = shard_rows([("gsm8k", 3, p) for p in range(10)])
@@ -465,6 +493,43 @@ class BarrierTest(unittest.TestCase):
             self.ev.wait_for_part(folder, self.manifest, "certify", self.order, self.parts, poll=10, limit=30,
                                   sleep=slept.append)
         self.assertEqual(slept, [10, 10, 10])
+
+    def test_progress_by_another_shard_resets_the_limit(self):
+        # Review W3-7: a shard that resumed far behind keeps saving rows; the wait goes on.
+        needed = self.owned(1, "propose")
+        with tempfile.TemporaryDirectory() as folder:
+            self.write(folder, 0, self.owned(0, "propose"))
+            saved = [0]
+
+            def sleep(seconds):   # shard 1 saves five more rows during every poll
+                saved[0] = min(len(needed), saved[0] + 5)
+                self.write(folder, 1, needed[:saved[0]])
+            self.ev.wait_for_part(folder, self.manifest, "certify", self.order, self.parts, poll=10, limit=20,
+                                  sleep=sleep)
+            self.assertEqual(saved[0], len(needed))   # six polls, past a 20 s limit, and no stop
+
+    def test_replacement_is_retried_then_given_up(self):
+        # Review W3-7: on native Windows a reader can make os.replace fail for a moment.
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "certify-0-of-2.json")
+            calls, slept = [], []
+
+            def flaky(source, target):
+                calls.append(target)
+                if len(calls) == 1:
+                    raise PermissionError("in use")
+                os.replace(source, target)
+            self.ev.write_atomic(path, {"rows": [1]}, replace=flaky, sleep=slept.append)
+            with open(path) as handle:
+                self.assertEqual(json.load(handle), {"rows": [1]})
+            self.assertEqual((len(calls), len(slept)), (2, 1))
+
+            def never(source, target):
+                raise PermissionError("in use")
+            with self.assertRaises(PermissionError):
+                self.ev.write_atomic(path, {"rows": [2]}, replace=never, sleep=lambda seconds: None)
+            with open(path) as handle:
+                self.assertEqual(json.load(handle), {"rows": [1]})   # the last whole file stays
 
     def test_each_part_starts_after_a_save_and_a_wait(self):
         events, rows = [], []

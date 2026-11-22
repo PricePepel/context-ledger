@@ -110,13 +110,49 @@ def barrier_ready(out, manifest, part, order, parts):
     return True
 
 
+def shard_progress(out, manifest):
+    """How many rows the shards of this run have saved, in all."""
+    total, shards = 0, manifest["shards"]
+    same = {k: v for k, v in manifest.items() if k != "shard"}
+    for shard in range(shards):
+        try:
+            with open(os.path.join(out, f"certify-{shard}-of-{shards}.json")) as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if {k: data.get(k) for k in same} == same:
+            total += len(data.get("rows", []))
+    return total
+
+
 def wait_for_part(out, manifest, part, order, parts, poll=BARRIER_POLL, limit=BARRIER_LIMIT, sleep=time.sleep):
-    waited = 0
+    """Wait at the barrier; give up only after `limit` seconds in which no shard of the run saved
+    a row, so a shard that resumed far behind can catch up (review W3-7)."""
+    idle, seen = 0, shard_progress(out, manifest)
     while not barrier_ready(out, manifest, part, order, parts):
-        if waited >= limit:
-            raise SystemExit(f"waited {limit} s for the other shards to finish the parts before {part}")
+        if idle >= limit:
+            raise SystemExit(f"waited {limit} s with no progress from the other shards, before {part}")
         sleep(poll)
-        waited += poll
+        now = shard_progress(out, manifest)
+        idle = 0 if now > seen else idle + poll
+        seen = max(seen, now)
+
+
+def write_atomic(path, data, replace=os.replace, sleep=time.sleep, attempts=5):
+    """Write a shard's file whole, through a temporary file. On native Windows a peer reading the
+    file at the barrier can make the replacement fail for a moment, so it is retried (review
+    W3-7); POSIX replacement does not fail that way."""
+    temporary = path + ".tmp"
+    with open(temporary, "w") as handle:
+        json.dump(data, handle)
+    for attempt in range(attempts):
+        try:
+            replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            sleep(0.2 * (attempt + 1))
 
 
 def run_work(work, shard, shards, done, rows, ask, save, wait_part, parts):
@@ -391,10 +427,7 @@ def part_certify(args):
     done = {(r["kind"], r["block"], r["position"]) for r in rows}
 
     def save(complete):
-        temporary = path + ".tmp"
-        with open(temporary, "w") as handle:
-            json.dump(dict(manifest, rows=rows, complete=complete), handle)
-        os.replace(temporary, path)
+        write_atomic(path, dict(manifest, rows=rows, complete=complete))
 
     order, parts = work_keys(args.plan), part_of_keys(args.plan)
 
