@@ -374,17 +374,27 @@ def part_analyze(args):
         batched = json.load(handle)
     single = []
     shards = sorted(glob.glob(os.path.join(args.out, "certify-*-of-*.json")))
-    meta = None
+    manifests = []
     for path in shards:
         with open(path) as handle:
             data = json.load(handle)
         single += data["rows"]
-        meta = meta or data
-    expected = {int(re.search(r"of-(\d+)", path).group(1)) for path in shards}
-    if len(expected) != 1 or len(shards) != expected.pop():
-        raise SystemExit("the certification shards are incomplete")
+        manifests.append({k: data.get(k) for k in ("weightsHash", "thresholdSet", "reference", "fittedByW1", "dataset",
+                                                  "shards", "commit")} | {"shard": data.get("shard")})
+    # One run (review W3-3): every shard of one manifest, each once, and exactly the expected
+    # requests, each once.
+    if not manifests or any({k: v for k, v in m.items() if k != "shard"} !=
+                            {k: v for k, v in manifests[0].items() if k != "shard"} for m in manifests):
+        raise SystemExit("the certification shards are not of one run")
+    meta = manifests[0]
+    if sorted(m["shard"] for m in manifests) != list(range(meta["shards"])):
+        raise SystemExit("the certification shards are incomplete or repeated")
     if meta["weightsHash"] != batched["weightsHash"] or meta["thresholdSet"] != batched["thresholdSet"]:
         raise SystemExit("the batched and single runs are of different weights or threshold sets")
+    expected = sorted([("gsm8k", b, p) for b in CERTIFY + SCORE for p in range(COUNT if b < 6 else GSM8K_TEST - 6 * COUNT)]
+                      + [("fresh", None, p) for p in range(len(fresh_items()))], key=str)
+    if sorted(((r["kind"], r["block"], r["position"]) for r in single), key=str) != expected:
+        raise SystemExit("the certification requests are not exactly the expected ones, each once")
     proposal = [released_score(r)[0] for r in batched["gsm8k"] if r["block"] in PROPOSE]
     gsm = [r for r in single if r["kind"] == "gsm8k"]
     cert = [r for r in gsm if r["block"] in CERTIFY]
@@ -438,6 +448,26 @@ def part_analyze(args):
     value = auroc([-(r["confidence"] if r["confidence"] is not None else -1e9) for r in team_rows],
                   [not r["releasedCorrect"] for r in team_rows])
     explore["confidenceAurocSingle"] = None if value is None else round(value, 4)
+    # Pre-registered, exploratory only (review W3-3): the other scores on the batched run,
+    # with the same split, never used for the pass rule or the calibration.
+    b_rows = {b: by_block.get(b, []) for b in PROPOSE + CERTIFY + (4, 5)}
+    b_team = [r for b in (4, 5) for r in b_rows[b] if r["teamAnswer"]]
+    for name in ("meanLogprob", "minLogprob"):
+        def alt(r):
+            if r["action"] != "release":
+                return None, False
+            return (math.inf if r["fallback"] else r[name]), not r["releasedCorrect"]
+        prop = [alt(r)[0] for b in PROPOSE for r in b_rows[b]]
+        cert_alt = [alt(r) for b in CERTIFY for r in b_rows[b]]
+        score_alt = [alt(r) for b in (4, 5) for r in b_rows[b]]
+        t, _, _ = choose_threshold(prop, [p[0] for p in cert_alt], [p[1] for p in cert_alt], TARGET, DELTA, GRID)
+        value = auroc([-(r[name] if r[name] is not None else -1e9) for r in b_team],
+                      [not r["releasedCorrect"] for r in b_team])
+        explore[name] = {"aurocBatched": None if value is None else round(value, 4),
+                         "calibratedBatched": score_threshold([p[0] for p in score_alt], [p[1] for p in score_alt], t,
+                                                              TARGET)}
+    value = auroc([0.0 if r.get("agree") == "agree" else 1.0 for r in b_team], [not r["releasedCorrect"] for r in b_team])
+    explore["agreeWithSolverAlone"] = {"aurocBatched": None if value is None else round(value, 4)}
     explore["probe"] = batched.get("probe")   # eval 13, on the batched run
     summary["exploratory"] = explore
     print(json.dumps(summary, indent=1, default=str))

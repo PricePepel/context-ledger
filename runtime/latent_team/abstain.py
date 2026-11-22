@@ -38,6 +38,9 @@ import re
 
 CALIBRATION_DIR = os.path.join(os.path.dirname(__file__), "calibration")
 GRID = 20
+# The one policy W3 certifies (review W3-3): a file must name it exactly, and both pass rules
+# are recomputed with these constants, never with numbers the file supplies.
+POLICY = {"score": "answer-number-logprob", "target": 0.10, "delta": 0.05, "grid": GRID}
 
 
 class CalibrationInvalid(ValueError):
@@ -78,6 +81,9 @@ def validate(data, task=None, model_name=None):
         raise CalibrationInvalid("did not pass on held-out data")
     if not _finite(data.get("threshold")):
         raise CalibrationInvalid("threshold is not a finite number")
+    for name, value in POLICY.items():
+        if data.get(name) != value or isinstance(data.get(name), bool):
+            raise CalibrationInvalid(f"{name} is not the certified policy's")
     for name in ("target", "delta"):
         if not _finite(data.get(name)) or not 0 < data[name] < 1:
             raise CalibrationInvalid(f"{name} is not a rate")
@@ -99,12 +105,12 @@ def validate(data, task=None, model_name=None):
     if not isinstance(cert, dict) or not all(_count(cert.get(k)) for k in ("released", "errors")) or \
             cert.get("threshold") != data["threshold"] or cert["errors"] > cert["released"]:
         raise CalibrationInvalid("no certification counts for this threshold")
-    if upper_bound(cert["errors"], cert["released"], data["delta"] / data["grid"]) > data["target"]:
+    if upper_bound(cert["errors"], cert["released"], POLICY["delta"] / POLICY["grid"]) > POLICY["target"]:
         raise CalibrationInvalid("the certification counts do not pass")
     if not all(_count(held_out.get(k)) for k in ("questions", "released", "errors")) or \
             held_out["errors"] > held_out["released"] or held_out["released"] > held_out["questions"]:
         raise CalibrationInvalid("no held-out counts")
-    if not passes(held_out["errors"], held_out["released"], held_out["questions"], data["target"]):
+    if not passes(held_out["errors"], held_out["released"], held_out["questions"], POLICY["target"]):
         raise CalibrationInvalid("the held-out counts do not pass")
     return data
 

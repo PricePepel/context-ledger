@@ -169,6 +169,14 @@ class LoadTest(unittest.TestCase):
         for data in weak:
             with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
                 self.load({"a.json": data})
+        # Review W3-3 finding 3: the file cannot bring its own policy; counts that pass only at
+        # a 20% target, another score, grid or delta are refused.
+        loose = [calibration(target=0.2, certification={"threshold": -0.5, "released": 400, "errors": 40},
+                             heldOut={"questions": 519, "released": 400, "errors": 80, "passed": True}),
+                 calibration(score="mean-logprob"), calibration(grid=40), calibration(delta=0.1)]
+        for data in loose:
+            with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
+                self.load({"a.json": data})
 
 
 def old_predicted_number(text):
