@@ -4540,3 +4540,15 @@ Codex confirmed that round 1's fixes close the swap before a turn, the old-mask-
 - (medium) Replay compared only the memory at the solver: it now compares the memory at every hand-off as its recipient received it, and a replay whose own exact checks fail is a mismatch. The tolerance is fitted only on clean, finite, matching rows; the rate is renamed to say it compares values at positions both rows hold.
 - (medium) The reference's provenance was not enforced: it now records its weights and settings, is hashed and loaded from the same bytes, and is refused for other weights or when the threshold set names another file. A cost run needs a threshold set.
 
+### W1 review, round 3 (2026-11-22, Codex, read-only, of d946934)
+
+Codex confirmed round 2's fixes (signed-report copy, zero-mask detection, solver-cache finiteness, release-only routes) and found no checksum overflow or collision for the supported shapes, and no path that serializes thought records, caches, logits or per-token values. Its findings, all fixed with a regression test each:
+
+- (high) A fallback could be released from a model whose weights changed during the audits, since the signed report describes the original squad. The fallback is now released only while the model's state still equals the state the watchdog cleared (version counters only grow), and only within the run's one deadline.
+- (medium) A decode loop that stopped calling the model early but reported more tokens passed: the decode calls must now account for the tokens reported.
+- (medium) A sampled audit of a zero-step request always reported a replay mismatch: equal empty records now match.
+- (medium) The wall-time cap was checked only after the run, and a failure in generation, an audit or the fallback reached the server's generic 500: every guarded stage now ends in a hold with a fixed reason (`runtime-error`), and audits are skipped once the run's deadline has passed. Interrupting a model call that stalls needs a timeout outside the process; not done.
+- (medium) The eval accepted a reference or threshold set from the wrong block: the reference must be the block-2 build of the pinned setting and the threshold set must be fitted on block 0.
+- (medium) Eval 2 counted an unavailable score as a miss: measured and unmeasured rows are reported apart, and AUROC uses measured rows only. Replay time now includes its comparisons, and each audit's time is divided by the questions it audited.
+- (low) One squad listing a span twice could quarantine it alone: spans are counted per distinct squad.
+
