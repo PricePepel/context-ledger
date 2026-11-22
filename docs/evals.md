@@ -4471,6 +4471,20 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
+
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 14. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+
+| Eval | Expected |
+| --- | --- |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. There is no option to sign without redaction. |
+| Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
+| Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
+| Sender sees the count, not the values | `--sign` prints how many values it redacted on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
+| Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
+| Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
+| Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
