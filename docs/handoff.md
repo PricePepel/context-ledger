@@ -604,3 +604,17 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
+## Current checkpoint — watchdog design for the latent team (2026-11-21)
+
+Docs only, written on `ruslan/console-direction` (commit a467e6f) and brought onto `main` with W1. Cards W1 to W3 are on the board as Backlog; nobody has claimed them.
+
+- [The watchdog design](watchdog-security.md), version 2: one code watchdog per squad of up to 5 latent subagents and one code supervisor per run. It separates what holds by construction, what an exact check verifies, what is only a statistical check, and what is not covered, for four promises: honest hand-offs, hallucination, unnecessary actions, sensitive data.
+- [The research report](watchdog-research.md) behind it: about 95 sources, with the verification status of each group stated at the end.
+- The main design decisions are listed under "Decisions taken" in the design. The one that touches the runtime: production squads use soft thoughts with no adapter, because only then is every thought an exact, recorded mix of tokens.
+- No code and no evals in `docs/evals.md` yet. The evals are drafted in the design and move to the eval log when a card is claimed.
+
+Next steps:
+
+1. Leo and Ali read the design, in particular open question 3 (soft thoughts only).
+2. Claim W1 first. Its first results are new numbers on our own runs: how often a replay matches, how often team and solver agree, and how often the squad changes the answer at all.
+3. W2 is required before the latent team is given real project files or tools.
