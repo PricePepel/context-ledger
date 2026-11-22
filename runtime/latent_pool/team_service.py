@@ -112,7 +112,7 @@ class TeamService:
             self._slot.release()
         # Fail closed: the supervisor's hold leaves as an error, so no client can take it
         # for an answer, and nothing of the squad's text goes with it.
-        if outcome.decision["action"] == "hold" or outcome.answer is None:
+        if outcome.decision["action"] != "release" or outcome.answer is None:
             raise ApiError(409, HELD.format(reason=outcome.decision["reason"]))
         return outcome.answer, outcome
 
@@ -177,10 +177,13 @@ class TeamService:
         created, chat_id = int(time.time()), f"chatcmpl-{uuid.uuid4().hex[:24]}"
         if body.get("stream") is True:
             base = {"id": chat_id, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID}
+            # The receipt rides on the closing chunk (clients ignore unknown fields), so a
+            # streamed fallback answer is marked as one too.
             events = [
                 {**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": answer},
                                       "finish_reason": None}]},
-                {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+                {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                 "latent_receipt": self.receipt(outcome)},
             ]
             options = body.get("stream_options")
             if isinstance(options, dict) and options.get("include_usage") is True:
@@ -209,10 +212,11 @@ def reference_from_env(team, env=None):
     from latent_team.watchdog import Reference, load_thresholds, team_weights
     thresholds = load_thresholds(team.model_name, team_weights(team)[0])
     with open(path, "rb") as handle:
-        digest = hashlib.sha256(handle.read()).hexdigest()
-    if not thresholds or (thresholds.get("distance") or {}).get("reference") != digest:
+        data = handle.read()
+    if not thresholds or (thresholds.get("distance") or {}).get("reference") != hashlib.sha256(data).hexdigest():
         return None
-    return Reference.load(path, device=team.device)
+    # The bytes that were hashed are the bytes that are loaded.
+    return Reference.from_bytes(data, device=team.device, weights_hash=thresholds["weightsHash"])
 
 
 def register_team_from_env(env):

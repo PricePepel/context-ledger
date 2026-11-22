@@ -16,6 +16,7 @@ question or answer text, thought record or cache is written anywhere. `--part th
 import argparse
 import hashlib
 import json
+import math
 import os
 import statistics
 import time
@@ -72,6 +73,19 @@ def write(path, data):
     print(f"wrote {path}", flush=True)
 
 
+def checked_reference(args, team, thresholds):
+    """The reference the threshold set names: its bytes hashed and loaded once, and built on
+    these weights. A run with no matching threshold set or reference refuses to start."""
+    from .watchdog import Reference, team_weights
+    if thresholds is None:
+        raise SystemExit("no threshold set for these weights: run --part thresholds first")
+    with open(os.path.join(args.out, "reference.pt"), "rb") as handle:
+        blob = handle.read()
+    if hashlib.sha256(blob).hexdigest() != thresholds["distance"]["reference"]:
+        raise SystemExit("the reference file is not the one the threshold set names")
+    return Reference.from_bytes(blob, device=team.device, weights_hash=team_weights(team)[0])
+
+
 def flagged(raw, thresholds):
     """Per row: (degenerate flag, distance flag, weak signals) by the threshold set."""
     from .supervisor import WEAK_BUCKET
@@ -112,6 +126,7 @@ def clean_batch(team, guard, chunk, thresholds, reference, tolerance):
             "mismatchedNumber": other_n, "mismatchedChanged": words[r]["mismatchedMemory"] == "changed",
             "replaySameAnswer": measured["sameAnswer"][r], "replaySameTopShare": measured["sameTopShare"][r],
             "replayMemoryDiff": measured["memoryDiff"][r], "replayMaskDiffers": measured["maskDiffers"][r],
+            "replayClean": measured["replayClean"][r],
             "replayWord": words[r]["replay"],
             "legibilityError": float(watch.legibility_error[r]),
         })
@@ -149,7 +164,8 @@ def summarize_clean(rows, timings, thresholds=None):
                      "matchedMemoryDiffMax": max((max(r["replayMemoryDiff"]) for r in matched), default=None),"sameAnswerRate": rate(r["replaySameAnswer"] for r in rows),
                      "allTopTokensSameRate": rate(r["replaySameTopShare"] == 1 for r in rows),
                      "meanSameTopShare": round(statistics.mean(r["replaySameTopShare"] for r in rows), 6),
-                     "memoryBitwiseEqualRate": rate(d == 0 for d in diffs),
+                     "memoryEqualAtSharedPositionsRate": rate(d == 0 for d in diffs),
+                     "replayExactChecksCleanRate": rate(r["replayClean"] for r in rows),
                      "memoryDiffMax": max(diffs), "memoryDiffMedian": statistics.median(diffs),
                      "memoryDiffP99": quantile(diffs, 0.99),
                      "matchWordRate": rate(r["replayWord"] == "match" for r in rows)}
@@ -172,8 +188,11 @@ def summarize_clean(rows, timings, thresholds=None):
 def part_reference(args, team, block):
     from .team import chain_roles
     from .watchdog import ReferenceBuilder, Watch
+    import torch
+    from .watchdog import team_weights
     builder = ReferenceBuilder()
     started = time.perf_counter()
+    torch.set_grad_enabled(False)   # chain() can train; here it must keep no autograd graph
     for chunk in batches(block(2)):
         questions = [item["question"] for item in chunk]
         watch = Watch(team, questions, steps=STEPS, max_new_tokens=TOKENS, collect=builder)
@@ -183,7 +202,8 @@ def part_reference(args, team, block):
         finally:
             watch.detach()
         watch.drop()
-    reference = builder.build(meta={"model": MODEL, "block": 2, "seed": SEED, "steps": STEPS})
+    reference = builder.build(meta={"model": MODEL, "block": 2, "seed": SEED, "steps": STEPS, "batch": BATCH,
+                                    "weightsHash": team_weights(team)[0], "mode": "soft"})
     path = os.path.join(args.out, "reference.pt")
     reference.save(path)
     with open(path, "rb") as handle:
@@ -195,9 +215,10 @@ def part_reference(args, team, block):
 def part_thresholds(args, team, block):
     from .guard import Guard
     from .watchdog import LEGIBILITY_TOLERANCE, MODE, TEMPERATURE, TOP_K, Reference, names_digest, team_weights
-    reference = Reference.load(os.path.join(args.out, "reference.pt"), device=team.device)
-    with open(os.path.join(args.out, "reference.json")) as handle:
-        reference_digest = json.load(handle)["sha256"]
+    with open(os.path.join(args.out, "reference.pt"), "rb") as handle:
+        blob = handle.read()
+    reference_digest = hashlib.sha256(blob).hexdigest()
+    reference = Reference.from_bytes(blob, device=team.device, weights_hash=team_weights(team)[0])
     guard = Guard(team, thresholds=None)
     rows, timings = [], []
     for chunk in batches(block(0)):
@@ -210,7 +231,8 @@ def part_thresholds(args, team, block):
     # near-tie flip makes a run diverge, and its difference must not set the tolerance. How
     # often that happens is the divergence rate, reported on its own.
     matched = [max(r["replayMemoryDiff"]) for r in rows
-               if r["replaySameAnswer"] and r["replaySameTopShare"] == 1 and not r["replayMaskDiffers"]]
+               if r["replaySameAnswer"] and r["replaySameTopShare"] == 1 and not r["replayMaskDiffers"]
+               and r["replayClean"] and all(math.isfinite(d) for d in r["replayMemoryDiff"])]
     weights, names = team_weights(team)[0], team_weights(team)[1]
     thresholds = {
         "id": "w1-qwen2.5-3b-instruct-soft-m40-1", "model": MODEL, "weightsHash": weights, "mode": MODE,
@@ -240,9 +262,7 @@ def part_score(args, team, block):
     from .reports import EXACT_CHECKS
     from .watchdog import Reference, load_thresholds, team_weights
     thresholds = load_thresholds(MODEL, team_weights(team)[0], args.thresholds_dir)
-    if thresholds is None:
-        raise SystemExit("no threshold set for these weights: run --part thresholds first")
-    reference = Reference.load(os.path.join(args.out, "reference.pt"), device=team.device)
+    reference = checked_reference(args, team, thresholds)
     guard = Guard(team, thresholds=thresholds, reference=reference)
     items = block(1)
     rows, timings = [], []
@@ -322,7 +342,7 @@ def part_cost(args, team, block):
     from .guard import Guard
     from .watchdog import Reference, load_thresholds, team_weights
     thresholds = load_thresholds(MODEL, team_weights(team)[0], args.thresholds_dir)
-    reference = Reference.load(os.path.join(args.out, "reference.pt"), device=team.device)
+    reference = checked_reference(args, team, thresholds)
     guard = Guard(team, thresholds=thresholds, reference=reference)
     chunks = list(batches(block(1)[:2 * BATCH]))
     on, off = [], []

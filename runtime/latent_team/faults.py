@@ -20,6 +20,8 @@ NAMED = {
     # steps rather than at the hand-off seam.
     "think-swapped": "memoryChecksum", "decode-swapped": "memoryChecksum",
     "forward-hidden": "spanLedger", "positions-shifted": "spanLedger",
+    # Added after the second review: a latent step whose new mask column is zero.
+    "latent-masked": "spanLedger",
 }
 FAULTS = tuple(NAMED)
 
@@ -166,6 +168,18 @@ def _positions_shifted(team):
     return lambda: team.__dict__.pop("positions", None)
 
 
+def _latent_masked(team):
+    forward = team.forward
+
+    def masking(memory, memory_mask, ids=None, mask=None, embeds=None, hidden_only=False, hide=None):
+        if embeds is not None:
+            mask = torch.zeros(embeds.shape[:2], dtype=torch.long, device=embeds.device)
+        return forward(memory, memory_mask, ids=ids, mask=mask, embeds=embeds, hidden_only=hidden_only, hide=hide)
+
+    team.forward = masking
+    return lambda: team.__dict__.pop("forward", None)
+
+
 def inject(team, name):
     """(thought mode to run with, undo) for one fault."""
     if name == "noise":
@@ -196,7 +210,8 @@ def inject(team, name):
     if name == "extra-steps":
         return "soft", _extra_steps(team)
     inside = {"think-swapped": _think_swapped, "decode-swapped": _decode_swapped,
-              "forward-hidden": _forward_hidden, "positions-shifted": _positions_shifted}
+              "forward-hidden": _forward_hidden, "positions-shifted": _positions_shifted,
+              "latent-masked": _latent_masked}
     if name in inside:
         return "soft", inside[name](team)
     raise ValueError(f"unknown fault {name}")

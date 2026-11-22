@@ -466,7 +466,7 @@ class EvalDriverTest(unittest.TestCase):
         self.assertEqual({r["replayWord"] for r in rows}, {"match"})
         summary = watch_eval.summarize_clean(rows, [timing], thresholds)
         self.assertEqual(summary["anyExactFailure"], 0)
-        self.assertEqual(summary["replay"]["memoryBitwiseEqualRate"], 1.0)
+        self.assertEqual(summary["replay"]["memoryEqualAtSharedPositionsRate"], 1.0)
         self.assertEqual(summary["statistical"]["falseAlarm"]["degenerate"], 0.0)
         self.assertEqual(json.loads(json.dumps(summary)), summary)
         self.assertEqual(watch_eval.auroc([0.9, 0.1, 0.5], [True, False, False]), 1.0)

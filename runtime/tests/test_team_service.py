@@ -47,6 +47,8 @@ class FakeGuard:
         answer, system, marks, action = answers[0], "latent_mas", ["uncalibrated"], self.action
         if self.action == "hold":
             answer, marks, checks[self.reason] = None, [], False
+        elif self.action == "abstain":   # a broken guard that returns text with an abstention
+            marks = []
         elif self.action == "fallback":
             answer, system, marks, action = "The answer is 20.", "single", ["fallback", "uncalibrated"], "release"
         return [Outcome(answer=answer, decision={"action": action, "reason": self.reason, "marks": marks,
@@ -102,6 +104,15 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(result["receipt"]["decision"]["marks"], ["fallback", "uncalibrated"])
         chat = service.chat({"model": MODEL_ID, "messages": [{"role": "user", "content": "q"}]})
         self.assertEqual(chat["latent_receipt"]["decision"]["reason"], "statistical-flag")
+        events = service.chat({"model": MODEL_ID, "stream": True, "messages": [{"role": "user", "content": "q"}]}).events
+        self.assertEqual(events[1]["latent_receipt"]["decision"]["marks"], ["fallback", "uncalibrated"],
+                         "a streamed fallback is marked too")
+
+    def test_only_a_release_leaves_the_route(self):
+        service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team, "abstain", "low-confidence"))
+        with self.assertRaises(ApiError) as raised:
+            service({"question": "q"})
+        self.assertEqual(raised.exception.status, 409)
 
     def test_no_response_carries_a_vector_or_a_free_number(self):
         def leaves(value):

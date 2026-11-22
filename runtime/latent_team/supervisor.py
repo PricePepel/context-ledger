@@ -33,7 +33,8 @@ MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated")
 REPORT_PROBLEMS = ("report-missing", "report-unsigned", "report-malformed", "report-other-run",
                    "report-unknown-squad", "report-replayed", "report-late")
 REASONS = reports.EXACT_CHECKS + ("label-rule",) + REPORT_PROBLEMS + (
-    "statistical-flag", "weak-signals", "audit-disagrees", "low-confidence", "quote-failed", "uncalibrated", "passed")
+    "statistical-flag", "weak-signals", "audit-disagrees", "low-confidence", "quote-failed", "uncalibrated", "passed",
+    "fallback-failed", "watchdog-error")
 
 # A score bucket at or above WEAK_BUCKET is a weak signal (bucket 6 is the clean 95th
 # percentile, 8 the 99th: watchdog.bucket). WEAK_SUM weak signals in one run, across all
@@ -132,11 +133,17 @@ class Run:
         reason = "quote-failed" if quote_failed else "uncalibrated" if not calibrated else "passed"
         return Decision("release", reason, marks)                            # rows 6 to 8
 
-    def after_fallback(self, *, calibrated=False):
-        """The decision for the fallback answer: released, marked as a fallback. It runs at
-        most once and is uncalibrated unless the solver alone has its own calibration."""
+    def after_fallback(self, *, within_limits, calibrated=False):
+        """The decision for the fallback answer. It runs at most once, inside the same fence:
+        within_limits says the caller checked its token budget, wall time and output gate.
+        Released, marked as a fallback and uncalibrated unless the solver alone has its own
+        calibration; held when it broke a limit."""
         if self.decision is None or self.decision.action != "fallback":
             raise RuntimeError("only a run that fell back has a fallback answer")
+        if not within_limits:
+            self.decision = Decision("hold", "fallback-failed", self.decision.marks, self.decision.quarantined)
+            self.supervisor.counts[self.weights]["fallbackFailed"] += 1
+            return self.decision
         marks = self.decision.marks + ("fallback",) + (() if calibrated else ("uncalibrated",))
         decision = Decision("release", self.decision.reason, marks, self.decision.quarantined)
         self.decision = decision

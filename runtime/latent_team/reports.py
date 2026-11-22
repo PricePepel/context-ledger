@@ -130,10 +130,12 @@ def verify(envelope, key):
     mac = envelope.get("mac")
     if type(mac) is not str or MAC.match(mac) is None:
         raise ReportError("report-unsigned", "no signature")
-    expected = _mac(key, b"w1-report", canonical(envelope["report"]))
-    if not hmac.compare_digest(mac, expected):
+    signed = canonical(envelope["report"])
+    if not hmac.compare_digest(mac, _mac(key, b"w1-report", signed)):
         raise ReportError("report-unsigned", "the signature does not verify")
-    return validate(envelope["report"])
+    # A copy rebuilt from the signed bytes: a later change to the caller's object cannot
+    # change what the supervisor decides on.
+    return validate(json.loads(signed))
 
 
 # ---------------------------------------------------------------- memory that leaves the process

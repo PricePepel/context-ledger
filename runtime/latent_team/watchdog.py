@@ -69,29 +69,39 @@ THRESHOLD_DIR = os.path.join(os.path.dirname(__file__), "thresholds")
 
 
 # ------------------------------------------------------------------ weights
-def weights_fingerprint(model):
-    """(SHA-256 of every parameter and buffer in name order, the tuple of names, and each
-    parameter's in-place version counter).
-
-    Computed once per loaded model; LatentTeam.load_checkpoints drops it. The names show a
-    LoRA or any other module added later, and the version counters show an in-place edit of
-    a weight after hashing, so a stale hash never passes."""
-    digest = hashlib.sha256()
+def _weights(model):
     named = dict(model.named_buffers())
     named.update(model.named_parameters())
+    return named
+
+
+def weights_fingerprint(model):
+    """(SHA-256 of every parameter and buffer in name order, the tuple of parameter names,
+    and the state of every parameter and buffer).
+
+    Computed once per loaded model; LatentTeam.load_checkpoints drops it. The names show a
+    LoRA or any other module added later. The state (name, storage address, in-place version
+    counter, dtype and shape of each tensor) shows a tensor replaced or edited in place after
+    hashing, so a stale hash never passes; it is compared when a run starts and again when
+    its checks run, so an edit during a turn is seen too."""
+    digest = hashlib.sha256()
+    named = _weights(model)
     for name in sorted(named):
         tensor = named[name].detach()
         digest.update(f"{name}|{tensor.dtype}|{tuple(tensor.shape)}|".encode())
         digest.update(tensor.contiguous().reshape(-1).view(torch.uint8).cpu().numpy())
-    return digest.hexdigest(), parameter_names(model), parameter_versions(model)
+    return digest.hexdigest(), parameter_names(model), weights_state(model)
 
 
 def parameter_names(model):
     return tuple(name for name, _ in model.named_parameters())
 
 
-def parameter_versions(model):
-    return tuple(parameter._version for _, parameter in model.named_parameters())
+def weights_state(model):
+    """Who each weight is and whether it was touched: no copy of any value."""
+    named = _weights(model)
+    return tuple((name, named[name].data_ptr(), named[name]._version, str(named[name].dtype),
+                  tuple(named[name].shape)) for name in sorted(named))
 
 
 def names_digest(names):
@@ -108,13 +118,17 @@ def team_weights(team):
 
 # ------------------------------------------------------------------ memory
 def memory_layers(memory):
-    """[(keys, values)] of a DynamicCache, each [batch, heads, length, head dim]."""
+    """[(keys, values)] of a DynamicCache, each [batch, heads, length, head dim].
+
+    The supported contract is the one this runtime pins (transformers 5.x): a cache with
+    `.layers` whose items have `.keys` and `.values`. faults.py uses the same contract.
+    Anything else raises, and a raise inside the watchdog fails every check (Watch._guarded)."""
     if memory is None:
         return []
-    if hasattr(memory, "layers"):
-        return [(layer.keys, layer.values) for layer in memory.layers
-                if getattr(layer, "keys", None) is not None and layer.keys.numel()]
-    return list(zip(memory.key_cache, memory.value_cache))
+    if not hasattr(memory, "layers"):
+        raise TypeError("the watchdog supports caches with .layers (transformers 5.x DynamicCache)")
+    return [(layer.keys, layer.values) for layer in memory.layers
+            if getattr(layer, "keys", None) is not None and layer.keys.numel()]
 
 
 def memory_length(memory):
@@ -122,13 +136,17 @@ def memory_length(memory):
 
 
 class Checksum:
-    """A keyed checksum of a working memory, per row, computed on the device.
+    """A keyed corruption detector for a working memory, per row, computed on the device.
 
-    Every key and value is read as 16-bit words w (bit patterns, so the arithmetic is exact
-    and deterministic), and the checksum is sum(w * a_D * e_S * c_H * l_layer) mod P with
-    coefficients drawn from the run's key. For any fixed change to the words, the chance it
-    goes unseen is at most 5/P (Schwartz-Zippel) per sketch; two independent sketches are
-    kept. It shows the memory did not change between two points, not that it was right."""
+    Every key and value is read as 16-bit words w (bit patterns, so the arithmetic is exact),
+    and the checksum is sum(w * a_D * e_S * c_H * l_layer) mod P. The coefficients come from
+    a PRNG seeded by an HMAC of the run's key. With truly uniform coefficients, a change
+    chosen without knowing the key would go unseen with chance at most 5/P per sketch
+    (Schwartz-Zippel), and two sketches are kept; the PRNG approximates that, so read it as
+    a probabilistic detector of changes made independently of the key, not as a MAC. The
+    layout (number of layers, shapes, dtypes) is compared exactly beside it. It is
+    deterministic on one backend and one implementation. It shows the memory did not change
+    between two points, not that it was right."""
 
     def __init__(self, key):
         self.key = key
@@ -149,6 +167,11 @@ class Checksum:
         for axis in axes:
             y = ((y * self.coefficient(sketch, axis, y.shape[-1], y.device)) % P).sum(-1) % P
         return y
+
+    @staticmethod
+    def layout(memory, mask):
+        return (tuple((tuple(k.shape), str(k.dtype), tuple(v.shape), str(v.dtype)) for k, v in memory_layers(memory)),
+                None if mask is None else tuple(mask.shape))
 
     def __call__(self, memory, mask):
         layers = memory_layers(memory)
@@ -205,9 +228,20 @@ class Reference:
                     "meta": self.meta}, path)
 
     @classmethod
-    def load(cls, path, device="cpu"):
-        data = torch.load(path, map_location="cpu", weights_only=True)
-        return cls(data["means"], data["whiten"], data["pooledMean"], data["pooledWhiten"], data["meta"]).to(device)
+    def load(cls, path, device="cpu", weights_hash=None):
+        with open(path, "rb") as handle:
+            return cls.from_bytes(handle.read(), device=device, weights_hash=weights_hash)
+
+    @classmethod
+    def from_bytes(cls, blob, device="cpu", weights_hash=None):
+        """A reference from its file's bytes. With weights_hash, one built on other weights is
+        refused: its statistics describe another model."""
+        import io
+        data = torch.load(io.BytesIO(blob), map_location="cpu", weights_only=True)
+        reference = cls(data["means"], data["whiten"], data["pooledMean"], data["pooledWhiten"], data["meta"])
+        if weights_hash is not None and reference.meta.get("weightsHash") != weights_hash:
+            raise ValueError("this reference was built on other weights")
+        return reference.to(device)
 
 
 class ReferenceBuilder:
@@ -357,7 +391,7 @@ class Watch:
         self.keep_memory = keep_memory
         self.plan = Plan(team, self.questions, self.roles, steps)
         self.checksum = Checksum(key or reports.new_run_key())
-        self.weights_hash, self.weight_names, self.weight_versions = team_weights(team)
+        self.weights_hash, self.weight_names, self.weight_state = team_weights(team)
         self.pinned = frozenset(pinned or ())   # every weights hash a threshold set names for this model
         self.solver_phase = len(self.roles)
         rows, device = self.rows, self.device
@@ -376,6 +410,10 @@ class Watch:
         self.running_mask = torch.zeros(rows, 0, dtype=torch.long, device=device)
         self.boundary_ok = torch.ones(rows, dtype=torch.bool, device=device)
         self.handoff = None           # (layers, mask) the solver received, when keep_memory
+        self.boundaries = {}          # turn -> (layers, mask) it received, when keep_memory
+        self.layouts_start, self.layouts_end = {}, {}
+        self.broken = 0               # exceptions inside the watchdog: each fails every check
+        self.last_kind = None
         self.claims = None            # what latent_mas said it would run
         self.handles = []
         self.results = None
@@ -392,10 +430,21 @@ class Watch:
                        "adapter": getattr(team, "adapter", None) is not None, "topK": team.soft_top_k,
                        "temperature": team.soft_temperature, "names": parameter_names(team.model),
                        "lora": any("lora_" in name for name in parameter_names(team.model)),
-                       "versions": parameter_versions(team.model)}
+                       "state": weights_state(team.model)}
         base = team.model.base_model
-        self.handles = [base.register_forward_pre_hook(self._before, with_kwargs=True),
-                        base.register_forward_hook(self._after, with_kwargs=True)]
+        self.handles = [base.register_forward_pre_hook(self._guarded(self._before), with_kwargs=True),
+                        base.register_forward_hook(self._guarded(self._after), with_kwargs=True)]
+
+    def _guarded(self, hook):
+        """A hook that never raises into the model: any error inside the watchdog is counted
+        and fails every exact check, so the run is held, not crashed half-checked."""
+        def guarded(*args):
+            try:
+                hook(*args)
+            except Exception:   # noqa: BLE001 - fail closed on any watchdog error
+                self.broken += 1
+            return None
+        return guarded
 
     def detach(self):
         for handle in self.handles:
@@ -446,16 +495,28 @@ class Watch:
             self.boundary_ok &= False
         else:
             self.boundary_ok &= (full[:, :-n] == self.running_mask).all(-1)
+            # The new columns: a latent step or a decode step appends one real token for every
+            # row (a prompt or close is compared with the plan's own mask in turnStructure).
+            if embeds is not None or (self.phase == self.solver_phase and self.phase_calls > 0):
+                self.boundary_ok &= (full[:, -n:] == 1).all(-1)
             positions = kwargs.get("position_ids")
             expected = (full.cumsum(-1) - 1).clamp(min=0)[:, -n:]
             self.boundary_ok &= (positions == expected).all(-1) if positions is not None and \
                 positions.shape == expected.shape else torch.zeros_like(self.boundary_ok)
+            where = kwargs.get("cache_position")
+            if where is not None:
+                self.boundary_ok &= bool(torch.equal(where.reshape(-1).cpu(),
+                                                     torch.arange(call["past"], call["past"] + n)))
             self.running_mask = full
         first = self.phase is not None and self.phase_calls == 0
+        prefix = full[:, :-n] if full is not None else None
         if first and self.phase > 0:
-            self.sums_start[self.phase] = self.checksum(past, full[:, :-n] if full is not None else None)
+            self.sums_start[self.phase] = self.checksum(past, prefix)
+            self.layouts_start[self.phase] = Checksum.layout(past, prefix)
+            if self.keep_memory:   # references only: the cache grows by new tensors, so these stay as they were
+                self.boundaries[self.phase] = ([(k, v) for k, v in memory_layers(past)], prefix)
         if first and self.phase == self.solver_phase and self.keep_memory:
-            self.handoff = ([(k, v) for k, v in memory_layers(past)], full[:, :-n] if full is not None else None)
+            self.handoff = self.boundaries.get(self.phase)
         if ids is not None:
             if self.phase != self.solver_phase or first:
                 call["ids"] = ids.detach().clone()
@@ -464,6 +525,7 @@ class Watch:
             self._latent(embeds[:, -1])
         if self.phase is not None:
             self.phase_calls += 1
+        self.last_kind = call["kind"]
         self.calls.append(call)
 
     def _after(self, module, args, kwargs, output):
@@ -471,9 +533,10 @@ class Watch:
         self.prev_hidden = hidden[:, -1].detach()
         self.finite &= torch.isfinite(self.prev_hidden).all(-1)
         closing = self.phase is not None and self.phase < self.solver_phase and self.phase_calls > 1 and \
-            kwargs.get("input_ids") is not None
+            self.last_kind == "ids"
         if closing:   # the latest text call of a thinker's turn: its close, unless more follows
             self.sums_end[self.phase] = self.checksum(output.past_key_values, kwargs.get("attention_mask"))
+            self.layouts_end[self.phase] = Checksum.layout(output.past_key_values, kwargs.get("attention_mask"))
 
     def rebuild(self, hidden):
         """The soft mix of `hidden`, derived here: (mix, top ids, weights)."""
@@ -566,6 +629,10 @@ class Watch:
         for index in range(1, self.solver_phase + 1):
             end, start = self.sums_end.get(index - 1), self.sums_start.get(index)
             checksum &= none if end is None or start is None or end.shape != start.shape else (end == start).all(-1)
+            if self.layouts_end.get(index - 1) is None or self.layouts_end.get(index - 1) != self.layouts_start.get(index):
+                checksum &= none
+        # the whole cache after the solver, its new keys and values included
+        self.finite &= cache_finite(self.cache, rows, device) if self.cache is not None else none
 
         # configuration
         claims = self.claims or {}
@@ -573,7 +640,8 @@ class Watch:
                          and claims.get("roles") == self.roles and claims.get("adapter") is False
                          and claims.get("topK") == TOP_K and claims.get("temperature") == TEMPERATURE
                          and claims.get("names") == self.weight_names and not claims.get("lora")
-                         and claims.get("versions") == self.weight_versions)
+                         and claims.get("state") == self.weight_state
+                         and weights_state(self.team.model) == self.weight_state)
         if self.pinned:
             configuration &= self.weights_hash in self.pinned
         if self.thresholds is not None:
@@ -597,6 +665,10 @@ class Watch:
         tokens = torch.tensor([int(c) for c in counts], device=device)
         budgets = (tokens <= self.max_new_tokens) & (every if budget_ok else none)
 
+        if self.broken:   # an error inside the watchdog: nothing it checked can be trusted
+            structure, configuration, legibility, ledger = none.clone(), False, none.clone(), False
+            checksum, budgets = none.clone(), none.clone()
+            self.finite &= none
         checks = {"turnStructure": structure, "configuration": every if configuration else none,
                   "legibility": legibility, "spanLedger": (every if ledger else none) & self.boundary_ok,
                   "memoryChecksum": checksum,
@@ -653,5 +725,6 @@ class Watch:
         the checksum key and the raw scores."""
         self.calls, self.record, self.handoff, self.prev_hidden = [], [], None, None
         self.cache, self.running_mask, self.plan, self.questions, self.checksum = None, None, None, [], None
+        self.boundaries = {}
         if self.results is not None:
             self.results.pop("raw", None)

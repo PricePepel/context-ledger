@@ -165,6 +165,18 @@ class SupervisorTest(unittest.TestCase):
         self.assertFalse(forged.submit(reports.sign(clean_report(forged.run_id), reports.new_run_key())))
         self.assertEqual(forged.decide().reason, "report-unsigned")
 
+    def test_the_supervisor_decides_on_what_was_signed(self):
+        run = self.supervisor.open_run()
+        envelope = reports.sign(clean_report(run.run_id, checks__budgets=False), run.key)
+        self.assertTrue(run.submit(envelope))
+        envelope["report"]["checks"]["budgets"] = True     # changed after the MAC was checked
+        self.assertEqual(run.decide().reason, "budgets")
+
+    def test_a_fallback_that_broke_a_limit_is_held(self):
+        run, decision = self.decide({"flags__distance": True})
+        final = run.after_fallback(within_limits=False)
+        self.assertEqual((final.action, final.reason), ("hold", "fallback-failed"))
+
     def test_a_replayed_or_late_report_holds(self):
         run = self.supervisor.open_run()
         envelope = reports.sign(clean_report(run.run_id), run.key)
@@ -235,10 +247,10 @@ class SupervisorTest(unittest.TestCase):
     def test_a_fallback_is_released_once_and_marked(self):
         run, decision = self.decide({"flags__distance": True})
         self.assertEqual(decision.action, "fallback")
-        final = run.after_fallback()
+        final = run.after_fallback(within_limits=True)
         self.assertEqual((final.action, final.marks), ("release", ("fallback", "uncalibrated")))
         with self.assertRaises(RuntimeError):
-            run.after_fallback()
+            run.after_fallback(within_limits=True)
         with self.assertRaises(RuntimeError):
             run.decide()
 

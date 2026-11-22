@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .evaluate import predicted_number
-from .supervisor import Supervisor
+from .supervisor import Decision, Supervisor
 
 AUDIT_EVERY = 20
 REPLAY_TOLERANCE = 0.0   # until eval 3 measures it; a threshold set may carry its own
@@ -131,31 +131,42 @@ class Guard:
         again = self.watch(questions, steps, max_new_tokens, keep_memory=True)
         replay_answers, replay_receipt = team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens,
                                                          watch=again)
+        replay_results = again.finish(replay_answers, replay_receipt.generated_tokens, replay_receipt.seconds)
         measured["replaySeconds"] = time.perf_counter() - started
         top_a, top_b = watch.top_tokens(), again.top_tokens()
         if top_a.shape == top_b.shape and top_a.numel():
             same_top = (top_a == top_b).float().mean(-1)
         else:
             same_top = torch.zeros(rows, device=team.device)
-        if watch.handoff is not None and again.handoff is not None:
-            diff, mask_differs = memory_difference(watch.handoff, again.handoff, watch.plan.starts)
-        else:
-            diff = torch.full((rows, len(watch.roles)), float("inf"), device=team.device)
-            mask_differs = torch.ones(rows, dtype=torch.bool, device=team.device)
+        # Every hand-off, as each recipient received it: a change made before one hand-off
+        # and undone before the next is still seen.
+        turns = range(1, len(watch.roles) + 1)
+        diff = torch.full((rows, len(watch.roles)), float("inf"), device=team.device)
+        mask_differs = torch.ones(rows, dtype=torch.bool, device=team.device)
+        if all(t in watch.boundaries and t in again.boundaries for t in turns):
+            mask_differs = torch.zeros(rows, dtype=torch.bool, device=team.device)
+            for column, turn in enumerate(turns):
+                gap, differs = memory_difference(watch.boundaries[turn], again.boundaries[turn],
+                                                 [0, watch.plan.starts[turn]])
+                diff[:, column] = gap[:, 0]
+                mask_differs |= differs
         same_answer = [x == y for x, y in zip(answers, replay_answers)]
+        replay_clean = [all(replay_results["checks"][name][r] for name in replay_results["checks"]) for r in range(rows)]
         measured.update(sameAnswer=same_answer, sameTopShare=same_top.tolist(), memoryDiff=diff.tolist(),
-                        maskDiffers=mask_differs.tolist())
-        replay = ["match" if same_answer[r] and same_top[r] == 1 and not mask_differs[r]
-                  and bool((diff[r] <= tolerance).all()) else "mismatch" for r in range(rows)]
+                        maskDiffers=mask_differs.tolist(), replayClean=replay_clean)
+        replay = ["match" if same_answer[r] and same_top[r] == 1 and not mask_differs[r] and replay_clean[r]
+                  and bool(torch.isfinite(diff[r]).all()) and bool((diff[r] <= tolerance).all()) else "mismatch"
+                  for r in range(rows)]
         again.drop()
 
         mismatched = ["not-run"] * rows
         if rows >= 2 and watch.handoff is not None:
             from .team import LATENT_PROMPTS
             started = time.perf_counter()
-            memory, mask = rolled_memory(watch.handoff)
-            other, _ = team.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
-                                   max_new_tokens, first=False)
+            with torch.no_grad():   # an audit is inference: no autograd graph through the memory
+                memory, mask = rolled_memory(watch.handoff)
+                other, _ = team.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in questions],
+                                       max_new_tokens, first=False)
             team._sync()
             measured["mismatchedSeconds"] = time.perf_counter() - started
             measured["mismatchedAnswers"] = other
@@ -180,8 +191,21 @@ class Guard:
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
                            keep_memory=True)
+        try:
+            return self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch)
+        finally:
+            watch.drop()
+
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch):
+        rows = len(questions)
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
-        results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
+        try:
+            results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
+        except Exception:   # noqa: BLE001 - the watchdog could not check this run: hold it
+            return [Outcome(answer=None, decision=Decision("hold", "watchdog-error").as_dict(), checks={}, audits={},
+                            statistical={}, scores={}, system="latent_mas", tokens=int(receipt.generated_tokens[r]),
+                            latent_steps=steps, latent_vectors=receipt.latent_vectors, seconds=receipt.seconds)
+                    for r in range(rows)]
         held = [not all(results["checks"][name][r] for name in results["checks"]) for r in range(rows)]
         flagged = False
         if thresholds is not None:
@@ -197,21 +221,31 @@ class Guard:
 
         decisions = []
         for row in range(rows):
-            envelope = watch.report(row, run_id=runs[row].run_id, key=runs[row].key, audits=words[row])
-            runs[row].submit(envelope)
+            try:
+                envelope = watch.report(row, run_id=runs[row].run_id, key=runs[row].key, audits=words[row])
+            except Exception:   # noqa: BLE001 - an unsigned run has no report: the supervisor holds it
+                envelope = None
+            if envelope is not None:
+                runs[row].submit(envelope)
             decisions.append(runs[row].decide(calibrated=False))
         fallback_rows = [r for r, d in enumerate(decisions) if d.action == "fallback"]
         fallback = {}
         if fallback_rows:
+            # Once, with tools off, inside the same fence: its budget and time are checked
+            # before it may be released.
+            started = time.perf_counter()
             if alone is None:
                 texts, fallback_receipt = self.team.single([questions[r] for r in fallback_rows],
                                                            max_new_tokens=max_new_tokens)
-                tokens = fallback_receipt.generated_tokens
+                tokens, seconds = fallback_receipt.generated_tokens, time.perf_counter() - started
             else:
                 texts, tokens = [alone[r] for r in fallback_rows], [measured["aloneTokens"][r] for r in fallback_rows]
+                seconds = measured["aloneSeconds"]
             fallback = {r: (t, n) for r, t, n in zip(fallback_rows, texts, tokens)}
-            for r in fallback_rows:
-                decisions[r] = runs[r].after_fallback()
+            for r, text, count in zip(fallback_rows, texts, tokens):
+                within = isinstance(text, str) and 0 <= int(count) <= max_new_tokens and \
+                    (self.time_cap is None or seconds <= self.time_cap)
+                decisions[r] = runs[r].after_fallback(within_limits=within)
 
         outcomes = []
         for row in range(rows):
@@ -231,5 +265,4 @@ class Guard:
                 scores=dict(report["scores"]) if report else {}, system=system, tokens=int(tokens),
                 latent_steps=steps, latent_vectors=receipt.latent_vectors, seconds=receipt.seconds,
                 extra={"measured": measured} if measured and self.measure else {}))
-        watch.drop()
         return outcomes
