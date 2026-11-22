@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A minimal stdio MCP client for tests: one JSON-RPC message per line in each direction.
-export function startMcp(port) {
+// Pass the test server's CONTEXT_LEDGER_DB so the adapter finds its token file; without
+// it the adapter looks at a path that does not exist, never at a real ledger's token.
+export function startMcp(port, env = {}) {
   const child = spawn(process.execPath, ['src/mcp.mjs'], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), CONTEXT_LEDGER_DB: join(tmpdir(), 'context-ledger-no-ledger', 'none.sqlite'), ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const messages = [];
@@ -56,7 +60,10 @@ export function startMcp(port) {
     send(message) {
       child.stdin.write(JSON.stringify(message) + '\n');
     },
-    waitFor(match, timeout = 5000) {
+    // P5a: 45 s, since on the Windows runner the first call (adapter start, then a
+    // PowerShell token read with a 30 s limit) can take over 5 s. A test that waits on
+    // purpose passes its own.
+    waitFor(match, timeout = 45_000) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Timed out waiting for an MCP message.')), timeout);
         waiters.push({ match, resolve: value => { clearTimeout(timer); resolve(value); } });

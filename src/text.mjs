@@ -17,14 +17,20 @@ export function visibleText(text) {
 }
 
 // A single-line variant for labels: line breaks and tabs are escaped too.
-// A strict one-line variant for short labels such as agent paths (card I3): every
-// control, format and line-separator character is escaped, ZWNJ and ZWJ included.
-export function labelText(text) {
-  return text.replace(/\r\n/g, '\n').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeCodeUnits);
+// A strict one-line variant for error lines: every control, format and line-separator
+// character is escaped, ZWNJ and ZWJ included (card I1).
+export function terminalLine(text) {
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeCodeUnits);
 }
 
 export function inlineText(text) {
   return visibleText(text).replace(/[\n\t]/g, escapeCodeUnits);
+}
+
+// A strict single-line variant for file names and paths in terminal messages: every
+// control, format (ZWNJ and ZWJ included) and line or paragraph separator is escaped.
+export function terminalLabel(text) {
+  return String(text).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, escapeCodeUnits);
 }
 
 // JSON.stringify leaves DEL, C1 controls, bidi/format characters and U+2028/9 raw.

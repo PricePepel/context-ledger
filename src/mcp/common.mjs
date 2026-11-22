@@ -63,6 +63,26 @@ export function optionalParty(args) {
   return folded;
 }
 
+// Card P2a (ADR-7a): a project slug filter, folded like party (A-Z only).
+const projectName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const projectSchema = description => ({ type: 'string', maxLength: 64, pattern: partyFilter.source, description });
+export function optionalProject(args) {
+  const { project } = args;
+  if (project === undefined) return undefined;
+  const folded = typeof project === 'string' ? foldParty(project) : '';
+  if (folded.length > 64 || !projectName.test(folded)) {
+    throw new ToolError('project must be a slug of at most 64 lowercase letters, digits and single hyphens.');
+  }
+  return folded;
+}
+// A ledger from before P2a ignores the filter and sends rows of every project. Each row
+// must name the project asked for, so such a list is refused, never passed on as scoped.
+export function assertProjectRows(rows, project) {
+  if (project !== undefined && !rows.every(row => isObject(row) && row.project === project)) {
+    throw new ToolError('This Context Ledger cannot filter by project. Restart it with npm start.');
+  }
+}
+
 export const text = value => ({ type: 'text', text: value });
 // visibleText keeps U+2028/U+2029; escape them too so a briefing cannot fake line breaks.
 export const briefingText = value => visibleText(value)

@@ -7,12 +7,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { bearer, ledgerToken } from './ledger-auth.mjs';
 
 // H5: a probe set that pins what src/server.mjs answers for every route, wrong
 // methods, unknown paths, static files, foreign Host and Origin, the decisions
 // route's same-origin rule, bad IDs, the body limit and the error mapping. It was
 // run on the server before the request table replaced the if-chain. Synthetic data.
 // Set ROUTES_PROBE_OUT to a file path to also write every probe's full response.
+// P1e: the probes send the server's access token (read from the file next to its
+// database); a block at the end pins the 401 that every guarded probe gets without it.
 const fixtureRoot = fileURLToPath(new URL('../evals/latent/fixture', import.meta.url));
 const securityHeaders = {
   'cache-control': 'no-store',
@@ -32,7 +35,7 @@ async function startServer(env) {
   for await (const chunk of child.stdout) {
     output += chunk;
     const match = output.match(/listening at http:\/\/127\.0\.0\.1:(\d+)/);
-    if (match) return { port: Number(match[1]), stop: async () => { child.kill(); await once(child, 'exit'); } };
+    if (match) return { port: Number(match[1]), headers: bearer(await ledgerToken(env.CONTEXT_LEDGER_DB, Number(match[1]))), stop: async () => { child.kill(); await once(child, 'exit'); } };
   }
   throw new Error('Server exited before listening: ' + output);
 }
@@ -98,8 +101,10 @@ async function setup(t, env = {}) {
   const origin = `http://127.0.0.1:${port}`;
   state.port = port;
   state.origin = origin;
-  state.get = (path, headers) => raw(port, { path, headers });
-  state.post = (path, data, headers = {}) => raw(port, {
+  const auth = state.server.headers;
+  state.raw = request => raw(port, { ...request, headers: { ...auth, ...request.headers } });
+  state.get = (path, headers) => state.raw({ path, headers });
+  state.post = (path, data, headers = {}) => state.raw({
     method: 'POST', path, body: typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data),
     headers: { 'Content-Type': 'application/json', Origin: origin, ...headers },
   });
@@ -135,7 +140,7 @@ test('the server request table answers every probe as before', async t => {
     assert.equal(response.headers['content-type'], `${type}; charset=utf-8`);
     assert.ok(response.body.toLowerCase().startsWith(start), path);
     await expect(`POST ${path}`, state.post(path, {}), 404, notFound);
-    await expect(`HEAD ${path}`, raw(port, { method: 'HEAD', path }), 404, '');
+    await expect(`HEAD ${path}`, state.raw({ method: 'HEAD', path }), 404, '');
   }
   await expect('GET /?q=1 is still the page', state.get('/?q=1'), 200);
   for (const path of ['/index.html', '/public/app.js', '/nope', '/api', '/api/', '/api/sessions/', '/api/%73essions', '/API/sessions', '/api/graphs/', '/api/rooms/']) {
@@ -145,12 +150,12 @@ test('the server request table answers every probe as before', async t => {
   // Host and URL checks come before any route, including static files and writes.
   for (const host of ['evil.example', `evil.example:${port}`, `127.0.0.1:${port + 1}`, `localhost.evil:${port}`, `[::1]:${port}`]) {
     await expect(`Host ${host} GET /`, state.get('/', { Host: host }), 403, { error: 'Unrecognized local host.' });
-    await expect(`Host ${host} POST /api/import`, raw(port, { method: 'POST', path: '/api/import', body: '{}',
+    await expect(`Host ${host} POST /api/import`, state.raw({ method: 'POST', path: '/api/import', body: '{}',
       headers: { Host: host, 'Content-Type': 'application/json', Origin: `http://${host}` } }), 403, { error: 'Unrecognized local host.' });
   }
   await expect('Host localhost GET /api/rooms', state.get('/api/rooms', { Host: `localhost:${port}` }), 200, { rooms: [], next: null });
   await expect('URL //x', state.get('//x'), 400, { error: 'Invalid request URL.' });
-  await expect('URL *', raw(port, { method: 'OPTIONS', path: '*' }), 400, { error: 'Invalid request URL.' });
+  await expect('URL *', state.raw({ method: 'OPTIONS', path: '*' }), 400, { error: 'Invalid request URL.' });
   await expect('Host before URL', state.get('//x', { Host: 'evil.example' }), 403, { error: 'Unrecognized local host.' });
 
   // Writes: same origin, JSON type, size limit and valid JSON, in that order, on every write.
@@ -166,7 +171,7 @@ test('the server request table answers every probe as before', async t => {
   for (const [path, operation] of writes) {
     await expect(`${path} foreign Origin`, state.post(path, {}, { Origin: 'https://foreign.example' }), 403, { error: `${operation} requires the same origin.` });
     await expect(`${path} Origin of the other local name`, state.post(path, {}, { Origin: `http://localhost:${port}` }), 403, { error: `${operation} requires the same origin.` });
-    await expect(`${path} no Origin`, raw(port, { method: 'POST', path, body: '{}', headers: { 'Content-Type': 'application/json' } }), 403, { error: `${operation} requires the same origin.` });
+    await expect(`${path} no Origin`, state.raw({ method: 'POST', path, body: '{}', headers: { 'Content-Type': 'application/json' } }), 403, { error: `${operation} requires the same origin.` });
     await expect(`${path} text/plain`, state.post(path, {}, { 'Content-Type': 'text/plain' }), 415, { error: `${operation} requires application/json.` });
     await expect(`${path} declared too large`, state.post(path, '', { 'Content-Length': String(8 * 1024 * 1024 + 1) }), 413, { error: `${operation} exceeds the 8 MiB request limit.` });
     await expect(`${path} bad JSON`, state.post(path, '{'), 400, { error: `${operation} request must contain valid UTF-8 JSON.` });
@@ -174,11 +179,11 @@ test('the server request table answers every probe as before', async t => {
     await expect(`${path} charset parameter accepted`, state.post(path, '{', { 'Content-Type': 'Application/JSON; charset=utf-8' }), 400, { error: `${operation} request must contain valid UTF-8 JSON.` });
     for (const method of ['GET', 'PUT', 'DELETE', 'PATCH']) {
       if (method === 'GET' && (path === '/api/graphs' || path === '/api/rooms')) continue;
-      await expect(`${method} ${path}`, raw(port, { method, path, headers: { Origin: origin } }), 404, notFound);
+      await expect(`${method} ${path}`, state.raw({ method, path, headers: { Origin: origin } }), 404, notFound);
     }
   }
   // A body over the limit without a declared length is cut off while it streams.
-  await expect('streamed too large', raw(port, { method: 'POST', path: '/api/import', body: Buffer.alloc(8 * 1024 * 1024 + 1, 0x20),
+  await expect('streamed too large', state.raw({ method: 'POST', path: '/api/import', body: Buffer.alloc(8 * 1024 * 1024 + 1, 0x20),
     headers: { 'Content-Type': 'application/json', Origin: origin, 'Transfer-Encoding': 'chunked' } }), 413, { error: 'Import exceeds the 8 MiB request limit.' });
 
   // Error mapping: InputError and GraphInputError are 400, other errors 500.
@@ -226,11 +231,41 @@ test('the server request table answers every probe as before', async t => {
     await expect(`long ${prefix}${suffix}`, state.get(`${prefix}${'a'.repeat(65)}${suffix}`), 404, notFound);
     await expect(`trailing ${prefix}${suffix}`, state.get(`${prefix}${leo.id}${suffix}/`), 404, notFound);
     for (const method of ['POST', 'PUT', 'DELETE']) {
-      await expect(`${method} ${prefix}id${suffix}`, raw(port, { method, path: `${prefix}${leoGraph.id}${suffix}`, body: '{}',
-        headers: { 'Content-Type': 'application/json', Origin: origin } }), 404, notFound);
+      // Node's client sends a DELETE body unframed unless a length is given, and
+      // /api/sessions/:id now has a DELETE route, so the server would read those
+      // bytes as a second, malformed request. Give the length (P1d).
+      const length = method === 'DELETE' ? { 'Content-Length': '2' } : {};
+      await expect(`${method} ${prefix}id${suffix}`, state.raw({ method, path: `${prefix}${leoGraph.id}${suffix}`, body: '{}',
+        headers: { 'Content-Type': 'application/json', Origin: origin, ...length } }), 404, notFound);
     }
   }
   await expect('GET /api/graphs/<session id>', state.get(`/api/graphs/${leo.id}`), 404, notFound);
+
+  // P1d: DELETE /api/sessions/:id. The loop above still gets 404 for DELETE on
+  // /api/sessions/<graph id>, now from the handler (no such session) instead of from
+  // having no route. Origin comes first, then the ID, then the citing graphs.
+  const cara = (await expect('POST /api/import cara', state.post('/api/import', { provider: 'claude', source: 'cara.jsonl',
+    transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: 'Cara drafts the synthetic Vega notes.' } }) }), 200)).body.session;
+  const remove = (id, headers = { Origin: origin }) => state.raw({ method: 'DELETE', path: `/api/sessions/${id}`, headers });
+  const sameOrigin = { error: 'Deleting a session requires the same origin.' };
+  await expect('DELETE session foreign Origin', remove(cara.id, { Origin: 'https://foreign.example' }), 403, sameOrigin);
+  await expect('DELETE session Origin of the other local name', remove(cara.id, { Origin: `http://localhost:${port}` }), 403, sameOrigin);
+  await expect('DELETE session no Origin', remove(cara.id, {}), 403, sameOrigin);
+  await expect('DELETE unknown session needs the Origin', remove(hex('e'), {}), 403, sameOrigin);
+  await expect('DELETE session foreign Host', state.raw({ method: 'DELETE', path: `/api/sessions/${cara.id}`,
+    headers: { Host: 'evil.example', Origin: 'http://evil.example' } }), 403, { error: 'Unrecognized local host.' });
+  for (const [label, id] of [['unknown', hex('e')], ['upper', hex('A')], ['short', 'a'.repeat(63)], ['long', 'a'.repeat(65)]]) {
+    await expect(`DELETE ${label} session`, remove(id), 404, notFound);
+  }
+  await expect('DELETE session trailing slash', remove(`${cara.id}/`), 404, notFound);
+  await expect('DELETE /api/sessions', state.raw({ method: 'DELETE', path: '/api/sessions', headers: { Origin: origin } }), 404, notFound);
+  await expect('DELETE cited session', remove(leo.id), 409, { error: 'This session is cited by 1 graph, so it cannot be deleted.', graphs: 1 });
+  await expect('cited session still there', state.get(`/api/sessions/${leo.id}`), 200);
+  await expect('PATCH session', state.raw({ method: 'PATCH', path: `/api/sessions/${cara.id}`, headers: { Origin: origin } }), 404, notFound);
+  await expect('DELETE session', remove(cara.id), 200, { deleted: cara.id });
+  await expect('GET deleted session', state.get(`/api/sessions/${cara.id}`), 404, notFound);
+  await expect('DELETE deleted session', remove(cara.id), 404, notFound);
+  await expect('search after delete', state.get('/api/sessions?q=vega'), 200, { sessions: [] });
 
   // The decisions route: Sec-Fetch-Site first, then the write checks, then the room.
   const decisions = `/api/rooms/${room.id}/decisions`;
@@ -250,7 +285,7 @@ test('the server request table answers every probe as before', async t => {
   await expect('decision unknown room needs the browser', state.post(`/api/rooms/${hex('e')}/decisions`, choice), 403, people);
   await expect('decision upper-case room', state.post(`/api/rooms/${hex('A')}/decisions`, choice), 404, notFound);
   await expect('GET decisions', state.get(decisions), 404, notFound);
-  await expect('PUT decisions', raw(port, { method: 'PUT', path: decisions, body: '{}', headers: { ...browser, Origin: origin } }), 404, notFound);
+  await expect('PUT decisions', state.raw({ method: 'PUT', path: decisions, body: '{}', headers: { ...browser, Origin: origin } }), 404, notFound);
   const decided = await expect('POST decisions', state.post(decisions, choice, browser), 200);
   assert.equal(decided.body.room.id, room.id);
   assert.deepEqual(Object.keys(decided.body), ['room']);
@@ -272,6 +307,31 @@ test('the server request table answers every probe as before', async t => {
   assert.deepEqual(runtime.seen.slice(before).map(entry => entry.url), ['/latent/read', '/latent/transfer', '/latent/team']);
   // LatentError keeps its own status.
   await expect('latent team LatentError', state.post('/api/latent/team', { question: 'runtime-fails' }), 502, { error: 'The latent runtime refused the request (HTTP 500).' });
+
+  // P1e: without the token or a session cookie, every route but the static files and
+  // /login is 401, whatever the method or path, and never reaches a handler. The Host
+  // and URL checks still come first, and the static files stay public.
+  const signIn = { error: 'Sign in first: run npm run ledger -- login and open the link it prints.' };
+  const anonymous = (method, path, headers = {}) => raw(port, { method, path, body: method === 'GET' ? undefined : '{}',
+    headers: { 'Content-Type': 'application/json', Origin: origin, ...browser, ...headers } });
+  const guarded = [
+    ['POST', '/api/import'], ['POST', '/api/graphs'], ['GET', '/api/sessions'], ['GET', '/api/graphs'], ['GET', '/api/rooms'],
+    ['GET', `/api/sessions/${leo.id}`], ['GET', `/api/graphs/${leoGraph.id}`], ['GET', `/api/graphs/${leoGraph.id}/context`],
+    ['POST', '/api/latent/read'], ['POST', '/api/latent/transfer'], ['POST', '/api/latent/files'], ['POST', '/api/latent/team'],
+    ['POST', '/api/rooms'], ['GET', `/api/rooms/${room.id}`], ['POST', decisions], ['POST', '/api/login'],
+    ['GET', '/nope'], ['GET', '/api'], ['GET', '/API/sessions'], ['PUT', '/api/sessions'], ['DELETE', `/api/rooms/${room.id}`],
+  ];
+  const seenBefore = runtime.seen.length;
+  for (const [method, path] of guarded) {
+    const response = await expect(`no token ${method} ${path}`, anonymous(method, path), 401, signIn);
+    assert.equal(response.headers['www-authenticate'], 'Bearer realm="Context Ledger"', path);
+    await expect(`wrong token ${method} ${path}`, anonymous(method, path, { Authorization: 'Bearer ' + 'A'.repeat(43) }), 401, signIn);
+  }
+  assert.equal(runtime.seen.length, seenBefore);
+  await expect('no token, foreign Host', raw(port, { path: '/api/sessions', headers: { Host: 'evil.example' } }), 403, { error: 'Unrecognized local host.' });
+  await expect('no token, bad URL', raw(port, { path: '//api/sessions' }), 400, { error: 'Invalid request URL.' });
+  for (const path of ['/', '/app.js', '/styles.css']) await expect(`no token GET ${path}`, raw(port, { path }), 200);
+  await expect('no token HEAD / is still 404', raw(port, { method: 'HEAD', path: '/' }), 404, '');
 
   if (process.env.ROUTES_PROBE_OUT) {
     // Dates and the ephemeral port vary between runs; everything else is compared as is.
@@ -318,11 +378,16 @@ test('LATENT_URL and LATENT_ROOT are read on each request, and unexpected errors
       LATENT_URL: `http://127.0.0.1:${first.server.address().port}` },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
+  // P5a review: one promise for the child's end, so a child already gone (by a code or
+  // a signal) or one that failed to spawn never leaves the teardown waiting.
+  const ended = once(child, 'exit').catch(() => {});
+  let running = true;
+  ended.then(() => { running = false; });
   t.after(async () => {
     try {
-      if (child.exitCode === null) {
+      if (running) {
         child.kill();
-        await once(child, 'exit');
+        await ended;
       }
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -338,18 +403,35 @@ test('LATENT_URL and LATENT_ROOT are read on each request, and unexpected errors
     while ((end = buffered.indexOf('\n')) >= 0) {
       const line = buffered.slice(0, end).trim();
       buffered = buffered.slice(end + 1);
-      if (waiting.length) waiting.shift()(line);
+      if (waiting.length) waiting.shift().resolve(line);
       else lines.push(line);
     }
   });
-  const nextLine = () => (lines.length ? Promise.resolve(lines.shift()) : new Promise(resolve => waiting.push(resolve)));
-  const port = Number((await nextLine()).match(/listening at http:\/\/127\.0\.0\.1:(\d+)/)[1]);
+  // P5a: a child that exits (a server that cannot start) fails every wait instead of
+  // leaving it pending, which with the fake runtimes still listening hung the whole file.
+  let exited;
+  const fail = error => {
+    exited = error;
+    while (waiting.length) waiting.shift().reject(exited);
+  };
+  child.once('exit', (code, signal) => fail(new Error(`The server child exited (${signal ?? code}).`)));
+  child.once('error', error => fail(new Error(`The server child failed: ${error.message}`)));
+  const nextLine = () => {
+    if (lines.length) return Promise.resolve(lines.shift());
+    if (exited) return Promise.reject(exited);
+    return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+  };
+  const listening = (await nextLine()).match(/listening at http:\/\/127\.0\.0\.1:(\d+)/u);
+  assert.ok(listening, 'the server prints where it listens');
+  const port = Number(listening[1]);
+  assert.match(await nextLine(), /^Sign in to the browser app/u);
+  const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
   const send = async message => {
     child.stdin.write(JSON.stringify(message) + '\n');
     assert.equal(await nextLine(), 'ok');
   };
   const origin = `http://127.0.0.1:${port}`;
-  const post = (path, data) => raw(port, { method: 'POST', path, body: JSON.stringify(data), headers: { 'Content-Type': 'application/json', Origin: origin } });
+  const post = (path, data) => raw(port, { method: 'POST', path, body: JSON.stringify(data), headers: { 'Content-Type': 'application/json', Origin: origin, ...auth } });
 
   assert.equal((await post('/api/latent/team', { question: 'one' })).status, 200);
   await send({ env: { LATENT_URL: `http://127.0.0.1:${second.server.address().port}` } });

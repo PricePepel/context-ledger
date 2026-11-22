@@ -69,6 +69,8 @@ function bigGraph(id, party, sessionId) {
   return {
     id, packet: { version: 2, sessionId, party, nodes, edges, links },
     readyActionIds: nodes.slice(50).map(node => node.id), currentDecisionIds: [], openQuestionIds: [],
+    // Card G7: one mark per node, paged like the other ID lists.
+    quotedNodeIds: nodes.slice(0, 70).map(node => node.id), inferredNodeIds: nodes.slice(70).map(node => node.id),
   };
 }
 
@@ -122,7 +124,8 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
     id: hex(index), type: 'matches', from: endpoint(index < 100 ? ali : leo, index % 100), to: endpoint(index < 100 ? leo : ali, index % 100),
     choices: { ali: index % 3 ? 'confirm' : null, leo: 'confirm' }, state: index % 3 ? 'agreed' : 'proposed',
   }));
-  const party = graph => ({ party: graph.packet.party, graphId: graph.id, sessionId: graph.packet.sessionId, nodes: graph.packet.nodes,
+  const party = graph => ({ party: graph.packet.party, graphId: graph.id, sessionId: graph.packet.sessionId,
+    nodes: graph.packet.nodes.map((node, index) => ({ ...node, grounding: index < 70 ? 'quoted' : 'inferred' })),
     readyActionIds: graph.readyActionIds, currentDecisionIds: [], openQuestionIds: [] });
   const room = { id: 'e'.repeat(64), parties: [party(ali), party(leo)], proposals,
     agreedProposalIds: proposals.filter(proposal => proposal.state === 'agreed').map(proposal => proposal.id) };
@@ -136,13 +139,16 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.ok(graphPages.pages.length >= 8, `${graphPages.pages.length} graph pages`);
   assert.deepEqual(mergePages('graph', graphPages.pages), leo);
   const [firstGraph] = graphPages.pages;
-  assert.equal(firstGraph.page.totalItems, 100 + 300 + 100 + 50);
+  assert.equal(firstGraph.page.totalItems, 100 + 300 + 100 + 50 + 100);
   // Derived state first, so a paged graph_publish result carries it on its first page.
   assert.deepEqual(firstGraph.page.sections, { readyActionIds: [1, 50], currentDecisionIds: null, openQuestionIds: null,
-    'packet.nodes': [51, 150], 'packet.edges': [151, 450], 'packet.links': [451, 550] });
+    'packet.nodes': [51, 150], 'packet.edges': [151, 450], 'packet.links': [451, 550],
+    // Card G7: the marks come last, so adding them to an older graph renumbers nothing.
+    quotedNodeIds: [551, 620], inferredNodeIds: [621, 650] });
+  assert.ok(graphPages.pages.slice(0, -2).every(page => page.graph.quotedNodeIds === undefined), 'not repeated in the head');
   assert.equal(firstGraph.graph.packet.party, 'leo', 'the head repeats on every page');
   assert.equal(graphPages.pages.at(-1).graph.packet.sessionId, leo.packet.sessionId);
-  assert.match(firstGraph.more.note, new RegExp(`^Items ${firstGraph.more.fromItem} to 550 remain\\. Call graph_read again with this graphId and fromItem ${firstGraph.more.fromItem}\\.$`));
+  assert.match(firstGraph.more.note, new RegExp(`^Items ${firstGraph.more.fromItem} to 650 remain\\. Call graph_read again with this graphId and fromItem ${firstGraph.more.fromItem}\\.$`));
 
   const published = await client.call(100, 'graph_publish', { packet: { version: 2 } });
   const publishPage = JSON.parse(pageText(published));
@@ -156,10 +162,10 @@ test('graph_read, graph_publish, room_read and room_open page at the schema limi
   assert.deepEqual(publishPage.graph.currentDecisionIds, []);
   assert.deepEqual(publishPage.graph.openQuestionIds, []);
 
-  const past = JSON.parse(pageText(await client.call(101, 'graph_read', { graphId: leo.id, fromItem: 551 })));
+  const past = JSON.parse(pageText(await client.call(101, 'graph_read', { graphId: leo.id, fromItem: 651 })));
   assert.equal(past.more, undefined);
-  assert.equal(past.page.note, 'No items at or after 551; there are 550.');
-  assert.equal(past.page.toItem, 550);
+  assert.equal(past.page.note, 'No items at or after 651; there are 650.');
+  assert.equal(past.page.toItem, 650);
 
   const roomPages = await walkJson(client, 200, 'room_read', { roomId: room.id });
   assert.deepEqual(mergePages('room', roomPages.pages), room);
@@ -248,7 +254,7 @@ test('session_search pages 300 escape-heavy sessions; session_read splits long t
     if (!page.more) break;
     assert.equal(Object.keys(page)[0], 'more');
     assert.equal(page.more.after, page.sessions.at(-1).id);
-    assert.match(page.more.note, /Call session_search again with the same query and provider and after set to more\.after\./);
+    assert.match(page.more.note, /Call session_search again with the same query, provider and project and after set to more\.after\./);
     after = page.more.after;
     assert.ok(id < 100);
   }
@@ -550,7 +556,14 @@ test('context_for pages whole briefing lines and keeps the meter on every page',
 // budget counts these 13 by name and survives that merge.
 const cycleTools = ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open',
   'room_read', 'latent_read', 'latent_transfer', 'latent_team', 'graph_list', 'room_list'];
-const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name))).length;
+// Card P2a: the project filter on session_search, graph_list and room_list is that card's
+// growth, so it is taken out here and has its own budget below.
+const withoutProject = tool => {
+  const { project: _project, ...properties } = tool.inputSchema.properties ?? {};
+  return { ...tool, description: tool.description.replace(', party and/or project', ' and/or party').replace('graphId, party and/or project', 'graphId and/or party'),
+    inputSchema: { ...tool.inputSchema, properties } };
+};
+const cycleSize = tools => JSON.stringify(tools.filter(tool => cycleTools.includes(tool.name)).map(withoutProject)).length;
 
 test('review round 3: required arguments are those of 19f6522, and every new paging argument is optional', async t => {
   const client = mcp(t, 9);
@@ -560,6 +573,8 @@ test('review round 3: required arguments are those of 19f6522, and every new pag
     session_search: [], session_read: ['sessionId'], graph_schema: [], graph_publish: ['packet'], graph_read: ['graphId'],
     context_for: ['graphId'], room_open: ['graphIds'], room_read: ['roomId'], latent_read: ['paths', 'question'],
     latent_transfer: ['sender', 'receiver', 'question'], latent_team: ['question'], graph_list: [], room_list: [],
+    // Card G11: a new tool, so its required arguments are new too.
+    graph_diff: ['graphId', 'fromGraphId'],
   });
 });
 
@@ -571,6 +586,10 @@ test('tools/list: the cycle\'s thirteen closed tools, at most 3,500 characters m
   for (const name of cycleTools) assert.ok(names.includes(name), name);
   const size = cycleSize(result.tools);
   assert.ok(size <= 7066 + 3500, `tools/list is ${size} characters`);
+  // P2a's own budget: the three project arguments and their mention, at most 400 characters.
+  const scoped = JSON.stringify(result.tools.filter(tool => cycleTools.includes(tool.name))).length;
+  assert.ok(scoped - size <= 400, `the project filters add ${scoped - size} characters`);
+  assert.deepEqual(result.tools.filter(tool => tool.inputSchema.properties?.project).map(tool => tool.name), ['session_search', 'graph_list', 'room_list']);
   const merged = [...result.tools, { name: 'handoff_publish', description: 'x'.repeat(1800), inputSchema: { type: 'object', additionalProperties: false } }];
   assert.equal(cycleSize(merged), size, 'another branch\'s tool does not use this cycle\'s budget');
   for (const tool of result.tools) {

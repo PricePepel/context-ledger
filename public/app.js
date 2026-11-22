@@ -14,6 +14,7 @@ const readerHeading = document.querySelector('#reader-heading');
 const readerSource = document.querySelector('#reader-source');
 const readerStatus = document.querySelector('#reader-status');
 const readerMessages = document.querySelector('#reader-messages');
+const readerDelete = document.querySelector('#reader-delete');
 
 let searchRequest;
 let readerRequest;
@@ -35,7 +36,7 @@ function renderRows(container, entries, createRow) {
 async function request(path, options) {
   const response = await fetch(path, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
+  if (!response.ok) throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), { status: response.status });
   return body;
 }
 
@@ -112,6 +113,7 @@ async function openTranscript(id, focusHeading = false) {
   const { signal } = readerRequest;
   selectedId = id;
   renderSelection();
+  readerDelete.hidden = true;
   readerHeading.textContent = 'Opening transcript';
   readerSource.textContent = '';
   readerMessages.replaceChildren();
@@ -124,6 +126,7 @@ async function openTranscript(id, focusHeading = false) {
     readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`;
     renderRows(readerMessages, session.messages, messageRow);
     readerStatus.textContent = '';
+    readerDelete.hidden = false;
     if (focusHeading) readerHeading.focus();
   } catch (error) {
     if (signal.aborted) return;
@@ -134,32 +137,77 @@ async function openTranscript(id, focusHeading = false) {
   }
 }
 
+// Card I2: a partial import says so, with what was kept and which lines were skipped.
+function importNote(session, skipped) {
+  if (!skipped?.count) return `Imported ${session.source}.`;
+  const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+  const which = skipped.lines.length < skipped.count ? `, first ${skipped.lines.join(', ')}` : ` (${skipped.lines.join(', ')})`;
+  return `Partially imported ${session.source}: kept ${plural(session.messageCount, 'message')}, `
+    + `skipped ${plural(skipped.count, 'unreadable line')}${which}. Messages on those lines are missing.`;
+}
+
+// Deleting asks first, with fixed text: transcript text never goes into the dialog.
+readerDelete.addEventListener('click', async () => {
+  const id = selectedId;
+  if (!id || readerDelete.disabled) return;
+  if (!window.confirm('Delete this transcript from the ledger? This cannot be undone.')) return;
+  readerDelete.disabled = true;
+  readerStatus.textContent = 'Deleting transcript…';
+  try {
+    await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    // The person may have opened another transcript while the delete was in flight.
+    if (selectedId === id) {
+      readerRequest?.abort();
+      selectedId = undefined;
+      readerDelete.hidden = true;
+      readerHeading.textContent = 'No transcript selected';
+      readerSource.textContent = '';
+      readerMessages.replaceChildren();
+      readerStatus.textContent = 'Transcript deleted.';
+    }
+    await search();
+  } catch (error) {
+    if (selectedId === id) readerStatus.textContent = `Delete failed. ${error.message}`;
+  } finally {
+    readerDelete.disabled = false;
+  }
+});
+
 importForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const file = transcriptFile.files[0];
   if (!file || importButton.disabled) return;
+  const provider = sourceAgent.value;
+  const tooLarge = () => "Import failed. This import is over the browser's 8 MiB limit; import it with: npm run ledger -- import --provider "
+    + `${provider} <file>`;
   if (file.size >= maxImportBytes) {
-    importStatus.textContent = 'Import failed. Choose a transcript smaller than 8 MiB.';
+    importStatus.textContent = tooLarge();
     return;
   }
-  const provider = sourceAgent.value;
   const readerAtImport = readerRequest;
   importButton.disabled = true;
   importStatus.textContent = 'Importing transcript…';
 
   try {
-    const { session } = await request('/api/import', {
+    const body = JSON.stringify({ provider, source: file.name, transcript: await file.text() });
+    // A file under 8 MiB can still make a larger request once it is quoted as JSON. The
+    // server refuses that before reading it, which the browser sees as a failed fetch.
+    if (new Blob([body]).size > maxImportBytes) {
+      importStatus.textContent = tooLarge();
+      return;
+    }
+    const { session, skipped } = await request('/api/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, source: file.name, transcript: await file.text() }),
+      body,
     });
     if (transcriptFile.files[0] === file) transcriptFile.value = '';
-    importStatus.textContent = `Imported ${session.source}.`;
+    importStatus.textContent = importNote(session, skipped);
     const refresh = search();
     if (readerRequest === readerAtImport) await openTranscript(session.id);
     await refresh;
   } catch (error) {
-    importStatus.textContent = `Import failed. ${error.message}`;
+    importStatus.textContent = error.status === 413 ? tooLarge() : `Import failed. ${error.message}`;
   } finally {
     importButton.disabled = false;
   }
@@ -178,6 +226,7 @@ const roomGraphB = document.querySelector('#room-graph-b');
 const roomStatus = document.querySelector('#room-status');
 const roomView = document.querySelector('#room-view');
 const roomParties = document.querySelector('#room-parties');
+const roomUpdates = document.querySelector('#room-updates');
 const roomProposals = document.querySelector('#room-proposals');
 const roomAgreed = document.querySelector('#room-agreed');
 const linkVerbs = { matches: 'matches', conflicts: 'conflicts with', answers: 'answers' };
@@ -214,7 +263,9 @@ function partyColumn(party) {
   list.className = 'party-nodes';
   renderRows(list, party.nodes, node => {
     const item = document.createElement('li');
-    const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    // Card G7: quoted or inferred, from the cited lines; nothing for a graph stored before G7.
+    const detail = [node.kind, node.grounding, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+    if (node.grounding) item.dataset.grounding = node.grounding;
     item.append(textElement('span', detail, 'node-kind'), labelElement(node.label));
     return item;
   });
@@ -222,7 +273,7 @@ function partyColumn(party) {
   return column;
 }
 
-function proposalRow(proposal, parties) {
+function proposalRow(proposal, parties, takesChoices = true) {
   const item = document.createElement('li');
   item.dataset.proposal = proposal.id;
   item.dataset.state = proposal.state;
@@ -234,7 +285,8 @@ function proposalRow(proposal, parties) {
     group.className = 'choice-group';
     const made = proposal.choices[party];
     group.append(textElement('span', `${party}: ${made ?? 'undecided'}`, 'choice-made'));
-    for (const choice of ['confirm', 'reject']) {
+    // Card P2a: a read-only room keeps its recorded choices and offers no buttons.
+    for (const choice of takesChoices ? ['confirm', 'reject'] : []) {
       const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
       button.type = 'button';
       button.setAttribute('aria-pressed', String(made === choice));
@@ -250,11 +302,81 @@ function proposalRow(proposal, parties) {
   return item;
 }
 
+const changeWords = [['added', 'added'], ['removed', 'removed'], ['changed', 'changed'], ['superseded', 'decision superseded', 'decisions superseded'],
+  ['answered', 'question answered', 'questions answered'], ['opened', 'question opened', 'questions opened'],
+  ['readyGained', 'action now ready', 'actions now ready'], ['readyLost', 'action no longer ready', 'actions no longer ready'],
+  ['edges', 'edge changed', 'edges changed'], ['links', 'link changed', 'links changed']];
+
+function changeSummary(counts) {
+  const parts = changeWords.filter(([key]) => counts[key]).map(([key, one, many = one]) => `${counts[key]} ${counts[key] === 1 ? one : many}`);
+  return parts.length ? parts.join(', ') : 'no node, edge or link changes';
+}
+
+/** Card G11: the labels that changed, from the diff of the two snapshots. */
+async function fillUpdate(list, update, generation) {
+  try {
+    const { diff } = await request(`/api/graphs/${update.graphId}/diff?from=${update.fromGraphId}`);
+    if (generation !== roomGeneration) return;
+    // Each node once, with the first thing that happened to it.
+    const seen = new Set();
+    const rows = [
+      ...diff.nodes.added.map(node => ['Added', node]),
+      ...diff.nodes.removed.map(node => ['Removed', node]),
+      ...diff.supersededDecisions.map(node => ['Superseded', node]),
+      ...diff.answeredQuestions.map(node => ['Answered', node]),
+      ...diff.readyActionsGained.map(node => ['Now ready', node]),
+      ...diff.readyActionsLost.map(node => ['No longer ready', node]),
+      ...diff.nodes.changed.map(node => ['Changed', node]),
+    ].filter(([, node]) => !seen.has(node.id) && seen.add(node.id));
+    renderRows(list, rows.slice(0, 12), ([what, node]) => {
+      const item = document.createElement('li');
+      item.append(`${what} ${node.kind}: `, labelElement(node.label));
+      return item;
+    });
+  } catch {
+    if (generation === roomGeneration) list.replaceChildren(textElement('li', 'The changes could not be loaded.', 'room-note'));
+  }
+}
+
+function renderUpdates(room) {
+  const updates = room.newerGraphs ?? [];
+  const generation = roomGeneration;
+  renderRows(roomUpdates, updates, update => {
+    const box = document.createElement('section');
+    box.className = 'room-update';
+    box.setAttribute('aria-label', `Newer graph from ${update.party}`);
+    // Party names are not verified: a graph from another transcript is shown, not offered.
+    const who = update.sameSession ? `${update.party} has published a newer graph`
+      : `A newer graph from another transcript uses the party name ${update.party}, which is not verified`;
+    box.append(textElement('p', `${who} (${update.graphId.slice(0, 12)}…): ${changeSummary(update.counts)}. This room still shows the older one.`));
+    const list = document.createElement('ul');
+    box.append(list);
+    const use = textElement('button', `Use ${update.party}'s newer graph`);
+    use.type = 'button';
+    use.addEventListener('click', () => {
+      // Fill the form with the newer graph and the other party's graph; the person opens the room.
+      const other = room.parties.find(party => party.graphId !== update.fromGraphId);
+      roomGraphA.value = update.graphId;
+      roomGraphB.value = other?.graphId ?? '';
+      roomGraphA.focus();
+    });
+    if (update.sameSession) box.append(use);
+    void fillUpdate(list, update, generation);
+    return box;
+  });
+}
+
 function renderRoom(room) {
   currentRoomId = room.id;
+  renderUpdates(room);
   const parties = room.parties.map(party => party.party);
   renderRows(roomParties, room.parties, partyColumn);
-  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
+  // A ledger from before P2a sends no takesChoices; its rooms take choices as before.
+  const takesChoices = room.takesChoices !== false;
+  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties, takesChoices));
+  if (!takesChoices) {
+    roomProposals.prepend(textElement('li', "This room's graphs are not both in one known project, so it takes no choices. Open a room with two graphs from the same project.", 'room-note'));
+  }
   const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
   renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));
   if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));
@@ -344,3 +466,118 @@ roomForm.addEventListener('submit', async (event) => {
 
 const hashRoom = location.hash.match(/^#room=([a-f0-9]{64})$/u)?.[1];
 if (hashRoom) void loadRoom(hashRoom);
+
+// Card P2c (ADR-7c, 7d): a person approves or rejects the nodes of a version 3 graph by
+// their hash. Every label, citation and name is set with textContent.
+const reviewForm = document.querySelector('#review-form');
+const reviewGraphInput = document.querySelector('#review-graph');
+const reviewName = document.querySelector('#review-name');
+const reviewStatus = document.querySelector('#review-status');
+const reviewNodes = document.querySelector('#review-nodes');
+const reviewSubmit = reviewForm.querySelector('button[type="submit"]');
+const decisionWords = { approve: 'Approved', reject: 'Rejected' };
+let reviewGraph = null;
+let reviewing = false;
+
+function citationText(graph, node) {
+  const entry = (graph.citations ?? []).find(citation => citation.id === node.id);
+  const lines = (entry?.lines ?? []).map(line => `L${line}`);
+  const artifacts = (entry?.artifacts ?? []).map(artifact => `${artifact.kind} ${artifact.repo}@${artifact.ref}`);
+  return [...lines, ...artifacts].join(', ') || 'nothing';
+}
+
+function reviewRow(graph, node) {
+  const hash = (graph.nodeHashes ?? []).find(entry => entry.id === node.id)?.sha256;
+  const review = (graph.reviews ?? []).find(entry => entry.nodeId === node.id && entry.nodeSha256 === hash);
+  const item = document.createElement('li');
+  item.dataset.node = node.id;
+  item.dataset.state = review?.decision === 'approve' ? 'agreed' : review?.decision === 'reject' ? 'rejected' : 'proposed';
+  const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+  item.append(textElement('p', detail, 'node-kind'), labelElement(node.label),
+    textElement('p', `Cites ${citationText(graph, node)} · hash ${hash ? hash.slice(0, 12) + '…' : 'none'}`, 'room-note'),
+    textElement('p', review ? `${decisionWords[review.decision]} by ${review.reviewer} (self-asserted)` : 'Not reviewed', 'proposal-state'));
+  const actions = document.createElement('div');
+  actions.className = 'proposal-actions';
+  for (const decision of ['approve', 'reject']) {
+    const button = textElement('button', decision === 'approve' ? 'Approve' : 'Reject', 'choice-button');
+    button.type = 'button';
+    button.dataset.decision = decision;
+    button.setAttribute('aria-pressed', String(review?.decision === decision));
+    button.disabled = reviewing || !hash;
+    button.addEventListener('click', () => reviewNode(node.id, hash, decision));
+    actions.append(button);
+  }
+  item.append(actions);
+  return item;
+}
+
+function renderReview(graph) {
+  reviewGraph = graph;
+  renderRows(reviewNodes, graph.packet.nodes, node => reviewRow(graph, node));
+}
+
+async function loadReview(id) {
+  reviewStatus.textContent = 'Reading the graph…';
+  reviewNodes.replaceChildren();
+  reviewGraph = null;
+  try {
+    const { graph } = await request(`/api/graphs/${id}`);
+    if (graph.packet.version !== 3) {
+      reviewStatus.textContent = 'Only version 3 graphs are reviewed node by node.';
+      return;
+    }
+    renderReview(graph);
+    reviewStatus.textContent = Array.isArray(graph.nodeHashes)
+      ? `${graph.packet.nodes.length} ${graph.packet.nodes.length === 1 ? 'node' : 'nodes'} of ${graph.packet.party}'s graph.`
+      : 'This graph was stored before node hashes existed. Publish the same packet again to review it.';
+  } catch (error) {
+    reviewStatus.textContent = `Unable to read the graph. ${error.message}`;
+  }
+}
+
+async function reviewNode(nodeId, nodeSha256, decision) {
+  if (reviewing || !reviewGraph) return;
+  const reviewer = reviewName.value.trim();
+  if (!reviewer) {
+    reviewStatus.textContent = 'Type your name first.';
+    reviewName.focus();
+    return;
+  }
+  reviewing = true;
+  const graph = reviewGraph;
+  for (const button of reviewNodes.querySelectorAll('button')) button.disabled = true;
+  try {
+    const { reviews } = await request(`/api/graphs/${graph.id}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId, nodeSha256, decision, reviewer }),
+    });
+    reviewing = false;
+    if (reviewGraph !== graph) return;
+    renderReview({ ...graph, reviews });
+    reviewStatus.textContent = `${decisionWords[decision]} ${nodeId}.`;
+  } catch (error) {
+    reviewing = false;
+    if (reviewGraph === graph) {
+      renderReview(graph);
+      reviewStatus.textContent = `Review failed. ${error.message}`;
+    }
+  } finally {
+    reviewing = false;
+    // P2c review: another graph opened while this decision was in flight was drawn with
+    // its buttons disabled; draw it again, enabled.
+    if (reviewGraph && reviewGraph !== graph) renderReview(reviewGraph);
+  }
+  // Focus goes back only to the graph this decision was for (P2c review round 2).
+  if (reviewGraph === graph) reviewNodes.querySelector(`li[data-node="${nodeId}"] button[data-decision="${decision}"]`)?.focus();
+}
+
+reviewForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  reviewSubmit.disabled = true;
+  try {
+    await loadReview(reviewGraphInput.value.trim());
+  } finally {
+    reviewSubmit.disabled = false;
+  }
+});

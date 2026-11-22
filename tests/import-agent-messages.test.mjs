@@ -31,6 +31,9 @@ function importCodex(store, lines, source = 'orion.jsonl') {
   return { summary, messages: store.get(summary.id).messages };
 }
 
+// P1c gives every turn a stable key; these tests check the rest of each turn.
+const withoutKeys = messages => messages.map(({ key, ...message }) => message);
+
 test('I3: agent messages import as agent turns with author, recipient, line and the text as written', () => {
   const store = openStore(':memory:');
   const finalAnswer = envelope('FINAL_ANSWER', '/root', '/root/worker', 'No regressions in the Orion build.');
@@ -41,7 +44,8 @@ test('I3: agent messages import as agent turns with author, recipient, line and 
     codexLine('assistant', 'The worker found no regressions.'),
   ]);
 
-  assert.deepEqual(messages, [
+  assert.ok(messages.every(message => /^h:[0-9a-f]{32}$/u.test(message.key)));
+  assert.deepEqual(withoutKeys(messages), [
     { role: 'user', text: 'Check the Orion build for regressions.', line: 1 },
     { role: 'agent', author: '/root', recipient: '/root/worker', text: envelope('NEW_TASK', '/root/worker', '/root', ''), line: 2 },
     { role: 'agent', author: '/root/worker', recipient: '/root', text: finalAnswer, line: 3 },
@@ -75,7 +79,7 @@ test('I3: Claude Code records are unchanged, even one shaped like an agent messa
     JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', author: '/root', recipient: '/root/x', content: [{ type: 'input_text', text: 'Hidden.' }] } }),
   ].join('\n');
   const { id } = store.importTranscript({ provider: 'claude', source: 'vega.jsonl', transcript });
-  assert.deepEqual(store.get(id).messages, [{ role: 'user', text: 'Plan the Vega release.', line: 1 }]);
+  assert.deepEqual(withoutKeys(store.get(id).messages), [{ role: 'user', text: 'Plan the Vega release.', line: 1 }]);
 });
 
 test('I3: agent message text is searchable', () => {
@@ -195,10 +199,15 @@ test('I3 review: a Codex file imported before I3 gains its agent turns on a new 
   const { id } = store.importTranscript({ provider: 'codex', source: 'mira.jsonl', transcript });
   const graph = store.publishGraph({ version: 1, sessionId: id, nodes: [{ id: 'release', kind: 'goal', label: 'Release on Monday', evidenceLines: [3] }], edges: [] });
 
-  // Make the row look as the parser before I3 stored it: no agent turn.
+  const keys = store.get(id).messages.map(message => message.key);
+
+  // Make the rows look as the parser before I3 stored them: no agent turn.
   const raw = new DatabaseSync(path);
-  const old = JSON.parse(raw.prepare('SELECT messages FROM sessions WHERE id = ?').get(id).messages).filter(message => message.role !== 'agent');
-  raw.prepare('UPDATE sessions SET messages = ?, message_count = ?, search_text = ? WHERE id = ?').run(JSON.stringify(old), old.length, 'plan the mira release.', id);
+  raw.exec('BEGIN');
+  raw.prepare("DELETE FROM messages WHERE session_id = ? AND role = 'agent'").run(id);
+  raw.prepare("UPDATE messages SET seq = 1 WHERE session_id = ? AND line = 3").run(id);
+  raw.prepare('UPDATE sessions SET message_count = 2, search_text = ? WHERE id = ?').run('plan the mira release.', id);
+  raw.exec('COMMIT');
   raw.close();
   assert.equal(store.get(id).messages.length, 2);
   assert.equal(store.list('notes are ready', 'codex').length, 0);
@@ -207,6 +216,9 @@ test('I3 review: a Codex file imported before I3 gains its agent turns on a new 
   assert.equal(again.id, id);
   assert.equal(again.messageCount, 3);
   assert.deepEqual(store.get(id).messages.map(message => message.line), [1, 2, 3]);
+  assert.deepEqual(store.get(id).messages.map(message => message.key), keys, 'every turn keeps its key');
+  // A third import changes nothing.
+  assert.equal(store.importTranscript({ provider: 'codex', source: 'mira.jsonl', transcript }).messageCount, 3);
   assert.equal(store.list('notes are ready', 'codex').length, 1);
   assert.equal(store.getGraph(graph.id).id, graph.id);
   assert.ok(store.getGraphContext(graph.id), 'the old graph still builds its context');
@@ -258,4 +270,71 @@ test('I3 review: session_read splits a long agent turn with escaped paths and re
   }
   assert.equal(rejoined, body);
   assert.ok(sawLast, 'the turn after the agent turn is read');
+});
+
+test('I3: schema version 6 keeps every version 5 row, and stores agent paths in their own columns', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-i3-v6-'));
+  const path = join(directory, 'ledger.sqlite');
+  const stores = [];
+  t.after(async () => { for (const store of stores) store.close(); await rm(directory, { recursive: true, force: true }); });
+  const first = openStore(path);
+  stores.push(first);
+  const { id } = first.importTranscript({ provider: 'codex', source: 'lyra.jsonl', transcript: [codexLine('user', 'Plan the Lyra launch.'), codexLine('assistant', 'Launch on Friday.')].join('\n') });
+  const before = first.get(id).messages;
+  first.close();
+  stores.length = 0;
+
+  // Turn the file back into version 5: the messages table without the I3 columns.
+  const raw = new DatabaseSync(path);
+  raw.exec(`
+    BEGIN;
+    DROP TRIGGER sessions_messages;
+    CREATE TABLE old_messages (
+      id INTEGER PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+      seq INTEGER NOT NULL, line INTEGER NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      text_json TEXT NOT NULL, key TEXT NOT NULL,
+      UNIQUE (session_id, key), UNIQUE (session_id, seq)
+    ) STRICT;
+    INSERT INTO old_messages SELECT id, session_id, seq, line, role, text_json, key FROM messages;
+    DROP TABLE messages;
+    ALTER TABLE old_messages RENAME TO messages;
+    CREATE TRIGGER sessions_messages AFTER INSERT ON sessions
+    WHEN NOT EXISTS (SELECT 1 FROM messages WHERE session_id = NEW.id) BEGIN
+      INSERT INTO messages (session_id, seq, line, role, text_json, key)
+      SELECT NEW.id, m.key, m.value ->> '$.line', m.value ->> '$.role', m.value -> '$.text', 'l:' || (m.value ->> '$.line')
+      FROM json_each(NEW.messages) m ORDER BY m.key;
+    END;
+    PRAGMA user_version = 5;
+    COMMIT;
+  `);
+  raw.close();
+
+  const store = openStore(path);
+  stores.push(store);
+  assert.deepEqual(store.get(id).messages, before, 'the version 5 rows are kept as they were');
+  const agent = store.importTranscript({ provider: 'codex', source: 'lyra-team.jsonl', transcript: [
+    codexLine('user', 'Split the Lyra launch.'),
+    agentLine('/root', '/root/worker', [{ type: 'input_text', text: 'Check the Lyra checklist.' }]),
+  ].join('\n') });
+
+  const check = new DatabaseSync(path);
+  stores.push(check);
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.deepEqual(check.prepare('SELECT role, author, recipient FROM messages WHERE session_id = ? ORDER BY seq').all(agent.id)
+    .map(row => ({ ...row })), [
+    { role: 'user', author: null, recipient: null },
+    { role: 'agent', author: '/root', recipient: '/root/worker' },
+  ]);
+  // Builds from before versions read sessions.messages, and know only user and assistant turns.
+  const legacy = JSON.parse(check.prepare('SELECT messages FROM sessions WHERE id = ?').get(agent.id).messages);
+  assert.deepEqual(legacy.map(message => message.role), ['user']);
+  // An agent row needs both paths, and only an agent row has them.
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author) VALUES (?, 9, 9, 'agent', '\"x\"', 'l:9', '/root')").run(agent.id), /CHECK/u);
+  assert.throws(() => check.prepare("INSERT INTO messages (session_id, seq, line, role, text_json, key, author, recipient) VALUES (?, 9, 9, 'user', '\"x\"', 'l:9', '/a', '/b')").run(agent.id), /CHECK/u);
+  // The trigger for builds from before versions still gives a session they insert its rows.
+  check.prepare("INSERT INTO sessions (id, provider, source, title, message_count, messages, search_text) VALUES ('old', 'codex', 'o.jsonl', 't', 1, ?, 't')")
+    .run(JSON.stringify([{ role: 'user', text: 'Old build turn.', line: 1 }]));
+  assert.equal(check.prepare("SELECT count(*) AS n FROM messages WHERE session_id = 'old'").get().n, 1);
 });

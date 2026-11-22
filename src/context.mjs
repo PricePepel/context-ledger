@@ -1,15 +1,23 @@
-import { canonicalPacket, compareBy, kindOrder } from './graph.mjs';
+import { canonicalPacket, compareBy, kindOrder, nodeArtifacts, nodeLines } from './graph.mjs';
+import { nodeGrounding } from './grounding.mjs';
 import { handoffMarkdown } from './handoff.mjs';
+import { scopedText } from './scope.mjs';
 import { inlineText } from './text.mjs';
 
 // A rough, tokenizer-free estimate, labelled as such wherever it is shown. Vendors
 // tokenize differently, so exact counts belong to the M1.5 meter.
 const estimateTokens = text => Math.ceil(text.length / 4);
 
-function nodeLine(node) {
+function nodeLine(graph, node, grounding) {
   const state = [node.status, node.to && `to ${node.to}`].filter(Boolean).join(', ');
-  const lines = node.evidenceLines.map(line => 'L' + line).join(' ');
-  return `- ${node.id}${state ? ` [${state}]` : ''}: ${inlineText(node.label)} (${lines})`;
+  // P2b: a version 3 node cites the lines its message keys resolved to, then its artifacts.
+  const lines = [
+    ...nodeLines(graph, node).map(line => 'L' + line),
+    ...nodeArtifacts(graph, node).map(artifact => `${artifact.kind} ${inlineText(artifact.repo)}@${inlineText(artifact.ref)}`),
+  ].join(' ');
+  // Card G7: only inferred nodes are marked, so a fully quoted graph reads as before.
+  const mark = grounding === 'inferred' ? ', inferred' : '';
+  return `- ${node.id}${state ? ` [${state}]` : ''}: ${inlineText(node.label)} (${lines}${mark})`;
 }
 
 /**
@@ -34,7 +42,7 @@ function linkTargets(links, lookupGraph) {
  * the longest possible prefix. Identifiers that change with any edit (this graph,
  * the transcript snapshot, linked graphs) are in the final section.
  */
-export function contextText(graph, session, { lookupGraph } = {}) {
+export function contextText(graph, session, { lookupGraph, scope } = {}) {
   const packet = canonicalPacket(graph.packet);
   const lines = [
     `# Context Ledger graph v${packet.version}`,
@@ -49,7 +57,8 @@ export function contextText(graph, session, { lookupGraph } = {}) {
   // Canonical order for both versions. A v1 packet keeps its stored order for
   // identity, but rendering it sorted costs nothing.
   const nodes = [...packet.nodes].sort(compareBy('id'));
-  const nodeSection = kind => section(kind, nodes.filter(node => node.kind === kind).map(nodeLine));
+  const nodeSection = kind => section(kind, nodes.filter(node => node.kind === kind)
+    .map(node => nodeLine(graph, node, nodeGrounding(graph, node.id))));
   const firstVolatile = kindOrder.indexOf('action');
   kindOrder.slice(0, firstVolatile).forEach(nodeSection);
   section('edges', [...packet.edges].sort(compareBy('type', 'from', 'to'))
@@ -67,15 +76,35 @@ export function contextText(graph, session, { lookupGraph } = {}) {
     `current decisions: ${graph.currentDecisionIds.join(', ') || 'none'}`,
     ...(graph.openQuestionIds ? [`open questions: ${graph.openQuestionIds.join(', ') || 'none'}`] : []),
     ...[...targets].sort(compareBy(1)).map(([graphId, name]) => `linked graph ${name}: ${graphId}`),
+    // Card G7. In the last section, so the first inferred node cannot move the stable prefix.
+    ...(graph.inferredNodeIds?.length
+      ? ['inferred: the check found too little of these labels in their cited lines to mark them quoted; read the lines before relying on them']
+      : []),
     `session: ${packet.sessionId}`,
     `graph: ${graph.id}`,
+    // Card G9: a scoped briefing says what it left out, as its last line.
+    ...(scope ? [scope] : []),
   ]);
   return lines.join('\n') + '\n';
 }
 
-/** The context text plus a savings estimate against the full Markdown handoff. */
-export function graphContext(graph, session, options) {
-  const text = contextText(graph, session, options);
+/**
+ * The context text plus a savings estimate against the full Markdown handoff. With a
+ * question (and optionally a budget) the text is scoped to it (card G9, src/scope.mjs).
+ */
+export function graphContext(graph, session, { question, budget, ...options } = {}) {
+  let text;
+  if (question === undefined) {
+    text = contextText(graph, session, options);
+  } else {
+    // A budget renders the briefing several times; each linked graph is read once.
+    const seen = new Map();
+    const lookupGraph = options.lookupGraph && (id => {
+      if (!seen.has(id)) seen.set(id, options.lookupGraph(id));
+      return seen.get(id);
+    });
+    text = scopedText(graph, { question, budget }, (scoped, scope) => contextText(scoped, session, { ...options, lookupGraph, scope }));
+  }
   const handoff = handoffMarkdown(session);
   const handoffTokens = estimateTokens(handoff);
   const graphTokens = estimateTokens(text);

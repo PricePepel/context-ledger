@@ -1,4 +1,4 @@
-import { labelText, visibleText } from './text.mjs';
+import { terminalLabel, visibleText } from './text.mjs';
 
 function fencedText(text) {
   const visible = visibleText(text);
@@ -12,7 +12,7 @@ function fencedText(text) {
 
 // One line with nothing invisible: a path cannot start a heading of its own or hide
 // characters, and Markdown in it (strikethrough ~ included) is shown literally.
-const markdownText = text => labelText(text).replace(/[\\`*_{}[\]<>()!&#~]/g, '\\$&');
+const markdownText = text => terminalLabel(text).replace(/[\\`*_{}[\]<>()!&#~]/g, '\\$&');
 
 /** The heading of one turn; an agent message (card I3) names its author and recipient. */
 export function turnHeading({ role, line, author, recipient }) {

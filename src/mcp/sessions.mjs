@@ -2,9 +2,12 @@
 import { handoffMarkdown, turnHeading } from '../handoff.mjs';
 import { cutText, maxResultCharacters, resultSize } from '../paging.mjs';
 import { terminalJson } from '../text.mjs';
-import { ToolError, briefingText, checkArguments, fromOffsetArgument, hexSchema, isObject, jsonResult, listArguments, maxOffset, requireHex, text, tooLarge } from './common.mjs';
+import { ToolError, assertProjectRows, briefingText, checkArguments, fromOffsetArgument, hexSchema, isObject, jsonResult, listArguments, maxOffset, optionalProject, projectSchema, requireHex, text, tooLarge } from './common.mjs';
 import { ledger, listPage, olderLedger } from './ledger.mjs';
 import { listResult, listShape, notesSize, partialPage } from './pages.mjs';
+
+// The message keys P1c writes: a record UUID, a line hash, or a migrated line number.
+const messageKey = /^(?:u:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|h:[0-9a-f]{32}|l:[1-9][0-9]{0,15})$/u;
 
 /** One session_read page: whole turns, or one part of a turn too long for a page. */
 function sessionPage(session, remaining, fromLine, fromOffset) {
@@ -12,13 +15,18 @@ function sessionPage(session, remaining, fromLine, fromOffset) {
   if (!remaining.length) return briefingText(`${header}\n\n[No turns at or after line ${fromLine}.]`);
   // A turn's Markdown is what handoffMarkdown appends for it; escaping is per character,
   // so the escaped page is the escaped header plus the escaped turns.
+  // Card P2b: each heading also names the turn's stable key, which a version 3 graph cites.
+  // Only a key of the shape the ledger writes is shown; anything else is left out.
+  const keyOf = message => (typeof message.key === 'string' && messageKey.test(message.key) ? ` · key ${message.key}` : '');
   const turnMarkdown = (message, part) => {
     const shown = part ? { ...message, text: message.text.slice(part.start, part.end) } : message;
+    const plainHeading = `\n\n${turnHeading(message)}`;
     const turn = handoffMarkdown({ ...session, messages: [shown] }).slice(header.length);
-    if (!part) return turn;
-    const heading = `\n\n${turnHeading(message)}`;
+    const heading = turn.startsWith(plainHeading) ? plainHeading + keyOf(message) : plainHeading;
+    const keyed = heading + turn.slice(plainHeading.length);
+    if (!part) return turn.startsWith(plainHeading) ? keyed : turn;
     return `${heading}\n[Part of the turn at line ${message.line}: characters ${part.start}–${part.end} of ${message.text.length}.]` +
-      turn.slice(heading.length);
+      keyed.slice(heading.length);
   };
   const [first] = remaining;
   const firstPart = fromOffset > 0 ? { start: fromOffset, end: first.text.length } : undefined;
@@ -65,22 +73,25 @@ export const sessionSearch = ['session_search', {
     properties: {
       query: { type: 'string', maxLength: 512, default: '', description: 'Search terms.' },
       provider: { type: 'string', enum: ['claude', 'codex'], description: 'Only sessions from this agent.' },
+      project: projectSchema('Only this project.'),
       limit: { type: 'integer', minimum: 1, maximum: 100 },
       after: hexSchema('more.after of the previous page.'),
     },
     additionalProperties: false,
   },
   async run(args) {
-    checkArguments(args, ['query', 'provider', 'limit', 'after']);
+    checkArguments(args, ['query', 'provider', 'project', 'limit', 'after']);
     const query = args.query ?? '';
     if (typeof query !== 'string' || query.length > 512) throw new ToolError('query must be a string of at most 512 characters.');
     if (args.provider !== undefined && args.provider !== 'claude' && args.provider !== 'codex') {
       throw new ToolError('provider must be claude or codex.');
     }
+    const project = optionalProject(args);
     const { limit, after } = listArguments(args, 100);
     const url = cursor => {
       const search = new URLSearchParams({ q: query });
       if (args.provider) search.set('provider', args.provider);
+      if (project !== undefined) search.set('project', project);
       search.set('limit', limit);
       if (cursor) search.set('after', cursor);
       return '/api/sessions?' + search;
@@ -90,11 +101,13 @@ export const sessionSearch = ['session_search', {
     // without next. That list is complete, so it passes through as before when it fits;
     // trimming it, or answering an after, would send a client following more in a loop.
     if (isObject(data) && Array.isArray(data.sessions) && !Object.hasOwn(data, 'next')) {
+      assertProjectRows(data.sessions, project);
       const whole = jsonResult(data);
       if (after === undefined && resultSize(whole.content[0].text) <= maxResultCharacters) return whole;
       throw new ToolError(olderLedger);
     }
     if (!listShape(data, 'sessions')) throw new ToolError('Context Ledger returned an unexpected session list response.');
+    assertProjectRows(data.sessions, project);
     // Without a limit a page holds every session that fits, as on 19f6522, so a list
     // that fits is never cut at 100: read on until the rows pass the bound or end.
     // A ledger page holds up to 100 rows of at least 64 characters, so this stops after
@@ -104,12 +117,13 @@ export const sessionSearch = ['session_search', {
         && resultSize(terminalJson({ sessions: data.sessions })) <= maxResultCharacters; requests += 1) {
         const page = await listPage(url(data.next));
         if (!listShape(page, 'sessions')) throw new ToolError('Context Ledger returned an unexpected session list response.');
+        assertProjectRows(page.sessions, project);
         data.sessions.push(...page.sessions);
         data.next = page.next;
       }
     }
     return listResult('sessions', data.sessions, data.next,
-      'More sessions match. Call session_search again with the same query and provider and after set to more.after.', 'session list');
+      'More sessions match. Call session_search again with the same query, provider and project and after set to more.after.', 'session list');
   },
 }];
 
