@@ -672,6 +672,6 @@ Branch `claude/w2-data-gateway`, PR #71, stacked on W1 (PR #73); it targets `cla
 
 Next steps:
 
-1. **A human security review** before merge (sensitive-data handling, the shared scanner). Fifteen Codex rounds each found one or two more ways a copy of a secret can change between the gateway and a reader; each is fixed and tested, but the family is open. Look first at that boundary: any new path that transforms the prompt or the answer after the gateway must be checked against the canonical forms and rescanned.
+1. **A human security review** before merge (sensitive-data handling, the shared scanner). Twenty-five Codex rounds each found up to two more ways a copy of a secret can change between the gateway and a reader; each is fixed and tested, but the family is open, and a 26th round was refused by the provider's safety filter. Look first at that boundary: any new path that transforms the prompt or the answer after the gateway must be checked against the canonical forms and rescanned.
 2. When the latent team gets file input or tools, give each file its own span (origin `file`, a path, a sensitivity from the project's settings) and name the spans the task needs; declare tools with their argument rules and clearance in `Permissions` before admitting anything. A step that calls a tool with outside effect still has to run in text (design decision 3); that is not built.
 3. Not covered, and said in the code: a fragment of a secret value, and writes by native code outside the run's folders.
