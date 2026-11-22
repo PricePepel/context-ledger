@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { handoffMarkdown } from '../src/handoff.mjs';
 import { findSecrets, maskedPreview, redactSession, redactText } from '../src/secrets.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -725,5 +726,53 @@ test('P4d review: the copy search is one pass per field, not one per value', () 
   const seconds = Number(process.hrtime.bigint() - started) / 1e9;
   assert.equal(findings.length, 20000);
   // One indexOf per value took about 8 s on the Windows dev laptop; one pass, under 1 s.
+  assert.ok(seconds < 4, `${seconds} s`);
+});
+
+test('P4d review 2: copies of values merged into one finding, spaced passphrases and escaped bearer values', () => {
+  const BS = String.fromCodePoint(92);
+  const word = ['Viol', 'etLa', 'rk'].join('');
+  const session = {
+    id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl',
+    messages: [
+      // A password and a GitHub token on one line merge into one github-token finding.
+      { role: 'user', line: 1, text: `password=${word} with ${fake['github-token']}` },
+      { role: 'assistant', line: 2, text: `${word} and a${fake['github-token']}` },
+      { role: 'user', line: 3, text: 'password=Amber  Fox91 followed by prose' },
+      { role: 'assistant', line: 4, text: 'again Amber  Fox91 here' },
+      { role: 'user', line: 5, text: `"Authorization": "Bearer ${BS}u0051uartzOwl77"` },
+      { role: 'assistant', line: 6, text: 'QuartzOwl77 later' },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[1].text, '[REDACTED github-token] and a[REDACTED github-token]');
+  assert.equal(redacted.messages[3].text, 'again [REDACTED assigned-secret] here');
+  assert.equal(redacted.messages[5].text, '[REDACTED bearer-token] later');
+});
+
+test('P4d review 2: an agent turn\'s heading never shows a found value, in author or recipient', () => {
+  const value = ['Rook', 'Tide', '42'].join('');
+  const session = {
+    id: 'a'.repeat(64), provider: 'codex', source: 'agents.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `secret: ${value}` },
+      { role: 'agent', line: 2, author: '/root/lead', recipient: `/root/${value}`, text: 'Synthetic: hand-over.' },
+    ],
+  };
+  const markdown = handoffMarkdown(redactSession(session).session);
+  assert.ok(!markdown.includes(value));
+  assert.ok(markdown.includes('## agent /root/lead to /root/\\[REDACTED assigned-secret\\] · line 2'), markdown);
+});
+
+test('P4d review 2: many values that share their first characters stay linear', () => {
+  const count = 20000;
+  const messages = Array.from({ length: count }, (_, index) => ({ role: 'user', line: index + 1, text: `token=shared${index.toString(36).padStart(5, '0')}Q` }));
+  messages.push({ role: 'assistant', line: count + 1, text: 'shared_'.repeat(count) });
+  const started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'y.jsonl', messages });
+  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, count);
+  // Grouping values by their first six characters grew with the square (5 s at 8,000 in
+  // Codex's run); the matcher takes under 1 s.
   assert.ok(seconds < 4, `${seconds} s`);
 });

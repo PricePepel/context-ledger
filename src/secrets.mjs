@@ -391,65 +391,98 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-const lineTailKinds = new Set(['assigned-secret', 'bearer-token']);
-// A line tail's first words are searched for as one value, up to this many words.
-const maxTailWords = 8;
+// A finding's first words are searched for as one value, up to this many words.
+const maxPrefixWords = 8;
 const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
+const leadingQuotes = /^["'`]+/u;
 
 /**
- * The values a finding stands for, to search for elsewhere. A known format is its whole
- * span. A line tail runs to the end of its line, so it stands for:
- * - when it opens a quote, the quoted part as written and with its escapes decoded;
- * - otherwise its first word, its first two words, and so on (a passphrase pasted whole
- *   is matched whole), and the whole tail;
- * - and any later word that mixes letters and digits, as a key does.
+ * The values a finding stands for, to search for elsewhere. A finding can be one key, a
+ * line tail after a name (password=...) or several candidates merged into one span, so it
+ * stands for its whole span; its first word, its first two words and so on, as written
+ * (a passphrase is matched whole); every word that mixes letters and digits, as a key
+ * does; and the quoted part when the span opens a quote. Each value is also searched for
+ * with its escapes decoded.
  */
 function copyValues(text, finding) {
   const span = text.slice(finding.start, finding.end);
-  if (!lineTailKinds.has(finding.kind)) return [span];
+  const values = [span, span.trim().replace(trailingPunctuation, '')];
+  // Word ends in the span itself, so a prefix keeps the spaces it was written with.
+  const ends = [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].length);
+  for (const end of ends.slice(0, maxPrefixWords)) values.push(span.slice(0, end).trim().replace(trailingPunctuation, ''));
+  for (const word of span.split(/\s+/u)) {
+    const bare = word.replace(leadingQuotes, '').replace(trailingPunctuation, '');
+    if (mixed(bare)) values.push(bare);
+  }
   const quote = finding.start > 0 ? text[finding.start - 1] : '';
   if (/["'`]/u.test(quote)) {
     const close = quotedEnd(text, finding.start, quote);
-    if (close < finding.end) {
-      const raw = text.slice(finding.start, close);
-      return [raw, decoded(raw), ...raw.split(/\s+/u).filter(word => mixed(word))];
-    }
+    if (close < finding.end) values.push(text.slice(finding.start, close));
   }
-  const words = span.trim().split(/\s+/u);
-  const values = [span.trim().replace(trailingPunctuation, '')];
-  for (let count = 1; count <= Math.min(words.length, maxTailWords); count += 1) {
-    values.push(words.slice(0, count).join(' ').replace(trailingPunctuation, ''));
-  }
-  for (const word of words.slice(1)) {
-    const bare = word.replace(trailingPunctuation, '');
-    if (mixed(bare)) values.push(bare);
-  }
-  return values;
+  return [...values, ...values.map(decoded)];
 }
 
 /**
- * Every other occurrence in text of a known value, as spans that do not overlap. One pass
- * looks each position up by its first six characters, so the time grows with the text and
- * the matches, not with the number of values; at a position the longest value wins.
+ * A matcher for many values at once (Aho-Corasick over UTF-16 code units): one pass over a
+ * text finds, at every position, the longest value that ends there, so the time grows
+ * with the text and the values' total length, not with their product.
  */
-function copySpans(text, index) {
-  const spans = [];
-  for (let at = 0; at + minCopyLength <= text.length; at += 1) {
-    const candidates = index.get(text.slice(at, at + minCopyLength));
-    const hit = candidates?.find(candidate => text.startsWith(candidate.value, at));
-    if (!hit) continue;
-    const end = at + hit.value.length;
-    const last = spans.at(-1);
-    if (last && at < last.end) {
-      if (end > last.end) last.end = end;
-    } else {
-      spans.push({ kind: hit.kind, start: at, end, prefix: 0 });
+function copyMatcher(values) {
+  const nodes = [{ next: new Map(), fail: 0, length: 0, kind: '' }];
+  for (const [value, kind] of values) {
+    let node = 0;
+    for (let at = 0; at < value.length; at += 1) {
+      const unit = value.charCodeAt(at);
+      let child = nodes[node].next.get(unit);
+      if (child === undefined) {
+        child = nodes.push({ next: new Map(), fail: 0, length: 0, kind: '' }) - 1;
+        nodes[node].next.set(unit, child);
+      }
+      node = child;
+    }
+    if (value.length > nodes[node].length) Object.assign(nodes[node], { length: value.length, kind });
+  }
+  // Breadth first: a node's failure link is the longest proper suffix that is a node, and
+  // it inherits that suffix's longest value when it has none of its own.
+  const queue = [...nodes[0].next.values()];
+  for (let head = 0; head < queue.length; head += 1) {
+    const node = queue[head];
+    for (const [unit, child] of nodes[node].next) {
+      let fail = nodes[node].fail;
+      while (fail !== 0 && !nodes[fail].next.has(unit)) fail = nodes[fail].fail;
+      const target = nodes[fail].next.get(unit);
+      nodes[child].fail = target !== undefined && target !== child ? target : 0;
+      if (nodes[child].length === 0) Object.assign(nodes[child], { length: nodes[nodes[child].fail].length, kind: nodes[nodes[child].fail].kind });
+      queue.push(child);
     }
   }
-  return spans;
+  return text => {
+    const spans = [];
+    let node = 0;
+    for (let at = 0; at < text.length; at += 1) {
+      const unit = text.charCodeAt(at);
+      while (node !== 0 && !nodes[node].next.has(unit)) node = nodes[node].fail;
+      node = nodes[node].next.get(unit) ?? 0;
+      const { length, kind } = nodes[node];
+      if (!length) continue;
+      // Ends only grow, so a new match merges with the spans it overlaps at the end.
+      let start = at + 1 - length;
+      let spanKind = kind;
+      while (spans.length && spans.at(-1).end > start) {
+        const last = spans.pop();
+        if (last.start <= start) { start = last.start; spanKind = last.kind; }
+      }
+      spans.push({ kind: spanKind, start, end: at + 1, prefix: 0 });
+    }
+    return spans;
+  };
 }
 
-/** findings and copies merged into spans; a copy that widens a finding hides its prefix. */
+/**
+ * findings and copies merged into spans. A copy that widens a finding hides its prefix.
+ * A finding's prefix is only ever a key format's public start (ghp_, AKIA), so a copy
+ * inside it shows nothing that is not public.
+ */
 function withCopies(findings, copies) {
   if (!copies.length) return findings;
   const all = [...findings.map(finding => ({ ...finding, rank: 0 })), ...copies.map(copy => ({ ...copy, rank: 1 }))];
@@ -493,19 +526,12 @@ export function redactSession(session) {
       }
     }
   });
-  // Values by their first six characters, longest first, so a value that holds another
-  // is matched whole.
-  const byPrefix = new Map();
-  for (const [value, kind] of [...values].sort((a, b) => b[0].length - a[0].length)) {
-    const key = value.slice(0, minCopyLength);
-    if (!byPrefix.has(key)) byPrefix.set(key, []);
-    byPrefix.get(key).push({ value, kind });
-  }
+  const copiesIn = values.size ? copyMatcher(values) : () => [];
   const findings = [];
   let source = session.source;
   const changed = new Map();
   fields.forEach((field, index) => {
-    const spans = withCopies(found[index], byPrefix.size ? copySpans(field.text, byPrefix) : []);
+    const spans = withCopies(found[index], copiesIn(field.text));
     if (!spans.length) return;
     for (const span of spans) {
       findings.push({ line: field.line, kind: span.kind, length: span.end - span.start, preview: maskedPreview(field.text, span) });

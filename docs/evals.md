@@ -4510,6 +4510,17 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
   - Each fix has a test in `tests/secrets.test.mjs`.
 - **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
+- **Codex review, round 2** (of 49f03f7):
+  - (high) A password and a token on one line merge into one finding, and the copy search took only the whole merged span, so a bare copy of either value survived. Fixed: every word in a finding that mixes letters and digits, and its first one to eight words, are searched for, whatever the finding's kind.
+  - (high, not a leak) A source name `password=<session ID>` is replaced in the source name, but the ID still shows as the session ID. The ID is public by design, so a value that equals it was never secret. Documented in `docs/signed-handoff.md`.
+  - (medium) Copies of a passphrase written with two spaces were missed, because the prefixes were joined with one space. So was a Bearer value with an escape after a quote that comes before `Bearer`. Fixed: prefixes are cut from the text as written, and every value is searched for with its escapes decoded too.
+  - (medium) Grouping values by their first six characters was quadratic for values that share them: 5 s at 8,000 values. Replaced with one Aho-Corasick pass over all values per field: 0.4 s at 20,000. A test bounds it. Memory grows with the number of matches; that is documented.
+  - (low, not changed) A literal `[REDACTED assigned-secret]` in the transcript, after `password=assigned-secret`, becomes a nested marker. The value is still removed.
+  - (low, not changed) A password that is a key format's public prefix (`password=sk-ant-`) still shows that prefix in a key's `redact` preview. The prefix is public text, the same for every key of that format.
+  - (low) The OpenSSL check said "a whole number of 0 or more". It now gives the upper bound. The docs now name agent authors and recipients as scanned.
+  - (low) Tests:
+    - Every malformed redaction record is now checked through the CLI as well.
+    - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

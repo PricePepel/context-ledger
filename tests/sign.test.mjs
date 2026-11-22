@@ -1171,7 +1171,7 @@ test('P4d: verify refuses a version 2 manifest whose redaction record is not exa
     });
     assert.deepEqual(await problemsOf(dir, { fingerprint: context.fingerprint }),
       ['The manifest does not match the signed hand-off format.'], label);
-    if (label === 'other scanner') {
+    {
       const cli = await run(['verify', dir, '--fingerprint', context.fingerprint]);
       assert.equal(cli.code, 1);
       assert.equal(cli.stdout, '');
