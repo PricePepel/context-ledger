@@ -4763,3 +4763,23 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 - **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
 - **Codex review, round 3:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+## D4 — Website build demo: hand-off with and without the ledger (defined 2026-11-22, before the code and the run)
+
+The question an investor asks: when one agent hands a job to another, does the ledger change what gets built? This card measures it on one realistic job, a small business website, with the same model in every condition.
+
+- **Client chat (synthetic):** `demo/roaster.mjs` writes a Claude Code transcript in which Mara, owner of the made-up Tidewater Roast Co., briefs an agent on her website. It holds 15 checkable requirements. Five of them change partway through, as clients do: the brand colour (forest green to terracotta), the opening hours, the oat latte price, a wholesale page that is added and then dropped, and online ordering that is asked for and then put off. Work chatter is appended (150 extra exchanges, the same setting as the long-session rehearsal) so the chat reads like a real working session. Every name, number, phone and address is made up.
+- **Agents:** Claude Code (`claude -p`, model `sonnet`) for every agent, with built-in tools off, so each agent sees only what the ledger tools return or what is in its prompt. The builder is given the same design brief in every condition and returns one self-contained HTML file (no external images or scripts; Google Fonts allowed).
+- **Conditions,** run 3 times each:
+  - `chat`: the builder reads the whole client chat itself with `session_read`, then builds.
+  - `notes`: a first agent reads the chat and writes a hand-off note for the developer, as people do today; the builder gets only the note.
+  - `ledger`: a first agent publishes a cited version 2 graph of the chat (decisions, replaced decisions with `supersedes` edges, constraints); the builder calls `context_for` on it, then builds.
+- **Scoring (automatic, `demo/roaster.mjs`):** the visible text and CSS of each site are checked for each of the 15 requirements (present and correct = 1). Separately counted: **stale** values (a replaced colour, hours or price that still appears) and **forbidden** content (a wholesale section, a gluten-free claim, an online-order button). Also recorded per condition: the builder's input tokens and the end-to-end time of the whole hand-off (first agent plus builder).
+
+| Gate | Pass when |
+| --- | --- |
+| The ledger keeps the client's final word | `ledger` scores at least as high as `notes` on requirements in every run, and has no more stale or forbidden items than `notes` in total. |
+| It is cheaper to hand over | The `ledger` builder reads fewer input tokens than the `chat` builder, on average. |
+| Reported, not gated | `ledger` against `chat` on requirements and stale items, and end-to-end time for all three. Earlier rehearsals found the graph briefing as accurate as the raw transcript (18/18 and 12/12), so we expect no accuracy gain over `chat`; the claim there is tokens and time, not quality. |
+
+Not covered, and named so nobody reads more into a pass: one job, one client chat we wrote ourselves, one model family, three runs each, and design quality is judged by eye, not scored. The sites shown in the pitch are the actual outputs of these runs, unedited.
