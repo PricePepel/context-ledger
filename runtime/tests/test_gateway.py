@@ -712,6 +712,16 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn("paper-harbor", released.text)
         self.assertTrue(released.safe)
 
+    def test_round15_a_value_only_a_canonical_view_shows_has_its_copies_redacted(self):
+        # Review W2-15: a zero-width space in the field name and the value, and a declared
+        # value before the name that hides its word boundary until it is redacted.
+        zwsp = chr(0x200B)
+        g = gateway(declared=["syntheticPrefix"])
+        g.admit([Span("request", "request", "q")])
+        answer = "Copy: paper-harbor" + chr(10) + "syntheticPrefixpass" + zwsp + 'word="paper' + zwsp + '-harbor".'
+        released = OutputGate(g).release(answer)
+        self.assertFalse(released.safe and "paper-harbor" in released.text, released.text)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
