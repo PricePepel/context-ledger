@@ -4595,6 +4595,20 @@ The combined answer (services hit by a configuration change and their total down
 
 What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
 
+## S1b — Honest speed-up and peak KV on the swarm page (defined 2026-11-22, before the code)
+
+The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divided the sum of each agent's own time *while sharing the GPU* by the wall time (53× for 100 agents), but each request is slower under load, so the honest figure against one agent run alone was about 23–30×. "KV cache in use" read 0% because the last sample is taken after the agents finish.
+
+| What | Pass when |
+| --- | --- |
+| Solo baseline | Before the agents start, a live run sends one warm-up request (not timed) and then `SWARM_BASELINE_RUNS` timed requests (default 3, 1 to 5) to each server alone, one at a time, and keeps the median per server. The baseline uses the same prompt shape as an agent (report 1) and its tokens are not added to the run's totals. It is measured once per ledger process for the same set of servers and models and reused by later runs, with the time it was measured. |
+| Speed-up | `speed-up = estimated one-after-another ÷ wall time`, where the estimate adds each finished agent's server baseline. A test with a server that answers slower under load than alone shows the speed-up uses the solo baseline (and is below the old sum ÷ wall ratio). If the baseline fails, the run still goes on and the speed-up says "not measured". |
+| Old figure | The sum of agents' own times is no longer shown as a speed-up or as "one after another". It stays in the API as `agentMsSum` only. |
+| KV peak | The KV-cache tile shows the highest value sampled during the run (across servers and samples), labelled as the peak, not the last sample. A test with a server whose KV gauge is high during the run and 0 afterwards shows the peak, not 0. |
+| Simulated | A simulated run shows "not measured" for the speed-up, the one-after-another estimate and the KV peak; no baseline is taken. |
+| Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
+| Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
