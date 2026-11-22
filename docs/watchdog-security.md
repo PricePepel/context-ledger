@@ -258,12 +258,26 @@ Recorded here, taken as the recommended defaults.
 4. On a hold, nothing is returned but the reason. On a statistical flag or audit disagreement, the run falls back to the solver alone in text. (Version 1 left this open.)
 5. A thought record may be read by the machine's operator through a local debug switch, for a flagged run that is not labelled sensitive. It is never in an API response and never stored. (Version 1 left this open.)
 6. Squads have up to 5 subagents. That is an organising rule with no evidence behind any particular number.
+7. The first error ceiling is 10% of released answers on GSM8K-like arithmetic, with abstention allowed, as in eval 11. (Open question 1, taken as the recommended default on 2026-11-22 when W1 was claimed.)
+8. No MiniCheck-class claim checker for now: it would be a new runtime dependency, and a flag-only signal at about 75% balanced accuracy does not change any decision in the table. (Open question 2, default taken on 2026-11-22.)
+9. Production squads use soft thoughts only, with no trained thought adapter. (Open question 3, default taken on 2026-11-22; Leo and Ali are asked to confirm in the W1 pull request.)
+
+W1 implementation choices (2026-11-22), each the simplest that meets the design:
+
+- **Where the watchdog looks.** Two hooks on the model's base see every input the transformer receives (token ids or a fed vector) and the hidden state it returns, and the runtime calls the watchdog at every hand-off. The watchdog builds its own plan of every turn from the role prompts and the chat template, not from the team's rendering.
+- **Memory checksum.** Every key and value is read as 16-bit words and folded into a keyed polynomial modulo the prime 2^31 − 1, per row, on the GPU, with two independent sketches. Exact integer arithmetic, so it is deterministic; for any fixed change the chance it goes unseen is at most 5 in 2^31 per sketch. Chosen over HMAC-SHA256 of the bytes because it costs milliseconds instead of copying the whole cache to the CPU at each hand-off.
+- **A hold** leaves both routes as HTTP 409 with the reason word and no answer, before any byte of a stream. The ledger's MCP tool tells the agent the run was held and to answer itself.
+- **Audit sampling** is 1 run in 20, drawn with `secrets`, plus every flagged run. The mismatched-memory audit needs a second question in the batch, so a single service request does not run it; it is measured in the eval.
+- **Agreement** between team and solver alone means the same final number; text without a number is "not comparable" and never causes a fallback.
+- **Thresholds** are committed as quantiles of clean scores (`runtime/latent_team/thresholds/`), pinned to the weights hash. The reference statistics for the distance score are not committed; their SHA-256 is.
 
 ## Open questions for the team
 
-1. What error ceiling do we want to promise per kind of task, and is declining to answer acceptable in the product?
-2. A small claim checker ([MiniCheck](https://arxiv.org/abs/2404.10774)-class, about 75% balanced accuracy) would be a new runtime dependency and needs an ADR. Worth it as a flag-only signal?
-3. Leo and Ali: is "soft thoughts only" acceptable as the production rule, given it rules out the paper's alignment and any trained thought adapter?
+Each has a default, taken under "Decisions taken" (7 to 9) so the build is not blocked; the team can still change it.
+
+1. What error ceiling do we want to promise per kind of task, and is declining to answer acceptable in the product? *Default: 10% on GSM8K-like arithmetic, abstention allowed.*
+2. A small claim checker ([MiniCheck](https://arxiv.org/abs/2404.10774)-class, about 75% balanced accuracy) would be a new runtime dependency and needs an ADR. Worth it as a flag-only signal? *Default: no.*
+3. Leo and Ali: is "soft thoughts only" acceptable as the production rule, given it rules out the paper's alignment and any trained thought adapter? *Default: yes, pending their answer in the W1 pull request.*
 
 ## Review
 

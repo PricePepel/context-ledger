@@ -666,15 +666,35 @@ function checkTeam(input) {
   return Object.fromEntries(teamFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 }
 
+// W1: the runtime's watchdog decides each run. A decision's action, reason and marks are
+// single words (letters and hyphens); anything else is dropped, never printed.
+const decisionWord = /^[A-Za-z][A-Za-z-]{0,39}$/u;
+const teamActions = new Set(['release', 'fallback', 'abstain', 'hold']);
+
+function word(value) {
+  return typeof value === 'string' && decisionWord.test(value) ? value : null;
+}
+
+function cleanDecision(decision) {
+  if (typeof decision !== 'object' || decision === null) return null;
+  return {
+    action: teamActions.has(decision.action) ? decision.action : null,
+    reason: word(decision.reason),
+    marks: Array.isArray(decision.marks) ? decision.marks.map(word).filter(Boolean).slice(0, 8) : [],
+  };
+}
+
 function cleanTeamReceipt(receipt) {
   if (typeof receipt !== 'object' || receipt === null) return null;
   return {
     model: typeof receipt.model === 'string' && modelId.test(receipt.model) ? receipt.model : null,
     agents: Array.isArray(receipt.agents) ? receipt.agents.filter(role => teamRoles.has(role)).slice(0, 8) : [],
+    system: receipt.system === 'single' ? 'single' : 'latent_mas',
     latentStepsPerAgent: count(receipt.latentStepsPerAgent),
     latentVectors: count(receipt.latentVectors),
     generatedTokens: count(receipt.generatedTokens),
     seconds: ms(receipt.seconds),
+    decision: cleanDecision(receipt.decision),
   };
 }
 
@@ -702,6 +722,12 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
     body = null;
   }
   if (response.status === 503) return { mode: 'unavailable', reason: 'The latent team is busy or not loaded.' };
+  // W1: the watchdog held the run. The runtime names the reason in parentheses; only a
+  // single word is kept, and no answer exists to pass on.
+  if (response.status === 409) {
+    const named = typeof body?.error === 'string' ? body.error.match(/\(([A-Za-z-]{1,40})\)/u) : null;
+    return { mode: 'held', reason: named ? named[1] : 'unknown' };
+  }
   // An older runtime without /latent/team answers 404: the team is simply not there.
   if (response.status === 404) return { mode: 'unavailable', reason: 'This latent runtime has no agent team.' };
   if (!response.ok) throw new LatentError(502, `The latent runtime refused the request (HTTP ${response.status}).`);
