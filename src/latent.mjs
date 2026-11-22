@@ -5,7 +5,7 @@ import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { InputError } from './errors.mjs';
 import latentRules from '../rules/latent-rules.json' with { type: 'json' };
-import { redactText } from './secrets.mjs';
+import { canonicalRanges, findSecrets } from './secrets.mjs';
 
 const maxPaths = 32;
 const maxTextBytes = 512 * 1024;
@@ -153,6 +153,45 @@ const goodLabel = label => typeof label === 'string' && label.length <= 500 && /
 // validated findings or footer that agents read after it.
 const oneLine = text => [...text.slice(0, 4000)]
   .map(character => (hiddenOrBreaking(character) ? ' ' : character)).join('').replace(/\s+/gu, ' ').trim();
+
+/**
+ * W2: an answer not cleared for sensitive data, as printed. The one-line form can make a
+ * credential the runtime's scan could not see (an invisible character between a name and
+ * its value becomes a space), so the printed answer is scanned again with the shared
+ * scanner. Every copy of each value found, and of each declared value, is redacted in any
+ * spelling the canonical forms match (escaped, spaced or invisibly split), and the result
+ * is checked again before it leaves: null when a finding or a known value survives.
+ */
+function redactedAnswer(text, declared) {
+  const findings = findSecrets(text, { values: true });
+  const known = new Set();
+  const add = value => {
+    for (const form of [value, oneLine(value)]) if (form.trim()) known.add(form);
+  };
+  declared.forEach(add);
+  for (const finding of findings) {
+    add(text.slice(finding.start, finding.end));
+    finding.values.forEach(add);
+  }
+  const ranges = [...findings.map(({ start, end }) => [start, end]), ...canonicalRanges(text, [...known])]
+    .filter(([start, end]) => end > start)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let out = '';
+  let at = 0;
+  for (const [start, end] of merged) {
+    const kind = findings.find(finding => start <= finding.start && finding.end <= end)?.kind ?? 'secret';
+    out += `${text.slice(at, start)}[REDACTED ${kind}]`;
+    at = end;
+  }
+  out += text.slice(at);
+  return findSecrets(out).length || canonicalRanges(out, [...known]).length ? null : out;
+}
 
 const count = value => (Number.isInteger(value) && value >= 0 && value <= 1e9 ? value : null);
 const roles = new Set(['reader', 'planner', 'worker', 'synthesizer']);
@@ -756,12 +795,9 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   // declared values are checked again on the text as printed (also folded to one line).
   let answer = oneLine(body.answer).slice(0, 4000);
   if (request.clearance !== 'sensitive') {
-    // The one-line form can create a credential the runtime's scan could not see (an
-    // invisible character between a name and its value becomes a space): scan it again.
-    answer = redactText(answer);
-    for (const secret of [...(request.secrets ?? [])].sort((a, b) => b.length - a.length)) {
-      for (const form of new Set([secret, oneLine(secret)])) if (form) answer = answer.split(form).join('[REDACTED secret]');
-    }
+    answer = redactedAnswer(answer, request.secrets ?? []);
+    // What would leave still holds a credential or a known value: no answer is passed on.
+    if (answer === null) return { mode: 'held', reason: 'output-unsafe' };
   }
   return { mode: 'latent-team', answer, answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
 }

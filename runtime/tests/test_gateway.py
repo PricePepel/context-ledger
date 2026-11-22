@@ -480,6 +480,58 @@ class ToolGateTest(unittest.TestCase):
         result = ToolGate(g).submit({"name": "lookup", "arguments": {"harbor-slate-42": "ok"}}, lambda n, a: sent.append(a))
         self.assertEqual((result.sent, sent), (False, []))
 
+    def test_round8_the_tool_gate_matches_canonical_copies(self):
+        # Review W2-8 finding 1: an escaped or invisibly split copy of a declared value is
+        # never sent to an uncleared tool; a plain argument still is (positive control).
+        bs, zwsp = chr(92), chr(0x200B)
+        lookup = Tool("lookup", outside_effect=False, arguments=(Argument("q", required=False),))
+        for copy in ("harbor" + bs + "u002d" + "slate-42", "harbor" + zwsp + "-slate-42"):
+            g = gateway(tools=(lookup,), declared=["harbor-slate-42"])
+            g.admit([Span("request", "request", "q")])
+            sent = []
+            result = ToolGate(g).submit({"name": "lookup", "arguments": {"q": copy}}, lambda n, a: sent.append(a))
+            self.assertEqual((result.sent, result.reason, sent), (False, "placeholder", []), ascii(copy))
+        g = gateway(tools=(lookup,), declared=["harbor-slate-42"])
+        g.admit([Span("request", "request", "q")])
+        self.assertTrue(ToolGate(g).submit({"name": "lookup", "arguments": {"q": "fine"}}, lambda n, a: a).sent)
+
+    def test_round8_values_found_in_an_answer_are_matched_canonically(self):
+        # Review W2-8 finding 2: the copy comes before the assignment that reveals the value,
+        # split by an invisible character.
+        from latent_team.gateway import canon
+        zwsp = chr(0x200B)
+        g = gateway()
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("Copy: harbor" + zwsp + "slate 42" + chr(10) + "password=harbor slate 42")
+        for drop in (False, True):
+            self.assertNotIn("harbor slate 42", canon(released.text, drop)[0])
+            self.assertNotIn("harborslate 42", canon(released.text, drop)[0])
+        self.assertTrue(released.safe)
+
+    def test_round8_a_credential_only_a_canonical_reader_sees_is_found(self):
+        # Review W2-8 finding 3, at the runtime: an invisible character splits a header's name
+        # from its value, which printed on one line is a header. Both copies go from the
+        # answer, and the model never reads such a value either.
+        zwsp = chr(0x200B)
+        g = gateway()
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("harbor-slate-42 / Authorization:" + zwsp + "Bearer harbor-slate-42")
+        self.assertNotIn("harbor-slate-42", released.text)
+        self.assertTrue(released.safe)
+        admission = gateway().admit([Span("request", "request", "use Authorization:" + zwsp + "Bearer harbor-slate-42")])
+        self.assertNotIn("harbor-slate-42", admission.text)
+
+    def test_round8_both_canonical_forms(self):
+        # A display shows a format character as nothing, the ledger's printing as a space:
+        # both forms are matched.
+        from latent_team.gateway import canon
+        zwj = chr(0x200D)
+        self.assertEqual((canon("a" + zwj + "b")[0], canon("a" + zwj + "b", True)[0]), ("a b", "ab"))
+        self.assertEqual(canon("a" + chr(9) + chr(10) + "  b", True)[0], "a b")
+        g = gateway(declared=["harborslate42"])
+        g.admit([Span("request", "request", "q")])
+        self.assertNotIn("slate42", OutputGate(g).release("it is harbor" + zwj + "slate42").text)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { findSecrets, redactText } from '../src/secrets.mjs';
+import { canonicalRanges, findSecrets, redactText } from '../src/secrets.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
 const { cases } = read('rules/secret-conformance.json');
@@ -21,6 +21,25 @@ function expand(parts) {
 function codePoints(text, index) {
   return [...text.slice(0, index)].length;
 }
+
+test('W2: a finding lists the value it identified, only when asked (review W2-8)', () => {
+  const value = 'harbor'.concat('-slate-42');
+  const [finding] = findSecrets(`Authorization: Bearer ${value}`, { values: true });
+  assert.deepEqual(finding.values, [value]);
+  assert.equal(findSecrets(`Authorization: Bearer ${value}`)[0].values, undefined);
+});
+
+test('W2: canonical copies of a value are found in both forms, as the gateway finds them', () => {
+  // The same forms as canon in runtime/latent_team/gateway.py: escapes decoded, blanks and
+  // invisible characters read as one space, or invisible characters dropped.
+  const value = 'harbor'.concat('-slate-42');
+  const zwsp = String.fromCodePoint(0x200b);
+  const escaped = 'harbor'.concat(String.fromCodePoint(92), 'u002d', 'slate-42');
+  const text = `a ${escaped} b harbor${zwsp}-slate-42 c harbor  ${String.fromCodePoint(9)}slate 42 d`;
+  const covered = canonicalRanges(text, [value, 'harbor slate 42']).map(([start, end]) => text.slice(start, end));
+  for (const copy of [escaped, `harbor${zwsp}-slate-42`, `harbor  ${String.fromCodePoint(9)}slate 42`]) assert.ok(covered.includes(copy), copy);
+  assert.deepEqual(canonicalRanges('nothing here', [value]), []);
+});
 
 test('W2: every shared case is found as the gateway finds it', () => {
   assert.ok(cases.length >= 40);

@@ -64,7 +64,7 @@ class Seen:
     thought record's top tokens. Taken just before the watchdog runs its checks."""
 
     def __init__(self, tokenizer):
-        self.tokenizer, self.prompts, self.tops, self.reports = tokenizer, [], [], []
+        self.tokenizer, self.prompts, self.tops, self.reports, self.steps = tokenizer, [], [], [], []
 
     def __enter__(self):
         from latent_team.supervisor import Run
@@ -85,6 +85,7 @@ class Seen:
                                             for c in watch.calls if c.get("ids") is not None))
                 # Every rank of the record, each read as a sequence over the steps (review W2-4).
                 ranks = watch.record[0][1].shape[1] if watch.record else 0
+                seen.steps.append(len(watch.record))
                 seen.tops.append(chr(10).join(seen.tokenizer.decode([int(ids[row, rank]) for _, ids, _ in watch.record])
                                               for rank in range(ranks)))
             return original(watch, answers, counts, seconds)
@@ -231,6 +232,71 @@ class PlaceholderEvalTest(unittest.TestCase):
         self.assertIn("[[secret-1-", public["answer"])
         self.assertIn(secret, cleared["answer"])
         self.assertNotIn(secret, json.dumps(cleared["receipt"]))
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the squad")
+class SensitiveCanaryTest(unittest.TestCase):
+    """Eval 7 on sensitive input (review W2-8 finding 4): a declared canary in a span declared
+    sensitive, each role given as many thought steps as the canary has characters, so a
+    decoded rank sequence is long enough to spell it, and the positive controls run under
+    the same settings."""
+
+    def run_sensitive(self, secret, declare=True, spell=False):
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        from latent_team.watchdog import Watch
+        team = text_team()
+        steps = len(secret)
+        gateway = Gateway("proj-a", declared_secrets=[secret] if declare else ())
+        gateway.fix_permissions(Permissions(clearance="sensitive"))
+        gateway.admit([Span("request", "request", "What does my note say?"),
+                       Span("note-1", "file", f"My code is {secret}. Keep it.", sensitive=True)], named=("note-1",))
+        rebuild = Watch.rebuild
+
+        def spelling(watch, hidden):
+            mix, ids, weights = rebuild(watch, hidden)
+            ids = ids.clone()
+            ids[:, 3] = 3 + ALPHABET.index(secret[len(watch.record) % len(secret)])   # a lower rank
+            return mix, ids, weights
+
+        logs, err, out = io.StringIO(), io.StringIO(), io.StringIO()
+        handler = logging.StreamHandler(logs)
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.DEBUG)
+        try:
+            with contextlib.ExitStack() as stack:
+                if spell:
+                    stack.enter_context(mock.patch.object(Watch, "rebuild", spelling))
+                seen = stack.enter_context(Seen(team.tokenizer))
+                stack.enter_context(contextlib.redirect_stderr(err))
+                stack.enter_context(contextlib.redirect_stdout(out))
+                [outcome] = Guard(team, thresholds=None, sample=lambda: False).run(
+                    ["unused"], steps=steps, max_new_tokens=TOKENS, gateways=[gateway])
+        finally:
+            logging.getLogger().removeHandler(handler)
+        self.assertEqual(outcome.decision["action"], "release", outcome.decision)
+        self.assertGreaterEqual(min(seen.steps), len(secret), "the record is long enough to spell the canary")
+        return seen, [logs.getvalue(), err.getvalue(), out.getvalue()]
+
+    def test_a_declared_sensitive_canary_reaches_no_prompt_record_report_or_log(self):
+        secret = canary()
+        seen, logs = self.run_sensitive(secret)
+        for text in seen.prompts + seen.tops + seen.reports + logs:
+            self.assertNotIn(secret, text)
+        self.assertTrue(all("[[secret-1-" in text for text in seen.prompts), "the model read the placeholder")
+
+    def test_the_same_observation_sees_an_undeclared_sensitive_canary(self):
+        # Positive control, same span, length and steps: undeclared, the canary is just text.
+        secret = canary()
+        seen, _ = self.run_sensitive(secret, declare=False)
+        self.assertIn(secret, seen.prompts[0])
+
+    def test_the_same_observation_sees_the_canary_spelled_in_the_record(self):
+        # Positive control, same settings: thought tokens forced to spell the whole canary at
+        # a lower rank are found by the same observation.
+        secret = canary()
+        seen, _ = self.run_sensitive(secret, spell=True)
+        self.assertIn(secret, seen.tops[0])
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the squad")
@@ -383,6 +449,23 @@ class NothingOnDiskTest(unittest.TestCase):
             "from tests.test_gateway_squad import text_team\n"
             "from latent_pool.team_service import MODEL_ID, TeamService\n"
             "service = TeamService(text_team(), steps=3)\n"
+            "outside = open(os.path.join(os.environ['OUTSIDE_DIR'], 'init-handle.txt'), 'a')\n"
+            "outside.write('init')\n"
+            "outside.flush()\n"
+            "def handles():\n"
+            "    if not os.path.isdir('/proc/self/fd'):\n"
+            "        return None\n"
+            "    out = {}\n"
+            "    for name in os.listdir('/proc/self/fd'):\n"
+            "        try:\n"
+            "            target = os.readlink('/proc/self/fd/' + name)\n"
+            "            with open('/proc/self/fdinfo/' + name) as h:\n"
+            "                info = dict(line.split(':', 1) for line in h.read().splitlines() if ':' in line)\n"
+            "        except OSError:\n"
+            "            continue\n"
+            "        if int(info['flags'].strip(), 8) & (os.O_WRONLY | os.O_RDWR) and os.path.isfile(target):\n"
+            "            out[name + ' ' + target] = [int(info['pos'].strip()), os.path.getsize(target)]\n"
+            "    return out\n"
             "import hashlib\n"
             "def listing():\n"
             "    out = {}\n"
@@ -397,6 +480,7 @@ class NothingOnDiskTest(unittest.TestCase):
             "held.write('before')\n"
             "held.flush()\n"
             "before = listing()\n"
+            "fds_before = handles()\n"
             "writes = []\n"
             "def hook(event, args):\n"
             "    if event == 'open':\n"
@@ -413,7 +497,12 @@ class NothingOnDiskTest(unittest.TestCase):
             "'secrets': ['cnry0123456789abcdef0123456789abcdef'], 'latentSteps': 3, 'maxNewTokens': 6})\n"
             "service.chat({'model': MODEL_ID, 'max_tokens': 6, 'messages': [{'role': 'user', 'content': '2+2?'}]})\n"
             "after = listing()\n"
+            "fds_after = handles()\n"
             "run_writes = list(writes)\n"
+            "fds = None if fds_before is None else sorted(k for k in fds_after if fds_before.get(k) != fds_after[k])\n"
+            "outside.write('during')\n"
+            "outside.flush()\n"
+            "fd_control = None if fds_before is None else handles() != fds_after\n"
             "added = sorted(k for k in after if before.get(k) != after[k]) + sorted(k for k in before if k not in after)\n"
             "held.write('during')\n"
             "held.flush()\n"
@@ -424,10 +513,10 @@ class NothingOnDiskTest(unittest.TestCase):
             "os.close(fd)\n"
             "control = [w for w in writes if w[1].endswith('existing.txt')]\n"
             "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control), "
-            "'handle': control_handle}))\n")
-        with tempfile.TemporaryDirectory() as folder:
+            "'handle': control_handle, 'fds': fds, 'fdControl': fd_control}))\n")
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:
             env = dict(os.environ, HOME=folder, USERPROFILE=folder, TMPDIR=folder, TEMP=folder, TMP=folder,
-                       PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime)
+                       PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime, OUTSIDE_DIR=outside)
             result = subprocess.run([sys.executable, "-c", script], cwd=folder, env=env, capture_output=True,
                                     text=True, timeout=300)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
@@ -436,6 +525,15 @@ class NothingOnDiskTest(unittest.TestCase):
             self.assertGreater(report["control"], 0, "the hook sees a numeric-flag write (positive control)")
             self.assertTrue(report["handle"], "a write through a handle opened earlier changes the content "
                                               "comparison (positive control)")
+            # Review W2-8 finding 5: where the system lists a process's open files (Linux), the
+            # position and size of every regular file open for writing, anywhere, is compared
+            # across the run, with a positive control that writes through a handle opened at
+            # model initialization outside every folder above. Elsewhere the claim is limited
+            # to the folders and the audit hook (docs/evals.md, eval 10).
+            if report["fds"] is not None:
+                self.assertEqual(report["fds"], [])
+                self.assertTrue(report["fdControl"], "a write through a handle opened at init outside the "
+                                                     "folders moves its position (positive control)")
 
 if __name__ == "__main__":
     unittest.main()

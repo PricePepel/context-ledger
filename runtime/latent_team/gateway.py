@@ -149,18 +149,20 @@ class Admission:
                 "refused": self.refused, "placeholders": self.placeholders, "toolsOff": self.rule_of_two}
 
 
-_BLANK = ("Cc", "Cf", "Zl", "Zp", "Zs")
+_SPACE = ("Zl", "Zp", "Zs")
+_INVISIBLE = ("Cc", "Cf")
 
 
-def canon(text):
+def canon(text, drop=False):
     """(canonical text, the original (start, end) of each canonical character).
 
-    The canonical form is how a copy of a value can look after any of the transformations a
+    The canonical forms are how a copy of a value can look after the transformations a
     secret passes through between here and a reader: quoted-string escapes decoded
-    (surrogate pairs joined), and every control, format, separator or space character, and
-    any run of them, read as one space, which is also what the ledger's one-line printing
-    does. Matching known values in this form, with offsets mapped back, finds an escaped,
-    spaced or invisibly split copy of a value."""
+    (surrogate pairs joined), every space or separator character, and any run of them, read
+    as one space, and each control or format character read either as a space too (drop
+    False: what the ledger's one-line printing does) or as nothing (drop True: what a
+    display shows). Matching known values in both forms, with offsets mapped back, finds an
+    escaped, spaced or invisibly split copy of a value. src/secrets.mjs has the same forms."""
     chars, spans, i, n = [], [], 0, len(text)
     while i < n:
         start, character = i, text[i]
@@ -174,7 +176,10 @@ def canon(text):
                     i += low[1]
         else:
             i += 1
-        if character.isspace() or unicodedata.category(character) in _BLANK:
+        category = unicodedata.category(character)
+        if drop and category in _INVISIBLE and not character.isspace():
+            continue
+        if character.isspace() or category in _SPACE or category in _INVISIBLE:
             if chars and chars[-1] == " ":
                 spans[-1] = (spans[-1][0], i)
                 continue
@@ -185,17 +190,18 @@ def canon(text):
 
 
 def canon_ranges(text, values):
-    """Original ranges of text whose canonical form holds a canonical value."""
-    canonical, spans = canon(text)
+    """Original ranges of text where either canonical form holds the same form of a value."""
     out = []
-    for value in values:
-        target = canon(value)[0].strip()
-        if not target:
-            continue
-        at = canonical.find(target)
-        while at != -1:
-            out.append((spans[at][0], spans[at + len(target) - 1][1]))
-            at = canonical.find(target, at + 1)
+    for drop in (False, True):
+        canonical, spans = canon(text, drop)
+        for value in values:
+            target = canon(value, drop)[0].strip()
+            if not target:
+                continue
+            at = canonical.find(target)
+            while at != -1:
+                out.append((spans[at][0], spans[at + len(target) - 1][1]))
+                at = canonical.find(target, at + 1)
     return out
 
 
@@ -285,6 +291,24 @@ class Gateway:
         except TypeError:
             return self.scanner(text)
 
+    def _scan_all(self, text):
+        """The scanner's findings on text as written and on both canonical forms, each mapped
+        back to its original range, with the canonical spelling among its values: a
+        credential that only a reader of a canonical form would see (a name and its value
+        split by an invisible character, or an escaped one) is found too."""
+        findings = list(self._scan(text))
+        for drop in (False, True):
+            canonical, spans = canon(text, drop)
+            if canonical == text:
+                continue
+            for finding in self._scan(canonical):
+                start, end = finding["start"], finding["end"]
+                if end <= start:
+                    continue
+                values = set(finding.get("values", ())) | {canonical[start:end]}
+                findings.append(dict(finding, start=spans[start][0], end=spans[end - 1][1], values=sorted(values)))
+        return findings
+
     def _placeholder(self, value):
         if value not in self._tokens:
             token = f"[[secret-{len(self._tokens) + 1}-{self.nonce}]]"
@@ -322,10 +346,10 @@ class Gateway:
         for text in texts:
             offsets.append(at)
             at += len(text) + len(separator)
-        findings = self._scan(joined)
+        findings = self._scan_all(joined)
         ranges = [(f["start"], f["end"]) for f in findings]
         for text, offset in zip(texts, offsets):   # each span read alone, as the ledger would read it
-            alone = self._scan(text)
+            alone = self._scan_all(text)
             findings += alone
             ranges += [(offset + f["start"], offset + f["end"]) for f in alone]
         for value in self.declared:
@@ -537,7 +561,8 @@ class ToolGate:
             return "label"   # read-only or not: a call can carry what the memory holds
         # names travel too, and an integer is sent as text
         outbound = [tool.name] + [str(k) for k in final] + [v if isinstance(v, str) else str(v) for v in final.values()]
-        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v) for v in outbound):
+        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v, collapsed=True)
+                                    for v in outbound):
             return "placeholder"
         return "allowed"
 
@@ -584,14 +609,14 @@ class OutputGate:
         Then, for a cleared output only, the placeholders are put back."""
         gateway = self.gateway
         kinds, found = {}, set()
-        for finding in gateway._scan(gateway.masked(text)):
+        for finding in gateway._scan_all(gateway.masked(text)):
             kinds[(finding["start"], finding["end"])] = finding["kind"]
             found |= spellings(text[finding["start"]:finding["end"]])
             for value in finding.get("values", ()):
                 found |= spellings(value)
         ranges = list(kinds)
         # Every occurrence of a value this scan found, and (uncleared) of every known value.
-        ranges += gateway._occurrences(text, sorted(found, key=len, reverse=True))
+        ranges += gateway._occurrences(text, sorted(found, key=len, reverse=True)) + canon_ranges(text, found)
         if self.clearance != "sensitive":
             ranges += gateway.value_ranges(text)
         merged = gateway._merge(ranges)
@@ -608,6 +633,7 @@ class OutputGate:
         # Verify the text that would leave: for an output not cleared, no known value may be
         # in it, not even one the redaction itself wrote. Such a release is refused (safe =
         # False) and the guard holds the run.
+        long_found = [value for value in found if len(value) > 3]
         safe = (self.clearance == "sensitive" or not gateway.holds_value(text, collapsed=True)) and \
-            not any(value in text for value in found if len(value) > 3)
+            not any(value in text for value in long_found) and not canon_ranges(text, long_found)
         return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)
