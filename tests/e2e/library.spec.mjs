@@ -144,3 +144,30 @@ test('I1 review: a file under 8 MiB that is too large once quoted gets the same 
   await page.getByRole('button', { name: 'Import transcript' }).click();
   await expect(page.getByText("Import failed. This import is over the browser's 8 MiB limit; import it with: npm run ledger -- import --provider claude <file>", { exact: true })).toBeVisible();
 });
+
+test('I3: a Codex message between agents is shown with who sent it to whom', async ({ page }) => {
+  const transcript = asJsonl(
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Audit the Draco build.' }] } },
+    { type: 'response_item', payload: { type: 'agent_message', author: '/root/worker', recipient: '/root', content: [
+      { type: 'input_text', text: 'Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDraco audit is clean.' },
+      { type: 'encrypted_content', encrypted_content: 'enc_synthetic' },
+    ] } },
+  );
+  await page.goto('/');
+  await upload(page, 'codex', 'draco-codex.jsonl', transcript);
+  await expect(page.getByText('Agent /root/worker to /root', { exact: true })).toBeVisible();
+  await expect(page.getByText('Line 2', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Draco audit is clean\./u)).toBeVisible();
+  await expect(page.getByText(/enc_synthetic/u)).toHaveCount(0);
+});
+
+test('I3 review: an agent path with a bidi control is shown escaped', async ({ page }) => {
+  const rlo = String.fromCodePoint(0x202e);
+  const transcript = asJsonl(
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Audit Pyxis.' }] } },
+    { type: 'response_item', payload: { type: 'agent_message', author: `/root/${rlo}evil`, recipient: '/root', content: [{ type: 'input_text', text: 'Pyxis is clean.' }] } },
+  );
+  await page.goto('/');
+  await upload(page, 'codex', 'pyxis-codex.jsonl', transcript);
+  await expect(page.getByText('Agent /root/\\u202eevil to /root', { exact: true })).toBeVisible();
+});
