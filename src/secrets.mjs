@@ -230,7 +230,15 @@ function lineTails(text) {
       const valueEnd = judgedEnd(text, start, end, quote, trimmed);
       if (valueEnd <= start || placeholderAt(text, start, valueEnd)) continue;
       const closed = Boolean(quote) && valueEnd < end;
-      found.push({ kind: rule.kind, start, end, prefix: 0, valueEnd, closed });
+      const candidate = { kind: rule.kind, start, end, prefix: 0, valueEnd, closed };
+      if (quote && !closed) {
+        // The judged value runs to the line end ("x". is not a stand-in), but what the quotes
+        // hold is a value of its own (review W2-14).
+        let close = start;
+        while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
+        if (close < end && close > start) candidate.quotedEnd = close;
+      }
+      found.push(candidate);
       // After a closed quote, the next lead is looked for after it; otherwise right after this lead.
       pattern.lastIndex = Math.max(pattern.lastIndex, closed ? valueEnd + 1 : start);
     }
@@ -262,6 +270,7 @@ function spanValues(text, members) {
   let tail = true;
   for (const candidate of members) {
     if (candidate.coreEnd !== undefined) {
+      if (candidate.quotedEnd !== undefined) out.add(text.slice(candidate.start, candidate.quotedEnd));
       const core = text.slice(candidate.start, candidate.coreEnd).replace(/[ \t,;]+$/u, '');
       if (core && !placeholderAt(text, candidate.start, candidate.start + core.length)) out.add(core);
       if (tail) {

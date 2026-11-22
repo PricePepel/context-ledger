@@ -4946,6 +4946,16 @@ Codex confirmed round 12's fixes for consecutive bare assignments of one kind an
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 609 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (401) passed.
 
+### W2 review, round 14 (2026-11-22, Codex, read-only, of PR #71 at 793167d)
+
+Codex confirmed round 13's checks of the fitted and rendered prompts and of known values after the last substitution. Its findings:
+
+- (high, fixed) The final rescan redacted a credential that a redaction exposed (`syntheticPrefix` declared, then `password=paper-harbor` after it) but not that value's earlier bare copy, and the last check did not know the value. The parts the rescan finds not authorised are now values too: every copy of them outside what was authorised is redacted with them, and they join the final check.
+- (high, fixed) A full stop after a quoted value (`password="paper-harbor".`) makes the judged value run to the line end (the P4c rule: what follows the quote is part of the value), so the quoted part was not known and its bare copy survived. What the quotes hold is now a value of its own in both scanners; spans are unchanged.
+- (low, documented) Round 13's bound on judging stand-ins changed one P4c behaviour: a run of more than 4,096 digits (or other stand-in characters) after a name is now a value, where before it was a stand-in. It is conservative (more is redacted), and it is now a shared boundary case in `rules/secret-conformance.json` (4,096 digits a stand-in, 4,097 a value), so both scanners keep agreeing on it.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 610 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 126 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (404) passed.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.

@@ -694,6 +694,24 @@ class ToolGateTest(unittest.TestCase):
             g.fit(200, "[...]")
         self.assertEqual(raised.exception.reason, "unsafe-render")
 
+    def test_round14_a_value_the_last_rescan_finds_has_every_copy_redacted(self):
+        # Review W2-14 finding 1: the declared prefix hides the assignment until it is
+        # redacted; the rescan then finds the value, and its earlier copy must go too.
+        g = gateway(declared=["syntheticPrefix"])
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("Copy: paper-harbor" + chr(10) + "syntheticPrefixpassword=paper-harbor")
+        self.assertFalse(released.safe and "paper-harbor" in released.text, released.text)
+        self.assertNotIn("paper-harbor", released.text)
+
+    def test_round14_a_quoted_value_with_a_full_stop_after_it_is_known(self):
+        # Review W2-14 finding 2: the full stop makes the judged value run to the line end;
+        # what the quotes hold is a value of its own, so its bare copy goes too.
+        text = "Copy: paper-harbor" + chr(10) + 'password="paper-harbor".'
+        self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("paper-harbor", released.text)
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
