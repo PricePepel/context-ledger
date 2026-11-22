@@ -249,6 +249,21 @@ class LabelEvalTest(unittest.TestCase):
                                                                             max_new_tokens=TOKENS, gateways=[gateway])
         self.assertEqual((outcome.decision["action"], outcome.decision["reason"]), ("hold", "budgets"))
 
+    def test_a_role_template_cannot_complete_a_declared_value(self):
+        # Review W2-6 finding 3: the planner's "Question: " would complete the declared value.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        team = text_team()
+        gateway = Gateway("proj-a", declared_secrets=["Question: harbor-slate-42"])
+        gateway.fix_permissions(Permissions())
+        gateway.admit([Span("request", "request", "harbor-slate-42, how long is it?")])
+        with Seen(team.tokenizer) as seen:
+            [outcome] = Guard(team, thresholds=None, sample=lambda: False).run(["unused"], steps=STEPS,
+                                                                                max_new_tokens=TOKENS, gateways=[gateway])
+        self.assertEqual((outcome.decision["action"], outcome.decision["reason"], outcome.answer),
+                         ("hold", "unsafe-render", None))
+        self.assertEqual(seen.prompts, [], "the model never ran")
+
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
         from latent_team.guard import Guard

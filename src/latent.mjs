@@ -5,6 +5,7 @@ import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { InputError } from './errors.mjs';
 import latentRules from '../rules/latent-rules.json' with { type: 'json' };
+import { redactText } from './secrets.mjs';
 
 const maxPaths = 32;
 const maxTextBytes = 512 * 1024;
@@ -749,6 +750,9 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   // declared values are checked again on the text as printed (also folded to one line).
   let answer = oneLine(body.answer).slice(0, 4000);
   if (request.clearance !== 'sensitive') {
+    // The one-line form can create a credential the runtime's scan could not see (an
+    // invisible character between a name and its value becomes a space): scan it again.
+    answer = redactText(answer);
     for (const secret of [...(request.secrets ?? [])].sort((a, b) => b.length - a.length)) {
       for (const form of new Set([secret, oneLine(secret)])) if (form) answer = answer.split(form).join('[REDACTED secret]');
     }

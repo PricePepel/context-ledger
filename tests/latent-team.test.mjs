@@ -69,6 +69,15 @@ test('W2: a declared value the one-line printing would rebuild is redacted', asy
   assert.ok(cleared.answer.includes(declared));
 });
 
+test('W2: a credential the one-line printing creates is redacted', async () => {
+  // An invisible character between a name and its value hides the assignment from the
+  // runtime's scan; printed on one line it becomes a space.
+  const value = 'harbor'.concat('-slate-42');
+  const body = { ...ok, answer: `password${String.fromCodePoint(0x200b)}= ${value}` };
+  const result = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(200, body) });
+  assert.ok(!result.answer.includes(value), result.answer);
+});
+
 test('bad requests never reach the runtime', async () => {
   const calls = [];
   for (const input of [{}, { question: ' ' }, { question: 'x'.repeat(8001) }, { question: 'q', latentSteps: 81 },

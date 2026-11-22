@@ -151,11 +151,21 @@ def fold(text):
     return " ".join(text.split())
 
 
+def _combined(text):
+    """Escaped surrogate pairs (as JSON writes an emoji) joined into one character, as a
+    literal copy of the value is written."""
+    try:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16")
+    except UnicodeError:
+        return text
+
+
 def spellings(value):
-    """A found value as written and as its quoted-string escapes decode (the scanner decodes
-    them to recognise a value): both are the same secret."""
-    decoded = secret_scan.decoded(value)
-    return {value, decoded} - {""}
+    """The spellings of one secret: as written, as its quoted-string escapes decode (surrogate
+    pairs combined), trimmed, and with its whitespace folded, as text around it may carry it."""
+    forms = {value, _combined(secret_scan.decoded(value))}
+    forms |= {form.strip() for form in forms} | {fold(form) for form in forms}
+    return {form for form in forms if form}
 
 
 class Gateway:
@@ -196,12 +206,20 @@ class Gateway:
         # A snapshot of every rule, in tuples of frozen values: nothing the caller still holds
         # can widen them later.
         tools = []
-        for tool in permissions.tools:
-            if not isinstance(tool, Tool) or not all(isinstance(a, Argument) for a in tool.arguments):
+        for tool in tuple(permissions.tools):
+            if not isinstance(tool, Tool) or not isinstance(tool.name, str) or \
+                    type(tool.outside_effect) is not bool or type(tool.cleared) is not bool:
                 raise GatewayError("malformed", "tools")
+            rules = tuple(tool.arguments)   # read once: an iterator is not consumed by the check
+            for a in rules:
+                if not isinstance(a, Argument) or not isinstance(a.name, str) or a.kind not in ("string", "integer") \
+                        or type(a.required) is not bool or type(a.max_length) is not int \
+                        or (a.pattern is not None and not isinstance(a.pattern, str)) \
+                        or type(a.low) is not int or type(a.high) is not int:
+                    raise GatewayError("malformed", "argument rule")
             arguments = tuple(Argument(a.name, a.kind, a.required, a.max_length, a.pattern, a.low, a.high)
-                              for a in tool.arguments)
-            tools.append(Tool(tool.name, bool(tool.outside_effect), arguments, bool(tool.cleared)))
+                              for a in rules)
+            tools.append(Tool(tool.name, tool.outside_effect, arguments, tool.cleared))
         self.permissions = Permissions(tuple(tools), int(permissions.max_tool_calls), int(permissions.max_steps),
                                        int(permissions.max_new_tokens), float(permissions.max_seconds),
                                        permissions.clearance)
@@ -257,7 +275,8 @@ class Gateway:
             alone = self._scan(text)
             findings += alone
             ranges += [(offset + f["start"], offset + f["end"]) for f in alone]
-        self._egress.update(v for v in self.declared)
+        for value in self.declared:
+            self._egress.update(spellings(value))
         for start, end in ranges:   # the spelling in the text, and the value its escapes decode to
             self._egress.update(spellings(joined[start:end]))
         for finding in findings:    # the value each finding identified (a free-text span runs on)
@@ -365,7 +384,7 @@ class Gateway:
         """Does text hold a known secret value itself: a declared one or an original finding,
         whether or not it has a placeholder of its own? collapsed=True also compares with runs
         of whitespace folded to one space, as a client printing the answer on one line does."""
-        values = [v for v in self._egress | set(self.declared) if v]
+        values = [v for v in self._egress if v] + [s for v in self.declared for s in spellings(v)]
         if any(value in text for value in values):
             return True
         if collapsed:
@@ -374,8 +393,14 @@ class Gateway:
         return False
 
     def value_ranges(self, text):
-        return self._occurrences(text, sorted((v for v in self._egress | set(self.declared) if v), key=len,
-                                              reverse=True))
+        values = set(self._egress) | {s for v in self.declared for s in spellings(v)}
+        return self._occurrences(text, sorted((v for v in values if v), key=len, reverse=True))
+
+    def check_rendered(self, text):
+        """Raise GatewayError if a known value appears in text the model would read (a role
+        template around the admitted text could complete one)."""
+        if self.holds_value(self.masked_out(text), collapsed=True):
+            raise GatewayError("unsafe-render", "a known value is in the text as the model would read it")
 
     def masked(self, text):
         """text with every placeholder token turned into #'s of the same length: a stand-in to
