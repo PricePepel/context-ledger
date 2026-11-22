@@ -395,3 +395,44 @@ class ServiceWithGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the watchdog")
+class EvalDriverTest(unittest.TestCase):
+    """The live eval's own code paths (faults.py, watch_eval.py) on the tiny model, so a GPU
+    run does not find their bugs."""
+
+    def test_every_fault_of_eval_1_is_caught_by_its_named_check(self):
+        from latent_team.faults import FAULTS, NAMED, inject
+        for name in FAULTS:
+            team = tiny_team(tokenizer=SystemCharTokenizer())
+            from latent_team.watchdog import Watch
+            watch = Watch(team, QUESTIONS, steps=STEPS, max_new_tokens=TOKENS)
+            mode, undo = inject(team, name)
+            try:
+                answers, receipt = team.latent_mas(QUESTIONS, steps=STEPS, max_new_tokens=TOKENS, mode=mode,
+                                                   watch=watch)
+            finally:
+                undo()
+            results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
+            self.assertEqual(results["checks"][NAMED[name]], [False] * 3, name)
+            self.assertEqual(team.__dict__.keys() & {"between", "think", "render", "close_turn"}, set(), name)
+            self.assertIsNone(team.adapter)
+
+    def test_clean_batch_and_its_summary(self):
+        from latent_team import watch_eval
+        from latent_team.guard import Guard
+        team = tiny_team()
+        chunk = [{"question": q, "gold": 7.0} for q in QUESTIONS]
+        spec = {"edges": [0.0] * 9, "flag": 2.0}
+        thresholds = {"degenerate": spec, "distance": None}
+        rows, timing = watch_eval.clean_batch(team, Guard(team, thresholds=None), chunk, None, None, 0.0)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({r["replayWord"] for r in rows}, {"match"})
+        summary = watch_eval.summarize_clean(rows, [timing], thresholds)
+        self.assertEqual(summary["anyExactFailure"], 0)
+        self.assertEqual(summary["replay"]["memoryBitwiseEqualRate"], 1.0)
+        self.assertEqual(summary["statistical"]["falseAlarm"]["degenerate"], 0.0)
+        self.assertEqual(json.loads(json.dumps(summary)), summary)
+        self.assertEqual(watch_eval.auroc([0.9, 0.1, 0.5], [True, False, False]), 1.0)
+        self.assertAlmostEqual(watch_eval.quantile([0, 10], 0.25), 2.5)

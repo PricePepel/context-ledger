@@ -336,7 +336,11 @@ class Watch:
             raise ValueError("this watchdog was planned for another team")
         if views is not None or solver_questions is not None or sealed:
             raise ValueError("the watchdog plans the standard squad: every agent sees the question, nothing sealed")
-        self.claims = {"roles": tuple(roles), "mode": mode, "steps": steps, "maxNewTokens": max_new_tokens}
+        # What is in effect for this run, taken now: a setting changed back afterwards must not
+        # make the run look clean.
+        self.claims = {"roles": tuple(roles), "mode": mode, "steps": steps, "maxNewTokens": max_new_tokens,
+                       "adapter": getattr(team, "adapter", None) is not None, "topK": team.soft_top_k,
+                       "temperature": team.soft_temperature, "names": parameter_names(team.model)}
         base = team.model.base_model
         self.handles = [base.register_forward_pre_hook(self._before, with_kwargs=True),
                         base.register_forward_hook(self._after, with_kwargs=True)]
@@ -483,12 +487,11 @@ class Watch:
             checksum &= none if end is None or start is None or end.shape != start.shape else (end == start).all(-1)
 
         # configuration
-        team = self.team
         claims = self.claims or {}
         configuration = (claims.get("mode") == MODE and claims.get("steps") == self.steps
-                         and claims.get("roles") == self.roles and getattr(team, "adapter", None) is None
-                         and team.soft_top_k == TOP_K and team.soft_temperature == TEMPERATURE
-                         and parameter_names(team.model) == self.weight_names)
+                         and claims.get("roles") == self.roles and claims.get("adapter") is False
+                         and claims.get("topK") == TOP_K and claims.get("temperature") == TEMPERATURE
+                         and claims.get("names") == self.weight_names)
         if self.thresholds is not None:
             t = self.thresholds
             configuration &= (t.get("weightsHash") == self.weights_hash and t.get("mode") == MODE
