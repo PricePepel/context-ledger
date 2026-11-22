@@ -99,9 +99,13 @@ export function graphWith(graph, ids) {
   if (packet.links) cut.links = packet.links.filter(link => shown.has(link.from));
   const scoped = { ...graph, packet: cut };
   // Every derived ID list (ready actions, current decisions, open questions and any
-  // later one) names only nodes that are shown.
+  // later one) names only nodes that are shown. Card G9b: leftOut counts the rest, so a
+  // state line can say that some were left out instead of reading as none.
+  scoped.leftOut = {};
   for (const [key, value] of Object.entries(graph)) {
-    if (key.endsWith('Ids') && Array.isArray(value)) scoped[key] = value.filter(id => shown.has(id));
+    if (!key.endsWith('Ids') || !Array.isArray(value)) continue;
+    scoped[key] = value.filter(id => shown.has(id));
+    scoped.leftOut[key] = value.length - scoped[key].length;
   }
   return scoped;
 }
@@ -113,6 +117,8 @@ function scopeLine({ total, matched, shownMatched, shownNeighbours, left, budget
   const parts = [`scope: the question matched ${matched} of ${total} nodes`,
     `showing ${shownMatched} of them and ${shownNeighbours} neighbours`];
   if (budget !== undefined) parts.push(`${left} left out for a budget of ${budget} tokens`);
+  // Card G9b: whenever a node is not shown, say how to read the whole graph.
+  if (shownMatched + shownNeighbours < total) parts.push('call context_for without a question for the whole graph');
   return parts.join('; ');
 }
 

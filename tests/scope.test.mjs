@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { questionTerms, rankNodes } from '../src/scope.mjs';
+import { graphWith, questionTerms, rankNodes } from '../src/scope.mjs';
 import { InputError, openStore } from '../src/store.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
@@ -79,8 +79,8 @@ test('a question shows the matching nodes, the nodes one edge away and the edges
   assert.match(text, /^- port supersedes old-port$/mu);
   assert.doesNotMatch(text, /record|GPU/u);
   assert.match(text, /^current decisions: port$/mu);
-  assert.match(text, /^ready actions: none$/mu, 'state lists only shown nodes');
-  assert.match(text, /\nscope: the question matched 2 of 5 nodes; showing 2 of them and 0 neighbours\n$/u);
+  assert.match(text, /^ready actions: 1 left out$/mu, 'state names only shown nodes and counts the rest (G9b)');
+  assert.match(text, /\nscope: the question matched 2 of 5 nodes; showing 2 of them and 0 neighbours; call context_for without a question for the whole graph\n$/u);
   assert.equal(meter.graphCharacters, text.length, 'the meter counts the scoped text');
 
   const record = store.getGraphContext(graph.id, { question: 'When do we record?' }).text;
@@ -136,7 +136,7 @@ test('a budget drops neighbours before matches and keeps the estimate within it'
   const cut = store.getGraphContext(graph.id, { question, budget: estimate(full) - 1 });
   assert.ok(cut.meter.graphTokens <= estimate(full) - 1);
   assert.deepEqual(nodeIds(cut.text), ['port'], 'port has the most matched words, so it stays');
-  assert.match(cut.text, /showing 1 of them and 0 neighbours; 1 left out for a budget of \d+ tokens\n$/u);
+  assert.match(cut.text, /showing 1 of them and 0 neighbours; 1 left out for a budget of \d+ tokens; call context_for without a question for the whole graph\n$/u);
   assert.equal(cut.meter.graphCharacters, cut.text.length);
 
   const neighbourFirst = store.getGraphContext(graph.id, { question: 'record' });
@@ -185,13 +185,60 @@ test('a scoped briefing leaves out the links, state and linked graphs of nodes i
   assert.match(sunday, /^- record advances demo$/mu);
   for (const hidden of ['port', 'pairing', 'gpu-owner', '## links', 'linked graph', ali.id]) assert.ok(!sunday.includes(hidden), hidden);
   assert.match(sunday, /^ready actions: record$/mu);
-  assert.match(sunday, /^current decisions: none$/mu);
-  assert.match(sunday, /^open questions: none$/mu);
+  // Card G9b: a left-out decision or question is counted, never read as none.
+  assert.match(sunday, /^current decisions: 1 left out$/mu);
+  assert.match(sunday, /^open questions: 1 left out$/mu);
 
   const port = store.getGraphContext(leo.id, { question: 'port 4317' }).text;
   assert.match(port, /^- port answers ali:which-port$/mu, 'a link from a shown node stays');
   assert.doesNotMatch(port, /pairing matches/u);
   assert.match(port, new RegExp(`^linked graph ali: ${ali.id}$`, 'mu'));
+  store.close();
+});
+
+test('G9b: a scoped briefing that shows every node reads as the unscoped state, with no hint', () => {
+  const { store, graph } = setup();
+  const plain = store.getGraphContext(graph.id).text;
+  const all = store.getGraphContext(graph.id, { question: 'port demo record GPU owner' }).text;
+  const state = text => text.slice(text.indexOf('## state')).split('\n').filter(line => !line.startsWith('scope:')).join('\n');
+  assert.equal(state(all), state(plain));
+  assert.match(all, /^scope: the question matched 5 of 5 nodes; showing 5 of them and 0 neighbours$/mu);
+  assert.doesNotMatch(all, /left out|without a question/u);
+  store.close();
+});
+
+test('G9b: a list with some items shown counts the rest after them', () => {
+  const graph = {
+    id: 'g', packet: { nodes: [{ id: 'a' }, { id: 'b' }], edges: [] },
+    readyActionIds: [], openQuestionIds: ['a', 'b'], currentDecisionIds: ['b'],
+  };
+  const scoped = graphWith(graph, ['a']);
+  assert.deepEqual(scoped.openQuestionIds, ['a']);
+  assert.deepEqual(scoped.leftOut, { readyActionIds: 0, openQuestionIds: 1, currentDecisionIds: 1 });
+});
+
+test('G9b: the demo question no longer reads as "nothing open" and names no hidden node', () => {
+  const store = openStore(':memory:');
+  const { leo } = linkedFixture(store);
+  const { text } = store.getGraphContext(leo.id, { question: 'port ledger uses, video recording date, what Leo needs from me' });
+  assert.doesNotMatch(text, /^open questions: none$/mu);
+  assert.match(text, /^open questions: 1 left out$/mu);
+  assert.ok(!text.includes('gpu-owner') && !text.includes('GPU'), 'the hidden question is counted, not shown');
+  assert.match(text, /call context_for without a question for the whole graph\n$/u);
+  store.close();
+});
+
+test('G9b: a node dropped by the budget is counted too', () => {
+  const store = openStore(':memory:');
+  const { leo } = linkedFixture(store);
+  // port matches two words; old-port and gpu-owner one each, so the budget drops gpu-owner first.
+  const question = 'port 4317 GPU';
+  const full = store.getGraphContext(leo.id, { question }).text;
+  assert.match(full, /^open questions: gpu-owner$/mu);
+  const cut = store.getGraphContext(leo.id, { question, budget: estimate(full) - 1 }).text;
+  assert.ok(!nodeIds(cut).includes('gpu-owner'), 'the budget dropped the question');
+  assert.match(cut, /^open questions: 1 left out$/mu);
+  assert.match(cut, /left out for a budget of \d+ tokens; call context_for without a question for the whole graph\n$/u);
   store.close();
 });
 
