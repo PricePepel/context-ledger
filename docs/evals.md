@@ -4986,3 +4986,12 @@ No high-severity issue; Codex confirmed round 16's fixes. Its two findings, each
 - (medium) Round 13's bound changed how P4c judged long stand-ins (round 14 documented it; Codex asked for the old behaviour back). A value longer than 4,096 characters is again judged by the stand-in rules, once every lead on its line is known: a value that holds another assignment is never a stand-in, so only the last value on a line, or a quoted one, is read by those rules, and a line of many assignments stays linear. The shared boundary cases now say so: 4,097 digits or 5,000 x after a name are a stand-in, as on W1, and a long run of digits followed by another assignment is a value. W1's scanner gives the same spans on all three.
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 610 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 127 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (411) passed.
+
+### W2 review, round 18 (2026-11-22, Codex, read-only, of PR #71 at 84ac532)
+
+Codex confirmed round 17's fixes (the password argument refused, the long stand-in cases giving W1's spans). Its findings:
+
+- (high, fixed) A bare value was cut only at the next free-text lead, not at a structured value rule's (`password=paper-harbor, aws_secret_access_key=` and a key): the password's own value was unknown and its bare copy, before the line, reached the model and a public answer. Both scanners now cut a free-text value at the next named assignment of any rule; the shared spans are unchanged. Regression tests in both languages and through admission and the output gate, with the copy before the assignments.
+- (low, fixed) The shared rules and both scanners still said a value over `maxJudged` is never a stand-in: they now say what round 17 made true.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 611 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 127 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (413) passed.

@@ -762,6 +762,15 @@ class ToolGateTest(unittest.TestCase):
                                     lambda n, a: sent.append(a))
         self.assertEqual((result.sent, result.reason, sent), (False, "secret", []))
 
+    def test_round18_a_structured_assignment_after_a_password_cuts_its_value(self):
+        # Review W2-18: the AWS rule's lead ends the password's bare value; the copy is first.
+        aws = "aws_secret_access_key=" + "A" * 40
+        text = "Independent copy: paper-harbor" + chr(10) + "password=paper-harbor, " + aws
+        self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("paper-harbor", released.text)
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
