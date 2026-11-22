@@ -5,6 +5,12 @@ and picks the model `ctm-latent-team`. Each chat turn runs planner, critic and
 refiner in latent space on the local model; the solver writes the reply. Only text
 leaves the process. Replies are model output, not checked facts.
 
+Every run goes through the W1 guard (latent_team/guard.py): a code watchdog checks each
+hand-off and signs a number-only report, and a code supervisor decides. A hold returns
+HTTP 409 with the reason and no answer, on both routes, before any byte of an answer is
+sent. A fallback answer comes from the solver alone and is marked in the receipt. No
+thought record, vector or per-step value is ever part of a response.
+
 Notes for operators:
 - There is no authentication: any process that can reach the listener can use the GPU.
   It listens on 127.0.0.1 only; LATENT_ALLOWED_HOSTS opts extra Host names in.
@@ -16,6 +22,8 @@ import threading
 import time
 import uuid
 
+from latent_team.guard import Guard
+
 from . import ApiError
 
 MODEL_ID = "ctm-latent-team"
@@ -26,6 +34,8 @@ MAX_NEW_TOKENS = 1024
 SLOT_WAIT_SECONDS = 5.0
 BUSY = "The latent team is busy. Try again shortly."
 GONE = "The client left before the team started."
+HELD = "The latent team's answer was held by its watchdog ({reason}); no answer was returned."
+TIME_CAP_SECONDS = 180.0
 
 
 class SseResponse:
@@ -82,10 +92,11 @@ def build_question(messages):
 
 
 class TeamService:
-    def __init__(self, team, steps=40, slot_wait=SLOT_WAIT_SECONDS):
+    def __init__(self, team, steps=40, slot_wait=SLOT_WAIT_SECONDS, guard=None):
         self.team = team
         self.steps = steps
         self.slot_wait = slot_wait
+        self.guard = guard if guard is not None else Guard(team, time_cap=TIME_CAP_SECONDS)
         self._slot = threading.Lock()
 
     def run(self, question, steps, max_new_tokens, gone=None):
@@ -95,15 +106,22 @@ class TeamService:
             # A caller that gave up while waiting for the slot gets no GPU work.
             if gone is not None and gone():
                 raise ApiError(499, GONE)
-            answers, receipt = self.team.latent_mas([question], steps=steps, max_new_tokens=max_new_tokens)
+            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens)[0]
         finally:
             self._slot.release()
-        return answers[0], receipt
+        # Fail closed: the supervisor's hold leaves as an error, so no client can take it
+        # for an answer, and nothing of the squad's text goes with it.
+        if outcome.decision["action"] == "hold" or outcome.answer is None:
+            raise ApiError(409, HELD.format(reason=outcome.decision["reason"]))
+        return outcome.answer, outcome
 
-    def receipt(self, receipt):
+    def receipt(self, outcome):
         return {"model": self.team.model_name, "agents": ["planner", "critic", "refiner", "solver"],
-                "latentStepsPerAgent": receipt.latent_steps, "latentVectors": receipt.latent_vectors,
-                "generatedTokens": receipt.generated_tokens[0], "seconds": round(receipt.seconds, 3)}
+                "system": outcome.system, "latentStepsPerAgent": outcome.latent_steps,
+                "latentVectors": outcome.latent_vectors, "generatedTokens": outcome.tokens,
+                "seconds": round(outcome.seconds, 3), "decision": dict(outcome.decision),
+                "checks": dict(outcome.checks), "audits": dict(outcome.audits),
+                "statistical": dict(outcome.statistical), "scores": dict(outcome.scores)}
 
     def prompt_tokens(self, question):
         tokenizer = getattr(self.team, "tokenizer", None)
@@ -121,8 +139,8 @@ class TeamService:
             raise ApiError(400, f"question must be 1 to {MAX_QUESTION_CHARS} characters.")
         steps = _int(body, "latentSteps", self.steps, 0, MAX_STEPS)
         limit = _int(body, "maxNewTokens", 512, 1, MAX_NEW_TOKENS)
-        answer, receipt = self.run(question, steps, limit, gone)
-        return {"mode": "latent-team", "answer": answer, "answerVerified": False, "receipt": self.receipt(receipt)}
+        answer, outcome = self.run(question, steps, limit, gone)
+        return {"mode": "latent-team", "answer": answer, "answerVerified": False, "receipt": self.receipt(outcome)}
 
     # ------------------------------------------------------------ OpenAI API
     def models(self, _body=None):
@@ -150,8 +168,8 @@ class TeamService:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ApiError(400, "max_tokens must be a positive integer.")
         limit = min(limit, MAX_NEW_TOKENS)
-        answer, receipt = self.run(question, self.steps, limit, gone)
-        completion = receipt.generated_tokens[0]
+        answer, outcome = self.run(question, self.steps, limit, gone)
+        completion = outcome.tokens
         finish = "length" if completion >= limit else "stop"
         prompt = self.prompt_tokens(question)
         usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
@@ -169,7 +187,7 @@ class TeamService:
             return SseResponse(events)
         return {"id": chat_id, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": answer}, "finish_reason": finish}],
-                "usage": usage, "latent_receipt": self.receipt(receipt)}
+                "usage": usage, "latent_receipt": self.receipt(outcome)}
 
 
 def sse_bytes(response):

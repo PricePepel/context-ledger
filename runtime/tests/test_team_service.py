@@ -9,6 +9,10 @@ from latent_pool import ApiError
 from latent_pool.server import Config, LatentServer
 from latent_pool.team_service import MODEL_ID, TeamService
 from latent_pool.vllm_client import VllmClient
+from latent_team.guard import Outcome
+
+CHECKS = {name: True for name in ("turnStructure", "configuration", "legibility", "spanLedger", "memoryChecksum",
+                                  "numbers", "budgets")}
 
 
 class FakeReceipt:
@@ -30,10 +34,35 @@ class FakeTeam:
         return ["The answer is 18."], FakeReceipt(steps)
 
 
+class FakeGuard:
+    """Stands in for latent_team.guard.Guard (which needs torch): runs the fake team and
+    returns the outcome a supervisor decision would give."""
+
+    def __init__(self, team, action="release", reason="uncalibrated"):
+        self.team, self.action, self.reason = team, action, reason
+
+    def run(self, questions, steps, max_new_tokens):
+        answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens)
+        checks = dict(CHECKS)
+        answer, system, marks, action = answers[0], "latent_mas", ["uncalibrated"], self.action
+        if self.action == "hold":
+            answer, marks, checks[self.reason] = None, [], False
+        elif self.action == "fallback":
+            answer, system, marks, action = "The answer is 20.", "single", ["fallback", "uncalibrated"], "release"
+        return [Outcome(answer=answer, decision={"action": action, "reason": self.reason, "marks": marks,
+                                                 "quarantined": []},
+                        checks=checks, audits={"replay": "not-run", "mismatchedMemory": "not-run",
+                                               "solverAlone": "not-run"},
+                        statistical={"degenerate": "measured", "distance": "measured"},
+                        scores={"degenerate": 2, "distance": 3}, system=system, tokens=receipt.generated_tokens[0],
+                        latent_steps=receipt.latent_steps, latent_vectors=receipt.latent_vectors,
+                        seconds=receipt.seconds)]
+
+
 class TeamServiceTest(unittest.TestCase):
     def setUp(self):
         self.team = FakeTeam()
-        self.service = TeamService(self.team, steps=40, slot_wait=0.1)
+        self.service = TeamService(self.team, steps=40, slot_wait=0.1, guard=FakeGuard(self.team))
 
     def status(self, call, body):
         with self.assertRaises(ApiError) as raised:
@@ -47,6 +76,48 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(result["receipt"]["latentStepsPerAgent"], 20)
         self.assertEqual(result["receipt"]["agents"], ["planner", "critic", "refiner", "solver"])
         self.assertEqual(self.team.calls[0][1:], (20, 512))
+        receipt = result["receipt"]
+        self.assertEqual(receipt["decision"]["action"], "release")
+        self.assertEqual(receipt["checks"], CHECKS)
+        self.assertEqual(receipt["system"], "latent_mas")
+        self.assertEqual(set(receipt["audits"]), {"replay", "mismatchedMemory", "solverAlone"})
+
+    def test_a_hold_returns_the_reason_and_no_answer_on_both_routes(self):
+        service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team, "hold", "memoryChecksum"))
+        for call, body in [(service, {"question": "q"}),
+                           (service.chat, {"model": MODEL_ID, "messages": [{"role": "user", "content": "q"}]}),
+                           (service.chat, {"model": MODEL_ID, "stream": True,
+                                           "messages": [{"role": "user", "content": "q"}]})]:
+            with self.assertRaises(ApiError) as raised:
+                call(body)
+            self.assertEqual(raised.exception.status, 409)
+            self.assertIn("memoryChecksum", raised.exception.message)
+            self.assertNotIn("18", raised.exception.message, "nothing of the squad's text leaves with a hold")
+
+    def test_a_fallback_answer_is_the_solver_alone_and_marked(self):
+        service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team, "fallback", "statistical-flag"))
+        result = service({"question": "q"})
+        self.assertEqual(result["answer"], "The answer is 20.")
+        self.assertEqual(result["receipt"]["system"], "single")
+        self.assertEqual(result["receipt"]["decision"]["marks"], ["fallback", "uncalibrated"])
+        chat = service.chat({"model": MODEL_ID, "messages": [{"role": "user", "content": "q"}]})
+        self.assertEqual(chat["latent_receipt"]["decision"]["reason"], "statistical-flag")
+
+    def test_no_response_carries_a_vector_or_a_free_number(self):
+        def leaves(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from leaves(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from leaves(item)
+            else:
+                yield value
+        receipt = self.service({"question": "q"})["receipt"]
+        for name in ("checks", "audits", "statistical", "scores", "decision"):
+            for leaf in leaves(receipt[name]):
+                self.assertTrue(isinstance(leaf, (bool, str)) or (type(leaf) is int and 0 <= leaf <= 9),
+                                (name, leaf))
 
     def test_bad_team_requests(self):
         for body in [{}, {"question": " "}, {"question": "q", "latentSteps": 81}, {"question": "q", "latentSteps": True},
@@ -116,7 +187,8 @@ class TeamServiceTest(unittest.TestCase):
         self.assertEqual(self.status(self.service.chat, {**ok, "max_tokens": "big"}), 400)
 
     def test_busy_and_failure_release(self):
-        slow = TeamService(FakeTeam(delay=0.5), slot_wait=0.1)
+        slow_team = FakeTeam(delay=0.5)
+        slow = TeamService(slow_team, slot_wait=0.1, guard=FakeGuard(slow_team))
         worker = threading.Thread(target=lambda: slow({"question": "q"}))
         worker.start()
         time.sleep(0.1)
@@ -130,10 +202,10 @@ class TeamServiceTest(unittest.TestCase):
 class OpenAiRoutesTest(unittest.TestCase):
     """Through the real HTTP server, as Open WebUI would call it."""
 
-    def start(self, team, allowed_hosts=()):
+    def start(self, team, allowed_hosts=(), decision=()):
         config = Config(root=".", vllm_url="http://127.0.0.1:9/v1", model="m", port=0, allowed_hosts=allowed_hosts)
         server = LatentServer(config, client=VllmClient("http://127.0.0.1:9/v1", "m", 1), quiet=True,
-                              team=TeamService(team) if team else None)
+                              team=TeamService(team, guard=FakeGuard(team, *decision)) if team else None)
         threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -166,6 +238,17 @@ class OpenAiRoutesTest(unittest.TestCase):
         self.assertEqual(first["choices"][0]["delta"]["content"], "The answer is 18.")
         self.assertEqual(json.loads(events[1])["choices"][0]["finish_reason"], "stop")
         self.assertEqual(len(events), 3, "two chunks and [DONE] without include_usage")
+
+    def test_a_hold_over_http_is_409_before_any_stream_byte(self):
+        port = self.start(FakeTeam(), decision=("hold", "turnStructure"))
+        for path, body in [("/latent/team", {"question": "2+2?"}),
+                           ("/v1/chat/completions", {"model": MODEL_ID, "stream": True,
+                                                     "messages": [{"role": "user", "content": "2+2?"}]})]:
+            status, kind, raw = self.call(port, "POST", path, body)
+            self.assertEqual(status, 409, path)
+            self.assertTrue(kind.startswith("application/json"), kind)
+            self.assertNotIn(b"18", raw)
+            self.assertIn(b"turnStructure", raw)
 
     def test_no_team_loaded_is_503_and_foreign_hosts_need_opt_in(self):
         port = self.start(None)
