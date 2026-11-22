@@ -5063,6 +5063,10 @@ One high-severity finding and no medium one; Codex confirmed round 24's fix for 
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (429) passed.
 
+### W2 review, where the automated rounds stopped (2026-11-22)
+
+A 26th Codex round, of PR #71 at 3871c43, did not run: the provider refused the request as a possible cybersecurity risk (the review asks how secrets can leak through shell syntax and text transforms). The automated review stops at 25 rounds. Over rounds 6 to 25 each round found zero to two more ways a copy of a secret can change on its way between the gateway and a reader (escapes, invisible characters, quoting, line structure, shell syntax, word boundaries hidden or made by substitution, prompt fitting, the time budget); rounds 16 and 17 found no high-severity issue, and rounds 24 and 25 one each. Every finding is fixed with a regression test, but the family is open: the gateway can refuse only the forms it knows. That boundary, and the shared scanner's value extraction in `src/secrets.mjs` and `runtime/latent_team/secret_scan.py`, are where the human security review should look first.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.
