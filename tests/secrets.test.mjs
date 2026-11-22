@@ -693,3 +693,37 @@ test('P4d: a found value is also removed from an agent turn\'s author and recipi
   assert.deepEqual(findings.map(({ line, kind }) => [line, kind]), [[1, 'assigned-secret'], [2, 'assigned-secret']]);
   assert.equal(session.messages[1].author, `/root/${password}`, 'the input is not changed');
 });
+
+test('P4d review: a passphrase, a later key-like word and an escaped quote are matched as copies', () => {
+  const phrase = ['correct', 'horse', 'battery', 'staple'].join(' ');
+  const keyWord = ['def1', '2345', '6789'].join('');
+  const BS = String.fromCodePoint(92);
+  const quotedRaw = ['ab', BS, '"cd', 'efgh1234'].join('');
+  const quotedDecoded = ['ab', '"cd', 'efgh1234'].join('');
+  const session = {
+    id: 'e'.repeat(64), provider: 'claude', source: 'x.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `password: ${phrase}` },
+      { role: 'assistant', line: 2, text: `say ${phrase} now` },
+      { role: 'user', line: 3, text: `password: abc ${keyWord}` },
+      { role: 'assistant', line: 4, text: `later ${keyWord}` },
+      { role: 'user', line: 5, text: `password: "${quotedRaw}"` },
+      { role: 'assistant', line: 6, text: `as written ${quotedRaw} and decoded ${quotedDecoded} end` },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[1].text, 'say [REDACTED assigned-secret] now');
+  assert.equal(redacted.messages[3].text, 'later [REDACTED assigned-secret]');
+  assert.equal(redacted.messages[5].text, 'as written [REDACTED assigned-secret] and decoded [REDACTED assigned-secret] end');
+});
+
+test('P4d review: the copy search is one pass per field, not one per value', () => {
+  const messages = Array.from({ length: 20000 }, (_, index) => ({ role: 'user', line: index + 1, text: `token=${('k' + index).padEnd(12, 'Q')}9z` }));
+  messages.push({ role: 'assistant', line: 9999, text: 'x'.repeat(4 * 1024 * 1024) });
+  const started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'f'.repeat(64), provider: 'claude', source: 'y.jsonl', messages });
+  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, 20000);
+  // One indexOf per value took about 8 s on the Windows dev laptop; one pass, under 1 s.
+  assert.ok(seconds < 4, `${seconds} s`);
+});

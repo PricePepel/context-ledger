@@ -4500,6 +4500,16 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
     - A changed count under the old signature now fails the signature check.
     - The sender output is checked for key prefixes as well as for pieces of the values.
   - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
+- **Codex round 2** did not run: Codex hit its usage limit during the round. It is owed, against the head of the branch.
+- **Independent Claude review** (a separate code-reviewer agent, not shown the implementation notes), of the round 1 fix e04e948. No high finding:
+  - (medium) A value after a name was searched for only by its first word, so a passphrase pasted again kept its later words. Fixed: copies are searched for the first one to eight words, the whole tail and any later word that mixes letters and digits.
+  - (medium) The copy search cuts the same text inside longer words and in prose (`password: secret` hides every `secret`). Kept, since that errs toward hiding, and documented in ADR-9a and `docs/signed-handoff.md`.
+  - (medium) The copy search ran one `indexOf` per value per field: 20,000 values over 8 MiB took 39 s. Fixed with one pass per field that looks positions up by their first six characters: 0.8 s for that input. A test bounds 20,000 values over 4 MiB.
+  - (low) A quoted value with an escaped quote was cut short at the escape. Fixed: the quoted part is found with the scanner's own quote rules, and searched for as written and decoded.
+  - (low) A copy in another letter case, with an invisible character inside or in another Unicode normalization, is not found. Documented as a residual.
+  - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
+  - Each fix has a test in `tests/secrets.test.mjs`.
+- **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

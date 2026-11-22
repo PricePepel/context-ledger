@@ -392,37 +392,71 @@ export function maskedPreview(text, finding) {
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
 const lineTailKinds = new Set(['assigned-secret', 'bearer-token']);
+// A line tail's first words are searched for as one value, up to this many words.
+const maxTailWords = 8;
+const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
 
 /**
- * The value a finding starts with. A known format is its whole span. A line tail runs to
- * the end of its line, so its value is the quoted part when the span opens a quote, and
- * otherwise its first word without trailing punctuation.
+ * The values a finding stands for, to search for elsewhere. A known format is its whole
+ * span. A line tail runs to the end of its line, so it stands for:
+ * - when it opens a quote, the quoted part as written and with its escapes decoded;
+ * - otherwise its first word, its first two words, and so on (a passphrase pasted whole
+ *   is matched whole), and the whole tail;
+ * - and any later word that mixes letters and digits, as a key does.
  */
-function coreValue(text, finding) {
+function copyValues(text, finding) {
   const span = text.slice(finding.start, finding.end);
-  if (!lineTailKinds.has(finding.kind)) return span;
-  const quote = text[finding.start - 1];
-  if (finding.start > 0 && /["'`]/u.test(quote)) {
-    const close = span.indexOf(quote);
-    if (close > 0) return span.slice(0, close);
-  }
-  return span.split(/\s/u)[0].replace(/[,.;:!?)\]}>"'`]+$/u, '');
-}
-
-/** findings plus every other occurrence in text of a known value, merged into spans. */
-function withCopies(text, findings, values) {
-  const all = findings.map(finding => ({ ...finding, rank: 0 }));
-  for (const [value, kind] of values) {
-    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) {
-      all.push({ kind, start: at, end: at + value.length, prefix: 0, rank: 1 });
+  if (!lineTailKinds.has(finding.kind)) return [span];
+  const quote = finding.start > 0 ? text[finding.start - 1] : '';
+  if (/["'`]/u.test(quote)) {
+    const close = quotedEnd(text, finding.start, quote);
+    if (close < finding.end) {
+      const raw = text.slice(finding.start, close);
+      return [raw, decoded(raw), ...raw.split(/\s+/u).filter(word => mixed(word))];
     }
   }
-  if (all.length === findings.length) return findings;
+  const words = span.trim().split(/\s+/u);
+  const values = [span.trim().replace(trailingPunctuation, '')];
+  for (let count = 1; count <= Math.min(words.length, maxTailWords); count += 1) {
+    values.push(words.slice(0, count).join(' ').replace(trailingPunctuation, ''));
+  }
+  for (const word of words.slice(1)) {
+    const bare = word.replace(trailingPunctuation, '');
+    if (mixed(bare)) values.push(bare);
+  }
+  return values;
+}
+
+/**
+ * Every other occurrence in text of a known value, as spans that do not overlap. One pass
+ * looks each position up by its first six characters, so the time grows with the text and
+ * the matches, not with the number of values; at a position the longest value wins.
+ */
+function copySpans(text, index) {
+  const spans = [];
+  for (let at = 0; at + minCopyLength <= text.length; at += 1) {
+    const candidates = index.get(text.slice(at, at + minCopyLength));
+    const hit = candidates?.find(candidate => text.startsWith(candidate.value, at));
+    if (!hit) continue;
+    const end = at + hit.value.length;
+    const last = spans.at(-1);
+    if (last && at < last.end) {
+      if (end > last.end) last.end = end;
+    } else {
+      spans.push({ kind: hit.kind, start: at, end, prefix: 0 });
+    }
+  }
+  return spans;
+}
+
+/** findings and copies merged into spans; a copy that widens a finding hides its prefix. */
+function withCopies(findings, copies) {
+  if (!copies.length) return findings;
+  const all = [...findings.map(finding => ({ ...finding, rank: 0 })), ...copies.map(copy => ({ ...copy, rank: 1 }))];
   const spans = [];
   for (const span of all.sort((a, b) => a.start - b.start || a.rank - b.rank)) {
     const last = spans.at(-1);
     if (last && span.start < last.end) {
-      // A copy that runs past a finding widens it, and no prefix is shown any more.
       if (span.end > last.end) Object.assign(last, { end: span.end, prefix: 0 });
     } else {
       spans.push({ kind: span.kind, start: span.start, end: span.end, prefix: span.prefix });
@@ -454,17 +488,24 @@ export function redactSession(session) {
   const values = new Map();
   fields.forEach((field, index) => {
     for (const finding of found[index]) {
-      const value = coreValue(field.text, finding);
-      if (value.length >= minCopyLength && !values.has(value)) values.set(value, finding.kind);
+      for (const value of copyValues(field.text, finding)) {
+        if (value.length >= minCopyLength && !values.has(value)) values.set(value, finding.kind);
+      }
     }
   });
-  // Longest first, so a value that holds another is matched whole.
-  const ordered = [...values].sort((a, b) => b[0].length - a[0].length);
+  // Values by their first six characters, longest first, so a value that holds another
+  // is matched whole.
+  const byPrefix = new Map();
+  for (const [value, kind] of [...values].sort((a, b) => b[0].length - a[0].length)) {
+    const key = value.slice(0, minCopyLength);
+    if (!byPrefix.has(key)) byPrefix.set(key, []);
+    byPrefix.get(key).push({ value, kind });
+  }
   const findings = [];
   let source = session.source;
   const changed = new Map();
   fields.forEach((field, index) => {
-    const spans = withCopies(field.text, found[index], ordered);
+    const spans = withCopies(found[index], byPrefix.size ? copySpans(field.text, byPrefix) : []);
     if (!spans.length) return;
     for (const span of spans) {
       findings.push({ line: field.line, kind: span.kind, length: span.end - span.start, preview: maskedPreview(field.text, span) });
