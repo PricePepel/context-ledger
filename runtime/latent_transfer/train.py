@@ -160,7 +160,9 @@ def main():
     log(event="data", squadTrain=len(squad_train), squadDev=len(dev_rows), wiki=len(wiki), contexts=len(contexts))
 
     val_docs = [doc_text(p) for p in random.Random(2).sample(wiki_val, 64)]
-    val_batches = [pair.pair(val_docs[i:i + 16], args.max_tokens) for i in range(0, 64, 16)]
+    # Held-out batches as large as a training batch: batches of 16 spill past 16 GB once the
+    # optimizer state of a 4B pair is allocated (M2b-S smoke test).
+    val_batches = [pair.pair(val_docs[i:i + args.batch1], args.max_tokens) for i in range(0, 64, args.batch1)]
 
     params = [p for p in pair.mapper.parameters() if p.requires_grad]
 
