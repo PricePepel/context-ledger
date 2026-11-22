@@ -22,7 +22,11 @@ const tiles = new Map();
 async function api(path, init = {}) {
   const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(body.error ?? `Request failed (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
   return body;
 }
 
@@ -102,6 +106,7 @@ function renderStats(run) {
     stat('One after another', seconds(run.oneAfterAnotherMs), 'sum of every agent’s own time', sim),
     stat('Speed-up', speedup ? `${speedup.toFixed(1)}×` : '—', 'sum ÷ wall time', sim),
     stat('Tokens out per second', tokensPerSecond ? Math.round(tokensPerSecond).toLocaleString() : '—', `${run.tokensIn.toLocaleString()} in, ${run.tokensOut.toLocaleString()} out`, sim),
+    stat('Requests on the server', sim ? 'not measured' : (metrics?.requestsRunning ?? 'not reported').toLocaleString(), sim ? 'simulated run' : 'running now, from the model server'),
     stat('KV cache in use', sim ? 'not measured' : percent(metrics?.kvCacheUsage), sim ? 'simulated run' : 'from the model server'),
     stat('Prefix-cache hits', sim ? 'not measured' : percent(metrics?.prefixCacheHitRate), sim ? 'simulated run' : 'shared instructions reused'),
     stat('Quotes verified', `${run.counts.verified} / ${run.counts.finished}`, 'quote found in its report'),
@@ -119,8 +124,9 @@ function renderAnswer(run) {
     return;
   }
   const { question, fromAgents, truth } = run.answer;
-  const match = fromAgents.totalDowntimeMinutes === truth.totalDowntimeMinutes
-    && fromAgents.services.join() === truth.services.join();
+  // A match needs answers behind it: zero answers never "match" an empty truth.
+  const match = fromAgents.answersUsed > 0 && fromAgents.incidents === truth.incidents
+    && fromAgents.totalDowntimeMinutes === truth.totalDowntimeMinutes && fromAgents.services.join() === truth.services.join();
   $('answer').replaceChildren(el('div', { class: 'answer-rows' },
     el('p', { text: question }),
     row('Services (from verified answers)', fromAgents.services.join(', ') || 'none'),
@@ -154,7 +160,7 @@ function renderDetail(run) {
     el('p', { class: 'detail-meta' },
       el('span', { text: `Model: ${agent.model ?? '—'}` }), el('span', { text: `State: ${agent.state}` }),
       el('span', { text: `Time: ${seconds(agent.ms)}${run.simulated ? ' (simulated)' : ''}` }),
-      el('span', { text: `Tokens: ${agent.tokensIn ?? '—'} in, ${agent.tokensOut ?? '—'} out` })),
+      el('span', { text: `Tokens: ${agent.tokensIn ?? '—'} in, ${agent.tokensOut ?? '—'} out${run.simulated ? ' (simulated)' : ''}` })),
     markedReport(agent.report, answer?.quote ?? ''),
     answer ? el('dl', { class: 'facts' }, ...facts.flatMap(([label, value]) => [el('dt', { text: label }), el('dd', { text: value })]),
       el('dt', { text: 'Quote' }), el('dd', { class: 'flag', 'data-ok': String(agent.verified), text: agent.verified ? 'Found in the report' : 'Not found in the report' }),
@@ -175,20 +181,35 @@ function render(run) {
   renderDetail(run);
 }
 
-async function poll(id) {
+const maxPollFailures = 20;
+
+function doneMessage(run) {
+  const failed = run.counts.failed ? `, ${run.counts.failed} failed` : '';
+  return `Done: ${run.counts.total} agents in ${seconds(run.elapsedMs)}${run.simulated ? ' (simulated)' : ''}${failed}.`;
+}
+
+async function poll(id, failures = 0) {
   try {
     const { run } = await api(`/api/swarm/runs/${id}`);
     current = run;
     render(run);
     if (run.state === 'done' || run.state === 'failed') {
       $('run').disabled = false;
-      setStatus(run.state === 'done' ? `Done: ${run.counts.total} agents in ${seconds(run.elapsedMs)}.` : (run.error ?? 'The run failed.'));
+      setStatus(run.state === 'done' ? doneMessage(run) : (run.error ?? 'The run failed.'));
       return;
     }
+    failures = 0;
   } catch (error) {
+    // A run the server no longer keeps, or a server that stopped answering: stop and let the person run again.
+    if (error.status === 404 || failures + 1 >= maxPollFailures) {
+      $('run').disabled = false;
+      setStatus(error.status === 404 ? 'This run is no longer kept by the ledger. Run again.' : `Lost contact with the ledger: ${error.message}`);
+      return;
+    }
+    failures += 1;
     setStatus(error.message);
   }
-  timer = setTimeout(() => poll(id), pollMs);
+  timer = setTimeout(() => poll(id, failures), pollMs);
 }
 
 $('run-form').addEventListener('submit', async event => {

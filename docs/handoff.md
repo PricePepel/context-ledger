@@ -604,3 +604,10 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
+
+## Current checkpoint — S1 swarm demo (2026-11-21)
+
+Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and [the run sheet](swarm-demo.md). `/swarm/` runs up to 200 agents at once on local OpenAI-compatible model servers (`SWARM_URLS`, loopback only), shows each agent live, checks each quote against its report, and combines verified answers beside the generator's truth. A seeded simulation, labelled on every number, runs without a GPU.
+
+- **Next owner:** run it live on the laptop GPU once the M2b-S training (branch `claude/m2b-scale`) frees it: one 7B server, then two models. Record wall time, tokens per second, KV-cache use and prefix-cache hit rate at 25, 50 and 100 agents in the eval log.
+- Then add the latent lane: a second pass where agents hand a compacted cache instead of text, once M2b-S and Attention Matching pass.

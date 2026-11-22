@@ -81,11 +81,14 @@ export function parseAnswer(reply) {
   try {
     const value = JSON.parse(reply.slice(start, end + 1));
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    // Fields are capped, since every snapshot carries them to the page.
+    const text = (field, max) => (typeof field === 'string' ? field.trim().slice(0, max) : '');
     return {
-      service: typeof value.service === 'string' ? value.service.trim() : '',
-      cause: typeof value.cause === 'string' ? value.cause.trim().toLowerCase() : '',
-      downtimeMinutes: Number.isInteger(value.downtimeMinutes) ? value.downtimeMinutes : null,
-      quote: typeof value.quote === 'string' ? value.quote : '',
+      service: text(value.service, 80),
+      cause: text(value.cause, 40).toLowerCase(),
+      downtimeMinutes: Number.isInteger(value.downtimeMinutes) && value.downtimeMinutes >= 0 && value.downtimeMinutes <= 100_000
+        ? value.downtimeMinutes : null,
+      quote: text(value.quote, 400),
     };
   } catch {
     return null;
@@ -93,13 +96,14 @@ export function parseAnswer(reply) {
 }
 
 /**
- * Verified: the quote is in the report (whitespace folded) and states the downtime
- * number. It says the answer points at real text, not that the answer is right.
+ * Verified: the quote is in the report (whitespace folded) and states the downtime as
+ * "<number> minutes", so a date or an incident number in the quote does not count. It
+ * says the answer points at real text, not that the answer is right.
  */
 export function isVerified(answer, report) {
   if (!answer || !answer.quote.trim() || answer.downtimeMinutes === null) return false;
   const quote = fold(answer.quote);
-  return fold(report).includes(quote) && new RegExp(`(^|\\D)${answer.downtimeMinutes}(\\D|$)`, 'u').test(quote);
+  return fold(report).includes(quote) && new RegExp(`(^|\\D)${answer.downtimeMinutes} minutes?\\b`, 'u').test(quote);
 }
 
 /** Correct: all three facts match the generator's truth. */

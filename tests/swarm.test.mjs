@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { createSwarm, parseMetrics, swarmUrls } from '../src/swarm.mjs';
+import { createSwarm, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
 import { causes, combine, incidents, isCorrect, isVerified, parseAnswer, systemPrompt } from '../src/swarm-task.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -39,6 +39,10 @@ test('an answer is verified only when its quote is in the report and states the 
   const digit = String(answer.downtimeMinutes).slice(0, 1);
   if (String(answer.downtimeMinutes).length > 1) assert.equal(isVerified({ ...answer, downtimeMinutes: Number(digit) }, report.text), false, 'a digit inside a number is not the number');
   assert.equal(isVerified({ ...answer, quote: '' }, report.text), false);
+  // Review round 1: a number elsewhere in the quote (a date, the incident number) is not the downtime.
+  const dated = report.text.slice(0, report.text.indexOf('.', report.text.indexOf('2026-')) + 1);
+  assert.equal(isVerified({ ...answer, downtimeMinutes: 2026, quote: dated }, report.text), false, 'a year is not a downtime');
+  assert.equal(isVerified({ ...answer, downtimeMinutes: report.id, quote: report.text }, report.text), false, 'the incident number is not a downtime');
   assert.equal(isVerified(null, report.text), false);
   assert.equal(isCorrect(answer, report.truth), true);
   assert.equal(isCorrect({ ...answer, cause: 'bad deploy' === report.truth.cause ? 'capacity limit' : 'bad deploy' }, report.truth), false);
@@ -51,6 +55,8 @@ test('replies are parsed leniently but typed strictly', () => {
   assert.equal(parseAnswer('[1, 2]'), null);
   assert.equal(parseAnswer('{"downtimeMinutes": "12"}').downtimeMinutes, null, 'a string is not a number');
   assert.equal(parseAnswer('{"downtimeMinutes": 1.5}').downtimeMinutes, null);
+  const long = parseAnswer(JSON.stringify({ service: 's'.repeat(5000), cause: 'c'.repeat(500), quote: 'q'.repeat(5000), downtimeMinutes: -3 }));
+  assert.deepEqual([long.service.length, long.cause.length, long.quote.length, long.downtimeMinutes], [80, 40, 400, null], 'fields are capped');
 });
 
 test('the combined answer uses verified answers only and shows the truth beside it', () => {
@@ -86,16 +92,24 @@ test('metrics sum vLLM series across labels and ignore everything else', () => {
   assert.deepEqual(parseMetrics(text), { 'vllm:kv_cache_usage_perc': 0.25, 'vllm:num_requests_running': 5, 'vllm:prefix_cache_hits_total': 1000 });
 });
 
-test('start checks its input and keeps at most five runs', () => {
+test('start checks its input, runs one swarm at a time and keeps at most five finished runs', async () => {
   const swarm = createSwarm({ env: {}, simScale: 0.001 });
   for (const bad of [{}, { agents: 0, mode: 'simulated' }, { agents: 201, mode: 'simulated' }, { agents: 1.5, mode: 'simulated' },
     { agents: '10', mode: 'simulated' }, { agents: 10, mode: 'fast' }]) {
     assert.throws(() => swarm.start(bad), /agents must|mode must/u, JSON.stringify(bad));
   }
   assert.throws(() => swarm.start({ agents: 3, mode: 'live' }), /No model server configured/u);
-  const ids = Array.from({ length: 6 }, () => swarm.start({ agents: 1, mode: 'simulated' }).id);
-  assert.ok(ids.every(id => /^[a-f0-9]{64}$/u.test(id)));
-  assert.equal(swarm.snapshot(ids[0]), undefined, 'the oldest run is dropped');
+  const ids = [];
+  for (let i = 0; i < 6; i += 1) {
+    const { id } = swarm.start({ agents: 1, mode: 'simulated' });
+    assert.ok(/^[a-f0-9]{64}$/u.test(id));
+    // Review round 1 (high): a second run while one is running is refused, so the
+    // concurrency limit bounds what the GPU sees and no running run is ever dropped.
+    assert.throws(() => swarm.start({ agents: 1, mode: 'simulated' }), /already running/u);
+    await until(() => swarm.snapshot(id).state === 'done');
+    ids.push(id);
+  }
+  assert.equal(swarm.snapshot(ids[0]), undefined, 'the oldest finished run is dropped');
   assert.ok(swarm.snapshot(ids[5]));
 });
 
@@ -173,6 +187,58 @@ test('a live run with a silent server fails cleanly', async () => {
   const run = await until(() => (swarm.snapshot(id).state === 'failed' ? swarm.snapshot(id) : null));
   assert.equal(run.error, 'The model server is not answering.');
   assert.equal(run.answer, null);
+});
+
+test('review round 1: model requests do not follow redirects and refuse oversized bodies', async t => {
+  const requests = [];
+  const offsite = createServer((request, response) => { requests.push(request.url); response.end('{}'); });
+  await new Promise(resolve => offsite.listen(0, '127.0.0.1', resolve));
+  t.after(() => offsite.close());
+  const redirecting = createServer((request, response) => {
+    response.writeHead(302, { Location: `http://127.0.0.1:${offsite.address().port}${request.url}` });
+    response.end();
+  });
+  await new Promise(resolve => redirecting.listen(0, '127.0.0.1', resolve));
+  t.after(() => redirecting.close());
+  const swarm = createSwarm({ env: { SWARM_URLS: `http://127.0.0.1:${redirecting.address().port}/v1` } });
+  assert.equal((await swarm.config()).live, false);
+  assert.deepEqual(requests, [], 'the redirect target was never contacted');
+
+  const huge = createServer((request, response) => {
+    if (request.url === '/v1/models') return response.end(JSON.stringify({ data: [{ id: 'm' }], pad: 'x'.repeat(300 * 1024) }));
+    response.end('{}');
+  });
+  await new Promise(resolve => huge.listen(0, '127.0.0.1', resolve));
+  t.after(() => huge.close());
+  assert.equal((await createSwarm({ env: { SWARM_URLS: `http://127.0.0.1:${huge.address().port}/v1` } }).config()).live, false);
+});
+
+test('review round 1: the prefix-cache rate needs a baseline and counters that only grow', () => {
+  const sample = (hits, queries) => ({ 'vllm:prefix_cache_hits_total': hits, 'vllm:prefix_cache_queries_total': queries });
+  assert.equal(metricsView([sample(150, 300)], [sample(100, 200)]).prefixCacheHitRate, 0.5);
+  assert.equal(metricsView([sample(150, 300)], [{}]).prefixCacheHitRate, null, 'no baseline: old traffic would count');
+  assert.equal(metricsView([sample(10, 20)], [sample(100, 200)]).prefixCacheHitRate, null, 'a restarted server');
+  assert.equal(metricsView([{}], [{}]), null, 'nothing reported');
+  const view = metricsView([{ 'vllm:num_requests_running': 3 }, { 'vllm:num_requests_running': 2 }], [{}, {}]);
+  assert.equal(view.requestsRunning, 5);
+  assert.equal(view.kvCacheUsage, null, 'missing is not zero');
+});
+
+test('review round 1: a short live run still gets its metrics, and a run where every agent fails is a failure', async t => {
+  let hits = 0;
+  const metricsText = () => `vllm:prefix_cache_hits_total ${hits}\nvllm:prefix_cache_queries_total ${hits * 4}\n`;
+  const ok = await fakeModelServer(t, { model: 'm', metrics: () => { const text = metricsText(); hits += 10; return text; } });
+  const swarm = createSwarm({ env: { SWARM_URLS: ok.url } });
+  const { id } = swarm.start({ agents: 1, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
+  assert.equal(run.metrics.prefixCacheHitRate, 0.25, 'the last sample after the agents finished');
+
+  const failing = await fakeModelServer(t, { model: 'm', failFor: new Set([1, 2, 3]) });
+  const swarm2 = createSwarm({ env: { SWARM_URLS: failing.url } });
+  const second = swarm2.start({ agents: 3, mode: 'live' }).id;
+  const failed = await until(() => (swarm2.snapshot(second).state === 'failed' ? swarm2.snapshot(second) : null));
+  assert.match(failed.error, /Every agent failed/u);
+  assert.equal(failed.answer, null);
 });
 
 async function startServer(t, env = {}) {

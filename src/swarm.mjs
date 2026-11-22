@@ -2,11 +2,12 @@
 // Model servers are OpenAI-compatible (vLLM) and come only from SWARM_URLS on this
 // machine; a request picks the number of agents and live or simulated, nothing else.
 import { randomBytes } from 'node:crypto';
-import { InputError } from './errors.mjs';
+import { ConflictError, InputError } from './errors.mjs';
 import { combine, incidents, isCorrect, isVerified, parseAnswer, seeded, systemPrompt, userPrompt } from './swarm-task.mjs';
 
 export const maxAgents = 200;
 export const maxRuns = 5;
+export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
 const metricsEveryMs = 500;
 
@@ -29,28 +30,63 @@ export function parseMetrics(text) {
   const totals = {};
   for (const line of text.split('\n')) {
     const match = /^(vllm:[a-z_]+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)\s*$/u.exec(line);
-    if (match) totals[match[1]] = (totals[match[1]] ?? 0) + Number(match[2]);
+    if (match && Number.isFinite(Number(match[2]))) totals[match[1]] = (totals[match[1]] ?? 0) + Number(match[2]);
   }
   return totals;
 }
 
-const firstOf = (totals, names) => names.map(name => totals[name]).find(value => Number.isFinite(value));
+const firstOf = (totals, names) => names.map(name => totals?.[name]).find(value => Number.isFinite(value));
+const hitNames = ['vllm:prefix_cache_hits_total', 'vllm:gpu_prefix_cache_hits_total'];
+const queryNames = ['vllm:prefix_cache_queries_total', 'vllm:gpu_prefix_cache_queries_total'];
 
-function metricsView(samples, baseline) {
-  if (!samples.length) return null;
-  const pick = names => samples.map(sample => firstOf(sample, names)).filter(Number.isFinite);
-  const kv = pick(['vllm:kv_cache_usage_perc', 'vllm:gpu_cache_usage_perc']);
-  const running = pick(['vllm:num_requests_running']);
-  const sum = (list, names) => list.reduce((total, sample) => total + (firstOf(sample, names) ?? 0), 0);
-  const hitNames = ['vllm:prefix_cache_hits_total', 'vllm:gpu_prefix_cache_hits_total'];
-  const queryNames = ['vllm:prefix_cache_queries_total', 'vllm:gpu_prefix_cache_queries_total'];
-  const hits = sum(samples, hitNames) - sum(baseline, hitNames);
-  const queries = sum(samples, queryNames) - sum(baseline, queryNames);
+/**
+ * What the page shows from the servers' metrics. A server's prefix-cache counters count
+ * only when both its baseline (taken before the first agent starts) and its latest
+ * sample have them and they did not go backwards; otherwise the rate is not reported.
+ */
+export function metricsView(samples, baseline) {
+  if (!samples.some(sample => Object.keys(sample).length)) return null;
+  const gauges = names => samples.map(sample => firstOf(sample, names)).filter(Number.isFinite);
+  const kv = gauges(['vllm:kv_cache_usage_perc', 'vllm:gpu_cache_usage_perc']);
+  const running = gauges(['vllm:num_requests_running']);
+  let hits = 0;
+  let queries = 0;
+  let valid = true;
+  samples.forEach((sample, index) => {
+    const pairs = [[firstOf(baseline[index], hitNames), firstOf(sample, hitNames)], [firstOf(baseline[index], queryNames), firstOf(sample, queryNames)]];
+    if (pairs.every(([before, after]) => before === undefined && after === undefined)) return;
+    if (pairs.some(([before, after]) => before === undefined || after === undefined || after < before)) { valid = false; return; }
+    hits += pairs[0][1] - pairs[0][0];
+    queries += pairs[1][1] - pairs[1][0];
+  });
   return {
     kvCacheUsage: kv.length ? Math.max(...kv) : null,
     requestsRunning: running.length ? running.reduce((a, b) => a + b, 0) : null,
-    prefixCacheHitRate: queries > 0 ? hits / queries : null,
+    prefixCacheHitRate: valid && queries > 0 ? hits / queries : null,
   };
+}
+
+/** The body as text, refused past maxResponseBytes (the stream is cancelled). */
+async function cappedText(response) {
+  const declared = Number(response.headers.get('content-length'));
+  if (declared > maxResponseBytes) {
+    await response.body?.cancel();
+    throw new Error('response too large');
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > maxResponseBytes) {
+      await reader.cancel();
+      throw new Error('response too large');
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks, size));
 }
 
 export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => performance.now(), simScale } = {}) {
@@ -58,19 +94,26 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   const concurrency = Math.min(Math.max(Number.parseInt(env.SWARM_CONCURRENCY ?? '32', 10) || 32, 1), maxAgents);
   const scale = simScale ?? (Number(env.SWARM_SIM_SCALE) > 0 ? Number(env.SWARM_SIM_SCALE) : 1);
   const runs = new Map();
+  let active = null;
 
-  async function getJson(url, init = {}) {
-    const response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? requestTimeoutMs) });
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    return response.json();
+  // Every request to a model server: no redirects (they could leave this machine), a
+  // timeout, and a size cap before anything is parsed.
+  async function request(url, init = {}) {
+    const response = await fetchImpl(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(init.timeoutMs ?? requestTimeoutMs) });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`status ${response.status}`);
+    }
+    return cappedText(response);
   }
+  const getJson = async (url, init) => JSON.parse(await request(url, init));
 
   /** The first model each server lists, as { url, model }. */
   async function models() {
     return Promise.all(urls.map(async url => {
       const body = await getJson(`${url}/models`, { timeoutMs: 3000 });
       const model = body?.data?.[0]?.id;
-      if (typeof model !== 'string') throw new Error('no model listed');
+      if (typeof model !== 'string' || !model || model.length > 200) throw new Error('no model listed');
       return { url, model };
     }));
   }
@@ -91,8 +134,8 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt(report.text) }] }),
     });
     const reply = body?.choices?.[0]?.message?.content;
-    return { reply: typeof reply === 'string' ? reply : '',
-      tokensIn: body?.usage?.prompt_tokens ?? null, tokensOut: body?.usage?.completion_tokens ?? null };
+    const count = value => (Number.isInteger(value) && value >= 0 ? value : null);
+    return { reply: typeof reply === 'string' ? reply : '', tokensIn: count(body?.usage?.prompt_tokens), tokensOut: count(body?.usage?.completion_tokens) };
   }
 
   // Seeded stand-in for a model server: the timings and the few wrong answers are made up,
@@ -122,12 +165,12 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
           const out = run.mode === 'live' ? await liveAgent(run, agent, report, servers[agent.index % servers.length])
             : await simulatedAgent(run, agent, report);
           agent.answer = parseAnswer(out.reply);
-          agent.reply = out.reply.slice(0, 2000);
           agent.tokensIn = out.tokensIn;
           agent.tokensOut = out.tokensOut;
           agent.verified = isVerified(agent.answer, report.text);
           agent.correct = isCorrect(agent.answer, report.truth);
           agent.state = agent.answer ? 'done' : 'failed';
+          if (!agent.answer) agent.error = 'The reply held no answer.';
         } catch {
           agent.state = 'failed';
           agent.error = 'The model server did not answer.';
@@ -138,38 +181,47 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     await Promise.all(Array.from({ length: Math.min(concurrency, run.agents.length) }, worker));
   }
 
-  async function pollMetrics(run, servers) {
-    const read = () => Promise.all(servers.map(server => fetchImpl(`${server.url.replace(/\/v1$/u, '')}/metrics`,
-      { signal: AbortSignal.timeout(2000) }).then(response => (response.ok ? response.text() : '')).then(parseMetrics)
-      .catch(() => ({}))));
-    const baseline = await read();
-    while (!run.done) {
-      const samples = await read();
-      if (samples.some(sample => Object.keys(sample).length)) run.metrics = metricsView(samples, baseline);
+  const readMetrics = servers => Promise.all(servers.map(server => request(`${server.url.replace(/\/v1$/u, '')}/metrics`,
+    { timeoutMs: 2000 }).then(parseMetrics).catch(() => ({}))));
+
+  async function pollMetrics(run, servers, baseline) {
+    while (!run.agentsDone) {
+      run.metrics = metricsView(await readMetrics(servers), baseline) ?? run.metrics;
       await new Promise(resolve => setTimeout(resolve, metricsEveryMs));
     }
   }
 
   async function execute(run) {
-    let servers = [];
     try {
+      let servers = [];
+      let baseline = [];
       if (run.mode === 'live') {
         servers = await models();
         run.models = servers.map(server => server.model);
         run.agents.forEach(agent => { agent.model = run.models[agent.index % run.models.length]; });
+        baseline = await readMetrics(servers);
       }
       run.started = now();
       run.state = 'running';
-      const metrics = run.mode === 'live' ? pollMetrics(run, servers) : null;
+      const metrics = run.mode === 'live' ? pollMetrics(run, servers, baseline) : null;
       await runAgents(run, servers);
       run.wallMs = now() - run.started;
-      run.done = true;
+      run.agentsDone = true;
       await metrics;
-      run.state = 'done';
+      // A last sample after every agent finished, so a short run still gets its numbers.
+      if (run.mode === 'live') run.metrics = metricsView(await readMetrics(servers), baseline) ?? run.metrics;
+      if (run.agents.every(agent => agent.state === 'failed')) {
+        run.state = 'failed';
+        run.error = 'Every agent failed: the model server did not give usable answers.';
+      } else {
+        run.state = 'done';
+      }
     } catch {
-      run.done = true;
       run.state = 'failed';
       run.error = 'The model server is not answering.';
+    } finally {
+      run.agentsDone = true;
+      if (active === run) active = null;
     }
   }
 
@@ -179,17 +231,24 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     if (!Number.isInteger(agents) || agents < 1 || agents > maxAgents) throw new InputError(`agents must be a whole number from 1 to ${maxAgents}.`);
     if (mode !== 'live' && mode !== 'simulated') throw new InputError('mode must be live or simulated.');
     if (mode === 'live' && !urls.length) throw new InputError('No model server configured (set SWARM_URLS).');
+    // One run at a time, so SWARM_CONCURRENCY bounds the requests the GPU sees.
+    if (active) throw new ConflictError('A swarm run is already running. Wait for it to finish.', { runId: active.id });
     const id = randomBytes(32).toString('hex');
     const seed = 7;
     const reports = incidents(agents, seed);
     const run = {
-      id, mode, seed, reports, state: 'starting', done: false, started: now(), wallMs: null, metrics: null,
+      id, mode, seed, reports, state: 'starting', agentsDone: false, started: now(), wallMs: null, metrics: null,
       models: mode === 'simulated' ? ['simulated'] : [],
       agents: reports.map((report, index) => ({ index, id: report.id, model: mode === 'simulated' ? 'simulated' : null,
         state: 'queued', answer: null, verified: false, correct: false })),
     };
+    active = run;
     runs.set(id, run);
-    while (runs.size > maxRuns) runs.delete(runs.keys().next().value);
+    // Only finished runs are dropped; the running one is never among the oldest kept.
+    for (const [key, kept] of runs) {
+      if (runs.size <= maxRuns) break;
+      if (kept !== active) runs.delete(key);
+    }
     execute(run);
     return { id };
   }

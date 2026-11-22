@@ -4509,3 +4509,14 @@ For the investor demo: many small agents work one task at once on the laptop GPU
 | Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
 | Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
 | Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
+
+**Codex review, round 1** (of fa80ac7), each finding fixed with a regression test:
+
+- (high) Overlapping runs escaped the concurrency limit, and a running run could be dropped from the kept five while its agents kept working. One run at a time now (`409` while one runs), and only finished runs are dropped.
+- (medium) Model-server requests followed redirects, which could leave loopback: every request now uses `redirect: 'error'`; a test checks the redirect target is never contacted.
+- (medium) Model-server bodies were unbounded: capped at 256 KiB before parsing (the stream is cancelled), and answer fields are capped (service 80, cause 40, quote 400 characters, downtime 0 to 100,000).
+- (medium) The prefix-cache rate could include traffic from before the run, and a short run could finish without a sample. The baseline is read before the first agent starts, a last sample is taken after the last one, and a server's counters count only when both samples have them and they did not go backwards. The page now shows the server's running requests, "not reported" when missing.
+- (medium) Any number in the quote could verify a wrong downtime (a date, the incident number): the quote must state `<number> minutes`.
+- (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
+- (low) The finished message and an agent's token counts were not labelled simulated: both are now.
+- (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
