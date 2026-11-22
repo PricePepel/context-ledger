@@ -356,3 +356,16 @@ test('P3 review 4: a NUL and suffix added to a stored field is seen by verify', 
   raw.exec("UPDATE review_events SET reviewer = CAST(x'ff' AS TEXT) WHERE seq = 1;");
   assert.deepEqual(store.verifyReviews(), { events: 1, brokenAt: 1 });
 });
+
+test('P3 review 5: a leading BOM added to a stored field, or a seq past 2^53, is a broken event', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-bom-');
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'approve', reviewer: 'Mira' });
+  store.reviewNode(graph.id, { nodeId: 'test', nodeSha256: hash('test'), decision: 'reject', reviewer: 'Mira' });
+  const raw = keep(new DatabaseSync(path));
+  raw.exec("DROP TRIGGER review_events_no_update; UPDATE review_events SET reviewer = char(65279) || reviewer WHERE seq = 2;");
+  assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
+  raw.exec('UPDATE review_events SET seq = 9007199254740993 WHERE seq = 2;');
+  assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
+});

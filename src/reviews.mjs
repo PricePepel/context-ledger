@@ -53,14 +53,19 @@ const eventColumns = `seq, prev, hash, session_id AS sessionId, party, node_id A
 // so a value with a NUL and more added would otherwise hash as the original.
 const textColumns = { prev: 'prev', hash: 'hash', session_id: 'sessionId', party: 'party', node_id: 'nodeId',
   node_sha256: 'nodeSha256', decision: 'decision', label_json: 'labelJson', reviewer: 'reviewer', decided_at: 'decidedAt' };
-const byteColumns = ['seq', ...Object.keys(textColumns).map(column => `CAST(${column} AS BLOB) AS ${textColumns[column]}`)].join(', ');
-const utf8 = new TextDecoder('utf-8', { fatal: true });
+// seq is read as text too: a stored value past 2^53 would make node:sqlite throw. Its alias
+// is not seq, so ORDER BY seq still sorts by the number.
+const byteColumns = ['CAST(seq AS TEXT) AS seqText', ...Object.keys(textColumns).map(column => `CAST(${column} AS BLOB) AS ${textColumns[column]}`)].join(', ');
+// ignoreBOM keeps a leading U+FEFF, which is part of the stored value and its hash.
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fromBytes(row) {
-  const event = { seq: row.seq };
+  const seq = /^[1-9][0-9]{0,15}$/u.test(row.seqText) && Number.isSafeInteger(Number(row.seqText)) ? Number(row.seqText) : 0;
+  if (!seq) return { seq, unreadable: true };
+  const event = { seq };
   try {
     for (const name of Object.values(textColumns)) event[name] = row[name] === null ? null : utf8.decode(row[name]);
   } catch {
-    return { seq: row.seq, unreadable: true };
+    return { seq, unreadable: true };
   }
   return fromRow(event);
 }
