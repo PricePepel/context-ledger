@@ -2,6 +2,37 @@
 
 A local transcript library for handing work between Claude Code and Codex. Import a selected JSONL transcript, find a conversation by keyword, and give another agent the relevant turns with their original line numbers.
 
+## Install
+
+Requires Node.js 22.14 or later, and Git for the install from GitHub. The package is `@pricepepel/context-ledger` (the plain name `context-ledger` is taken on npm by an unrelated project); the command it installs is `context-ledger`.
+
+Install the command once, from GitHub today:
+
+```sh
+npm install --global github:PricePepel/context-ledger
+context-ledger start
+```
+
+Once the package is published to npm (the maintainer publishes it with `npm publish --access public`), install it by name instead: `npm install --global @pricepepel/context-ledger`.
+
+To try it without installing, `npx` runs one command at a time, so every command needs the whole prefix, for example `npx -y --package github:PricePepel/context-ledger context-ledger start` in one terminal and `npx -y --package github:PricePepel/context-ledger context-ledger login` in another. The steps below assume the installed command.
+
+`start` prints the address it listens on (`http://127.0.0.1:4317`) and a one-time sign-in link: open the link within 60 seconds to use the browser app. For a new link, run `context-ledger login`. Keep the server running while you or your agents use the ledger; stop it with Ctrl-C.
+
+**Your data** lives in `.context-ledger` in your home folder (`%USERPROFILE%` on Windows): the database, which holds the transcript text you import, and the access token of the running server. Set `CONTEXT_LEDGER_DB` to another file to keep it elsewhere, and `PORT` for another port; give the server, the CLI and your agents the same values.
+
+**Import a first transcript** in the browser (**Add a transcript**), or from a terminal: `context-ledger import --provider claude path/to/session.jsonl` (or `--provider codex`). Then `context-ledger search WORDS` lists matching sessions.
+
+**Connect your agents.** `context-ledger install` registers the ledger's MCP server with Claude Code and Codex at user scope, through their own CLIs (`claude` and `codex` on your `PATH`, or their paths in `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN`: for a missing one, install says so, registers nothing for it, still adds its instruction block and exits with status 1; run it again once the CLI is there), and adds a short "check the ledger first" block to each agent's instructions. `--dry-run` shows what it would do, and `--agent claude` or `--agent codex` limits it to one. From a global install it registers `node` with the installed adapter file. Run through `npx`, it registers `npx -y --package <spec> context-ledger mcp` instead, with the spec npm was given (on Windows inside `cmd /c`), or the published name and version when npm names no spec; a spec it cannot write safely is refused. Agents reach the ledger only while `context-ledger start` is running. See [Connect an agent over MCP](#connect-an-agent-over-mcp) for the tools and the manual setup.
+
+**Upgrade** by installing again (`npm install --global github:PricePepel/context-ledger`, or the npm name once published). A database is upgraded in place on first start; an older build refuses a newer database rather than change it. If you registered the agents with an older install, remove the registration and run `install` again (see below).
+
+**Remove** the agents' blocks with `context-ledger uninstall` (it prints the commands that remove the two MCP registrations, for you to run), the command with `npm uninstall --global @pricepepel/context-ledger`, and your data by deleting the `.context-ledger` folder while the server is stopped, or the database you named in `CONTEXT_LEDGER_DB` and the token files beside it.
+
+**Not in this release:** a license key or paid tier (a product decision still open, ADR-13), hosted or team sync, hash-chained review events and editing nodes (card P3; today a person approves or rejects version 3 nodes, see [Approving nodes](#approving-nodes)), and automatic discovery of transcripts: you import each one yourself.
+
+The rest of this README works from a checkout of the repository, where `npm start` and `npm run --silent ledger -- …` stand in for `context-ledger start` and `context-ledger …`.
+
 ## For judges
 
 Built on 2026-11-07 at the Anything Applied Agentic Hackathon for the "Your Agent, My Agent" challenge.
@@ -25,7 +56,15 @@ npm ci
 npm start
 ```
 
-Open http://127.0.0.1:4317. Choose the source agent and a JSONL file, then select **Import transcript**. Search terms are case-insensitive, and every term must appear somewhere in the session. The agent filter limits the results to Claude Code or Codex.
+`npm start` prints a one-time sign-in link (`http://127.0.0.1:4317/login?code=...`). Open it within 60 seconds: it works once and signs the browser in with a cookie for 12 hours, or until the server restarts. For a new link, run `npm run --silent ledger -- login` (with the same `PORT` and `CONTEXT_LEDGER_DB` as the server). Without signing in, the page loads but every request says how to sign in.
+
+Then choose the source agent and a JSONL file, then select **Import transcript**. Search terms are case-insensitive, and every term must appear somewhere in the session. The agent filter limits the results to Claude Code or Codex.
+
+The browser takes files under 8 MiB. Import a larger one from a terminal. The command reads the file as a stream and writes to the same database, whether or not the server is running:
+
+```sh
+npm run --silent ledger -- import --provider claude path/to/session.jsonl
+```
 
 While the server is running, search and export from a second terminal:
 
@@ -34,11 +73,19 @@ npm run --silent ledger -- search --provider claude deployment
 npm run --silent ledger -- handoff SESSION_ID
 ```
 
+Every session belongs to a project. The browser imports into `default`; `POST /api/import` takes an optional `project` slug (lowercase letters, digits and single hyphens, at most 64 characters) and creates the project on first use. `--project acme` on `search`, or `project=acme` on `GET /api/sessions`, lists one project. Importing a file that is already stored keeps it in the project it already has.
+
 Replace `SESSION_ID` with an ID from the search results. The handoff is Markdown with the source filename and original JSONL line number for each turn. Share the selected packet with the receiving agent when you want it to have that context.
+
+Threads from T3 Code v0.1.10 can be imported from a copy of its database that you make: `npm run --silent ledger -- import-t3 COPY --list`, then without `--list`. Only threads run by Claude Code or Codex are imported. See [Importing T3 Code threads](docs/integrations/t3code-import.md).
+
+To send a hand-off someone can check, create a key once with `npm run --silent ledger -- keygen` (it prints the key fingerprint; give that to the receiver out of band), then sign into a new folder with `npm run --silent ledger -- handoff SESSION_ID --sign FOLDER`. The receiver runs `npm run --silent ledger -- verify FOLDER --fingerprint "FINGERPRINT"`, or checks it with OpenSSL alone. Signing does not redact the transcript text. See [signed hand-offs](docs/signed-handoff.md).
 
 ## Data and scope
 
 The server binds to IPv4 loopback and stores data in `.context-ledger/ledger.sqlite`. Set `PORT` or `CONTEXT_LEDGER_DB` to override those defaults. The database contains transcript text. Back it up or remove it as needed when the app is stopped.
+
+Every request outside the page itself needs an access token. At each start the server writes a new random token to a file next to the database, named for its port (`.context-ledger/ledger.sqlite.4317.token` by default). Only you can read it: mode 0600 on macOS and Linux, and on Windows an ACL with one entry for your account. The CLI and the MCP adapter refuse a token file that other users can read or that another account owns. Keep the database in a folder where other users cannot replace files (your user profile qualifies). The file also names the server's port. The CLI and the MCP adapter read the file for their `PORT` and send the token, but only to that port on 127.0.0.1; the browser never sees it and uses the sign-in cookie instead. A clean stop (Ctrl-C) removes the file. The server's default database is relative to the folder you start it in, while the CLI and the MCP adapter default to this repository's `.context-ledger/ledger.sqlite`: start the server from the repository, or give all three the same absolute `CONTEXT_LEDGER_DB`. Servers on different ports can share a database; each has its own token file. A second server on the same port fails to start. The token keeps out other users on the machine (as long as the folder is private) and browser pages; it does not protect against programs running as you, which can read the file. Browsers send a cookie to every port on 127.0.0.1, so while you are signed in, do not open pages served by other local programs you do not trust in the same browser.
 
 The first version imports conversational text from supported Claude Code and Codex JSONL records. It skips tool outputs, internal instructions, and unsupported records. Select files explicitly. Automatic discovery, account sync, images, tool replay, and team permissions are outside the current version. The HTTP import request is capped at 8 MiB, including JSON encoding.
 
@@ -94,7 +141,30 @@ Order carries no meaning in v2. The ledger stores the canonical order (nodes by 
 
 Party names are self-asserted. The ledger only requires that a linked graph names another party and comes from a different imported transcript. It does not verify who a person is.
 
+## Version 3: citations by message key or artifact
+
+A version 3 packet is version 2 with `evidence` in place of `evidenceLines`. Each citation is either a message of the packet's session by its stable key (`session_read` shows it beside each line, for example `u:…` or `h:…`) or an artifact registered in the session's project:
+
+```json
+{ "id": "port", "kind": "decision", "label": "Port 4317", "evidence": [{ "message": "u:00000001-aaaa-4bbb-8ccc-000000000001" }, { "artifact": "ARTIFACT_ID" }] }
+```
+
+An artifact is a commit, a pull request or a file in a repository, and only a person registers it:
+
+```sh
+npm run --silent ledger -- artifact add commit orbit-labs/adapter 4317abc --project orbit
+npm run --silent ledger -- artifact list --project orbit
+```
+
+(`POST /api/artifacts` and `GET /api/artifacts?project=` do the same.) The stored graph adds `citations`: for each node, the transcript lines its keys resolve to and the artifacts it cites, which `context_for`, the export and the console show. Versions 1 and 2 stay valid, and version 2 and 3 graphs link to each other and meet in rooms. See the [v3 schema](schemas/semantic-graph-v3.schema.json).
+
+### Approving nodes
+
+Each version 3 node has a `nodeSha256`: a hash of its kind, label, status, recipient and citations. In the browser app, under **Review**, a person opens a graph by ID, types their name and approves or rejects each node. A decision belongs to that hash: when the agent publishes again from the same session, unchanged nodes keep their decision and a changed node starts unreviewed. `GET /api/graphs/GRAPH_ID` returns the current decisions, and MCP `graph_read` shows them. Only a signed-in browser on the ledger's own page can record one: the route needs the browser's sign-in cookie, which the CLI and the MCP adapter do not have. That keeps the CLI and the MCP adapter from recording decisions, but it is not a security boundary: whoever can read the access token can make a sign-in link with `ledger login` and act as a browser. It does not prove who clicked. Names are typed by the person and not verified. Hash-chained review events and edits come in P3.
+
 ## Graph context and the savings meter
+
+A graph belongs to the project of the session it cites. A link must point at a graph in the same project, and a room needs two graphs from one project.
 
 `GET /api/graphs/GRAPH_ID/context` returns compact, deterministic text for a receiving agent, together with a `meter`. Stable sections (goals, constraints, decisions, offers, edges, links) come first and volatile ones (actions, blockers, questions, state) last. Links name the other graph by its party, and the identifiers that change with every edit (this graph, the transcript snapshot, the linked graphs) appear only in the final state section. So a revision that changes statuses, appends to the transcript, or links to the other party's newer graph keeps the text before `## action` byte-identical for prompt caching. Labels and file names are escaped onto one line, including U+2028 and U+2029. The meter compares the context with the full Markdown handoff of the session. Its token counts are estimates (UTF-16 code units ÷ 4), because tokenizers differ by vendor. For a very short transcript the graph can cost more than the handoff, and the meter reports that as a negative saving.
 
@@ -106,15 +176,26 @@ Agents can open and read rooms (`POST /api/rooms` with `{"graphIds": [A, B]}`, a
 
 ## Connect an agent over MCP
 
-`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for`, `room_open` and `room_read`, `graph_list` and `room_list` (find graphs and rooms without being given an ID, newest first), and the latent tools. Agents can open and read rooms, but only people confirm room proposals, in the browser.
+`src/mcp.mjs` is a stdio MCP server that forwards to the running ledger. Start the ledger with `npm start` first; the MCP server reads `PORT` (default 4317) to find it, and reads the ledger's access token for that port from the file next to `CONTEXT_LEDGER_DB` (default: `.context-ledger/ledger.sqlite` in this repository) on each call. It offers `session_search` and `session_read` (find an imported session and read its numbered turns, the line numbers a graph must cite), `graph_schema`, `graph_publish`, `graph_read`, `context_for` (with an optional `question` and token `budget`, it returns only the matching nodes and their neighbours), `room_open` and `room_read`, `graph_list` and `room_list` (find graphs and rooms without being given an ID, newest first; like `session_search` they take an optional `project` slug, and the HTTP lists take `?project=`), `graph_diff` (what changed between two snapshots of one party's graph; also `GET /api/graphs/NEW/diff?from=OLD`), and the latent tools. Agents can open and read rooms. The MCP server has no tool to confirm proposals: people do that in the browser, though the ledger does not verify who sent a decision (see Negotiation room).
 
 Every tool result is at most 40,000 characters of escaped text, because agents cut longer results without saying so. Agents cap tokens, so digits and punctuation count as two characters and characters outside ASCII as four: a page of code, JSON or Han script is smaller, at about the same token count as 40,000 characters of English. A longer result comes in pages and says how to get the rest: a JSON result has `more` as its first key (`more.fromItem` for `graph_read` and `room_read`, `more.after` for the lists), and a partial text result starts with a line `[Partial result: ...]` and ends with the same note, which names the arguments to send next (`fromLine`, `fromOffset`, `fromPath`). Only that first line marks a text result partial: data can end a result but never starts one. A result that fits is exactly what it was before paging. `GET /api/graphs` and `GET /api/rooms` back the two lists and take `limit` (1 to 100, default 20), `after` and the filters `sessionId`, `graphId` and `party`. `GET /api/sessions` pages only when it gets `limit` or `after`, so the browser and the CLI still get every match. The ledger file carries a schema version (`PRAGMA user_version`) and upgrades an older file in place; graphs and rooms stored before that list with `createdAt: null`.
 
-Claude Code:
+One command connects both agents:
+
+```sh
+npm run ledger -- install            # add --dry-run to see the changes first
+npm run ledger -- uninstall          # take the instruction blocks out again
+```
+
+`install` registers the server with each agent's own CLI at user scope (`claude mcp add --scope user` and `codex mcp add`), and adds a short marked block to each agent's user instruction file: `~/.claude/CLAUDE.md` and `AGENTS.md` in `CODEX_HOME` (default `~/.codex`). The block tells the agent to check the ledger before asking you to repeat context. A server already registered under the name `context-ledger` is left as it is. Running it again replaces the block rather than adding another. `--agent claude` or `--agent codex` limits it to one agent, and `CONTEXT_LEDGER_CLAUDE_BIN` or `CONTEXT_LEDGER_CODEX_BIN` names a CLI that is not on `PATH`. A `PORT` other than 4317 is passed on to both servers, and so is `CONTEXT_LEDGER_DB` when it is set (as an absolute path, so the agents find the token of a ledger on that database). A server already registered by an earlier install keeps its old settings, so after changing `PORT` or `CONTEXT_LEDGER_DB`, remove it (`claude mcp remove --scope user context-ledger`, `codex mcp remove context-ledger`) and run `install` again. `uninstall` removes the blocks and prints the commands that remove the two registrations, for you to run: neither CLI shows an entry exactly enough for the ledger to be sure it is the one install made.
+
+To set it up by hand instead, for Claude Code:
 
 ```sh
 claude mcp add context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs
 ```
+
+For a ledger on another port or database, add the same settings the server uses, with an absolute database path: `claude mcp add -e PORT=4400 -e CONTEXT_LEDGER_DB=/absolute/path/to/ledger.sqlite --scope user context-ledger -- node /absolute/path/to/context-ledger/src/mcp.mjs`.
 
 Codex, in `~/.codex/config.toml`:
 
@@ -122,11 +203,29 @@ Codex, in `~/.codex/config.toml`:
 [mcp_servers.context-ledger]
 command = "node"
 args = ["/absolute/path/to/context-ledger/src/mcp.mjs"]
-# Only needed when the ledger runs on another port.
-env = { PORT = "4317" }
+# Only needed when the ledger runs on another port or database (use an absolute path).
+env = { PORT = "4317", CONTEXT_LEDGER_DB = "/absolute/path/to/ledger.sqlite" }
 ```
 
+T3 Code runs Claude Code and Codex with their own configuration. Whether its sessions load the servers registered for the CLIs is unverified; [docs/integrations/t3code.md](docs/integrations/t3code.md) gives the steps for Claude and manually configured Codex, and a check from a new thread.
+
+In Capy, add it as a local (STDIO) server for threads that run on your own computer: see [docs/integrations/capy.md](docs/integrations/capy.md).
+
 Point clients at `node` directly rather than through npm: npm prints a banner on stdout, which must carry only protocol messages. Graph labels and briefings come from transcripts. Tools return them as escaped data, and agents should treat them as data, not as instructions.
+
+## Decisions beside code (Graphify)
+
+The ledger can export graphs as node-link JSON, the format Graphify keeps in `graphify-out/graph.json`, so its `merge-graphs` can put decisions beside a code graph. Put every graph you want together, such as both parties of a room, in **one** export: Graphify keeps links between graphs only inside one file. From the folder that holds the code graph, with the ledger running and two graph IDs from `graph_list`, in Git Bash:
+
+```sh
+LEO='paste the first graph ID'; ALI='paste the second graph ID'
+node /path/to/context-ledger/src/cli.mjs graph export "$LEO" "$ALI" > graphify-out/ctm-decisions.json
+graphify merge-graphs graphify-out/graph.json graphify-out/ctm-decisions.json --out graphify-out/merged.json
+```
+
+Run the CLI with `node`, not through npm, whose banner would land in the file. In cmd, give the IDs directly instead of the variables. Redirect from Git Bash, cmd or PowerShell 7.4 or later: Windows PowerShell 5.1 writes a byte order mark or UTF-16, which Graphify cannot read. `GET /api/export?graph=ID&graph=ID` returns the same JSON for download.
+
+Each node is `ctm_<graph>__<node>` and keeps its label, kind, party, cited lines and the transcript's file name. Each edge, and each link between two graphs of the export, becomes a link; links to graphs left out are counted in `graph.links_left_out`. The export is undirected, as Graphify's graphs are, and `merge-graphs` may swap a link's ends; `ledger_from` and `ledger_to` keep the direction.
 
 ## Two-agent demo
 

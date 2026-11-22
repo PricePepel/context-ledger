@@ -1,2 +1,5 @@
 *.sh text eol=lf
 demo/*.jsonl text eol=lf
+# Card P5c: the bin keeps LF, so its #!/usr/bin/env node line works on macOS and Linux
+# even when the package is packed from a Windows checkout.
+bin/* text eol=lf

@@ -113,12 +113,12 @@ test('a slow request does not hold back a later one', async t => {
   assert.deepEqual(JSON.parse((await slow).content[0].text), { graph: { id: graphId } });
 });
 
-test('tools/list offers exactly the thirteen ledger tools with closed input schemas', async t => {
+test('tools/list offers exactly the fourteen ledger tools with closed input schemas', async t => {
   const client = mcp(t, await freePort());
   const { result } = await client.request(1, 'tools/list');
   assert.deepEqual(result.tools.map(tool => tool.name),
     ['session_search', 'session_read', 'graph_schema', 'graph_publish', 'graph_read', 'context_for', 'room_open', 'room_read', 'latent_read', 'latent_transfer', 'latent_team',
-      'graph_list', 'room_list']);
+      'graph_list', 'room_list', 'graph_diff']);
   for (const tool of result.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');
@@ -149,8 +149,9 @@ test('each tool calls the matching ledger route with the CLI conventions', async
   const origin = `http://127.0.0.1:${ledger.port}`;
   const packet = { version: 2, sessionId: otherGraphId, party: 'leo', nodes: [], edges: [] };
 
+  // Card P2b: version 3 is the default.
   const schema = await client.call(1, 'graph_schema', {});
-  assert.deepEqual(JSON.parse(schema.content[0].text), graphSchemas[2]);
+  assert.deepEqual(JSON.parse(schema.content[0].text), graphSchemas[3]);
   const schemaV1 = await client.call(2, 'graph_schema', { version: 1 });
   assert.deepEqual(JSON.parse(schemaV1.content[0].text), graphSchemas[1]);
   assert.equal(ledger.requests.length, 0);
@@ -268,8 +269,8 @@ test('bad tool arguments are tool errors and never reach the ledger', async t =>
   const ledger = await fakeLedger(t, () => ({ body: {} }));
   const client = mcp(t, ledger.port);
   const cases = [
-    ['graph_schema', { version: 3 }, /version must be 1 or 2/],
-    ['graph_schema', { version: '2' }, /version must be 1 or 2/],
+    ['graph_schema', { version: 4 }, /version must be 1, 2 or 3/],
+    ['graph_schema', { version: '2' }, /version must be 1, 2 or 3/],
     ['graph_schema', { extra: true }, /Unknown argument "extra"/],
     ['graph_publish', undefined, /packet must be a JSON object/],
     ['graph_publish', { packet: [] }, /packet must be a JSON object/],

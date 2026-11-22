@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures.mjs';
 import { aliPacket, importParty, leoPacket, publish } from './party-fixtures.mjs';
 
 const htmlLabel = '<img src=x onerror="window.__pwned=1"> GPU time';
@@ -24,6 +24,11 @@ test('two people open a room, confirm a match, reject a conflict and see it afte
   await expect(page.getByRole('region', { name: 'Party ali' })).toContainText('No work on Sunday');
   await expect(page.getByRole('region', { name: 'Party leo' })).toContainText('Pair on the MCP adapter');
   await expect(page.getByRole('region', { name: 'Party ali' })).toContainText(label);
+  // Card G7: the planted label's "=1" is not in its cited line, so it is inferred.
+  const aliNodes = page.getByRole('region', { name: 'Party ali' }).locator('.party-nodes > li');
+  await expect(aliNodes.filter({ hasText: label }).locator('.node-kind')).toHaveText('offer · inferred');
+  await expect(aliNodes.filter({ hasText: 'No work on Sunday' }).locator('.node-kind')).toHaveText('constraint · quoted');
+  await expect(aliNodes.filter({ hasText: label })).toHaveAttribute('data-grounding', 'inferred');
   expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
 
   const match = page.locator('#room-proposals > li', { hasText: 'matches' });
@@ -170,4 +175,106 @@ test('a decision that lands after switching rooms does not replace the new room'
   await expect(page.getByRole('region', { name: 'Party ali' })).toContainText('stale second');
   await expect(page.locator('#room-proposals > li', { hasText: 'matches' })).toContainText('leo: undecided');
   expect(page.url()).toMatch(new RegExp(`#room=${secondRoom}$`, 'u'));
+});
+
+test('a graph stored before G7 shows no mark in the room', async ({ page, request, baseURL }) => {
+  const { ali, leo } = await publishPair(request, baseURL, 'Two evenings of GPU time, unmarked');
+  // A ledger that has not republished an older graph sends nodes without a mark.
+  await page.route('**/api/rooms', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const party of body.room.parties) for (const node of party.nodes) node.grounding = null;
+    delete body.room.parties[0].nodes[0].grounding;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(leo.id);
+  await page.getByLabel('Second graph ID').fill(ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  const kinds = page.locator('.party-nodes .node-kind');
+  await expect(kinds.first()).toBeVisible();
+  for (const text of await kinds.allTextContents()) expect(text).not.toMatch(/quoted|inferred|null|undefined/u);
+  await expect(page.getByRole('region', { name: 'Party ali' }).locator('.party-nodes > li', { hasText: 'No work on Sunday' }).locator('.node-kind')).toHaveText('constraint');
+  expect(await page.locator('.party-nodes > li[data-grounding]').count()).toBe(0);
+});
+
+test('a room says when a party has published a newer graph, and what changed', async ({ page, request, baseURL }, testInfo) => {
+  // Card G11. The label is set with textContent, so markup in it stays text.
+  const label = `<b>GPU</b> evenings #g11-${testInfo.repeatEachIndex}-${Date.now()}`;
+  const { ali, leo } = await publishPair(request, baseURL, label);
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(leo.id);
+  await page.getByLabel('Second graph ID').fill(ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-status')).toContainText('3 proposals');
+
+  // Leo publishes again: the goal is relabelled and the action is done.
+  const revised = leoPacket(leo.packet.sessionId, ali.id);
+  revised.nodes = revised.nodes.map(node => (node.id === 'orbit-demo' ? { ...node, label: `${label} demo live by 19:00` }
+    : node.id === 'record-demo' ? { ...node, status: 'completed' } : node));
+  const newer = await publish(request, baseURL, revised);
+  await page.reload();
+  const update = page.getByRole('region', { name: 'Newer graph from leo' });
+  await expect(update).toContainText(`leo has published a newer graph (${newer.id.slice(0, 12)}…): 2 changed, 1 action no longer ready`);
+  // A readiness change wins over the generic "Changed" row for the same node.
+  await expect(update.locator('li')).toHaveText([/^No longer ready action: Record the demo on Sunday$/u, /^Changed goal: /u]);
+  await expect(update.locator('li').nth(1).locator('bdi')).toHaveText(`${label} demo live by 19:00`);
+  expect(await update.locator('b').count()).toBe(0);
+
+  await update.getByRole('button', { name: "Use leo's newer graph" }).click();
+  await expect(page.getByLabel('First graph ID')).toHaveValue(newer.id);
+  await expect(page.getByLabel('Second graph ID')).toHaveValue(ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-status')).toContainText('3 proposals');
+  await expect(page.getByRole('region', { name: 'Newer graph from leo' })).toHaveCount(0);
+});
+
+test('a diff that answers after the person opened another room does not touch the new room', async ({ page, request, baseURL }, testInfo) => {
+  const tag = `#g11-race-${testInfo.repeatEachIndex}-${Date.now()}`;
+  const first = await publishPair(request, baseURL, `GPU A ${tag}`);
+  const revised = leoPacket(first.leo.packet.sessionId, first.ali.id);
+  revised.nodes = revised.nodes.map(node => (node.id === 'orbit-demo' ? { ...node, label: `Demo A ${tag}` } : node));
+  await publish(request, baseURL, revised);
+  const second = await publishPair(request, baseURL, `GPU B ${tag}`);
+
+  // Hold room A's diff until room B is open.
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/diff?from=*', async route => { await held; await route.continue(); });
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(first.leo.id);
+  await page.getByLabel('Second graph ID').fill(first.ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.getByRole('region', { name: 'Newer graph from leo' }).first()).toBeVisible();
+
+  await page.getByLabel('First graph ID').fill(second.leo.id);
+  await page.getByLabel('Second graph ID').fill(second.ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-status')).toContainText('3 proposals');
+  await expect(page.getByRole('region', { name: 'Party ali' })).toContainText(`GPU B ${tag}`);
+  const before = await page.locator('#room-updates').innerHTML();
+  release();
+  await page.waitForTimeout(300);
+  expect(await page.locator('#room-updates').innerHTML()).toBe(before);
+  await expect(page.locator('#room-updates')).not.toContainText(`Demo A ${tag}`);
+});
+
+test('P2a review: a room across projects shows its choices but no buttons', async ({ page, request, baseURL }) => {
+  const { ali, leo } = await publishPair(request, baseURL, 'Two evenings of GPU time, read-only');
+  // Such a room can only come from a file older than P2a, so the response is changed here.
+  await page.route('**/api/rooms', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.room.takesChoices = false;
+    body.room.proposals[0].choices[body.room.parties[0].party] = 'confirm';
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto('/');
+  await page.getByLabel('First graph ID').fill(leo.id);
+  await page.getByLabel('Second graph ID').fill(ali.id);
+  await page.getByRole('button', { name: 'Open room' }).click();
+  await expect(page.locator('#room-proposals')).toContainText("This room's graphs are not both in one known project, so it takes no choices.");
+  await expect(page.locator('.choice-button')).toHaveCount(0);
+  await expect(page.locator('.choice-made').first()).toBeVisible();
+  await expect(page.locator('#room-proposals')).toContainText(`${'ali'}: confirm`);
 });
