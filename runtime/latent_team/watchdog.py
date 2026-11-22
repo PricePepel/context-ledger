@@ -5,10 +5,12 @@ soft thought, which is linear algebra on weights, and never runs the transformer
 squad output as instructions.
 
 How it watches. `LatentTeam.latent_mas(..., watch=w)` registers two hooks on the model's
-base and calls the watchdog at every hand-off (`turn_start`, `turn_end`). The hooks see
-every input the transformer actually receives (token ids or a fed vector) and the last
-hidden state it returns, so the watchdog's record is taken at the model boundary, not
-from the team's own bookkeeping.
+base and tells the watchdog where each turn starts and ends (`turn_start`, `turn_end`),
+which gives the order of turns and the lengths the runtime claims. Everything else is
+taken in the hooks, from what the transformer receives and returns: the token ids or fed
+vector, the memory object, the attention mask and position ids, the hidden state, and the
+memory checksums (at a turn's first call, and from the output of a thinker's closing
+call). So a change between two turns is seen wherever the runtime makes it.
 
 The thought record. A soft thought is the probability-weighted mix of the top 16 token
 embeddings at that step, so it has an exact description: 16 token ids and 16 weights. The
@@ -23,12 +25,22 @@ Exact checks, per question unless the fault is batch-wide by nature:
   configuration   soft thoughts, no adapter, no LoRA, the planned steps and the weights
                   hash the threshold set was measured on
   legibility      each fed vector equals the watchdog's own rebuild of the soft mix
-  spanLedger      every call appended what the plan says, at the planned position
-  memoryChecksum  a keyed checksum of the memory at the end of one turn equals the one
-                  at the start of the next
+  spanLedger      every call appended what the plan says, at the planned position; the
+                  memory part of every attention mask is the mask already seen and the
+                  position ids count real tokens only (no hidden span, no shifted position)
+  memoryChecksum  one memory object for the run, and a keyed checksum of the memory as the
+                  model wrote it at the end of one turn equals the one it reads at the
+                  start of the next
   numbers         no NaN or infinity in thoughts, hidden states or the cache
   budgets         m latent steps per thinker, no text from a thinker, the solver within
-                  its token budget, wall time within its cap, no tool calls
+                  its token budget, wall time within its cap. A W1 squad has no tool
+                  handle, so its tool count is 0 by construction; W2's tool gate counts
+                  calls where tools exist
+
+Not covered: a change made to the memory in place in the middle of a turn, between two
+latent steps, and a rewrite of the answer text after decoding. Both need code inside the
+runtime, which is trusted (docs/watchdog-security.md, "Trust assumptions"); a sampled
+replay sees the first when it is not deterministic.
 
 Statistical checks (accidents only; their rates are measured, not assumed):
   degenerate      repeated top tokens, whitespace and special top tokens, and weights
@@ -58,10 +70,12 @@ THRESHOLD_DIR = os.path.join(os.path.dirname(__file__), "thresholds")
 
 # ------------------------------------------------------------------ weights
 def weights_fingerprint(model):
-    """(SHA-256 of every parameter and buffer, in name order, and the tuple of names).
+    """(SHA-256 of every parameter and buffer in name order, the tuple of names, and each
+    parameter's in-place version counter).
 
-    Computed once per loaded model; LatentTeam.load_checkpoints drops it, and the names
-    show a LoRA or any other module added later."""
+    Computed once per loaded model; LatentTeam.load_checkpoints drops it. The names show a
+    LoRA or any other module added later, and the version counters show an in-place edit of
+    a weight after hashing, so a stale hash never passes."""
     digest = hashlib.sha256()
     named = dict(model.named_buffers())
     named.update(model.named_parameters())
@@ -69,11 +83,19 @@ def weights_fingerprint(model):
         tensor = named[name].detach()
         digest.update(f"{name}|{tensor.dtype}|{tuple(tensor.shape)}|".encode())
         digest.update(tensor.contiguous().reshape(-1).view(torch.uint8).cpu().numpy())
-    return digest.hexdigest(), parameter_names(model)
+    return digest.hexdigest(), parameter_names(model), parameter_versions(model)
 
 
 def parameter_names(model):
     return tuple(name for name, _ in model.named_parameters())
+
+
+def parameter_versions(model):
+    return tuple(parameter._version for _, parameter in model.named_parameters())
+
+
+def names_digest(names):
+    return hashlib.sha256(chr(10).join(names).encode()).hexdigest()
 
 
 def team_weights(team):
@@ -231,6 +253,20 @@ def load_thresholds(model_name, weights_hash, directory=THRESHOLD_DIR):
     return None
 
 
+def pinned_hashes(model_name, directory=THRESHOLD_DIR):
+    """Every weights hash a committed threshold set names for this model. When there is one,
+    a run on any other weights fails the configuration check: its thresholds are void."""
+    found = set()
+    if os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if name.endswith(".json"):
+                with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if data.get("model") == model_name and isinstance(data.get("weightsHash"), str):
+                    found.add(data["weightsHash"])
+    return frozenset(found)
+
+
 def bucket(score, edges):
     """0 to 9: how many of the threshold set's edges the score reaches. The edges are the
     clean 50, 60, 70, 80, 90, 95, 98, 99 and 99.5th percentiles, so bucket 8 or more is a
@@ -262,7 +298,9 @@ def junk_table(team):
 # ------------------------------------------------------------------ the plan
 class Plan:
     """What the squad must append, derived by the watchdog from the questions, the role
-    prompts and the model's chat template, independently of LatentTeam.render."""
+    prompts (team.LATENT_PROMPTS) and the template's turn strings (team.turns), not from
+    LatentTeam.render. The turn strings themselves are checked for a preamble repeated in a
+    later turn and for an empty close (template_ok)."""
 
     def __init__(self, team, questions, roles, steps):
         from .team import LATENT_PROMPTS
@@ -279,6 +317,13 @@ class Plan:
             self.prompts.append(batch([first_turn(tokenizer, t) if index == 0 else team.turns.later(t) for t in texts]))
         self.close = batch([team.turns.close] * len(questions))
         self.solver = batch([team.turns.later(LATENT_PROMPTS["solver"].format(question=q)) for q in questions])
+        # The plan reads the template's turn strings (team.turns); check them on their own: the
+        # first turn is a preamble followed by a later turn, a later turn never repeats that
+        # preamble, and the close is not empty.
+        sample = LATENT_PROMPTS[roles[0]].format(question=questions[0]) if questions else ""
+        first, later = first_turn(tokenizer, sample), team.turns.later(sample)
+        head = first[:-len(later)] if later and first.endswith(later) else None
+        self.template_ok = bool(team.turns.close) and head is not None and (not head or head not in later)
         self.starts = [0]
         for ids, _ in self.prompts:
             self.starts.append(self.starts[-1] + ids.shape[1] + steps + self.close[0].shape[1])
@@ -300,7 +345,7 @@ class Watch:
     """The watchdog of one squad for one run (a batch of questions, one squad each)."""
 
     def __init__(self, team, questions, *, steps, max_new_tokens, agents=3, thresholds=None, reference=None,
-                 time_cap=None, key=None, keep_memory=False, collect=None):
+                 time_cap=None, key=None, keep_memory=False, collect=None, pinned=None):
         from .team import chain_roles
         if not 1 <= agents <= MAX_THINKERS:
             raise ValueError(f"a squad has 1 to {MAX_THINKERS} thinking agents and the solver")
@@ -312,7 +357,8 @@ class Watch:
         self.keep_memory = keep_memory
         self.plan = Plan(team, self.questions, self.roles, steps)
         self.checksum = Checksum(key or reports.new_run_key())
-        self.weights_hash, self.weight_names = team_weights(team)
+        self.weights_hash, self.weight_names, self.weight_versions = team_weights(team)
+        self.pinned = frozenset(pinned or ())   # every weights hash a threshold set names for this model
         self.solver_phase = len(self.roles)
         rows, device = self.rows, self.device
         self.calls, self.record = [], []
@@ -325,6 +371,10 @@ class Watch:
         self.distance_steps = 0
         self.starts_seen, self.ends_seen = {}, {}
         self.sums_start, self.sums_end = {}, {}
+        self.phase_calls = 0
+        self.cache, self.same_cache = None, True
+        self.running_mask = torch.zeros(rows, 0, dtype=torch.long, device=device)
+        self.boundary_ok = torch.ones(rows, dtype=torch.bool, device=device)
         self.handoff = None           # (layers, mask) the solver received, when keep_memory
         self.claims = None            # what latent_mas said it would run
         self.handles = []
@@ -340,7 +390,9 @@ class Watch:
         # make the run look clean.
         self.claims = {"roles": tuple(roles), "mode": mode, "steps": steps, "maxNewTokens": max_new_tokens,
                        "adapter": getattr(team, "adapter", None) is not None, "topK": team.soft_top_k,
-                       "temperature": team.soft_temperature, "names": parameter_names(team.model)}
+                       "temperature": team.soft_temperature, "names": parameter_names(team.model),
+                       "lora": any("lora_" in name for name in parameter_names(team.model)),
+                       "versions": parameter_versions(team.model)}
         base = team.model.base_model
         self.handles = [base.register_forward_pre_hook(self._before, with_kwargs=True),
                         base.register_forward_hook(self._after, with_kwargs=True)]
@@ -351,22 +403,23 @@ class Watch:
         self.handles = []
         self.phase = None
 
+    # The team calls turn_start and turn_end at its hand-offs; they give the order of turns
+    # and the lengths the runtime claims. Every check of the memory itself is taken in the
+    # hooks, from what the model receives and returns: the start checksum at the first call
+    # of a turn, the end checksum from the output of a thinker's closing call. So a change
+    # made anywhere between two turns (in think, forward, decode or the hand-off) is seen.
     def turn_start(self, index, memory, mask):
         if index != self.next_turn:
             self.order_ok = False
         self.next_turn = index + 1
         self.phase = index
+        self.phase_calls = 0
         self.starts_seen[index] = (memory_length(memory), 0 if mask is None else mask.shape[1])
-        if index > 0:
-            self.sums_start[index] = self.checksum(memory, mask)
-        if index == self.solver_phase and self.keep_memory:
-            self.handoff = ([(k, v) for k, v in memory_layers(memory)], mask)
 
     def turn_end(self, index, memory, mask):
         if index != self.phase:
             self.order_ok = False
         self.ends_seen[index] = (memory_length(memory), 0 if mask is None else mask.shape[1])
-        self.sums_end[index] = self.checksum(memory, mask)
         self.finite &= cache_finite(memory, self.rows, self.device)
         self.phase = None
 
@@ -375,26 +428,52 @@ class Watch:
         if ids is None and embeds is None and args:
             ids = args[0]
         past = kwargs.get("past_key_values")
+        full = kwargs.get("attention_mask")
         new = ids if ids is not None else embeds
-        call = {"phase": self.phase, "kind": "ids" if ids is not None else "embeds", "n": int(new.shape[1]),
+        n = int(new.shape[1])
+        call = {"phase": self.phase, "kind": "ids" if ids is not None else "embeds", "n": n,
                 "past": memory_length(past)}
         if self.phase is None:
             self.stray += 1
+        # One working memory per run, updated in place: every call must get that object.
+        if self.cache is None:
+            self.cache = past
+        elif past is not self.cache:
+            self.same_cache = False
+        # The memory part of the mask must be the mask the model already saw, and the
+        # positions must count only real tokens: no hidden span, no shifted position.
+        if full is None or full.shape[1] != call["past"] + n or self.running_mask.shape[1] != call["past"]:
+            self.boundary_ok &= False
+        else:
+            self.boundary_ok &= (full[:, :-n] == self.running_mask).all(-1)
+            positions = kwargs.get("position_ids")
+            expected = (full.cumsum(-1) - 1).clamp(min=0)[:, -n:]
+            self.boundary_ok &= (positions == expected).all(-1) if positions is not None and \
+                positions.shape == expected.shape else torch.zeros_like(self.boundary_ok)
+            self.running_mask = full
+        first = self.phase is not None and self.phase_calls == 0
+        if first and self.phase > 0:
+            self.sums_start[self.phase] = self.checksum(past, full[:, :-n] if full is not None else None)
+        if first and self.phase == self.solver_phase and self.keep_memory:
+            self.handoff = ([(k, v) for k, v in memory_layers(past)], full[:, :-n] if full is not None else None)
         if ids is not None:
-            first_solver_call = self.phase == self.solver_phase and not any(
-                c["phase"] == self.solver_phase for c in self.calls[-1:])
-            if self.phase != self.solver_phase or first_solver_call:
-                mask = kwargs.get("attention_mask")
+            if self.phase != self.solver_phase or first:
                 call["ids"] = ids.detach().clone()
-                call["mask"] = None if mask is None else mask[:, -new.shape[1]:].detach().clone()
+                call["mask"] = None if full is None else full[:, -n:].detach().clone()
         else:
             self._latent(embeds[:, -1])
+        if self.phase is not None:
+            self.phase_calls += 1
         self.calls.append(call)
 
     def _after(self, module, args, kwargs, output):
         hidden = output.last_hidden_state if hasattr(output, "last_hidden_state") else output[0]
         self.prev_hidden = hidden[:, -1].detach()
         self.finite &= torch.isfinite(self.prev_hidden).all(-1)
+        closing = self.phase is not None and self.phase < self.solver_phase and self.phase_calls > 1 and \
+            kwargs.get("input_ids") is not None
+        if closing:   # the latest text call of a thinker's turn: its close, unless more follows
+            self.sums_end[self.phase] = self.checksum(output.past_key_values, kwargs.get("attention_mask"))
 
     def rebuild(self, hidden):
         """The soft mix of `hidden`, derived here: (mix, top ids, weights)."""
@@ -458,6 +537,8 @@ class Watch:
         solver_calls = by_phase.get(self.solver_phase, [])
         prompt = (solver_calls[0].get("ids"), solver_calls[0].get("mask")) if solver_calls else None
         structure &= _same_rows(prompt, self.plan.solver, rows, device)
+        if not self.plan.template_ok:
+            structure &= none
 
         # span ledger: every call at its planned position, every boundary where planned
         ledger = self.order_ok and not self.stray and not self.orphans
@@ -480,8 +561,8 @@ class Watch:
             ledger &= c["kind"] == "ids" and c["n"] == want_n and c["past"] == position
             position += c["n"]
 
-        # memory checksum at every hand-off, row by row
-        checksum = every.clone()
+        # memory checksum at every hand-off, row by row, and one memory object for the run
+        checksum = every.clone() if self.same_cache else none.clone()
         for index in range(1, self.solver_phase + 1):
             end, start = self.sums_end.get(index - 1), self.sums_start.get(index)
             checksum &= none if end is None or start is None or end.shape != start.shape else (end == start).all(-1)
@@ -491,12 +572,17 @@ class Watch:
         configuration = (claims.get("mode") == MODE and claims.get("steps") == self.steps
                          and claims.get("roles") == self.roles and claims.get("adapter") is False
                          and claims.get("topK") == TOP_K and claims.get("temperature") == TEMPERATURE
-                         and claims.get("names") == self.weight_names)
+                         and claims.get("names") == self.weight_names and not claims.get("lora")
+                         and claims.get("versions") == self.weight_versions)
+        if self.pinned:
+            configuration &= self.weights_hash in self.pinned
         if self.thresholds is not None:
             t = self.thresholds
             configuration &= (t.get("weightsHash") == self.weights_hash and t.get("mode") == MODE
                               and t.get("topK") == TOP_K and t.get("temperature") == TEMPERATURE
-                              and t.get("steps") == self.steps)
+                              and t.get("steps") == self.steps
+                              and t.get("parameterNames", names_digest(self.weight_names)) == names_digest(
+                                  self.weight_names))
 
         # legibility: every planned latent step was rebuilt and matched
         planned_latent = len(self.roles) * self.steps
@@ -512,7 +598,8 @@ class Watch:
         budgets = (tokens <= self.max_new_tokens) & (every if budget_ok else none)
 
         checks = {"turnStructure": structure, "configuration": every if configuration else none,
-                  "legibility": legibility, "spanLedger": every if ledger else none, "memoryChecksum": checksum,
+                  "legibility": legibility, "spanLedger": (every if ledger else none) & self.boundary_ok,
+                  "memoryChecksum": checksum,
                   "numbers": self.finite.clone(), "budgets": budgets}
         raw = self.raw_scores()
         self.results = {"checks": {k: v.tolist() for k, v in checks.items()}, "raw": raw,
@@ -561,5 +648,10 @@ class Watch:
         return reports.sign(report, key)
 
     def drop(self):
-        """Forget the thought record, memory references and per-call ids of this run."""
+        """Forget everything of this run but its results: the thought record, the memory and
+        its references, the per-call ids, the plan (the prompts' token ids), the questions,
+        the checksum key and the raw scores."""
         self.calls, self.record, self.handoff, self.prev_hidden = [], [], None, None
+        self.cache, self.running_mask, self.plan, self.questions, self.checksum = None, None, None, [], None
+        if self.results is not None:
+            self.results.pop("raw", None)

@@ -15,6 +15,9 @@ applies wins (docs/watchdog-security.md, "The supervisor"):
   7  no calibration set for this kind of task                     release, marked uncalibrated
   8  everything passed                                            release
 
+A release whose statistical checks did not run (no threshold set for these weights and
+steps) is also marked unscreened.
+
 It never repairs and never names a guilty agent: it holds or replaces the whole squad's
 output. It keeps long-run counts per weights hash in memory, for drift alarms; nothing
 here is written to disk.
@@ -26,7 +29,7 @@ from dataclasses import dataclass
 from . import reports
 
 ACTIONS = ("hold", "fallback", "abstain", "release")
-MARKS = ("tool-refused", "fallback", "unverified", "uncalibrated")
+MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated")
 REPORT_PROBLEMS = ("report-missing", "report-unsigned", "report-malformed", "report-other-run",
                    "report-unknown-squad", "report-replayed", "report-late")
 REASONS = reports.EXACT_CHECKS + ("label-rule",) + REPORT_PROBLEMS + (
@@ -122,6 +125,8 @@ class Run:
             return Decision("abstain", "low-confidence", marks)
         if quote_failed:                                                     # row 6
             marks += ("unverified",)
+        if any(r["statistical"][n] == "not-run" for r in valid for n in reports.SCORES):
+            marks += ("unscreened",)   # no threshold set for this setting: no statistical check ran
         if not calibrated:                                                   # row 7
             marks += ("uncalibrated",)
         reason = "quote-failed" if quote_failed else "uncalibrated" if not calibrated else "passed"

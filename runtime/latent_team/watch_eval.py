@@ -8,9 +8,9 @@
 Pinned setting: Qwen2.5-3B-Instruct in bf16, soft thoughts, no adapter, m = 40, GSM8K test,
 seed 0, blocks of 200, batches of 32, greedy decoding with up to 512 solver tokens.
 
-Everything written to --out stays on this machine: per-question numbers (correct or not,
-scores, check results) and the reference statistics. No question, answer, thought record
-or cache is written anywhere. `--part thresholds` also writes the committed threshold set
+Everything written to --out stays on this machine: per-question numbers (correct or not, the
+final number each system gave, scores, check results) and the reference statistics. No
+question or answer text, thought record or cache is written anywhere. `--part thresholds` also writes the committed threshold set
 (aggregate quantiles only) into latent_team/thresholds/.
 """
 import argparse
@@ -111,7 +111,8 @@ def clean_batch(team, guard, chunk, thresholds, reference, tolerance):
             "agreement": agreement(answers[r], alone[r]), "teamNumber": team_n, "aloneNumber": alone_n,
             "mismatchedNumber": other_n, "mismatchedChanged": words[r]["mismatchedMemory"] == "changed",
             "replaySameAnswer": measured["sameAnswer"][r], "replaySameTopShare": measured["sameTopShare"][r],
-            "replayMemoryDiff": measured["memoryDiff"][r], "replayWord": words[r]["replay"],
+            "replayMemoryDiff": measured["memoryDiff"][r], "replayMaskDiffers": measured["maskDiffers"][r],
+            "replayWord": words[r]["replay"],
             "legibilityError": float(watch.legibility_error[r]),
         })
     timing = {"teamSeconds": receipt.seconds, "replaySeconds": measured["replaySeconds"],
@@ -135,14 +136,17 @@ def summarize_clean(rows, timings, thresholds=None):
     out["solverAlone"] = {
         "agree": len(agree), "disagree": len(disagree), "notComparable": n - len(agree) - len(disagree),
         "agreementRate": rate(r["agreement"] == "agree" for r in rows),
-        "squadChangedAnswerRate": rate(r["agreement"] != "agree" for r in rows),
+        # One definition everywhere (as Supervisor.stats): disagree / (agree + disagree).
+        "squadChangedAnswerRate": rate(r["agreement"] == "disagree" for r in agree + disagree),
         "teamAccuracyWhenAgree": rate(r["teamCorrect"] for r in agree),
         "teamAccuracyWhenDisagree": rate(r["teamCorrect"] for r in disagree),
         "aloneAccuracyWhenDisagree": rate(r["aloneCorrect"] for r in disagree)}
     out["mismatchedMemory"] = {"answerChangedRate": rate(r["mismatchedChanged"] for r in rows),
                                "changed": sum(r["mismatchedChanged"] for r in rows)}
     diffs = [max(r["replayMemoryDiff"]) for r in rows]
-    out["replay"] = {"sameAnswerRate": rate(r["replaySameAnswer"] for r in rows),
+    matched = [r for r in rows if r["replaySameAnswer"] and r["replaySameTopShare"] == 1 and not r["replayMaskDiffers"]]
+    out["replay"] = {"diverged": len(rows) - len(matched),
+                     "matchedMemoryDiffMax": max((max(r["replayMemoryDiff"]) for r in matched), default=None),"sameAnswerRate": rate(r["replaySameAnswer"] for r in rows),
                      "allTopTokensSameRate": rate(r["replaySameTopShare"] == 1 for r in rows),
                      "meanSameTopShare": round(statistics.mean(r["replaySameTopShare"] for r in rows), 6),
                      "memoryBitwiseEqualRate": rate(d == 0 for d in diffs),
@@ -190,7 +194,7 @@ def part_reference(args, team, block):
 
 def part_thresholds(args, team, block):
     from .guard import Guard
-    from .watchdog import LEGIBILITY_TOLERANCE, MODE, TEMPERATURE, TOP_K, Reference, team_weights
+    from .watchdog import LEGIBILITY_TOLERANCE, MODE, TEMPERATURE, TOP_K, Reference, names_digest, team_weights
     reference = Reference.load(os.path.join(args.out, "reference.pt"), device=team.device)
     with open(os.path.join(args.out, "reference.json")) as handle:
         reference_digest = json.load(handle)["sha256"]
@@ -202,12 +206,17 @@ def part_thresholds(args, team, block):
         timings.append(timing)
     degenerate = [r["degenerate"] for r in rows]
     distance = [r["distance"] for r in rows]
-    diffs = [max(r["replayMemoryDiff"]) for r in rows]
-    weights = team_weights(team)[0]
+    # The tolerance comes from the clean replays whose answer and top tokens matched: one
+    # near-tie flip makes a run diverge, and its difference must not set the tolerance. How
+    # often that happens is the divergence rate, reported on its own.
+    matched = [max(r["replayMemoryDiff"]) for r in rows
+               if r["replaySameAnswer"] and r["replaySameTopShare"] == 1 and not r["replayMaskDiffers"]]
+    weights, names = team_weights(team)[0], team_weights(team)[1]
     thresholds = {
         "id": "w1-qwen2.5-3b-instruct-soft-m40-1", "model": MODEL, "weightsHash": weights, "mode": MODE,
         "topK": TOP_K, "temperature": TEMPERATURE, "steps": STEPS, "legibilityTolerance": LEGIBILITY_TOLERANCE,
-        "replayTolerance": max(diffs),
+        "replayTolerance": max(matched) if matched else 0.0,
+        "parameterNames": names_digest(names),
         "degenerate": {"edges": [quantile(degenerate, q) for q in QUANTILES], "flag": quantile(degenerate, 0.99)},
         "distance": {"edges": [quantile(distance, q) for q in QUANTILES], "flag": quantile(distance, 0.99),
                      "reference": reference_digest, "referenceBlock": 2},
@@ -215,7 +224,8 @@ def part_thresholds(args, team, block):
                        "date": time.strftime("%Y-%m-%d")},
         "about": ("W1 threshold set (docs/watchdog-security.md). Edges are the clean 50, 60, 70, 80, 90, 95, 98, 99 "
                   "and 99.5th percentiles of each score on GSM8K test block 0; flag is the 99th. replayTolerance is "
-                  "the largest clean replay memory difference on block 0. The distance reference statistics are "
+                  "the largest memory difference among block 0's clean replays whose answer and top tokens matched. "
+                  "The distance reference statistics are "
                   "not committed; their SHA-256 is recorded. Any change of weights voids this file."),
     }
     os.makedirs(args.thresholds_dir, exist_ok=True)
@@ -277,7 +287,7 @@ def part_score(args, team, block):
         write(os.path.join(args.out, "block1-summary.json"), summary)
 
     # Eval 3's fault: a cache swapped in just before the solver, the in-run checksum ignored.
-    flagged_by_replay, unchanged_answer, checksum_saw = 0, 0, 0
+    flagged_by_replay, unchanged_answer, checksum_saw, mask_differs, values_without_mask = 0, 0, 0, 0, 0
     for chunk in batches(fault_items):
         questions = [item["question"] for item in chunk]
         watch = guard.watch(questions, STEPS, TOKENS, keep_memory=True)
@@ -290,15 +300,19 @@ def part_score(args, team, block):
         checksum_saw += sum(not v for v in results["checks"]["memoryChecksum"])
         again = guard.watch(questions, STEPS, TOKENS, keep_memory=True)
         replay, _ = team.latent_mas(questions, steps=STEPS, max_new_tokens=TOKENS, watch=again)
-        diff = memory_difference(watch.handoff, again.handoff, watch.plan.starts)
+        diff, differs = memory_difference(watch.handoff, again.handoff, watch.plan.starts)
         for r in range(len(chunk)):
+            # Counted on keys and values at positions both rows hold, not on the mask.
             seen = bool((diff[r] > thresholds["replayTolerance"]).any())
             flagged_by_replay += seen
+            mask_differs += bool(differs[r])
+            values_without_mask += seen and not bool(differs[r])
             unchanged_answer += seen and answers[r] == replay[r]
         watch.drop()
         again.drop()
     summary["swapBeforeSolver"] = {"questions": len(fault_items), "replayMemoryFlagged": flagged_by_replay,
                                    "flaggedWithTheAnswerUnchanged": unchanged_answer,
+                                   "masksAlsoDiffer": mask_differs, "flaggedWithEqualMasks": values_without_mask,
                                    "inRunChecksumAlsoCaught": checksum_saw}
     write(os.path.join(args.out, "block1-summary.json"), summary)
 

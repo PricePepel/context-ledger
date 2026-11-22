@@ -9,7 +9,7 @@ verifies it and decides by its fail-closed table (supervisor.py). A hold returns
 answer. A fallback runs the solver alone in text once and releases that, marked.
 
 Audits run on a sample of runs (1 in AUDIT_EVERY, drawn with `secrets`, so a caller cannot
-tell which) and on every flagged run:
+predict which; the receipt says afterwards) and on every flagged run:
   replay            the squad again from the same inputs in a fresh memory, with the same
                     batch layout: same answer, same top token at every latent step, and the
                     memory at each hand-off within REPLAY_TOLERANCE
@@ -58,24 +58,30 @@ def agreement(a, b):
 
 
 def memory_difference(a, b, starts):
-    """[rows, thinkers]: the largest absolute key or value difference over each thinker's span
-    of two solver hand-offs (watch.handoff); inf where the shapes differ."""
+    """(diff, mask_differs) of two solver hand-offs (watch.handoff), row by row.
+
+    diff [rows, thinkers]: the largest absolute key or value difference over each thinker's
+    span, read only at positions where both rows hold a real token, so a padding difference
+    never stands in for a value difference. mask_differs [rows]: the rows' masks differ.
+    Shapes that differ make every row inf and True."""
     import torch
     layers_a, mask_a = a
     layers_b, mask_b = b
     rows = mask_a.shape[0]
     spans = list(zip(starts[:-1], starts[1:]))
     out = torch.zeros(rows, len(spans), device=mask_a.device)
-    if len(layers_a) != len(layers_b) or mask_a.shape != mask_b.shape or not torch.equal(mask_a, mask_b):
-        return out.fill_(float("inf"))
+    shapes = len(layers_a) == len(layers_b) and mask_a.shape == mask_b.shape and all(
+        ka.shape == kb.shape and va.shape == vb.shape for (ka, va), (kb, vb) in zip(layers_a, layers_b))
+    if not shapes:
+        return out.fill_(float("inf")), torch.ones(rows, dtype=torch.bool, device=mask_a.device)
+    mask_differs = (mask_a != mask_b).any(-1)
+    both = (mask_a.bool() & mask_b.bool())[:, None, :, None]          # [rows, 1, positions, 1]
     for (ka, va), (kb, vb) in zip(layers_a, layers_b):
-        if ka.shape != kb.shape or va.shape != vb.shape:
-            return out.fill_(float("inf"))
         for index, (lo, hi) in enumerate(spans):
             for x, y in ((ka, kb), (va, vb)):
-                diff = (x[:, :, lo:hi].float() - y[:, :, lo:hi].float()).abs().flatten(1).amax(-1)
-                out[:, index] = torch.maximum(out[:, index], diff)
-    return out
+                gap = (x[:, :, lo:hi].float() - y[:, :, lo:hi].float()).abs() * both[:, :, lo:hi]
+                out[:, index] = torch.maximum(out[:, index], gap.flatten(1).amax(-1))
+    return out, mask_differs
 
 
 def rolled_memory(handoff):
@@ -90,26 +96,30 @@ def rolled_memory(handoff):
 
 class Guard:
     def __init__(self, team, supervisor=None, thresholds="auto", reference=None, audit_every=AUDIT_EVERY,
-                 time_cap=None, sample=None):
+                 time_cap=None, sample=None, measure=False):
         self.team = team
         self.supervisor = supervisor or Supervisor()
         self._thresholds = thresholds          # "auto": the committed set for this model and weights
+        self.pinned = None                     # every weights hash a committed set names for this model
         self.reference = reference
+        self.measure = measure                 # eval only: keep the audits' raw measurements
         self.audit_every = audit_every
         self.sample = sample or (lambda: secrets.randbelow(self.audit_every) == 0)
         self.time_cap = time_cap
 
     def thresholds(self, steps):
         if self._thresholds == "auto":
-            from .watchdog import load_thresholds, team_weights
+            from .watchdog import load_thresholds, pinned_hashes, team_weights
             self._thresholds = load_thresholds(self.team.model_name, team_weights(self.team)[0])
+            self.pinned = pinned_hashes(self.team.model_name)
         t = self._thresholds
         return t if t is not None and t.get("steps") == steps else None
 
     def watch(self, questions, steps, max_new_tokens, thresholds=None, reference=None, **kwargs):
         from .watchdog import Watch
         return Watch(self.team, questions, steps=steps, max_new_tokens=max_new_tokens, thresholds=thresholds,
-                     reference=reference, time_cap=self.time_cap, key=secrets.token_bytes(32), **kwargs)
+                     reference=reference, time_cap=self.time_cap, key=secrets.token_bytes(32), pinned=self.pinned,
+                     **kwargs)
 
     def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance):
         """Replay, mismatched memory and solver alone for a batch. Returns (per-row audit words,
@@ -128,13 +138,15 @@ class Guard:
         else:
             same_top = torch.zeros(rows, device=team.device)
         if watch.handoff is not None and again.handoff is not None:
-            diff = memory_difference(watch.handoff, again.handoff, watch.plan.starts)
+            diff, mask_differs = memory_difference(watch.handoff, again.handoff, watch.plan.starts)
         else:
             diff = torch.full((rows, len(watch.roles)), float("inf"), device=team.device)
+            mask_differs = torch.ones(rows, dtype=torch.bool, device=team.device)
         same_answer = [x == y for x, y in zip(answers, replay_answers)]
-        measured.update(sameAnswer=same_answer, sameTopShare=same_top.tolist(), memoryDiff=diff.tolist())
-        replay = ["match" if same_answer[r] and same_top[r] == 1 and bool((diff[r] <= tolerance).all())
-                  else "mismatch" for r in range(rows)]
+        measured.update(sameAnswer=same_answer, sameTopShare=same_top.tolist(), memoryDiff=diff.tolist(),
+                        maskDiffers=mask_differs.tolist())
+        replay = ["match" if same_answer[r] and same_top[r] == 1 and not mask_differs[r]
+                  and bool((diff[r] <= tolerance).all()) else "mismatch" for r in range(rows)]
         again.drop()
 
         mismatched = ["not-run"] * rows
@@ -205,12 +217,12 @@ class Guard:
         for row in range(rows):
             report = runs[row].reports.get("squad-0")
             decision = decisions[row]
-            if decision.action == "hold":
-                answer, system, tokens = None, "latent_mas", receipt.generated_tokens[row]
-            elif row in fallback:
+            if row in fallback and decision.action == "release":
                 (answer, tokens), system = fallback[row], "single"
             else:
-                answer, system, tokens = answers[row], "latent_mas", receipt.generated_tokens[row]
+                # Only a release carries an answer: a hold, and an abstention (W3), give none.
+                answer = answers[row] if decision.action == "release" else None
+                system, tokens = "latent_mas", receipt.generated_tokens[row]
             outcomes.append(Outcome(
                 answer=answer, decision=decision.as_dict(),
                 checks=dict(report["checks"]) if report else {n: bool(results["checks"][n][row])
@@ -218,6 +230,6 @@ class Guard:
                 audits=dict(report["audits"]) if report else {}, statistical=dict(report["statistical"]) if report else {},
                 scores=dict(report["scores"]) if report else {}, system=system, tokens=int(tokens),
                 latent_steps=steps, latent_vectors=receipt.latent_vectors, seconds=receipt.seconds,
-                extra={"measured": measured} if measured else {}))
+                extra={"measured": measured} if measured and self.measure else {}))
         watch.drop()
         return outcomes

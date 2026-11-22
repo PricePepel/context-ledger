@@ -228,6 +228,10 @@ class SupervisorTest(unittest.TestCase):
         _, decision = self.decide(calibrated=True, confidence=0.9, threshold=0.5)
         self.assertEqual((decision.action, decision.reason, decision.marks), ("release", "passed", ()))
 
+    def test_a_release_without_statistical_checks_is_marked_unscreened(self):
+        _, decision = self.decide({"statistical__distance": "not-run", "scores__distance": 0})
+        self.assertEqual((decision.action, decision.marks), ("release", ("unscreened", "uncalibrated")))
+
     def test_a_fallback_is_released_once_and_marked(self):
         run, decision = self.decide({"flags__distance": True})
         self.assertEqual(decision.action, "fallback")

@@ -103,6 +103,7 @@ class CleanSquadTest(unittest.TestCase):
         watch, _, _ = run(team)
         watch.drop()
         self.assertEqual((watch.record, watch.calls, watch.handoff, watch.prev_hidden), ([], [], None, None))
+        self.assertEqual((watch.plan, watch.questions, watch.checksum, watch.cache), (None, [], None, None))
         base = team.model.base_model
         self.assertFalse(base._forward_hooks or base._forward_pre_hooks, "the hooks are removed after the run")
 
@@ -135,11 +136,28 @@ class InjectedFaultTest(unittest.TestCase):
 
     def test_lora_weights_left_on(self):
         from latent_team.lora import inject_lora
-        team = tiny_team()
         from latent_team.watchdog import team_weights
+        team = tiny_team()
         team_weights(team)
         inject_lora(team.model, targets=("q_proj",), rank=2)
         _, results, _ = run(team)
+        self.assertCaught(results, "configuration")
+        before = tiny_team()   # injected before the weights were ever hashed (review finding 3)
+        inject_lora(before.model, targets=("q_proj",), rank=2)
+        _, results, _ = run(before)
+        self.assertCaught(results, "configuration")
+
+    def test_a_weight_edited_in_place_after_hashing(self):
+        from latent_team.watchdog import team_weights
+        team = tiny_team()
+        team_weights(team)
+        with torch.no_grad():
+            next(team.model.parameters()).mul_(1.0)   # same values, but the weights were touched
+        _, results, _ = run(team)
+        self.assertCaught(results, "configuration")
+
+    def test_weights_other_than_the_pinned_ones(self):
+        _, results, _ = run(tiny_team(), pinned={"f" * 64})
         self.assertCaught(results, "configuration")
 
     def test_a_missing_end_of_turn_token(self):
@@ -194,7 +212,10 @@ class InjectedFaultTest(unittest.TestCase):
             tamper(team, change)
             _, results, _ = run(team)
             self.assertCaught(results, "memoryChecksum")
-            self.assertNotIn("spanLedger", failed(results), change.__name__)
+            if change is swapped:   # the rolled mask is not the mask the model saw: the ledger sees it too
+                self.assertIn("spanLedger", failed(results))
+            else:
+                self.assertNotIn("spanLedger", failed(results), change.__name__)
 
     def test_one_changed_word_in_one_row(self):
         def nudge(memory, mask):
@@ -330,7 +351,8 @@ class GuardTest(unittest.TestCase):
         team = tiny_team()
         outcomes = Guard(team, thresholds=None, sample=lambda: False).run(QUESTIONS, steps=STEPS, max_new_tokens=TOKENS)
         self.assertEqual([o.decision["action"] for o in outcomes], ["release"] * 3)
-        self.assertEqual(outcomes[0].decision["marks"], ["uncalibrated"])
+        self.assertEqual(outcomes[0].decision["marks"], ["unscreened", "uncalibrated"])
+        self.assertEqual(outcomes[0].extra, {}, "raw measurements only for the eval")
         self.assertTrue(all(o.answer is not None and all(o.checks.values()) for o in outcomes))
         self.assertEqual(outcomes[0].statistical, {"degenerate": "not-run", "distance": "not-run"})
 
@@ -349,8 +371,8 @@ class GuardTest(unittest.TestCase):
         spec = {"edges": [0.0] * 9, "flag": float("-inf")}
         thresholds = {"id": "w1-tiny-1", "model": "tiny", "weightsHash": team_weights(team)[0], "mode": "soft",
                       "topK": 16, "temperature": 1.0, "steps": STEPS, "degenerate": spec}
-        outcomes = Guard(team, thresholds=thresholds, sample=lambda: False).run(QUESTIONS, steps=STEPS,
-                                                                                 max_new_tokens=TOKENS)
+        outcomes = Guard(team, thresholds=thresholds, sample=lambda: False, measure=True).run(
+            QUESTIONS, steps=STEPS, max_new_tokens=TOKENS)
         alone, _ = team.single(QUESTIONS, max_new_tokens=TOKENS)
         for outcome, text in zip(outcomes, alone):
             self.assertEqual(outcome.decision["action"], "release")
@@ -363,6 +385,17 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(measured["sameAnswer"], [True] * 3)
         self.assertEqual(measured["memoryDiff"], [[0.0] * 3] * 3)
 
+    def test_an_abstention_carries_no_answer(self):
+        from unittest import mock
+        from latent_team import supervisor
+        from latent_team.guard import Guard
+        team = tiny_team()
+        with mock.patch.object(supervisor.Run, "_decide",
+                               lambda self, *a: supervisor.Decision("abstain", "low-confidence")):
+            outcomes = Guard(team, thresholds=None, sample=lambda: False).run(QUESTIONS, steps=STEPS,
+                                                                               max_new_tokens=TOKENS)
+        self.assertEqual({(o.decision["action"], o.answer) for o in outcomes}, {("abstain", None)})
+
     def test_replay_sees_a_cache_swapped_in_before_the_solver(self):
         from latent_team.guard import Guard, memory_difference
         team = tiny_team()
@@ -374,7 +407,8 @@ class GuardTest(unittest.TestCase):
         guard = Guard(team, thresholds=None)
         words, _, measured = guard.audit(QUESTIONS, STEPS, TOKENS, watch, answers, tolerance=0.0)
         self.assertEqual([w["replay"] for w in words], ["mismatch"] * 3)
-        self.assertTrue(all(max(row) > 0 for row in measured["memoryDiff"]))
+        self.assertTrue(all(max(row) > 0 for row in measured["memoryDiff"]),
+                        "seen in the keys and values, not only in the masks")
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the watchdog")
@@ -416,7 +450,8 @@ class EvalDriverTest(unittest.TestCase):
                 undo()
             results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
             self.assertEqual(results["checks"][NAMED[name]], [False] * 3, name)
-            self.assertEqual(team.__dict__.keys() & {"between", "think", "render", "close_turn"}, set(), name)
+            self.assertEqual(team.__dict__.keys() & {"between", "think", "render", "close_turn", "decode", "forward",
+                                                     "positions"}, set(), name)
             self.assertIsNone(team.adapter)
 
     def test_clean_batch_and_its_summary(self):

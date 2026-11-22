@@ -96,7 +96,8 @@ class TeamService:
         self.team = team
         self.steps = steps
         self.slot_wait = slot_wait
-        self.guard = guard if guard is not None else Guard(team, time_cap=TIME_CAP_SECONDS)
+        self.guard = guard if guard is not None else Guard(team, time_cap=TIME_CAP_SECONDS,
+                                                           reference=reference_from_env(team))
         self._slot = threading.Lock()
 
     def run(self, question, steps, max_new_tokens, gone=None):
@@ -193,6 +194,25 @@ class TeamService:
 def sse_bytes(response):
     return b"".join(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
                     for event in response.events) + b"data: [DONE]\n\n"
+
+
+def reference_from_env(team, env=None):
+    """LATENT_WATCH_REFERENCE=<file> loads the distance score's reference statistics (built by
+    latent_team.watch_eval --part reference). It is used only when its SHA-256 is the one the
+    committed threshold set names; otherwise the distance check does not run and releases are
+    marked unscreened."""
+    import hashlib
+    import os
+    path = (env if env is not None else os.environ).get("LATENT_WATCH_REFERENCE")
+    if not path:
+        return None
+    from latent_team.watchdog import Reference, load_thresholds, team_weights
+    thresholds = load_thresholds(team.model_name, team_weights(team)[0])
+    with open(path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()
+    if not thresholds or (thresholds.get("distance") or {}).get("reference") != digest:
+        return None
+    return Reference.load(path, device=team.device)
 
 
 def register_team_from_env(env):

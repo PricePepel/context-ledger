@@ -16,6 +16,10 @@ NAMED = {
     "span-inserted": "spanLedger", "span-lengthened": "spanLedger", "span-removed": "spanLedger",
     "cache-random": "memoryChecksum", "cache-scaled": "memoryChecksum", "cache-values": "memoryChecksum",
     "cache-swapped": "memoryChecksum", "subagent-text": "budgets", "extra-steps": "budgets",
+    # Added after the first review: the same kinds of change made inside the runtime's own
+    # steps rather than at the hand-off seam.
+    "think-swapped": "memoryChecksum", "decode-swapped": "memoryChecksum",
+    "forward-hidden": "spanLedger", "positions-shifted": "spanLedger",
 }
 FAULTS = tuple(NAMED)
 
@@ -109,6 +113,59 @@ def _extra_steps(team, more=5):
     return lambda: team.__dict__.pop("think", None)
 
 
+def _in_place_swap(memory, mask):
+    """Roll the rows of the memory object itself, so the same object reaches the model."""
+    swapped(memory, mask)
+    return mask.roll(1, 0)
+
+
+def _think_swapped(team):
+    think, calls = team.think, []
+
+    def tampered(memory, memory_mask, prompts, steps, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:   # the critic starts on another question's memory
+            memory_mask = _in_place_swap(memory, memory_mask)
+        return think(memory, memory_mask, prompts, steps, **kwargs)
+
+    team.think = tampered
+    return lambda: team.__dict__.pop("think", None)
+
+
+def _decode_swapped(team):
+    decode = team.decode
+
+    def tampered(memory, memory_mask, prompts, max_new_tokens, **kwargs):
+        if memory is not None:
+            memory_mask = _in_place_swap(memory, memory_mask)
+        return decode(memory, memory_mask, prompts, max_new_tokens, **kwargs)
+
+    team.decode = tampered
+    return lambda: team.__dict__.pop("decode", None)
+
+
+def _forward_hidden(team):
+    """Every agent after the planner stops attending to the planner's prompt (C15's sealed
+    behaviour without the sealed flag)."""
+    forward, width = team.forward, []
+
+    def hiding(memory, memory_mask, ids=None, mask=None, embeds=None, hidden_only=False, hide=None):
+        if not width and ids is not None:
+            width.append(ids.shape[1])
+        if memory_mask is not None and width and memory_mask.shape[1] > width[0] + 4 and hide is None:
+            hide = torch.ones(memory_mask.shape[0], width[0], dtype=memory_mask.dtype, device=memory_mask.device)
+        return forward(memory, memory_mask, ids=ids, mask=mask, embeds=embeds, hidden_only=hidden_only, hide=hide)
+
+    team.forward = hiding
+    return lambda: team.__dict__.pop("forward", None)
+
+
+def _positions_shifted(team):
+    positions = type(team).positions
+    team.positions = lambda full_mask, new_tokens: positions(full_mask, new_tokens) + 1
+    return lambda: team.__dict__.pop("positions", None)
+
+
 def inject(team, name):
     """(thought mode to run with, undo) for one fault."""
     if name == "noise":
@@ -138,6 +195,10 @@ def inject(team, name):
         return "soft", _emitting(team)
     if name == "extra-steps":
         return "soft", _extra_steps(team)
+    inside = {"think-swapped": _think_swapped, "decode-swapped": _decode_swapped,
+              "forward-hidden": _forward_hidden, "positions-shifted": _positions_shifted}
+    if name in inside:
+        return "soft", inside[name](team)
     raise ValueError(f"unknown fault {name}")
 
 
