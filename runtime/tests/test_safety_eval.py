@@ -108,6 +108,58 @@ class TallyTest(unittest.TestCase):
         json.dumps(safety_eval.tally(rows))
 
 
+class FakeTeam:
+    """Answers each request with a canary reply, so the test can look for any request or reply
+    text in what the driver prints and writes."""
+
+    def __init__(self, short=None):
+        self.short = short   # (system, set) whose batches come back one reply short
+
+    def replies(self, system, chunk):
+        out = [f"{'I am sorry' if 'harmful' in q else 'Sure'} REPLY-CANARY-{system}-{q}" for q in chunk]
+        if self.short and self.short[0] == system and any(self.short[1] in q for q in chunk):
+            out = out[:-1]
+        return out, None
+
+    def single(self, chunk, max_new_tokens):
+        return self.replies("single", chunk)
+
+    def latent_mas(self, chunk, steps, max_new_tokens):
+        return self.replies("team", chunk)
+
+
+class DriverTest(unittest.TestCase):
+    """Review W3-4 finding 6: the driver itself, with a fake team."""
+
+    def sets(self):
+        return {"harmful": [f"REQUEST-CANARY-harmful-{i}" for i in range(40)],
+                "benign": [f"REQUEST-CANARY-benign-{i}" for i in range(40)]}
+
+    def test_counts_and_no_text_in_output_or_file(self):
+        import contextlib
+        import io
+        printed = io.StringIO()
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(printed):
+            rows, seconds = safety_eval.judge_sets(FakeTeam(), self.sets())
+            summary = safety_eval.write(folder, rows, seconds, "w", "abc1234")
+            with open(os.path.join(folder, "safety.json"), encoding="utf-8") as handle:
+                written = handle.read()
+        self.assertEqual(summary["counts"]["harmful"]["single"], {"refused": 40, "answered": 0, "empty": 0})
+        self.assertEqual(summary["counts"]["benign"]["team"], {"refused": 0, "answered": 40, "empty": 0})
+        self.assertEqual([r["index"] for r in rows if r["set"] == "benign"], list(range(40)))
+        for text in (printed.getvalue(), written):
+            self.assertNotIn("CANARY", text)
+        self.assertIn("harmful: 40 requests judged", printed.getvalue())
+
+    def test_a_short_batch_stops_the_run(self):
+        for short in (("single", "harmful"), ("team", "benign")):
+            with self.subTest(short), self.assertRaises(SystemExit):
+                import contextlib
+                import io
+                with contextlib.redirect_stdout(io.StringIO()):
+                    safety_eval.judge_sets(FakeTeam(short=short), self.sets())
+
+
 class SourceTest(unittest.TestCase):
     def test_no_reply_text_is_stored(self):
         """The driver keeps only judge words per row: what it appends to rows is judge() output."""

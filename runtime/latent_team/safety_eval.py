@@ -84,15 +84,10 @@ def tally(rows):
     return summary
 
 
-def run(args):
-    import torch
-    from .team import LatentTeam
-    from .watchdog import team_weights
-    sets = {name: load_behaviors(getattr(args, name), digest) for name, (_, digest) in SETS.items()}
-    team = LatentTeam(MODEL)
-    warm = sets["benign"][:4]
-    team.single(warm, max_new_tokens=8)
-    team.latent_mas(warm, steps=2, max_new_tokens=8)
+def judge_sets(team, sets, clear=lambda: None):
+    """Ask every request of every set of both systems, batched, and judge each reply in memory.
+    Every request gets exactly one reply from each system, and every request is judged once,
+    or the run stops (review W3-4): a short batch never shrinks the counts silently."""
     rows, seconds = [], {"single": 0.0, "team": 0.0}
     for name, goals in sets.items():
         for start in range(0, len(goals), BATCH):
@@ -103,19 +98,43 @@ def run(args):
             began = time.perf_counter()
             together, _ = team.latent_mas(chunk, steps=STEPS, max_new_tokens=TOKENS)
             seconds["team"] += time.perf_counter() - began
+            if not len(alone) == len(together) == len(chunk):
+                raise SystemExit(f"{name}: {len(alone)} and {len(together)} replies for {len(chunk)} requests")
             for offset, (one, two) in enumerate(zip(alone, together)):
                 rows.append({"set": name, "index": start + offset, "single": judge(one), "team": judge(two)})
             del alone, together
-            torch.cuda.empty_cache()
-        print(f"{name}: {len(goals)} requests judged", flush=True)
-    commit = os.path.join(REPO, "COMMIT")
+            clear()
+        judged = [row["index"] for row in rows if row["set"] == name]
+        if judged != list(range(len(goals))):
+            raise SystemExit(f"{name}: the judged requests are not each request once")
+        print(f"{name}: {len(judged)} requests judged", flush=True)
+    return rows, seconds
+
+
+def write(out, rows, seconds, weights_hash, commit):
+    """The counts eval 14 reports, printed and written with the per-request judge words."""
     summary = {"revision": REVISION, "sha256": {name: digest for name, (_, digest) in SETS.items()},
-               "weightsHash": team_weights(team)[0], "steps": STEPS, "maxNewTokens": TOKENS, "batch": BATCH,
-               "commit": open(commit).read().strip() if os.path.exists(commit) else None,
+               "weightsHash": weights_hash, "steps": STEPS, "maxNewTokens": TOKENS, "batch": BATCH, "commit": commit,
                "counts": tally(rows), "seconds": {k: round(v, 1) for k, v in seconds.items()}}
-    with open(os.path.join(args.out, "safety.json"), "w") as handle:
+    with open(os.path.join(out, "safety.json"), "w") as handle:
         json.dump(dict(summary, rows=rows), handle)
     print(json.dumps(summary, indent=1), flush=True)
+    return summary
+
+
+def run(args):
+    import torch
+    from .team import LatentTeam
+    from .watchdog import team_weights
+    sets = {name: load_behaviors(getattr(args, name), digest) for name, (_, digest) in SETS.items()}
+    team = LatentTeam(MODEL)
+    warm = sets["benign"][:4]
+    team.single(warm, max_new_tokens=8)
+    team.latent_mas(warm, steps=2, max_new_tokens=8)
+    rows, seconds = judge_sets(team, sets, torch.cuda.empty_cache)
+    commit = os.path.join(REPO, "COMMIT")
+    write(args.out, rows, seconds, team_weights(team)[0],
+          open(commit).read().strip() if os.path.exists(commit) else None)
 
 
 def main():
