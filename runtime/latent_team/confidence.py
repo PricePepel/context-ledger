@@ -1,64 +1,55 @@
 """W3: the confidence score of a released answer (docs/watchdog-security.md, W3).
 
 The score is the log-probability the solver gave to the final number it wrote: the sum of
-the log-probabilities of the tokens that spell the number after the last "answer is" (or,
-without that phrase, the last number in the text), read from the decode's own token
-probabilities. It needs no extra model call. An answer with no number has no score, so on
-a calibrated kind of task it is never released as an answer.
+the log-probabilities of the tokens that spell the number the grader reads
+(evaluate.predicted_span: after the last "answer is", else in the last \\boxed{}, else the
+last number), read from the decode's own token probabilities. It needs no extra model call.
+
+The number is found on the released answer itself, and its tokens are found by the decoded
+text of each generated token. When those pieces do not join into exactly the text the
+answer was cut from (a character split across tokens, for example), there is no score: an
+answer with no score is never released on a calibrated kind of task, so a score is never of
+a different number from the one graded.
 
 This is one simple score, chosen before calibrating. The threshold on it comes from
-abstain.choose_threshold on a calibration set; the probe of eval 13 joins it only if it
-adds on held-back data.
+abstain.choose_threshold; the probe of eval 13 is reported, not used.
 
 Standard library only.
 """
-import re
+import math
 
-NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
-
-
-def _trimmed(match):
-    """A match's span without trailing commas ("7, not 72" ends the number at 7)."""
-    start, end = match.span()
-    while end > start + 1 and match.string[end - 1] == ",":
-        end -= 1
-    return start, end
+from .evaluate import predicted_span
 
 
 def number_span(text):
-    """(start, end) of the final answer's number in text, the way evaluate.predicted_number
-    picks it: the first number after the last "answer is", else in the last \\boxed{}, else
-    the last number. None when there is none."""
-    lowered = text.lower()
-    clean = text.replace("$", " ")
-    if "answer is" in lowered:
-        at = lowered.rindex("answer is")
-        match = NUMBER.search(clean, at)
-        if match:
-            return _trimmed(match)
-    boxed = list(re.finditer(r"\\boxed\{([^}]*)\}", text))
-    if boxed:
-        match = NUMBER.search(clean, boxed[-1].start(1), boxed[-1].end(1))
-        if match:
-            return _trimmed(match)
-    found = list(NUMBER.finditer(clean))
-    return _trimmed(found[-1]) if found else None
+    """(start, end) of the graded number in text, or None."""
+    found = predicted_span(text)
+    return None if found is None else (found[1], found[2])
 
 
-def answer_logprob(pieces, logprobs):
-    """The log-probability of the final number, from the decoded text of each generated token
-    (pieces, concatenated in order) and each token's log-probability. None without a number."""
-    if len(pieces) != len(logprobs) or not pieces:
+def answer_logprob(pieces, logprobs, raw=None):
+    """The log-probability of the graded number. pieces: the decoded text of each generated
+    token, in order; logprobs: each token's log-probability; raw: the decode of all of them
+    before the answer was stripped (team.decode gives it), which the pieces must join into
+    exactly. None without a number, without an exact alignment, or with a value that is not
+    a finite log-probability."""
+    if not pieces or len(pieces) != len(logprobs):
         return None
     text = "".join(pieces)
-    span = number_span(text)
+    if raw is not None and text != raw:
+        return None
+    lead = len(text) - len(text.lstrip())
+    span = number_span(text.strip())
     if span is None:
         return None
-    start, end = span
+    start, end = span[0] + lead, span[1] + lead
     total, at, used = 0.0, 0, False
     for piece, value in zip(pieces, logprobs):
         piece_start, piece_end = at, at + len(piece)
         if piece_end > start and piece_start < end:   # the token overlaps the number
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+                    or value > 0:
+                return None
             total += value
             used = True
         at = piece_end

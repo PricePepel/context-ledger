@@ -332,14 +332,18 @@ class LatentTeam:
                 chosen.append(logprob(out.logits[:, -1], next_ids))
         if not steps:
             empty = [""] * batch, [0] * batch
-            return (*empty, [{"pieces": [], "logprobs": []} for _ in range(batch)]) if scores else empty
+            return (*empty, [{"pieces": [], "raw": "", "logprobs": []} for _ in range(batch)]) if scores else empty
         grid = torch.stack(steps, dim=1).tolist()
         tokens = [[t for t in row if t >= 0] for row in grid]
         texts = [self.tokenizer.decode(t, skip_special_tokens=True).strip() for t in tokens]
         if not scores:
             return texts, [len(t) for t in tokens]
         values = torch.stack(chosen[:len(steps)], dim=1).tolist()
-        details = [{"pieces": [self.tokenizer.decode([t]) for t in row_tokens],
+        # Each token's text as the answer's own decode shows it (special tokens skipped), and
+        # that whole decode before stripping: confidence.answer_logprob scores only when the
+        # pieces join into it exactly (W3 review round 1).
+        details = [{"pieces": [self.tokenizer.decode([t], skip_special_tokens=True) for t in row_tokens],
+                    "raw": self.tokenizer.decode(row_tokens, skip_special_tokens=True),
                     "logprobs": [v for t, v in zip(row_grid, row_values) if t >= 0]}
                    for row_tokens, row_grid, row_values in zip(tokens, grid, values)]
         return texts, [len(t) for t in tokens], details

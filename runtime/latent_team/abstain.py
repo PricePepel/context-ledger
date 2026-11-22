@@ -7,20 +7,27 @@ system declining to answer when its confidence is low:
     "On [kind of task], at most X% of released answers are wrong, measured on N labelled
      examples; the system declines to answer Y% of the time."
 
-The threshold is chosen on a calibration set by learn then test (Angelopoulos et al. 2021;
-selective risk as in Geifman and El-Yaniv 2017) over a fixed grid: GRID candidate
-thresholds at the scores that release 5%, 10%, ... 100% of the calibration answers (set
-from the scores alone, never from which answers are wrong), each tested at delta / GRID
-(Bonferroni). A candidate passes when the one-sided Clopper-Pearson upper bound of the error
-among the answers it releases is at or under the target; the loosest passing candidate is
-kept, and with none, nothing is released for that kind of task. A grid with a Bonferroni
-correction is used rather than a fixed sequence from the strictest threshold because the
-risk is not monotone here: fallback answers are always released, so a few fallback errors
-can fail the strictest candidates while looser ones pass.
+The threshold is chosen by learn then test (Angelopoulos et al. 2021; selective risk as in
+Geifman and El-Yaniv 2017) with the candidates fixed before the test data is looked at:
+GRID candidate thresholds at the scores that release 5%, 10%, ... 100% of a separate
+proposal set (its scores alone; which answers are wrong is never used), each then tested on
+a certification set at delta / GRID (Bonferroni). A candidate passes when the one-sided
+Clopper-Pearson upper bound of the error among the certification answers it releases is at
+or under the target; the loosest passing candidate is kept. Because each candidate is fixed
+before the certification rows are seen, each test is an ordinary binomial test of a fixed
+release rule, and the Bonferroni correction covers the whole grid. With no passing
+candidate the kind of task is not certified: nothing about it is claimed, and no
+calibration is written.
 
-The guarantee holds only while live questions resemble the calibration set, and only for
-the weights the scores were measured on. A kind of task with no calibration set is marked
-uncalibrated and no ceiling is claimed (supervisor row 7).
+A grid rather than a fixed sequence from the strictest threshold, because fallback answers
+are always released, so the risk is not monotone in the threshold.
+
+The guarantee holds only while live questions are exchangeable with the certification set
+(same kind of task, same weights and settings), and it is about the policy tested: W1's
+supervisor first (holds release nothing, fallbacks are always released), then the
+threshold. A kind of task with no calibration for these weights and settings is marked
+uncalibrated and no ceiling is claimed (supervisor row 7). A calibration file that matches
+this task and model but is malformed or not certified is refused, and the run is held.
 
 Standard library only.
 """
@@ -29,20 +36,70 @@ import math
 import os
 
 CALIBRATION_DIR = os.path.join(os.path.dirname(__file__), "calibration")
+GRID = 20
 
 
-def load_calibration(model_name, weights_hash, steps, task, directory=CALIBRATION_DIR):
-    """The committed calibration for this task on these weights and steps, or None (the run
-    is then uncalibrated: released, marked so, with no ceiling claimed)."""
+class CalibrationInvalid(ValueError):
+    """A calibration for this task and model exists but cannot be trusted: hold the run."""
+
+
+def _finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _refuse_constant(word):
+    raise CalibrationInvalid(f"{word} is not a number")   # NaN, Infinity and -Infinity
+
+
+def validate(data):
+    """Raise CalibrationInvalid unless data is a certified, held-out-passed calibration with a
+    finite threshold and every field the binding needs."""
+    if not isinstance(data, dict):
+        raise CalibrationInvalid("not an object")
+    if data.get("certified") is not True:
+        raise CalibrationInvalid("not certified")
+    held_out = data.get("heldOut")
+    if not isinstance(held_out, dict) or held_out.get("passed") is not True:
+        raise CalibrationInvalid("did not pass on held-out data")
+    if not _finite(data.get("threshold")):
+        raise CalibrationInvalid("threshold is not a finite number")
+    for name in ("target", "delta"):
+        if not _finite(data.get(name)) or not 0 < data[name] < 1:
+            raise CalibrationInvalid(f"{name} is not a rate")
+    for name in ("task", "model", "weightsHash", "thresholdSet", "score"):
+        if not isinstance(data.get(name), str) or not data[name]:
+            raise CalibrationInvalid(f"{name} is missing")
+    for name in ("steps", "maxNewTokens"):
+        if not isinstance(data.get(name), int) or isinstance(data[name], bool) or data[name] <= 0:
+            raise CalibrationInvalid(f"{name} is not a positive count")
+    if not isinstance(data.get("reference"), bool):
+        raise CalibrationInvalid("reference is not a boolean")
+    return data
+
+
+def load_calibration(model_name, weights_hash, task, *, steps, max_new_tokens, threshold_set, reference,
+                     directory=CALIBRATION_DIR):
+    """The committed calibration for this task, model and weights, measured with these
+    settings (latent steps, the solver's token budget, W1's threshold set and whether the
+    distance reference was on), or None: the run is then uncalibrated (released, marked so,
+    no ceiling claimed). Raises CalibrationInvalid when a file names this task and model but
+    cannot be read or trusted, or when a file cannot be read at all: the guard then holds."""
     if not task or not os.path.isdir(directory):
         return None
     for name in sorted(os.listdir(directory)):
-        if name.endswith(".json"):
+        if not name.endswith(".json"):
+            continue
+        try:
             with open(os.path.join(directory, name), encoding="utf-8") as handle:
-                data = json.load(handle)
-            if (data.get("task"), data.get("model"), data.get("weightsHash"), data.get("steps")) == \
-                    (task, model_name, weights_hash, steps) and isinstance(data.get("threshold"), (int, float)):
-                return data
+                data = json.load(handle, parse_constant=_refuse_constant)
+        except (OSError, ValueError) as error:
+            raise CalibrationInvalid(f"{name} cannot be read") from error
+        if not isinstance(data, dict) or (data.get("task"), data.get("model")) != (task, model_name):
+            continue
+        validate(data)
+        if (data["weightsHash"], data["steps"], data["maxNewTokens"], data["thresholdSet"], data["reference"]) == \
+                (weights_hash, steps, max_new_tokens, threshold_set, bool(reference)):
+            return data
     return None
 
 
@@ -86,12 +143,10 @@ def wilson(errors, n, z=1.959964):
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
-GRID = 20
-
-
 def candidates(scores, grid=GRID):
-    """The grid: thresholds at the finite scores that release 1/grid, 2/grid, ... of them.
-    Set from the scores alone (math.inf scores, always released, are left out)."""
+    """The grid: thresholds at the finite scores of the proposal set that release 1/grid,
+    2/grid, ... of them. Set from those scores alone (math.inf scores, always released, and
+    None, never released, are left out)."""
     finite = sorted((s for s in scores if s is not None and s != math.inf), reverse=True)
     if not finite:
         return []
@@ -103,39 +158,45 @@ def candidates(scores, grid=GRID):
     return picks
 
 
-def choose_threshold(scores, wrong, target=0.10, delta=0.05, grid=GRID):
-    """The loosest grid threshold whose released answers (score >= threshold) keep the upper
-    bound of their error at or under target, each candidate tested at delta / grid.
+def released(scores, wrong, threshold):
+    """The wrong flags of the answers a threshold releases: score at or above it (math.inf
+    always; None never). threshold None (not certified) releases only math.inf scores."""
+    return [w for s, w in zip(scores, wrong)
+            if s is not None and (s == math.inf or (threshold is not None and s >= threshold))]
 
-    scores: a confidence per calibration question (higher is more confident; math.inf always
-    releases; None never does). wrong: whether each question's answer is wrong. Returns
-    (threshold, steps): threshold is math.inf when no candidate passes, so nothing but the
-    always-released answers is released."""
+
+def choose_threshold(proposal_scores, certify_scores, certify_wrong, target=0.10, delta=0.05, grid=GRID):
+    """The loosest candidate (from the proposal scores) whose released certification answers
+    keep the upper bound of their error at or under target, each tested at delta / grid.
+    Returns (threshold, steps, chosen): threshold None when no candidate passes (nothing is
+    certified); steps lists every candidate's test; chosen is the kept candidate's step."""
     level = delta / grid
-    threshold, steps = math.inf, []
-    for value in candidates(scores, grid):
-        chosen = [w for s, w in zip(scores, wrong) if s is not None and s >= value]
-        bound = upper_bound(sum(chosen), len(chosen), level)
-        steps.append({"threshold": value, "released": len(chosen), "errors": sum(chosen), "upper": bound})
-        if bound <= target and (threshold == math.inf or value < threshold):
-            threshold = value
-    return threshold, steps
+    threshold, steps, chosen = None, [], None
+    for value in candidates(proposal_scores, grid):
+        picked = released(certify_scores, certify_wrong, value)
+        step = {"threshold": value, "released": len(picked), "errors": sum(picked),
+                "upper": upper_bound(sum(picked), len(picked), level)}
+        steps.append(step)
+        if step["upper"] <= target and (threshold is None or value < threshold):
+            threshold, chosen = value, step
+    return threshold, steps, chosen
 
 
 def score_threshold(scores, wrong, threshold, target=0.10):
     """What a threshold does on held-out questions: released share, error among released
-    with its 95% Wilson interval, and eval 11's pass rule (error at or under target plus
-    1.645 standard errors for the number released, and at least half released)."""
+    with its 95% Wilson interval, and eval 11's pass rule (a certified threshold, error at or
+    under target plus 1.645 standard errors for the number released, and at least half
+    released). threshold None (not certified) never passes."""
     n = len(scores)
-    released = [w for s, w in zip(scores, wrong) if s is not None and s >= threshold]
-    k, m = sum(released), len(released)
+    picked = released(scores, wrong, threshold)
+    k, m = sum(picked), len(picked)
     error = k / m if m else 0.0
     allowance = target + 1.645 * math.sqrt(target * (1 - target) / m) if m else target
     return {"questions": n, "released": m, "releasedShare": round(m / n, 4) if n else 0.0,
-            "abstained": n - m, "abstainedShare": round((n - m) / n, 4) if n else 0.0,
+            "notReleased": n - m, "notReleasedShare": round((n - m) / n, 4) if n else 0.0,
             "errors": k, "error": round(error, 4), "error95": [round(x, 4) for x in wilson(k, m)],
-            "allowance": round(allowance, 4),
-            "passed": bool(m and error <= allowance and m >= n / 2)}
+            "allowance": round(allowance, 4), "certified": threshold is not None,
+            "passed": bool(threshold is not None and m and error <= allowance and m >= n / 2)}
 
 
 def auroc(scores, labels):

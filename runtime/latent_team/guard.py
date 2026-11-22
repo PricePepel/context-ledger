@@ -48,6 +48,7 @@ class Outcome:
     seconds: float
     extra: dict = field(default_factory=dict)
     gateway: dict = field(default_factory=dict)  # W2: the run's label and the gateway's counts
+    confidence: Optional[float] = None  # W3: the team answer's score when scored, else None
 
 
 def agreement(a, b):
@@ -98,13 +99,15 @@ def rolled_memory(handoff):
 
 class Guard:
     def __init__(self, team, supervisor=None, thresholds="auto", reference=None, audit_every=AUDIT_EVERY,
-                 time_cap=None, sample=None, measure=False):
+                 time_cap=None, sample=None, measure=False, calibration_dir=None, keep_solver_state=False):
         self.team = team
         self.supervisor = supervisor or Supervisor()
         self._thresholds = thresholds          # "auto": the committed set for this model and weights
         self.pinned = None                     # every weights hash a committed set names for this model
         self.reference = reference
         self.measure = measure                 # eval only: keep the audits' raw measurements
+        self.calibration_dir = calibration_dir     # W3: None means the committed calibration folder
+        self.keep_solver_state = keep_solver_state  # W3's probe (eval only, with measure): kept in memory
         self.audit_every = audit_every
         self.sample = sample or (lambda: secrets.randbelow(self.audit_every) == 0)
         self.time_cap = time_cap
@@ -188,13 +191,18 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def calibration(self, task, steps):
-        """W3: the committed calibration of this kind of task, for these weights and steps."""
+    def calibration(self, task, steps, max_new_tokens, thresholds, reference):
+        """W3: the committed calibration of this kind of task for these weights, measured with
+        these settings (steps, token budget, W1's threshold set, the distance reference on or
+        off), or None (uncalibrated). Raises abstain.CalibrationInvalid for a file that names
+        this task and model but cannot be trusted."""
         if not task:
             return None
-        from .abstain import load_calibration
+        from .abstain import CALIBRATION_DIR, load_calibration
         from .watchdog import team_weights
-        return load_calibration(self.team.model_name, team_weights(self.team)[0], steps, task)
+        return load_calibration(self.team.model_name, team_weights(self.team)[0], task, steps=steps,
+                                max_new_tokens=max_new_tokens, threshold_set=(thresholds or {}).get("id"),
+                                reference=reference is not None, directory=self.calibration_dir or CALIBRATION_DIR)
 
     def rendered(self, question):
         """Every prompt a guarded run can give the model for one question, as the chat template
@@ -207,7 +215,8 @@ class Guard:
         texts.append(first_turn(tokenizer, SINGLE_PROMPT.format(question=question)))
         return texts
 
-    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None, task=None):
+    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None, task=None,
+            calibration_override=None):
         """One guarded batch. audit: True or False forces the audits; None samples them.
 
         gateways (W2): one gateway.Gateway per question, its permissions fixed. Each admits the
@@ -244,6 +253,15 @@ class Guard:
         if thresholds is None or not thresholds.get("distance"):
             reference = None
         rows = len(questions)
+        # W3: the calibration is chosen before any model call. One that names this task and
+        # model but cannot be trusted holds the run. calibration_override is for the eval,
+        # which records each run's score without abstaining ({"threshold": -inf}).
+        from .abstain import CalibrationInvalid
+        try:
+            calibration = calibration_override if calibration_override is not None else \
+                self.calibration(task, steps, max_new_tokens, thresholds, reference)
+        except CalibrationInvalid:
+            return [self._held(steps, "calibration-invalid") for _ in questions]
         # One deadline for the whole run: the guard's own cap and the gateway's, whichever is
         # shorter, for the watchdog's budget check, the audits, the fallback and the release.
         cap = self.time_cap
@@ -252,13 +270,12 @@ class Guard:
             cap = seconds if cap is None else min(cap, seconds)
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
-                           keep_memory=True, time_cap=cap)
+                           keep_memory=True, time_cap=cap, keep_solver_state=self.keep_solver_state and self.measure)
         started = time.monotonic()
         gates = None if gateways is None else [OutputGate(g) for g in gateways]
         try:
             outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
-                                 calibration=self.calibration(task, steps),
-                                 cap=cap)
+                                 calibration=calibration, cap=cap)
         except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
             outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
@@ -273,6 +290,19 @@ class Guard:
                        statistical={}, scores={}, system="latent_mas", tokens=int(tokens), latent_steps=steps,
                        latent_vectors=vectors, seconds=seconds)
 
+    def _extra(self, measured, watch, receipt, row):
+        """Eval only (measure=True): the audits' measurements, W3's exploratory scores and the
+        solver's hidden state for the probe, all kept in memory."""
+        extra = {"measured": measured} if measured else {}
+        details = getattr(receipt, "details", None)
+        if details:
+            values = details[row]["logprobs"]
+            extra["meanLogprob"] = sum(values) / len(values) if values else None
+            extra["minLogprob"] = min(values) if values else None
+        if watch.solver_state is not None:
+            extra["solverState"] = watch.solver_state[row].float().cpu()
+        return extra
+
     def _over(self, started, cap):
         return cap is not None and time.monotonic() - started > cap
 
@@ -286,7 +316,8 @@ class Guard:
         confidences = [None] * rows
         if scored:   # W3: the log-probability of each answer's final number (confidence.py)
             from .confidence import answer_logprob
-            confidences = [answer_logprob(d["pieces"], d["logprobs"]) for d in receipt.details]
+            # The pieces must join into the decode the answer was cut from, else no score.
+            confidences = [answer_logprob(d["pieces"], d["logprobs"], d.get("raw", "")) for d in receipt.details]
         try:
             results = watch.finish(answers, receipt.generated_tokens, receipt.seconds)
         except Exception:   # noqa: BLE001 - the watchdog could not check this run: hold it
@@ -376,5 +407,6 @@ class Guard:
                 audits=dict(report["audits"]) if report else {}, statistical=dict(report["statistical"]) if report else {},
                 scores=dict(report["scores"]) if report else {}, system=system, tokens=int(tokens),
                 latent_steps=steps, latent_vectors=receipt.latent_vectors, seconds=receipt.seconds,
-                extra={"measured": measured} if measured and self.measure else {}))
+                confidence=confidences[row] if system == "latent_mas" else None,
+                extra=self._extra(measured, watch, receipt, row) if self.measure else {}))
         return outcomes

@@ -48,18 +48,50 @@ def to_number(text, first=False):
         return None
 
 
+# "answer is" in any ASCII case, as text.lower() found it, with offsets in text itself.
+ANSWER_IS = re.compile("[Aa][Nn][Ss][Ww][Ee][Rr] [Ii][Ss]")
+
+
+def _number_at(text, start, end, first):
+    """(value, start, end) of the first or last number in text[start:end], read as to_number
+    reads it (dollar signs removed first, so "1$2" is 12), as a span of text itself, without
+    trailing commas; None without one."""
+    keep = [i for i in range(start, end) if text[i] != "$"]
+    stripped = "".join(text[i] for i in keep)
+    found = list(NUMBER.finditer(stripped))
+    if not found:
+        return None
+    match = found[0 if first else -1]
+    try:
+        value = float(match.group(0).replace(",", "").rstrip("."))
+    except ValueError:
+        return None
+    a, b = match.span()
+    while b > a + 1 and stripped[b - 1] == ",":   # "7, not 72" ends the number at 7
+        b -= 1
+    return value, keep[a], keep[b - 1] + 1
+
+
+def predicted_span(text):
+    """(value, start, end): the number predicted_number reads and where it is in text. The
+    grader and the confidence score (confidence.py) share it, so a score is always of the
+    number that is graded (W3 review round 1). None when there is none."""
+    phrases = list(ANSWER_IS.finditer(text))
+    if phrases:
+        # "The answer is 7, not 72" answers 7: the first number after the phrase.
+        found = _number_at(text, phrases[-1].start(), len(text), True)
+        if found is not None:
+            return found
+    boxed = list(re.finditer(r"\\boxed\{([^}]*)\}", text))
+    if boxed:   # the last \\boxed{} decides, even when it holds no number
+        return _number_at(text, boxed[-1].start(1), boxed[-1].end(1), True)
+    return _number_at(text, 0, len(text), False)
+
+
 def predicted_number(text):
     """The number after the last 'answer is', else in the last \\boxed{}, else the last number."""
-    lowered = text.lower()
-    if "answer is" in lowered:
-        # "The answer is 7, not 72" answers 7: the first number after the phrase.
-        value = to_number(text[lowered.rindex("answer is"):], first=True)
-        if value is not None:
-            return value
-    boxed = re.findall(r"\\boxed\{([^}]*)\}", text)
-    if boxed:
-        return to_number(boxed[-1], first=True)
-    return to_number(text)
+    found = predicted_span(text)
+    return None if found is None else found[0]
 
 
 def correct(text, gold):

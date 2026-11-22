@@ -74,6 +74,14 @@ def declared_secrets(body):
     return secrets
 
 
+def task_name(body):
+    """W3: the kind of task a request names for calibrated abstention, or None."""
+    task = body.get("task")
+    if task is not None and (not isinstance(task, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", task)):
+        raise ApiError(400, "task must be a short lower-case name, such as gsm8k-arithmetic.")
+    return task
+
+
 def _text_content(content):
     """OpenAI message content: a string, or a list of parts of which text parts count."""
     if isinstance(content, str):
@@ -192,9 +200,7 @@ class TeamService:
         clearance = body.get("clearance", "public")
         if clearance not in ("public", "sensitive"):
             raise ApiError(400, "clearance must be public or sensitive.")
-        task = body.get("task")
-        if task is not None and (not isinstance(task, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", task)):
-            raise ApiError(400, "task must be a short lower-case name, such as gsm8k-arithmetic.")
+        task = task_name(body)
         answer, outcome, _ = self.run(question, steps, limit, gone, origin="request", secrets=secrets,
                                       clearance=clearance, task=task)
         if answer is None:   # abstained: no model text leaves
@@ -230,8 +236,10 @@ class TeamService:
         limit = min(limit, MAX_NEW_TOKENS)
         # The flattened conversation mixes system text, history and the new message, so its
         # origin is lost: it is untrusted as a whole (docs/watchdog-security.md, "The gateway").
+        # W3: "task" is accepted here too, as an extension field like "secrets", so a calibrated
+        # kind of task can abstain on this route (review W3-1).
         answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat",
-                                             secrets=declared_secrets(body))
+                                             secrets=declared_secrets(body), task=task_name(body))
         if answer is None:   # abstained (W3): a fixed sentence, never model text
             answer = ABSTAINED
         completion = outcome.tokens
