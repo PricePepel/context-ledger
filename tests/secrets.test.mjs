@@ -828,3 +828,12 @@ test('P4d review 4: a quoted Bearer value, many findings in one message and many
   // An entry per key-like word took about 220 MiB in Codex's run; the budget is per candidate.
   assert.ok(grown < 64, `${grown} MiB`);
 });
+
+test('P4d review 5: a quoted value full of escapes is still searched for decoded', () => {
+  const BS = String.fromCodePoint(92);
+  const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password="' + (BS + 'u0051').repeat(44) + '"' },
+    { role: 'assistant', line: 2, text: 'Copied ' + 'Q'.repeat(44) },
+  ] });
+  assert.equal(session.messages[1].text, 'Copied [REDACTED assigned-secret]');
+});

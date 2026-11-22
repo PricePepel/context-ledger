@@ -4532,6 +4532,10 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
   - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
   - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
+- **Codex review, round 5** (of be3a2f2): no medium finding.
+  - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
+  - (low) The README still called the count a count of values. It now says replacements.
+  - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

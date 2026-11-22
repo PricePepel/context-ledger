@@ -392,9 +392,9 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// What one candidate adds to the copy search is capped, across all its entries, so one
-// long finding cannot fill the heap; a longer value is still found by its first
-// characters and its first key-like words.
+// What one candidate adds to the copy search is capped, across all its entries as written
+// and again across their decoded forms, so one long finding cannot fill the heap; a
+// longer value is still found by its first characters and its first key-like words.
 const maxCopyLength = 512;
 const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
 const leadingQuotes = /^["'`]+/u;
@@ -408,12 +408,13 @@ const leadingQuotes = /^["'`]+/u;
  * own. A text with an escape is also searched for decoded.
  */
 function copyEntries(text, candidate) {
-  let budget = maxCopyLength;
+  // Separate budgets, so text as written cannot use up what its decoded form needs.
+  const budget = { written: maxCopyLength, decoded: maxCopyLength };
   const entries = [];
-  const add = (value, ends) => {
-    if (budget <= 0 || value.length < minCopyLength) return;
-    const kept = value.slice(0, budget);
-    budget -= kept.length;
+  const add = (value, ends, pool = 'written') => {
+    if (budget[pool] <= 0 || value.length < minCopyLength) return;
+    const kept = value.slice(0, budget[pool]);
+    budget[pool] -= kept.length;
     entries.push({ value: kept, ends: [...ends.filter(length => length <= kept.length), kept.length] });
   };
   // The quote the scanner saw (it can stand before Bearer), else the character before.
@@ -431,7 +432,7 @@ function copyEntries(text, candidate) {
   }
   for (const entry of [...entries]) {
     if (!entry.value.includes('\\')) continue;
-    for (const length of entry.ends) add(decoded(entry.value.slice(0, length)), []);
+    for (const length of entry.ends) add(decoded(entry.value.slice(0, length)), [], 'decoded');
   }
   return entries;
 }
