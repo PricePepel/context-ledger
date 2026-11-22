@@ -1,7 +1,9 @@
 // The loopback API token (ADR-10). The server writes a fresh random token next to its
 // database at each start, together with the port it listens on; the CLI and the MCP
 // adapter read it and send it as a bearer token, but only to that port; the browser
-// signs in with a one-time code and then holds a session cookie. The server keeps
+// signs in with a one-time code and then holds a session secret in its own origin's
+// storage, which it sends as a header (P1f; not a cookie, which browsers would send to
+// every port on 127.0.0.1). The server keeps
 // only SHA-256 digests; the bearer check compares digests in constant time, and codes
 // and sessions are looked up by their digests. Each port has its own file, so servers
 // on different ports and one database do not replace each other's token.
@@ -381,17 +383,6 @@ export async function tokenForUrl(url, env = process.env) {
   return (await clientToken(Number(parsed.port || 80), env)).token;
 }
 
-/** The value of one cookie in a Cookie header, or undefined. */
-function cookieValue(header, name) {
-  if (typeof header !== 'string') return undefined;
-  for (const part of header.split(';')) {
-    const separator = part.indexOf('=');
-    if (separator < 0) continue;
-    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
-  }
-  return undefined;
-}
-
 /** Keeps a map of digest -> expiry under a size bound, dropping expired and then oldest entries. */
 function remember(map, key, expiresAt, limit, now) {
   for (const [entry, expiry] of map) if (expiry <= now) map.delete(entry);
@@ -409,31 +400,35 @@ function takeValid(map, key, now) {
   return true;
 }
 
+/** The header a signed-in browser sends its session secret in (P1f). */
+export const sessionHeader = 'x-context-ledger-session';
+
 /** The server's side: the token digest, one-time sign-in codes and browser sessions. */
 export function createAuth({ token, port, now = Date.now }) {
   const tokenDigest = digest(token);
   const codes = new Map();
   const sessions = new Map();
-  const cookieName = `context_ledger_${port}`;
 
   const bearer = request => {
     const match = /^Bearer ([A-Za-z0-9_-]{1,256})$/u.exec(request.headers.authorization ?? '');
     return Boolean(match) && timingSafeEqual(digest(match[1]), tokenDigest);
   };
+  // Cookies are not read at all: browsers send them to every port of the host (P1f).
   const session = request => {
-    const value = cookieValue(request.headers.cookie, cookieName);
-    return value !== undefined && secretPattern.test(value) && takeValid(sessions, digestKey(value), now());
+    const value = request.headers[sessionHeader];
+    return typeof value === 'string' && secretPattern.test(value) && takeValid(sessions, digestKey(value), now());
   };
 
   return {
-    cookieName,
+    /** A Set-Cookie value that removes this port's P1e session cookie, if a browser still has one. */
+    clearOldCookie: `context_ledger_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
     /** True when the request carries the bearer token. */
     bearer,
     /** True for this server's token (compared as digests, in constant time). */
     isOwnToken: text => timingSafeEqual(digest(text), tokenDigest),
-    /** True when the request carries the bearer token or a live session cookie. */
+    /** True when the request carries the bearer token or a live browser session. */
     allowed: request => bearer(request) || session(request),
-    /** True when the request carries a live browser session cookie (P2c). */
+    /** True when the request carries a live browser session (P2c). */
     signedIn: request => session(request),
     /** A new one-time sign-in code. */
     mintCode() {
@@ -441,7 +436,7 @@ export function createAuth({ token, port, now = Date.now }) {
       remember(codes, digestKey(code), now() + codeLifetimeMs, maxCodes, now());
       return code;
     },
-    /** Uses up a code; returns the Set-Cookie value of a new session, or undefined. */
+    /** Uses up a code; returns the secret of a new browser session, or undefined. */
     redeem(code) {
       if (typeof code !== 'string' || !secretPattern.test(code)) return undefined;
       const key = digestKey(code);
@@ -450,7 +445,7 @@ export function createAuth({ token, port, now = Date.now }) {
       if (!valid) return undefined;
       const id = newSecret();
       remember(sessions, digestKey(id), now() + sessionLifetimeMs, maxSessions, now());
-      return `${cookieName}=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionLifetimeMs / 1000}`;
+      return id;
     },
   };
 }

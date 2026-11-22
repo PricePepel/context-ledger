@@ -6,13 +6,18 @@ import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
-import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { codeLifetimeMs, createAuth, newToken, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.js', ['app.js', 'text/javascript']],
   ['/styles.css', ['styles.css', 'text/css']],
+  // P1f: the browser's session secret lives in this origin's storage; session.js reads
+  // it for the pages, and the sign-in page turns a one-time code into one.
+  ['/session.js', ['session.js', 'text/javascript']],
+  ['/login', ['login.html', 'text/html']],
+  ['/login.js', ['login.js', 'text/javascript']],
   // The console (card U1): a fixed list, so no other path under /console/ is served.
   ['/console', ['console/index.html', 'text/html']],
   ['/console/', ['console/index.html', 'text/html']],
@@ -20,6 +25,8 @@ const staticFiles = new Map([
   ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
+  // The same session.js, so the console's files all stay under /console/ (P1f).
+  ['/console/session.js', ['session.js', 'text/javascript']],
 ]);
 
 class HttpError extends Error {
@@ -39,20 +46,20 @@ function requireSameOrigin(request, origin, operation) {
   if (request.headers.origin !== origin) throw new HttpError(403, `${operation} requires the same origin.`);
 }
 
-async function readJson(request, origin, operation) {
+async function readJson(request, origin, operation, limit = { bytes: maxRequestBytes, text: '8 MiB' }) {
   requireSameOrigin(request, origin, operation);
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new HttpError(415, `${operation} requires application/json.`);
   }
-  if (Number(request.headers['content-length']) > maxRequestBytes) {
-    throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
+  if (Number(request.headers['content-length']) > limit.bytes) {
+    throw new HttpError(413, `${operation} exceeds the ${limit.text} request limit.`);
   }
 
   const chunks = [];
   let size = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > maxRequestBytes) throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
+    if (size > limit.bytes) throw new HttpError(413, `${operation} exceeds the ${limit.text} request limit.`);
     chunks.push(chunk);
   }
 
@@ -161,8 +168,11 @@ function scopeParameters(url) {
 }
 
 // Host, URL and token checks run before this table; each write checks its Origin, in
-// readJson or, for the bodiless DELETE, in requireSameOrigin. Only the static files and
-// /login are open without the token or a cookie.
+// readJson or, for the bodiless DELETE, in requireSameOrigin. Only the static files
+// (the sign-in page among them) and POST /api/session are open without the token or a
+// browser session.
+const signInLimit = { bytes: 1024, text: '1 KiB' };
+const linkFailure = 'This sign-in link was already used, has expired or is not valid. Run npm run ledger -- login for a new one.';
 const routes = [
   ...[...staticFiles].map(([path, [file, contentType]]) => ({
     method: 'GET', path, handler: async ({ response }) => {
@@ -172,15 +182,18 @@ const routes = [
       return sent;
     },
   })),
-  { method: 'GET', path: '/login', handler: ({ response, url }) => {
-    // A one-time code from the start-up line or `npm run ledger -- login` becomes a
-    // session cookie. The code is used up whether or not it was still valid.
-    const codes = url.searchParams.getAll('code');
-    const cookie = codes.length === 1 ? auth.redeem(codes[0]) : undefined;
-    if (!cookie) throw new HttpError(401, 'This sign-in link was already used, has expired or is not valid. Run npm run ledger -- login for a new one.');
-    response.writeHead(303, { Location: '/', 'Set-Cookie': cookie });
-    response.end();
-    return sent;
+  { method: 'POST', path: '/api/session', handler: async ({ request, response, origin }) => {
+    // P1f: the sign-in page (GET /login, a static file) sends the one-time code from the
+    // start-up line or `npm run ledger -- login` here, from this origin, and keeps the
+    // session secret it gets back in this origin's storage. A well-formed code is used
+    // up whether or not it was still valid. No cookie is set, and any P1e cookie of this
+    // port is removed, because browsers send cookies to every port of the host.
+    const input = await readJson(request, origin, 'Signing in', signInLimit);
+    const keys = input !== null && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : [];
+    const session = keys.length === 1 && keys[0] === 'code' ? auth.redeem(input.code) : undefined;
+    if (!session) throw new HttpError(401, linkFailure);
+    response.setHeader('Set-Cookie', auth.clearOldCookie);
+    return { session, expiresInSeconds: sessionLifetimeMs / 1000 };
   } },
   { method: 'POST', path: '/api/login', handler: ({ request }) => {
     // Sign-in codes are made with the token file, not with a browser session.
@@ -247,7 +260,7 @@ const routes = [
   } },
   { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
     // People approve or reject nodes in the browser. The request must carry a browser's
-    // sign-in cookie (the CLI and the MCP adapter hold only the bearer token) and a
+    // sign-in session (the CLI and the MCP adapter hold only the bearer token) and a
     // browser's Sec-Fetch-Site, which page scripts cannot forge. That keeps agent clients
     // out; it does not prove who clicked: a program running as the person can still sign
     // in as a browser does (ADR-10 trusts the OS user; P2c review).
@@ -346,7 +359,8 @@ const server = createServer(async (request, response) => {
     const origin = `http://${host}`;
     const url = new URL(request.url, origin);
     if (!auth) throw new HttpError(503, 'Context Ledger is starting.');
-    if (!staticFiles.has(url.pathname) && url.pathname !== '/login') {
+    const open = staticFiles.has(url.pathname) || (request.method === 'POST' && url.pathname === '/api/session');
+    if (!open) {
       if (!auth.allowed(request)) {
         response.setHeader('WWW-Authenticate', 'Bearer realm="Context Ledger"');
         throw new HttpError(401, signInHelp);

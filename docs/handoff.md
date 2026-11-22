@@ -593,7 +593,7 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
 
 - Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
-- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in session (a header since P1f) and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
 - **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
 
 ## Current checkpoint — P5d clean-install eval (2026-11-21)
@@ -604,3 +604,11 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21)
+
+Branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §14).
+
+- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
+- `public/session.js` (also served as `/console/session.js`) adds the header to the app's and the console's requests and forgets the secret on a 401.
+- The CLI, the MCP adapter and the link format are unchanged.
+- **Next owner:** a human security review of the PR. Then P1's remaining items (project delete and retention) and P3, whose review events can rely on the browser session as the P2c route does.

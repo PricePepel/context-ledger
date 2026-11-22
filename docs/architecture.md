@@ -237,8 +237,8 @@ Locally, blobs are files in the data directory. The hosted implementation maps t
 
 **Authentication.**
 - First run writes a 256-bit token to `<dataDir>/auth-token` (0600) in the OS data directory (0700). Only `sha256(token)` is stored; comparison is timing-safe.
-- Every `/api` route, GET included, requires the bearer token or session cookie, else 401.
-- The token never reaches the browser. `ledger open` mints a single-use nonce valid for 60 seconds. `/auth/<nonce>` exchanges it for an `HttpOnly; SameSite=Strict` cookie.
+- Every `/api` route, GET included, requires the bearer token or a browser session, else 401.
+- The token never reaches the browser. `ledger open` mints a single-use nonce valid for 60 seconds. ~~`/auth/<nonce>` exchanges it for an `HttpOnly; SameSite=Strict` cookie.~~ **Revised by P1f (ADR-10a):** the sign-in page exchanges it for a session secret that the page keeps in its origin's storage and sends as a header; there is no cookie.
 - stdio MCP has no listener, and whoever can spawn it can already read the file, so it trusts the OS user.
 
 **Browser boundary.** Today's protections stay: the Host allowlist (which blocks DNS rebinding), the exact Origin check on writes, JSON-only bodies, the streamed body cap, CSP, `nosniff`, `no-store`, no CORS, and binding to 127.0.0.1 only.
@@ -252,7 +252,7 @@ Locally, blobs are files in the data directory. The hosted implementation maps t
 
 | Threat | Control | Residual |
 |---|---|---|
-| Another local process reads the API | Token or cookie on every route; token file mode 0600 | Same-user malware reads the file directly |
+| Another local process reads the API | Token or browser session on every route; token file mode 0600; the session is in origin-scoped storage, not a cookie other ports receive (ADR-10a) | Same-user malware reads the file or the browser profile directly |
 | Website attacks 127.0.0.1 (CSRF, DNS rebinding) | Host allowlist, exact Origin, SameSite=Strict, JSON only, no CORS | Low |
 | Prompt injection makes the agent draft false nodes | MCP cannot approve or sign; referential validation; human approves each node hash beside its evidence | Reviewer approves a wrong claim |
 | XSS from transcript text | `textContent` only, strict CSP, no JS in the bundle, bidi and control escaping | Low |
@@ -320,7 +320,7 @@ Each is accepted once P1's owner approves this design (see the note at the top).
 7. Content-addressed versions; approval bound to node hash [per-version approval forces full re-review].
 8. Allowlist export from cleared excerpts [blocklist redaction].
 9. Raw Ed25519 over a JCS manifest, fingerprint out of band [PGP for UX; Sigstore, whose public log exposes client relationships; PAdES for CA cost].
-10. Loopback token exchanged for a cookie; stdio trusts the OS user [token in the URL fragment].
+10. Loopback token exchanged for a ~~cookie~~ browser session kept in origin-scoped storage and sent as a header (ADR-10a, P1f); stdio trusts the OS user [token in the URL fragment; a cookie, which browsers send to every port of the host].
 11. Fail closed on unknown formats [best-effort parsing].
 12. Team sync by event-log replication [CRDT libraries merge silently; a central database means cloud custody].
 13. Apache-2.0 core plus Pro; offline signed licenses and packet-bound tokens [AGPL, online activation].
@@ -358,3 +358,10 @@ The user's answers of 2026-11-21, and the defaults taken under their standing in
 - **ADR-15b, one command.** `context-ledger start`, `context-ledger mcp`, and every `ledger` subcommand. Under the command an unset `CONTEXT_LEDGER_DB` is `~/.context-ledger/ledger.sqlite` (`USERPROFILE` on Windows), so the server, the CLI and the MCP adapter share one database and token file from any folder. A checkout keeps its own defaults.
 - **ADR-15c, agents through npx.** Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). The spec must be a registry name (with an optional version or tag), a host shorthand such as `github:owner/repo` (with an optional `#ref`), or a local path, which is made absolute; each kind has a grammar without spaces, quotes or the characters cmd.exe treats specially, which is what matters on the two paths the command takes (one argument on POSIX, the `cmd /c` line on Windows). Anything else, every URL (it can carry credentials) and `git+ssh:` among them, is refused with the advice to install globally instead. From a checkout or a global install, `node <path>/src/mcp.mjs` as before.
 
+## 14. Browser credential (P1f, 2026-11-21)
+
+Recommended defaults taken under the user's standing instruction of 2026-11-21; the change needs a human security review before merge (AGENTS.md section 4).
+
+- **ADR-10a, an origin-scoped browser session.** P1e's session cookie was named per port, but browsers send cookies for 127.0.0.1 to every port, so any program serving a page on another local port received it. The browser session is now a 32-byte secret that the page keeps in `localStorage` under `context-ledger-session` and sends in an `X-Context-Ledger-Session` header. Browsers keep `localStorage` apart by scheme, host and port, and send a custom header only from page script, so another port neither receives nor reads it. The server reads no cookie at all. `localStorage` over `sessionStorage`: the sign-in then covers new tabs and the console link, as the cookie did; the secret lives only in memory on the server and dies with a restart or after 12 hours, and a 401 makes the page forget it.
+- **The sign-in flow.** The link stays `/login?code=…`, so the CLI, the start-up line and the docs keep their shape. `GET /login` is now a static page that uses up nothing; its script removes the code from the address bar and history entry and sends it once to `POST /api/session` as JSON from the ledger's own Origin (body capped at 1 KiB, exactly one `code` string). That route is open without the token, like the page, and answers `{ session, expiresInSeconds }`. Its response removes the port's P1e cookie (`Max-Age=0`), so a browser upgraded from P1e stops carrying it.
+- **What stays.** The Host allowlist, the exact Origin on writes, the strict CSP (`script-src 'self'`, no inline script), `textContent` rendering, and the node-review route's need for a browser session plus `Sec-Fetch-Site: same-origin`. **Residual:** script that runs in the ledger's own origin can read the secret, which an `HttpOnly` cookie hid; the CSP and `textContent` are the control for that, as they already were for the API responses. Same-user malware can read the browser profile, as it could read the cookie jar.

@@ -159,17 +159,18 @@ test('P2c: the review route is for people in the browser; reads carry the decisi
   const { graph } = (await post('/api/graphs', packet(session.id), { ...ledger.auth, Origin: ledger.origin })).body;
   const [first] = graph.nodeHashes;
   const review = { nodeId: first.id, nodeSha256: first.sha256, decision: 'approve', reviewer: 'Leo Park' };
-  // A browser signs in with a one-time link and then holds a session cookie.
+  // A browser signs in with a one-time link and then sends its session in a header (P1f).
   const { path } = (await post('/api/login', {}, ledger.auth)).body;
-  const signedIn = await fetch(ledger.origin + path, { redirect: 'manual' });
-  const cookie = signedIn.headers.get('set-cookie').split(';')[0];
-  const browser = { Cookie: cookie, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' };
+  const { session: secret } = (await post('/api/session', { code: path.slice('/login?code='.length) }, { Origin: ledger.origin })).body;
+  const signedIn = { 'X-Context-Ledger-Session': secret };
+  const browser = { ...signedIn, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' };
   const refusal = { status: 403, body: { error: 'Nodes are approved or rejected by people in the browser, signed in.' } };
   assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin }), refusal, 'an agent client');
   // P2c review: the bearer token with a browser's header is still not a browser.
   assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...ledger.auth, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' }), refusal, 'token and header');
-  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { Cookie: cookie, Origin: ledger.origin }), refusal, 'a cookie without the header');
-  assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' })).status, 401, 'no token or cookie');
+  assert.deepEqual(await post(`/api/graphs/${graph.id}/reviews`, review, { ...signedIn, Origin: ledger.origin }), refusal, 'a session without Sec-Fetch-Site');
+  assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' })).status, 401, 'no token or session');
+  assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { Cookie: `context_ledger_${new URL(ledger.origin).port}=${secret}`, Origin: ledger.origin, 'Sec-Fetch-Site': 'same-origin' })).status, 401, 'the session as a cookie');
   assert.equal((await post(`/api/graphs/${graph.id}/reviews`, review, { ...browser, Origin: 'http://evil.test' })).status, 403, 'a foreign Origin');
   const recorded = await post(`/api/graphs/${graph.id}/reviews`, review, browser);
   assert.equal(recorded.status, 200, JSON.stringify(recorded.body));

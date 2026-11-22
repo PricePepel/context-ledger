@@ -7,8 +7,14 @@ const maxPages = 50;
 const requestMs = 8000;
 const maxLinkedReads = 10;
 
+// P1f: the sign-in session from /session.js (absent outside the browser page, as in
+// the node tests, which pass their own fetchJson).
+const session = globalThis.ledgerSession;
+
 async function getJson(path) {
-  const response = await fetch(path, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(requestMs) });
+  const accept = { Accept: 'application/json' };
+  const response = await fetch(path, { headers: session ? session.headers(accept) : accept, signal: AbortSignal.timeout(requestMs) });
+  if (response.status === 401) session?.forget();
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
   return body;
