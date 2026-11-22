@@ -135,6 +135,43 @@ class PlaceholderEvalTest(unittest.TestCase):
                                             "maxNewTokens": TOKENS})
         self.assertIn(secret, seen.prompts[0])
 
+    def test_the_observation_would_see_a_canary_in_the_thought_record(self):
+        # Positive control (review W2-2 finding 5): thought tokens forced to spell the canary
+        # are found by the same observation, so its silence above means something.
+        from latent_team.watchdog import Watch
+        team = text_team()
+        secret = "cnry" + "0123456789"
+        rebuild = Watch.rebuild
+
+        def spelling(watch, hidden):
+            mix, ids, weights = rebuild(watch, hidden)
+            index = len(watch.record) % len(secret)
+            ids = ids.clone()
+            ids[:, 0] = 3 + ALPHABET.index(secret[index])
+            return mix, ids, weights
+
+        with mock.patch.object(Watch, "rebuild", spelling), Seen(team.tokenizer) as seen:
+            team_steps = len(secret)
+            service = quiet_service(team)
+            service({"question": "q", "latentSteps": team_steps, "maxNewTokens": TOKENS})
+        self.assertIn(secret, seen.tops[0])
+
+    def test_a_canary_the_model_writes_never_leaves_an_uncleared_answer(self):
+        # Positive control: the solver's raw text holds the declared value; the public gate
+        # removes it and the cleared one keeps it.
+        team = text_team()
+        secret = canary()
+        decode = team.decode
+
+        def writing(memory, memory_mask, prompts, max_new_tokens, **kwargs):
+            texts, counts = decode(memory, memory_mask, prompts, max_new_tokens, **kwargs)
+            return [f"The code is {secret}." for _ in texts], counts
+
+        team.decode = writing
+        body = {"question": f"Keep {secret}", "secrets": [secret], "latentSteps": STEPS, "maxNewTokens": TOKENS}
+        self.assertNotIn(secret, quiet_service(team)(body)["answer"])
+        self.assertIn(secret, quiet_service(team)(dict(body, clearance="sensitive"))["answer"])
+
     def test_the_streamed_http_route_carries_no_canary(self):
         import http.client
         import threading
@@ -196,6 +233,18 @@ class PlaceholderEvalTest(unittest.TestCase):
 @unittest.skipUnless(HAVE_TORCH, "torch and transformers are needed for the squad")
 class LabelEvalTest(unittest.TestCase):
     """Eval 9 through the squad: the label rule holds, and two projects share no memory."""
+
+    def test_a_guard_without_a_cap_keeps_the_gateway_deadline(self):
+        # Review W2-2 finding 4.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        team = text_team()
+        gateway = Gateway("proj-a")
+        gateway.fix_permissions(Permissions(max_seconds=1e-9))
+        gateway.admit([Span("request", "request", "q")])
+        [outcome] = Guard(team, thresholds=None, sample=lambda: False).run(["unused"], steps=STEPS,
+                                                                            max_new_tokens=TOKENS, gateways=[gateway])
+        self.assertEqual((outcome.decision["action"], outcome.decision["reason"]), ("hold", "budgets"))
 
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
@@ -302,8 +351,12 @@ class NothingOnDiskTest(unittest.TestCase):
             "before = listing()\n"
             "writes = []\n"
             "def hook(event, args):\n"
-            "    if event == 'open' and len(args) > 1 and isinstance(args[1], str) and any(c in args[1] for c in 'wax+'):\n"
-            "        writes.append([event, str(args[0])])\n"
+            "    if event == 'open':\n"
+            "        path, mode, flags = (list(args) + [None, None, 0])[:3]\n"
+            "        by_mode = isinstance(mode, str) and any(c in mode for c in 'wax+')\n"
+            "        by_flags = isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND)\n"
+            "        if by_mode or by_flags:\n"
+            "            writes.append([event, str(path)])\n"
             "    elif event in ('os.rename', 'os.replace', 'os.remove', 'os.unlink', 'os.mkdir', 'os.rmdir',\n"
             "                   'shutil.copyfile', 'shutil.move', 'os.truncate'):\n"
             "        writes.append([event, str(args[0]) if args else ''])\n"
@@ -311,7 +364,13 @@ class NothingOnDiskTest(unittest.TestCase):
             "service({'question': 'Keep cnry0123456789abcdef0123456789abcdef safe.', "
             "'secrets': ['cnry0123456789abcdef0123456789abcdef'], 'latentSteps': 3, 'maxNewTokens': 6})\n"
             "service.chat({'model': MODEL_ID, 'max_tokens': 6, 'messages': [{'role': 'user', 'content': '2+2?'}]})\n"
-            "sys.stdout.write(json.dumps({'writes': writes, 'added': sorted(set(listing()) - set(before))}))\n")
+            "run_writes, added = list(writes), sorted(set(listing()) - set(before))\n"
+            "probe = os.path.join(os.getcwd(), 'existing.txt')\n"
+            "fd = os.open(probe, os.O_WRONLY | os.O_APPEND | os.O_CREAT)\n"
+            "os.write(fd, b'x')\n"
+            "os.close(fd)\n"
+            "control = [w for w in writes if w[1].endswith('existing.txt')]\n"
+            "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control)}))\n")
         with tempfile.TemporaryDirectory() as folder:
             env = dict(os.environ, HOME=folder, USERPROFILE=folder, TMPDIR=folder, TEMP=folder, TMP=folder,
                        PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime)
@@ -319,7 +378,8 @@ class NothingOnDiskTest(unittest.TestCase):
                                     text=True, timeout=300)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
             report = json.loads(result.stdout.strip().splitlines()[-1])
-            self.assertEqual(report, {"writes": [], "added": []})
+            self.assertEqual((report["writes"], report["added"]), ([], []))
+            self.assertGreater(report["control"], 0, "the hook sees a numeric-flag write (positive control)")
 
 if __name__ == "__main__":
     unittest.main()

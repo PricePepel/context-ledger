@@ -7,14 +7,14 @@ a short bounded pattern finds where a candidate starts, a forward scan finds whe
 value really ends, and overlapping candidates merge into one span labelled with the most
 specific kind. It only reports and replaces; it never stores, prints or sends a value.
 
-JavaScript's u-flag patterns are rewritten before Python compiles them, as the H4 grader
-(runtime/tests/grade.py) does: \\b and \\w use JavaScript's word characters exactly (ASCII,
-plus U+017F LONG S and U+212A KELVIN SIGN under i), \\s and \\S use JavaScript's whitespace
-list (rules/latent-rules.json), and a case-insensitive pattern folds case as Python's
-Unicode IGNORECASE does, so LONG S matches s and KELVIN SIGN matches k, as JavaScript's i
-does. One difference is left: inside a letter class such as [A-Za-z] under i, Python also
-matches U+0130 and U+0131 (dotted capital and dotless i), JavaScript does not; no rule's
-outcome in the shared cases depends on it. Offsets count code points where JavaScript
+JavaScript's u-flag patterns are rewritten before Python compiles them, in the spirit of
+the H4 grader (runtime/tests/grade.py): \\b and \\w use JavaScript's word characters exactly
+(ASCII, plus U+017F LONG S and U+212A KELVIN SIGN under i), \\s and \\S use JavaScript's
+whitespace list (rules/latent-rules.json), and $ ends the text. Case-insensitive matching
+is written into the pattern rather than left to Python's IGNORECASE: every ASCII letter
+becomes its two cases, plus LONG S for s and KELVIN SIGN for k, which is exactly what
+JavaScript's i with u folds into ASCII letters; so U+0130 and U+0131 (dotted capital and
+dotless i) match no letter, as in JavaScript. Offsets count code points where JavaScript
 counts UTF-16 units.
 
 Standard library only.

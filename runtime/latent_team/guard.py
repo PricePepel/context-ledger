@@ -116,11 +116,11 @@ class Guard:
         t = self._thresholds
         return t if t is not None and t.get("steps") == steps else None
 
-    def watch(self, questions, steps, max_new_tokens, thresholds=None, reference=None, **kwargs):
+    def watch(self, questions, steps, max_new_tokens, thresholds=None, reference=None, time_cap=None, **kwargs):
         from .watchdog import Watch
         return Watch(self.team, questions, steps=steps, max_new_tokens=max_new_tokens, thresholds=thresholds,
-                     reference=reference, time_cap=self.time_cap, key=secrets.token_bytes(32), pinned=self.pinned,
-                     **kwargs)
+                     reference=reference, time_cap=self.time_cap if time_cap is None else time_cap,
+                     key=secrets.token_bytes(32), pinned=self.pinned, **kwargs)
 
     def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance):
         """Replay, mismatched memory and solver alone for a batch. Returns (per-row audit words,
@@ -205,8 +205,7 @@ class Guard:
             # The gateway's budgets were fixed before any data was read; the run keeps to them.
             for g in gateways:
                 p = g.permissions
-                if steps > p.max_steps or max_new_tokens > p.max_new_tokens or \
-                        (self.time_cap is not None and self.time_cap > p.max_seconds):
+                if steps > p.max_steps or max_new_tokens > p.max_new_tokens:
                     raise ValueError("the run asks for more than the gateway's fixed budgets")
             admitted = [g.admission if g.admission is not None else g.admit([Span("request", "request", q)])
                         for g, q in zip(gateways, questions)]
@@ -216,13 +215,20 @@ class Guard:
         if thresholds is None or not thresholds.get("distance"):
             reference = None
         rows = len(questions)
+        # One deadline for the whole run: the guard's own cap and the gateway's, whichever is
+        # shorter, for the watchdog's budget check, the audits, the fallback and the release.
+        cap = self.time_cap
+        if gateways is not None:
+            seconds = min(g.permissions.max_seconds for g in gateways)
+            cap = seconds if cap is None else min(cap, seconds)
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
-                           keep_memory=True)
+                           keep_memory=True, time_cap=cap)
         started = time.monotonic()
         gates = None if gateways is None else [OutputGate(g) for g in gateways]
         try:
-            outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates)
+            outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
+                                 cap=cap)
         except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
             outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
@@ -237,10 +243,10 @@ class Guard:
                        statistical={}, scores={}, system="latent_mas", tokens=int(tokens), latent_steps=steps,
                        latent_vectors=vectors, seconds=seconds)
 
-    def _over(self, started):
-        return self.time_cap is not None and time.monotonic() - started > self.time_cap
+    def _over(self, started, cap):
+        return cap is not None and time.monotonic() - started > cap
 
-    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None):
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None, cap=None):
         from .watchdog import weights_state
         rows = len(questions)
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
@@ -256,7 +262,7 @@ class Guard:
                 spec = thresholds.get(name)
                 values = results["raw"][name]
                 flagged |= spec is not None and any(v is not None and v >= spec["flag"] for v in values)
-        do_audit = ((self.sample() if audit is None else audit) or flagged) and not self._over(started)
+        do_audit = ((self.sample() if audit is None else audit) or flagged) and not self._over(started, cap)
         words, alone, measured = [{}] * rows, None, {}
         if do_audit and not all(held):
             tolerance = (thresholds or {}).get("replayTolerance", REPLAY_TOLERANCE)
@@ -291,7 +297,7 @@ class Guard:
             same_model = weights_state(self.team.model) == watch.weight_state
             for r, text, count in zip(fallback_rows, texts, tokens):
                 within = isinstance(text, str) and 0 <= int(count) <= max_new_tokens and same_model and \
-                    (self.time_cap is None or seconds <= self.time_cap) and not self._over(started)
+                    (cap is None or seconds <= cap) and not self._over(started, cap)
                 decisions[r] = runs[r].after_fallback(within_limits=within)
 
         outcomes = []

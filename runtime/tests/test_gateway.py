@@ -136,6 +136,32 @@ class PlaceholderTest(unittest.TestCase):
         g.admit([Span("request", "request", f"keep {secret}")])
         self.assertNotIn(secret, OutputGate(g).release(f"here: {secret}").text)
 
+    def test_round2_no_substitution_hides_a_new_credential_from_the_output_scan(self):
+        # Review W2-2 finding 1: a declared lead, and a credential right after a placeholder.
+        g = gateway(declared=["password="])
+        admission = g.admit([Span("request", "request", "password=")])
+        fresh = "New" + "Value99x"
+        self.assertNotIn(fresh, OutputGate(g).release(f"password={fresh}").text)
+        token = admission.text.strip()
+        leak = github_token()
+        self.assertNotIn(leak, OutputGate(g).release(f"{token}{leak}").text)
+
+    def test_round2_values_without_a_placeholder_of_their_own_never_leave(self):
+        # Review W2-2 finding 2: overlapping declarations, and a declaration absent from the text.
+        g = gateway(tools=(SEARCH,), declared=["alpha123", "123omega", "zeta" + "4567"])
+        admission = g.admit([Span("request", "request", "say alpha123omega")])
+        self.assertNotIn("alpha123", admission.text)
+        for leak in ("alpha123", "123omega", "zeta4567"):
+            self.assertNotIn(leak, OutputGate(g).release(f"it is {leak}").text, leak)
+            self.assertEqual(ToolGate(g).check({"name": "search_notes", "arguments": {"query": leak}}), "placeholder")
+
+    def test_round2_a_credential_formed_across_two_spans_is_hidden(self):
+        # Review W2-3: two named spans that only make a key once joined.
+        key = "wJal" * 10
+        admission = gateway().admit([Span("request", "request", "set aws_secret_access_key="),
+                                     Span("rest", "file", key)], named={"rest"})
+        self.assertNotIn(key, admission.text)
+
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
         secret = canary()

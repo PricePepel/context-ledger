@@ -167,6 +167,7 @@ class Gateway:
         self.nonce = secrets.token_hex(16)
         self._values = {}           # placeholder token -> value; never stored, never returned
         self._tokens = {}           # value -> placeholder token
+        self._egress = set()        # every declared value and original finding: never out uncleared
         self.admission = None
 
     # ------------------------------------------------------------ before the squad reads
@@ -206,26 +207,30 @@ class Gateway:
                 at = text.find(value, at + 1)
         return ranges
 
-    def _hide_all(self, texts):
-        """Every span's declared secrets and scanner findings, then every other occurrence of
-        any value found anywhere, replaced in one pass per span on the original text, with
-        overlapping ranges merged. Returns (texts, count of ranges replaced)."""
+    def _hide_all(self, texts, separator):
+        """The memory's text, assembled first: every span's own scanner findings (in its own
+        context), the findings of a scan of the assembled text (a credential can form across
+        two spans), the declared values, and every other occurrence of any of those values,
+        all found on the original text, merged where they overlap and replaced in one pass.
+        Returns (text, count of ranges replaced). Every declared value and original finding
+        also joins the egress set the output and tool gates check, placeholder or not."""
         texts = [t.replace(self.RESERVED, self.NEUTRAL) for t in texts]
-        known = set(self.declared)
-        for text in texts:   # the scanner reads each original text before anything is replaced
-            known.update(text[f["start"]:f["end"]] for f in self.scanner(text))
-        known = sorted((v for v in known if v), key=len, reverse=True)
-        out, count = [], 0
+        joined, offsets, at = separator.join(texts), [], 0
         for text in texts:
-            ranges = self._merge([(f["start"], f["end"]) for f in self.scanner(text)] +
-                                 self._occurrences(text, known))
-            pieces, at = [], 0
-            for start, end in ranges:
-                pieces.append(text[at:start] + self._placeholder(text[start:end]))
-                at = end
-            out.append("".join(pieces) + text[at:])
-            count += len(ranges)
-        return out, count
+            offsets.append(at)
+            at += len(text) + len(separator)
+        ranges = [(f["start"], f["end"]) for f in self.scanner(joined)]
+        for text, offset in zip(texts, offsets):   # each span read alone, as the ledger would read it
+            ranges += [(offset + f["start"], offset + f["end"]) for f in self.scanner(text)]
+        self._egress.update(v for v in self.declared)
+        self._egress.update(joined[start:end] for start, end in ranges)
+        known = sorted((v for v in self._egress if v), key=len, reverse=True)
+        merged = self._merge(ranges + self._occurrences(joined, known))
+        pieces, at = [], 0
+        for start, end in merged:
+            pieces.append(joined[at:start] + self._placeholder(joined[start:end]))
+            at = end
+        return "".join(pieces) + joined[at:], len(merged)
 
     def admit(self, spans, named=()):
         """Admit the run's own request and the spans the task names, label them and build the
@@ -257,13 +262,13 @@ class Gateway:
             chosen.append(span.text)
         if label is None:
             raise GatewayError("empty", "nothing was admitted")
-        texts, placeholders = self._hide_all(chosen)
+        text, placeholders = self._hide_all(chosen, "\n\n")
         tools = tuple(self.permissions.tools)
         outside = any(t.outside_effect for t in tools)
         off = label.trust == "untrusted" and label.sensitivity == "sensitive" and outside
         if off:
             tools = ()
-        self.admission = Admission("\n\n".join(texts), label, tools, tuple(kept), left_out, refused, placeholders, off)
+        self.admission = Admission(text, label, tools, tuple(kept), left_out, refused, placeholders, off)
         return self.admission
 
     def fit(self, limit, marker):
@@ -298,20 +303,20 @@ class Gateway:
         return any(token in text for token in self._values)
 
     def holds_value(self, text):
-        """Does text hold any known secret value itself (declared or found)?"""
-        return any(value in text for value in self._tokens)
+        """Does text hold a known secret value itself: a declared one or an original finding,
+        whether or not it has a placeholder of its own?"""
+        return any(value and value in text for value in self._egress | set(self.declared))
 
-    def hide_values(self, text):
-        """Every known value in text replaced by its placeholder (longest first)."""
-        for value in sorted(self._tokens, key=len, reverse=True):
-            text = text.replace(value, self._tokens[value])
-        return text
+    def value_ranges(self, text):
+        return self._occurrences(text, sorted((v for v in self._egress | set(self.declared) if v), key=len,
+                                              reverse=True))
 
     def masked(self, text):
-        """text with every placeholder token turned into x's of the same length, so a scan
-        neither flags a token nor lets one hide a real secret next to it."""
+        """text with every placeholder token turned into #'s of the same length: a stand-in to
+        the scanner, and not a word character, so a credential right after a token keeps its
+        word boundary."""
         for token in self._values:
-            text = text.replace(token, "x" * len(token))
+            text = text.replace(token, "#" * len(token))
         return text
 
 
@@ -414,19 +419,26 @@ class OutputGate:
         return self.admission.label.sensitivity == "sensitive" and self.clearance != "sensitive"
 
     def release(self, text):
-        """For an output not cleared: every known value (declared or found) the text holds
-        itself is replaced by its placeholder, then the scanner redacts what else it finds.
-        For a cleared output: the scan runs on the text as the model wrote it, then the
-        placeholders are put back, so a cleared value is never redacted by its own scan."""
-        gateway, redactions, marks = self.gateway, 0, ()
-        if self.clearance != "sensitive" and gateway.holds_value(text):
-            text, redactions, marks = gateway.hide_values(text), 1, ("redacted",)
-        findings = gateway.scanner(gateway.masked(text))
-        if findings:
-            text = secret_scan.redact_text(text, findings)
-            redactions += len(findings)
-            marks = ("redacted",)
+        """The scanner reads the answer as the model wrote it (placeholders masked), and for an
+        output not cleared every known value the answer holds itself is found too; all the
+        ranges are merged and redacted in one pass, so no substitution can hide a finding.
+        Then, for a cleared output only, the placeholders are put back."""
+        gateway = self.gateway
+        kinds = {}
+        for finding in gateway.scanner(gateway.masked(text)):
+            kinds[(finding["start"], finding["end"])] = finding["kind"]
+        ranges = list(kinds)
+        if self.clearance != "sensitive":
+            ranges += gateway.value_ranges(text)
+        merged = gateway._merge(ranges)
+        if merged:
+            pieces, at = [], 0
+            for start, end in merged:
+                kind = next((k for (a, b), k in kinds.items() if start <= a and b <= end), "secret")
+                pieces.append(text[at:start] + f"[REDACTED {kind}]")
+                at = end
+            text = "".join(pieces) + text[at:]
         restored = False
         if self.clearance == "sensitive" and gateway.holds_placeholder(text):
             text, restored = gateway.restore(text), True
-        return Release(text, marks, redactions, restored)
+        return Release(text, ("redacted",) if merged else (), len(merged), restored)
