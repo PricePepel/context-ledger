@@ -4540,3 +4540,22 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
   - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
   - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
   - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+
+## P3 — review events (defined 2026-11-21, before implementation)
+
+P2c (ADR-7c) records one person's approve or reject decision per version 3 node hash as a plain row that a later decision overwrites. ADR-6 asks for append-only, hash-chained review events whose state is a fold, and the reviewer needs an edit decision as well. Synthetic graphs and reviewer names only.
+
+### What is tested and the expected result
+
+- **Events, not rows.** Every decision appends one row to `review_events` (schema version 7). An UPDATE or DELETE on it is refused by the database. The current decision for a node hash is the latest event for it.
+- **Hash chain.** Each event stores `prev` (the previous event's hash, 64 zeros for the first) and `hash`, SHA-256 of the RFC 8785 JCS form of the event: prev, session, party, node ID, node hash, decision, label when it is an edit, reviewer and time. `ledger reviews verify` recomputes the chain and reports the event count and head hash, or the first event that does not match. Changing any field of a stored event, by a raw write with the triggers dropped, is reported.
+- **Edit.** A third decision, `edit`, carries the corrected label (1 to 500 characters, well-formed Unicode, not only spaces). The graph itself never changes: the edit is a review outcome shown beside the node. Approve and reject carry no label.
+- **Same rules as P2c.** Only version 3 nodes with a current hash are reviewed; a stale hash is a 409; the reviewer is 1 to 64 visible characters on one line and self-asserted; the POST route still needs a browser sign-in; errors never echo a value.
+- **Migration.** A version 6 file with P2c rows gains one event per row, in the order they were decided, with a valid chain, and `node_reviews` is dropped. The decisions a graph shows are the same before and after.
+- **Browser.** The review section has Approve, Edit and Reject. Edit opens a field with the label filled in; saving shows "Edited by <name> (self-asserted)" and the new label as text. Everything is set with `textContent`.
+- **Concurrency.** Two stores appending to one file keep one chain: each append reads the head under the write lock.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs`, `npm run -s test:graph`, `npx playwright test` and the runtime Python checks pass, with the cases above in `tests/review-events.test.mjs` and the review browser spec.
+- No new dependency.
