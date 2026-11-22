@@ -11,6 +11,8 @@
 // - Each pattern resumes after the whole value it found, so long runs are scanned once.
 // - Overlapping candidates merge into one span, labelled with the most specific kind.
 
+import secretRules from '../rules/secret-rules.json' with { type: 'json' };
+
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
 const base64url = /[A-Za-z0-9_-]/u;
@@ -87,73 +89,74 @@ function quotedEnd(text, from, quote) {
   return text.length;
 }
 
+// Card W2: the rule tables below are built from rules/secret-rules.json, which the latent
+// runtime's gateway (runtime/latent_team/secret_scan.py) reads too, so a rule changes in
+// one place. rules/secret-conformance.json holds the cases both test suites run.
+
 /**
  * Simple rules: a pattern that recognises the start of the value, the value's character
- * class, and how many leading characters are a fixed public prefix that may be shown.
+ * class (none: the start is the whole value), and an anchored pattern whose match is the
+ * fixed public prefix that may be shown. mixedAfter: the value from that index on must hold
+ * a letter and a digit, so a long hyphenated word after sk- is not a key.
  */
-const simpleRules = [
-  { kind: 'anthropic-key', start: /\bsk-ant-[A-Za-z0-9_-]{20}/gu, cls: base64url, prefix: () => 7 },
-  { kind: 'github-token', start: /\bgithub_pat_[A-Za-z0-9_]{22}/gu, cls: /[A-Za-z0-9_]/u, prefix: () => 11 },
-  { kind: 'github-token', start: /\bgh[pousr]_[A-Za-z0-9]{36}/gu, cls: /[A-Za-z0-9]/u, prefix: () => 4 },
-  { kind: 'aws-access-key-id', start: /\b(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/gu, cls: /(?!)/u, prefix: () => 4 },
-  { kind: 'slack-token', start: /\bxox[abposr]-[A-Za-z0-9-]{10}/gu, cls: /[A-Za-z0-9-]/u, prefix: () => 5 },
-  { kind: 'stripe-key', start: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16}/gu, cls: /[A-Za-z0-9]/u, prefix: value => value.indexOf('_', 3) + 1 },
-  { kind: 'openai-key', start: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20}/gu, cls: base64url, prefix: value => value.match(/^sk-(?:proj-|svcacct-|admin-)?/u)[0].length, accept: value => mixed(value.slice(3)) },
-];
+const simpleRules = secretRules.simple.rules.map(rule => {
+  const prefix = new RegExp(rule.prefix, 'u');
+  return {
+    kind: rule.kind,
+    start: new RegExp(rule.start, 'gu'),
+    cls: new RegExp(rule.cls ?? '(?!)', 'u'),
+    prefix: value => value.match(prefix)?.[0].length ?? 0,
+    accept: rule.mixedAfter === undefined ? undefined : value => mixed(value.slice(rule.mixedAfter)),
+  };
+});
 
 /**
  * Rules for a value after a name or header. The pattern ends where the value begins; the
- * value is then read whole, quoted or not.
+ * value is then read whole, quoted or not. Free-text values (a bearer header's value, or
+ * any value after a name such as password=) are handled by lineTails below (card P4c).
  */
-const valueRules = [
-  { kind: 'aws-secret-access-key', lead: /\baws_secret_access_key\b["']?\s{0,8}[:=]\s{0,8}/giu, cls: /[A-Za-z0-9/+=]/u, accept: value => /^[A-Za-z0-9/+=]{40}$/u.test(value) },
-  // Free-text values (a bearer header's value, or any value after a name such as
-  // password=) are handled by lineTails below (card P4c), not here.
-];
+const valueRules = secretRules.values.rules.map(rule => {
+  const accept = new RegExp(rule.accept, 'u');
+  return { kind: rule.kind, lead: new RegExp(rule.lead, 'giu'), cls: new RegExp(rule.cls, 'u'), accept: value => accept.test(value) };
+});
 
 // Card P4c: names whose value is treated as a secret.
-const nameKeywords = 'password|passwd|pwd|passphrase|secret|client[ _-]?secret|api[ _-]?key|access[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|token';
+const nameKeywords = secretRules.freeText.nameKeywords.join('|');
 
 /**
  * Card P4c: free-text leads. After one of these, the rest of the line is the value: the
  * scanner never guesses where a free-text value ends inside the line, so no fragment of it
  * can be left visible. The cost, other text on that line being redacted too, is bounded by
- * the false-alarm budget in docs/evals.md.
+ * the false-alarm budget in docs/evals.md. Only spaces and tabs may sit inside a lead, so a
+ * lead never runs onto the next line, and the padding after an opening quote is consumed
+ * only when the quote is there, so long runs of spaces before a non-Bearer value do not
+ * backtrack.
  */
 const freeTextLeads = [
-  // Only spaces and tabs may sit inside a lead, so a lead never runs onto the next line.
-  // The padding after an opening quote is consumed only when the quote is there, so long
-  // runs of spaces before a non-Bearer value do not backtrack.
-  { kind: 'bearer-token', lead: /\bAuthorization["']?[ \t]*:[ \t]*(?:["'][ \t]*)?Bearer[ \t]+/giu },
+  { kind: 'bearer-token', lead: new RegExp(secretRules.freeText.bearerLead, 'giu') },
   { kind: 'assigned-secret', lead: new RegExp(`\\b(?:[A-Za-z0-9]{1,32}[_.-])?(?:${nameKeywords})\\b["']?[ \\t]*[:=][ \\t]*`, 'giu') },
 ];
+
+const placeholderPatterns = secretRules.placeholders.patterns.map(({ pattern, flags = '' }) => new RegExp(pattern, `${flags}u`));
 
 /**
  * A value that is only a stand-in for a secret, judged on the whole value (trailing quotes
  * and closing punctuation removed). Anything more than the stand-in is still a secret.
  */
 function isPlaceholder(value) {
-  return /^[0-9]+$/u.test(value)
-    || /^(?:x+|\*+|\.+|#+|-+)$/iu.test(value)
-    || /^(?:changeme|change[_-]?me|placeholder|redacted|null|none|nil|undefined|true|false|required|optional)$/iu.test(value)
-    || /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|\([A-Za-z_][A-Za-z0-9_]*\)|[A-Za-z_][A-Za-z0-9_]*)$/u.test(value)
-    || /^%[A-Za-z_][A-Za-z0-9_]*%$/u.test(value)
-    || isAngleStandIn(value)
-    || /^(?:process\.env|import\.meta\.env|os\.environ)\.[A-Za-z_][A-Za-z0-9_]*$/u.test(value)
-    || /^\[REDACTED [a-z-]{1,32}\]$/u.test(value)
-    || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
-    || /^[0-9a-f]{40}$/iu.test(value);
+  return placeholderPatterns.some(pattern => pattern.test(value)) || isAngleStandIn(value);
 }
 
 // Whole words that mark an angle-bracket stand-in, such as <your-key-here>.
-const standInWords = new Set(['key', 'token', 'secret', 'password', 'here', 'value']);
+const standInWords = new Set(secretRules.placeholders.standInWords);
+const angleStandIn = new RegExp(secretRules.placeholders.angleStandIn, 'u');
 
 /**
  * An angle-bracket stand-in names what goes there with a whole word, split by spaces,
  * underscores or hyphens: <your-key-here> is one, <monkey9> is not.
  */
 function isAngleStandIn(value) {
-  if (!/^<[A-Za-z0-9 _-]{1,48}>$/u.test(value)) return false;
+  if (!angleStandIn.test(value)) return false;
   return value.slice(1, -1).split(/[ _-]/u).some(word => standInWords.has(word.toLowerCase()));
 }
 
