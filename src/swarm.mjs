@@ -11,6 +11,9 @@ export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
 const metricsEveryMs = 500;
 
+/** The middle value (the lower of the two middle values for an even count). */
+export const median = values => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) / 2)];
+
 /** The model servers from SWARM_URLS: loopback http only, refused at start otherwise. */
 export function swarmUrls(text) {
   if (!text?.trim()) return [];
@@ -93,8 +96,11 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   const urls = swarmUrls(env.SWARM_URLS);
   const concurrency = Math.min(Math.max(Number.parseInt(env.SWARM_CONCURRENCY ?? '32', 10) || 32, 1), maxAgents);
   const scale = simScale ?? (Number(env.SWARM_SIM_SCALE) > 0 ? Number(env.SWARM_SIM_SCALE) : 1);
+  // Card S1b: timed solo requests per server for the baseline, after one untimed warm-up.
+  const baselineRuns = Math.min(Math.max(Number.parseInt(env.SWARM_BASELINE_RUNS ?? '3', 10) || 3, 1), 5);
   const runs = new Map();
   let active = null;
+  let baselineCache = null;
 
   // Every request to a model server: no redirects (they could leave this machine), a
   // timeout, and a size cap before anything is parsed.
@@ -184,10 +190,48 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   const readMetrics = servers => Promise.all(servers.map(server => request(`${server.url.replace(/\/v1$/u, '')}/metrics`,
     { timeoutMs: 2000 }).then(parseMetrics).catch(() => ({}))));
 
+  // Card S1b: keep the highest KV-cache sample seen during the run, since the last sample
+  // (after every agent finished) is usually near zero.
+  function noteMetrics(run, view) {
+    if (!view) return;
+    if (Number.isFinite(view.kvCacheUsage)) run.kvPeak = Math.max(run.kvPeak ?? 0, view.kvCacheUsage);
+    run.metrics = { ...view, kvCachePeak: run.kvPeak ?? null };
+  }
+
   async function pollMetrics(run, servers, baseline) {
     while (!run.agentsDone) {
-      run.metrics = metricsView(await readMetrics(servers), baseline) ?? run.metrics;
+      noteMetrics(run, metricsView(await readMetrics(servers), baseline));
       await new Promise(resolve => setTimeout(resolve, metricsEveryMs));
+    }
+  }
+
+  /**
+   * Card S1b: how long one agent takes on each server with nothing else running: one
+   * untimed warm-up, then baselineRuns timed requests one at a time, the median kept.
+   * Measured once per ledger process for the same servers and models. Null if any
+   * request fails, and the run goes on without a speed-up.
+   */
+  async function soloBaseline(servers) {
+    const key = JSON.stringify(servers);
+    if (baselineCache?.key === key) return { ...baselineCache.value, reused: true };
+    const report = incidents(1, 7)[0];
+    try {
+      const perServer = [];
+      for (const server of servers) {
+        await liveAgent(null, null, report, server);
+        const times = [];
+        for (let i = 0; i < baselineRuns; i += 1) {
+          const begin = now();
+          await liveAgent(null, null, report, server);
+          times.push(now() - begin);
+        }
+        perServer.push({ model: server.model, ms: median(times) });
+      }
+      const value = { perServer, runs: baselineRuns, measuredAt: new Date().toISOString() };
+      baselineCache = { key, value };
+      return { ...value, reused: false };
+    } catch {
+      return null;
     }
   }
 
@@ -199,6 +243,9 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
         servers = await models();
         run.models = servers.map(server => server.model);
         run.agents.forEach(agent => { agent.model = run.models[agent.index % run.models.length]; });
+        run.phase = 'baseline';
+        run.baseline = await soloBaseline(servers);
+        run.phase = null;
         baseline = await readMetrics(servers);
       }
       run.started = now();
@@ -211,8 +258,9 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
       // A last sample after every agent finished, so a short run still gets its numbers.
       // If it fails, the last sample from during the run stays, marked stale, with no "running now".
       if (run.mode === 'live') {
-        run.metrics = metricsView(await readMetrics(servers), baseline)
-          ?? (run.metrics && { ...run.metrics, requestsRunning: null, stale: true });
+        const last = metricsView(await readMetrics(servers), baseline);
+        if (last) noteMetrics(run, last);
+        else if (run.metrics) run.metrics = { ...run.metrics, requestsRunning: null, stale: true };
       }
       if (run.agents.every(agent => agent.state === 'failed')) {
         run.state = 'failed';
@@ -241,7 +289,7 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const seed = 7;
     const reports = incidents(agents, seed);
     const run = {
-      id, mode, seed, reports, state: 'starting', agentsDone: false, started: now(), wallMs: null, metrics: null,
+      id, mode, seed, reports, state: 'starting', phase: null, agentsDone: false, started: now(), wallMs: null, metrics: null, baseline: null, kvPeak: null,
       models: mode === 'simulated' ? ['simulated'] : [],
       agents: reports.map((report, index) => ({ index, id: report.id, model: mode === 'simulated' ? 'simulated' : null,
         state: 'queued', answer: null, verified: false, correct: false })),
@@ -263,11 +311,20 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const finished = run.agents.filter(agent => agent.state === 'done' || agent.state === 'failed');
     const sum = key => run.agents.reduce((total, agent) => total + (agent[key] ?? 0), 0);
     const elapsed = run.wallMs ?? (run.state === 'running' ? now() - run.started : 0);
+    // Card S1b: one after another is estimated from each finished agent's server running it
+    // alone, not from the agents' own times under load (each request is slower when shared).
+    const solo = run.baseline?.perServer;
+    const oneAfterAnother = solo ? finished.reduce((total, agent) => total + solo[agent.index % solo.length].ms, 0) : null;
     return {
       id: run.id, mode: run.mode, simulated: run.mode === 'simulated', state: run.state, error: run.error,
       models: run.models, concurrency,
       elapsedMs: Math.round(elapsed),
-      oneAfterAnotherMs: Math.round(sum('ms')),
+      phase: run.phase,
+      baseline: run.baseline && { perServer: run.baseline.perServer.map(entry => ({ model: entry.model, ms: Math.round(entry.ms) })),
+        runs: run.baseline.runs, measuredAt: run.baseline.measuredAt, reused: run.baseline.reused },
+      oneAfterAnotherMs: oneAfterAnother === null ? null : Math.round(oneAfterAnother),
+      speedup: oneAfterAnother !== null && elapsed > 0 && finished.length ? oneAfterAnother / elapsed : null,
+      agentMsSum: Math.round(sum('ms')),
       tokensIn: sum('tokensIn'), tokensOut: sum('tokensOut'),
       counts: { total: run.agents.length, finished: finished.length,
         running: run.agents.filter(agent => agent.state === 'running').length,

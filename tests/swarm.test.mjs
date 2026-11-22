@@ -127,7 +127,11 @@ test('a simulated run finishes, says it is simulated and reports no GPU numbers'
   assert.equal(run.metrics, null);
   assert.ok(run.counts.verified >= 90 && run.counts.verified < 100, 'a few seeded answers fail the quote check');
   assert.ok(run.counts.correct < run.counts.finished, 'a few seeded answers are wrong');
-  assert.ok(run.oneAfterAnotherMs >= run.elapsedMs);
+  // Card S1b: a simulated run takes no solo baseline, so there is no honest speed-up to show.
+  assert.equal(run.baseline, null);
+  assert.equal(run.oneAfterAnotherMs, null);
+  assert.equal(run.speedup, null);
+  assert.ok(run.agentMsSum >= run.elapsedMs, 'the old sum stays in the API only');
   assert.ok(run.answer.truth.incidents > 0);
 });
 
@@ -144,7 +148,7 @@ async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => 
     state.active += 1;
     state.peak = Math.max(state.peak, state.active);
     state.prompts.push(input.messages);
-    await new Promise(resolve => setTimeout(resolve, delayMs));
+    await new Promise(resolve => setTimeout(resolve, typeof delayMs === 'function' ? delayMs(state.active) : delayMs));
     state.active -= 1;
     const report = input.messages[1].content.replace(/^Report: /u, '');
     const id = Number(/^Incident (\d+)/u.exec(report)[1]);
@@ -172,7 +176,9 @@ test('a live run spreads agents over the servers, keeps to the concurrency limit
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
   assert.equal(run.simulated, false);
   assert.deepEqual(run.models, ['model-a', 'model-b']);
-  assert.equal(a.state.calls + b.state.calls, 20);
+  // Card S1b: each server also got one warm-up and three timed solo requests first.
+  assert.equal(a.state.calls + b.state.calls, 20 + 2 * 4);
+  assert.deepEqual(run.baseline.perServer.map(entry => entry.model), ['model-a', 'model-b']);
   assert.ok(a.state.peak + b.state.peak <= 4 + 1 && Math.max(a.state.peak, b.state.peak) <= 4, 'never more than the limit at once');
   assert.deepEqual(run.agents.map(agent => agent.model), Array.from({ length: 20 }, (_, i) => (i % 2 ? 'model-b' : 'model-a')));
   assert.equal(run.agents[6].state, 'failed', 'agent 7 got a server error');
@@ -181,6 +187,7 @@ test('a live run spreads agents over the servers, keeps to the concurrency limit
   assert.equal(run.counts.correct, 19);
   assert.equal(run.tokensOut, 19 * 40);
   assert.equal(run.metrics.kvCacheUsage, 0.4);
+  assert.equal(run.metrics.kvCachePeak, 0.4);
   assert.equal(run.metrics.prefixCacheHitRate, 0.5, 'hits over queries since the run started');
   for (const messages of [...a.state.prompts, ...b.state.prompts]) assert.equal(messages[0].content, systemPrompt, 'the shared prefix comes first');
 });
@@ -263,14 +270,66 @@ test('round 2: when the last metrics scrape fails, the earlier sample is marked 
     scrapes += 1;
     return scrapes > stopAfter ? '' : 'vllm:num_requests_running 2\nvllm:kv_cache_usage_perc 0.3\n';
   };
-  const slow = await fakeModelServer(t, { model: 'm', metrics, onComplete: () => { stopAfter = scrapes; }, delayMs: 1200 });
-  const swarm = createSwarm({ env: { SWARM_URLS: slow.url } });
+  // The scrapes stop when the agent's request completes; S1b's two baseline requests come first.
+  let completions = 0;
+  const slow = await fakeModelServer(t, { model: 'm', metrics, delayMs: active => (completions >= 2 ? 1200 : 5),
+    onComplete: () => { completions += 1; if (completions === 3) stopAfter = scrapes; } });
+  const swarm = createSwarm({ env: { SWARM_URLS: slow.url, SWARM_BASELINE_RUNS: '1' } });
   const { id } = swarm.start({ agents: 1, mode: 'live' });
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
   assert.ok(run.metrics, 'a scrape during the 1.2 s agent saw the server');
   assert.equal(run.metrics.stale, true);
   assert.equal(run.metrics.requestsRunning, null);
   assert.equal(run.metrics.kvCacheUsage, 0.3);
+});
+
+test('S1b: the speed-up uses one agent timed alone, not the agents’ own times under load', async t => {
+  // Each request takes 40 ms per request in flight, so it is 8x slower when 8 share the server.
+  const server = await fakeModelServer(t, { model: 'm', delayMs: active => 40 * active });
+  const swarm = createSwarm({ env: { SWARM_URLS: server.url, SWARM_CONCURRENCY: '8' } });
+  const { id } = swarm.start({ agents: 16, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
+  const [solo] = run.baseline.perServer;
+  assert.ok(solo.ms >= 35 && solo.ms < 150, `solo ${solo.ms} ms is one request alone`);
+  assert.equal(run.baseline.runs, 3);
+  assert.equal(run.baseline.reused, false);
+  assert.ok(Math.abs(run.oneAfterAnotherMs - 16 * solo.ms) <= 16, 'one after another is 16 solo runs');
+  assert.ok(Math.abs(run.speedup - run.oneAfterAnotherMs / run.elapsedMs) < 0.05);
+  const oldRatio = run.agentMsSum / run.elapsedMs;
+  assert.ok(run.speedup < oldRatio / 2, `honest ${run.speedup.toFixed(2)}x is well below the old ${oldRatio.toFixed(2)}x`);
+
+  // A second run on the same servers reuses the baseline instead of timing again.
+  const calls = server.state.calls;
+  const second = swarm.start({ agents: 2, mode: 'live' }).id;
+  const again = await until(() => (swarm.snapshot(second).state === 'done' ? swarm.snapshot(second) : null));
+  assert.equal(again.baseline.reused, true);
+  assert.equal(again.baseline.measuredAt, run.baseline.measuredAt);
+  assert.equal(server.state.calls - calls, 2, 'no new solo requests');
+});
+
+test('S1b: the KV-cache tile shows the peak during the run, not the idle last sample', async t => {
+  const holder = {};
+  const metrics = () => `vllm:kv_cache_usage_perc ${holder.server?.state.active ? 0.7 : 0}
+`;
+  holder.server = await fakeModelServer(t, { model: 'm', metrics, delayMs: 1200 });
+  const swarm = createSwarm({ env: { SWARM_URLS: holder.server.url, SWARM_BASELINE_RUNS: '1' } });
+  const { id } = swarm.start({ agents: 1, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null), 20_000);
+  assert.equal(run.metrics.kvCacheUsage, 0, 'the last sample, after the agent, is idle');
+  assert.equal(run.metrics.kvCachePeak, 0.7, 'the peak is the highest sample during the run');
+});
+
+test('S1b: if the solo baseline fails the run still goes on, with no speed-up', async t => {
+  const server = await fakeModelServer(t, { model: 'm', failFor: new Set([1]) });
+  const swarm = createSwarm({ env: { SWARM_URLS: server.url } });
+  const { id } = swarm.start({ agents: 3, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
+  assert.equal(run.baseline, null);
+  assert.equal(run.oneAfterAnotherMs, null);
+  assert.equal(run.speedup, null);
+  assert.equal(run.counts.finished, 3);
+  assert.equal(run.counts.failed, 1, 'agent 1 uses the same report and fails too');
+  assert.equal(run.tokensOut, 2 * 40, 'baseline requests add no tokens');
 });
 
 async function startServer(t, env = {}) {
