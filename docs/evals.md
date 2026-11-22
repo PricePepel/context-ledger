@@ -4542,6 +4542,9 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
   - (low) Two passages still said "values replaced". They now say replacements.
   - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
+- **Codex review, round 7** (of 94fea13): no medium or low finding.
+  - (high) A quoted value after a further name in JSON (`"token":"violetorchid"`) ran on past its closing quote, and JSON has no spaces to end a word, so a bare copy survived. Fixed: such a value stops at its closing quote or at the next name, and values can also end just before a quote or separator.
+  - (high) Several names on one line each took the whole rest of the line, so their overlapping suffixes used up the budget before a later value was reached. Fixed: these values stop at the next name and never overlap. The span, the quoted part, these values, key-like words and decoded forms each have their own 512-character budget. Both cases are tested.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

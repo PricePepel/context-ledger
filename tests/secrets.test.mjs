@@ -855,3 +855,15 @@ test('P4d review 6: a second named value on a line, and a long decoded passphras
     { role: 'assistant', line: 2, text: `a ${tail}` },
   ]), '[REDACTED assigned-secret]');
 });
+
+test('P4d review 7: a quoted value after a further name in JSON, and many names on one line', () => {
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: '{"password":"firstphrase","token":"violetorchid","note":"synthetic"}' },
+    { role: 'assistant', line: 2, text: 'Copied violetorchid today.' },
+  ]), 'Copied [REDACTED assigned-secret] today.');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=firstphrase token=secondphrase token=thirdphrase ' + 'a'.repeat(370) + ' token=violetorchid' },
+    { role: 'assistant', line: 2, text: 'Copied violetorchid today.' },
+  ]), 'Copied [REDACTED assigned-secret] today.');
+});
