@@ -107,8 +107,8 @@ def calibration(**changes):
     data = {"id": "test-1", "task": "gsm8k-arithmetic", "model": "m", "weightsHash": "w", "thresholdSet": "t-1",
             "reference": True, "steps": 40, "maxNewTokens": 512, "batch": 1, "gated": True, "grid": 20,
             "score": "answer-number-logprob", "threshold": -0.5, "target": 0.1, "delta": 0.05, "certified": True,
-            "certification": {"threshold": -0.5, "released": 300, "errors": 6},
-            "heldOut": {"questions": 519, "released": 400, "errors": 30, "passed": True},
+            "certification": {"threshold": -0.5, "released": 300, "errors": 6, "heldCountedWrong": 0},
+            "heldOut": {"questions": 519, "released": 400, "errors": 30, "passed": True, "heldCountedWrong": 0},
             "profile": "request-public",
             "provenance": {"run": "run-1", "commit": "abc1234",
                            "dataset": {"revision": "r", "fingerprint": "f", "labels": "l"}},
@@ -212,9 +212,25 @@ class LoadTest(unittest.TestCase):
         for data in bad:
             with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
                 self.load({"a.json": data})
-        fits = calibration(measuredOn={"plan": "today"}, certification={"threshold": -0.5, "released": 150, "errors": 2},
-                           heldOut={"questions": 150, "released": 100, "errors": 8, "passed": True})
+        fits = calibration(measuredOn={"plan": "today"},
+                           certification={"threshold": -0.5, "released": 150, "errors": 2, "heldCountedWrong": 0},
+                           heldOut={"questions": 150, "released": 100, "errors": 8, "passed": True,
+                                    "heldCountedWrong": 0})
         self.assertEqual(self.load({"a.json": fits})["threshold"], -0.5)
+
+    def test_holds_are_in_the_counts(self):
+        # Review W3-5: each hold is counted as a released wrong answer, and not as a release
+        # for the coverage rule; a file without that count, or covering half only with its
+        # holds, is refused.
+        held_out = {"questions": 519, "released": 400, "errors": 30, "passed": True}
+        for data in (calibration(certification={"threshold": -0.5, "released": 300, "errors": 6}),
+                     calibration(heldOut=held_out),
+                     calibration(certification={"threshold": -0.5, "released": 300, "errors": 6, "heldCountedWrong": 7}),
+                     calibration(heldOut=dict(held_out, heldCountedWrong=True)),
+                     calibration(heldOut=dict(held_out, errors=30, heldCountedWrong=30, released=280))):
+            with self.subTest(data), self.assertRaises(abstain.CalibrationInvalid):
+                self.load({"a.json": data})
+        self.assertIsNotNone(self.load({"a.json": calibration(heldOut=dict(held_out, heldCountedWrong=20))}))
 
     def test_plan_sizes_match_the_driver(self):
         from latent_team import abstain_eval
@@ -241,7 +257,7 @@ class RunProvenanceTest(unittest.TestCase):
         data.update(changes)
         return data
 
-    def analyse(self, shards, calibration_dir=None):
+    def analyse(self, shards, calibration_dir=None, run="run-1"):
         import argparse
         from latent_team import abstain_eval
         with tempfile.TemporaryDirectory() as folder:
@@ -249,7 +265,7 @@ class RunProvenanceTest(unittest.TestCase):
                 with open(os.path.join(folder, f"certify-{shard}-of-2.json"), "w") as handle:
                     json.dump(dict(manifest, rows=rows, complete=True), handle)
             out = calibration_dir if calibration_dir is not None else None
-            args = argparse.Namespace(out=folder, calibration_dir=out)
+            args = argparse.Namespace(out=folder, calibration_dir=out, run=run)
             import contextlib
             import io
             with contextlib.redirect_stdout(io.StringIO()):
@@ -279,6 +295,40 @@ class RunProvenanceTest(unittest.TestCase):
                                self.manifest(1, dataset={"revision": "r", "fingerprint": "f"}))):
             with self.subTest((first, second)), self.assertRaises(SystemExit):
                 self.analyse([(first, shard_rows(even)), (second, shard_rows(odd))])
+
+    def test_analysis_takes_only_the_run_it_names(self):
+        # Review W3-5: a complete older run in the folder is not analysed in place of another.
+        from latent_team import abstain_eval
+        even, odd = self.split(abstain_eval.work_keys("today"))
+        shards = [(self.manifest(0), shard_rows(even)), (self.manifest(1), shard_rows(odd))]
+        for run in ("run-2", None):
+            with self.subTest(run), self.assertRaises(SystemExit):
+                self.analyse(shards, run=run)
+        summary = self.analyse(shards)
+        self.assertEqual((summary["run"], summary["commit"]), ("run-1", "abc1234"))
+
+    def test_holds_count_as_released_wrong_answers_for_the_calibration(self):
+        # Review W3-5: the shards share a GPU, so a hold may hide a wrong answer; the
+        # calibration comes from the worst case, and is not written when only that fails.
+        from latent_team import abstain_eval
+        keys = abstain_eval.work_keys("today")
+        rows = shard_rows(keys)
+        scored = [r for r in rows if r["block"] == 3]
+        for r in scored[:40]:   # 40 of 150 scored requests held: fine as measured, not at worst
+            r.update(action="hold", reason="deadline", teamAnswer=False, releasedCorrect=False, confidence=None)
+        even = [r for n, r in enumerate(rows) if n % 2 == 0]
+        odd = [r for n, r in enumerate(rows) if n % 2 == 1]
+        with tempfile.TemporaryDirectory() as calibration_dir:
+            summary = self.analyse([(self.manifest(0), even), (self.manifest(1), odd)], calibration_dir=calibration_dir)
+            worst = summary["worstCaseForHolds"]["eval11"]
+            self.assertEqual(worst["heldCountedWrong"], 40)
+            self.assertEqual(worst["releasedWithoutHolds"], summary["eval11"]["released"])
+            self.assertTrue(summary["eval11"]["passed"])   # as measured, holds release nothing
+            self.assertFalse(worst["passed"])
+            self.assertEqual(os.listdir(calibration_dir), [])
+        self.assertEqual(summary["holdsByReason"]["score"], {"deadline": 40})
+        # worst_case itself: a hold is released and wrong at every threshold.
+        self.assertEqual(abstain_eval.worst_case({"action": "hold"}), (math.inf, True))
 
     def test_a_request_in_the_wrong_shard_is_refused(self):
         from latent_team import abstain_eval
@@ -327,6 +377,9 @@ class RunProvenanceTest(unittest.TestCase):
             self.assertEqual(written["provenance"]["run"], "run-1")
             self.assertEqual(written["provenance"]["dataset"]["labels"], "l")
             self.assertEqual(written["measuredOn"]["plan"], "today")
+            self.assertEqual(written["measuredOn"]["execution"], "two shards sharing one GPU")
+            self.assertEqual((written["heldOut"]["heldCountedWrong"], written["certification"]["heldCountedWrong"]),
+                             (0, 0))
             settings = dict(steps=abstain_eval.STEPS, max_new_tokens=abstain_eval.TOKENS, threshold_set="t-1",
                             reference=True, batch=1, gated=True, directory=calibration_dir)
             self.assertIsNotNone(abstain.load_calibration(abstain_eval.MODEL, "w", abstain_eval.TASK,

@@ -143,6 +143,13 @@ def validate(data, task=None, model_name=None):
         raise CalibrationInvalid("the held-out questions are not the plan's")
     if not passes(held_out["errors"], held_out["released"], held_out["questions"], POLICY["target"]):
         raise CalibrationInvalid("the held-out counts do not pass")
+    # The worst case for holds (review W3-5): each held request is in the counts as a released
+    # wrong answer, and is not a release for the coverage rule.
+    for name, part in (("certification", cert), ("held-out", held_out)):
+        if not _count(part.get("heldCountedWrong")) or part["heldCountedWrong"] > part["errors"]:
+            raise CalibrationInvalid(f"the {name} counts do not count their holds")
+    if held_out["released"] - held_out["heldCountedWrong"] < held_out["questions"] / 2:
+        raise CalibrationInvalid("fewer than half of the held-out questions were released")
     return data
 
 

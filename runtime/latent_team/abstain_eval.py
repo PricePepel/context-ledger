@@ -372,6 +372,31 @@ def released_score(row):
     return row["confidence"], not row["releasedCorrect"]
 
 
+def worst_case(row):
+    """(score, wrong) with a held request counted as a released wrong answer at every threshold
+    (review W3-5). The two shards share one GPU, so one request's timing can change another's
+    decision, and only by holding it: every budget check that skips a stage is followed by a
+    hold at the release boundary (guard.py). On a service no slower than the certification's,
+    a held request would at worst be released and wrong, so these counts are at least its."""
+    if row["action"] != "release":
+        return math.inf, True
+    return released_score(row)
+
+
+def worst_case_eval11(scored, threshold):
+    """Eval 11's rule from the worst case: holds count as released wrong answers for the error
+    rule, and as not released for the coverage rule."""
+    from .abstain import passes, score_threshold
+    pairs = [worst_case(r) for r in scored]
+    result = score_threshold([p[0] for p in pairs], [p[1] for p in pairs], threshold, TARGET)
+    held = sum(r["action"] != "release" for r in scored)
+    result["heldCountedWrong"] = held if threshold is not None else 0
+    result["releasedWithoutHolds"] = result["released"] - result["heldCountedWrong"]
+    result["passed"] = bool(threshold is not None and passes(result["errors"], result["released"], len(scored), TARGET)
+                            and result["releasedWithoutHolds"] >= len(scored) / 2)
+    return result
+
+
 def fit_logistic(x, y, l2, steps=300):
     import torch
     weights = torch.zeros(x.shape[1], requires_grad=True)
@@ -499,6 +524,8 @@ def part_analyze(args):
                             {k: v for k, v in manifests[0].items() if k != "shard"} for m in manifests):
         raise SystemExit("the certification shards are not of one run")
     meta = manifests[0]
+    if args.run is None or meta["run"] != args.run:   # review W3-5: the run asked for, or nothing
+        raise SystemExit(f"the certification shards are of run {meta['run']!r}, not {args.run!r}")
     if sorted(m["shard"] for m in manifests) != list(range(meta["shards"])):
         raise SystemExit("the certification shards are incomplete or repeated")
     if not all(isinstance(meta.get(k), str) and meta[k] for k in ("run", "commit")) or \
@@ -529,11 +556,20 @@ def part_analyze(args):
                                                 TARGET, DELTA, GRID)
     result = score_threshold([p[0] for p in score_pairs], [p[1] for p in score_pairs], threshold, TARGET)
     result.update(counts(scored, score_pairs, threshold))
+    # The worst case for holds (review W3-5): the claim and the calibration come from it.
+    cert_worst = [worst_case(r) for r in cert]
+    worst_threshold, _, worst_chosen = choose_threshold(proposal, [p[0] for p in cert_worst],
+                                                        [p[1] for p in cert_worst], TARGET, DELTA, GRID)
+    if worst_chosen is not None:
+        worst_chosen = dict(worst_chosen, heldCountedWrong=sum(r["action"] != "release" for r in cert))
+    worst = {"threshold": worst_threshold, "certification": worst_chosen,
+             "eval11": worst_case_eval11(scored, worst_threshold)}
     seconds = [r["seconds"] for r in single]
     summary = {
+        "run": meta["run"], "commit": meta["commit"], "execution": "two shards sharing one GPU",
         "plan": plan, "threshold": threshold, "certification": chosen, "candidates": len(steps),
         "proposalQuestions": len(proposal), "scoredQuestions": len(scored),
-        "certificationQuestions": len(cert), "eval11": result,
+        "certificationQuestions": len(cert), "eval11": result, "worstCaseForHolds": worst,
         "releasedAccuracyBeforeThreshold": {
             "certify": round(sum(r["releasedCorrect"] for r in cert) / len(cert), 4),
             "score": round(sum(r["releasedCorrect"] for r in scored) / len(scored), 4)},
@@ -565,7 +601,7 @@ def part_analyze(args):
     if batched is None:
         explore["batched"] = "not run: no finished batched run of these weights (eval 13's probe ran on it)"
         summary["exploratory"] = explore
-        return finish(args, summary, result, threshold, chosen, meta)
+        return finish(args, summary, worst, meta)
     by_block = {}
     for r in batched["gsm8k"]:
         by_block.setdefault(r["block"], []).append(r)
@@ -609,11 +645,14 @@ def part_analyze(args):
     explore["agreeWithSolverAlone"] = {"aurocBatched": None if value is None else round(value, 4)}
     explore["probe"] = batched.get("probe")   # eval 13, on the batched run
     summary["exploratory"] = explore
-    return finish(args, summary, result, threshold, chosen, meta)
+    return finish(args, summary, worst, meta)
 
 
-def finish(args, summary, result, threshold, chosen, meta):
+def finish(args, summary, worst, meta):
+    """Print and write the summary; write the calibration only from the worst case for holds
+    (review W3-5), when it is certified and passes eval 11's rule."""
     from .abstain import upper_bound
+    threshold, chosen, result = worst["threshold"], worst["certification"], worst["eval11"]
     print(json.dumps(summary, indent=1, default=str))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(summary, handle, indent=1, default=str)
@@ -636,18 +675,21 @@ def finish(args, summary, result, threshold, chosen, meta):
                            "certify": [list(x) for x in PLANS[plan]["certify"]],
                            "score": [list(x) for x in PLANS[plan]["score"]],
                            "fittedByW1": list(FITTED_BY_W1),
-                           "requests": "single, through TeamService", "date": time.strftime("%Y-%m-%d")},
+                           "requests": "single, through TeamService", "execution": "two shards sharing one GPU",
+                           "date": time.strftime("%Y-%m-%d")},
             "certification": {"threshold": threshold, "released": chosen["released"], "errors": chosen["errors"],
+                              "heldCountedWrong": chosen["heldCountedWrong"],
                               "upper": upper_bound(chosen["errors"], chosen["released"], DELTA / GRID)},
             "heldOut": {k: result[k] for k in ("questions", "released", "releasedShare", "errors", "error", "error95",
-                                               "passed")},
+                                               "heldCountedWrong", "releasedWithoutHolds", "passed")},
             "about": ("W3 calibration (docs/watchdog-security.md): for single requests through the latent team "
                       "service on this kind of task, an answer is released when the log-probability of its graded "
                       "number reaches the threshold (a fallback answer is released, a held run is not). Candidates "
                       f"came from the scores of GSM8K test {describe(plan, 'propose')}, were tested on "
                       f"{describe(plan, 'certify')} at 0.05 / 20 each (Bonferroni over the grid, one-sided "
                       f"Clopper-Pearson) for a 10% error ceiling, and the threshold was scored on {describe(plan, 'score')} "
-                      f"(plan {plan!r}). Void for any other weights, task, policy or service profile "
+                      f"(plan {plan!r}), every held request counted as a released wrong answer (the two "
+                      "certification shards shared one GPU). Void for any other weights, task, policy or service profile "
                       "(it was measured on /latent/team requests with public clearance and no declared secrets)."),
         }
         validate(calibration, TASK, MODEL)
@@ -665,7 +707,7 @@ def main():
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--plan", choices=sorted(PLANS), default="full")
-    parser.add_argument("--run", default=None, help="certify: the run's name, shared by its shards")
+    parser.add_argument("--run", default=None, help="certify and analyze: the run's name, shared by its shards")
     args = parser.parse_args()
     args.out = os.path.expanduser(args.out)
     args.w1 = os.path.expanduser(args.w1)
