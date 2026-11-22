@@ -156,13 +156,13 @@ class Admission:
 _LINE_CONTROLS = frozenset((9, 10, 11, 12, 13))
 
 
-def _character_at(text, i):
-    """The character at i with an escape decoded, and the index after it. A high surrogate,
-    escaped or not, joins the low surrogate right after it, escaped or not."""
-    escape = secret_scan.escape_at(text, i) if text[i] == BACKSLASH else None
+def _character_at(text, i, decode=True):
+    """The character at i, with an escape decoded unless decode is False, and the index after
+    it. A high surrogate, escaped or not, joins the low surrogate right after it, escaped or not."""
+    escape = secret_scan.escape_at(text, i) if decode and text[i] == BACKSLASH else None
     character, i = (escape[0], i + escape[1]) if escape else (text[i], i + 1)
     if 0xD800 <= ord(character) <= 0xDBFF and i < len(text):
-        low = secret_scan.escape_at(text, i) if text[i] == BACKSLASH else (text[i], 1)
+        low = secret_scan.escape_at(text, i) if decode and text[i] == BACKSLASH else (text[i], 1)
         if low and 0xDC00 <= ord(low[0]) <= 0xDFFF:
             character = chr(0x10000 + ((ord(character) - 0xD800) << 10) + (ord(low[0]) - 0xDC00))
             i += low[1]
@@ -178,37 +178,21 @@ def _blank_or_invisible(character):
     return None
 
 
-def decoded_view(text):
-    """(text with its quoted-string escapes decoded and nothing else changed, the original
-    (start, end) of each character): the view in which a line-oriented rule sees a value
-    written with escaped line breaks, such as a private key in a JSON string."""
+def _view(text, decode=True, invisible="keep", fold=False):
+    """(a view of text, the original (start, end) of each of its characters). decode: quoted-
+    string escapes decoded. invisible: each control or format character other than tab and
+    the line breaks kept ("keep"), read as nothing ("drop") or read as a blank ("space").
+    fold: every blank, and any run of them, read as one space."""
     chars, spans, i = [], [], 0
     while i < len(text):
         start = i
-        character, i = _character_at(text, i)
-        chars.append(character)
-        spans.append((start, i))
-    return "".join(chars), spans
-
-
-def canon(text, drop=False):
-    """(canonical text, the original (start, end) of each canonical character).
-
-    The canonical forms are how a copy of a value can look after the transformations a
-    secret passes through between here and a reader: quoted-string escapes decoded
-    (surrogate pairs joined), every space or separator character, tab or line break, and any
-    run of them, read as one space, and each other control or format character read either
-    as a space too (drop False: what the ledger's one-line printing does) or as nothing
-    (drop True: what a display shows). Matching known values in both forms, with offsets
-    mapped back, finds an escaped, spaced or invisibly split copy of a value."""
-    chars, spans, i = [], [], 0
-    while i < len(text):
-        start = i
-        character, i = _character_at(text, i)
+        character, i = _character_at(text, i, decode)
         kind = _blank_or_invisible(character)
-        if kind == "invisible" and drop:
-            continue
-        if kind:
+        if kind == "invisible":
+            if invisible == "drop":
+                continue
+            kind = "blank" if invisible == "space" else None
+        if kind == "blank" and fold:
             if chars and chars[-1] == " ":
                 spans[-1] = (spans[-1][0], i)
                 continue
@@ -218,19 +202,48 @@ def canon(text, drop=False):
     return "".join(chars), spans
 
 
+def decoded_view(text):
+    """text with its quoted-string escapes decoded and nothing else changed: the view in which
+    a line-oriented rule sees a value written with escaped line breaks, such as a private key
+    in a JSON string."""
+    return _view(text)
+
+
+def cleaned_view(text):
+    """text with its escapes decoded and its invisible characters dropped, line breaks and
+    spaces kept: the view in which a line-oriented rule sees a value both escaped and split by
+    an invisible character, such as a private key's line with a zero-width space in it."""
+    return _view(text, invisible="drop")
+
+
+def canon(text, drop=False, decode=True):
+    """(canonical text, the original (start, end) of each canonical character).
+
+    The canonical forms are how a copy of a value can look after the transformations a
+    secret passes through between here and a reader: quoted-string escapes decoded
+    (surrogate pairs joined), every space or separator character, tab or line break, and any
+    run of them, read as one space, and each other control or format character read either
+    as a space too (drop False: what the ledger's one-line printing does) or as nothing
+    (drop True: what a display shows). Matching known values in both forms, with offsets
+    mapped back, finds an escaped, spaced or invisibly split copy of a value. decode=False
+    reads a value's own backslashes as written (for values that hold one)."""
+    return _view(text, decode, "drop" if drop else "space", fold=True)
+
+
 def canon_ranges(text, values):
-    """Original ranges of text where either canonical form holds the same form of a value."""
+    """Original ranges of text where either canonical form holds the same form of a value: of
+    the value with its escapes decoded, and of the value as written, so a value holding a
+    backslash is found in a JSON-quoted copy too."""
     out = []
     for drop in (False, True):
         canonical, spans = canon(text, drop)
         for value in values:
-            target = canon(value, drop)[0].strip()
-            if not target:
-                continue
-            at = canonical.find(target)
-            while at != -1:
-                out.append((spans[at][0], spans[at + len(target) - 1][1]))
-                at = canonical.find(target, at + 1)
+            targets = {canon(value, drop)[0].strip(), canon(value, drop, decode=False)[0].strip()}
+            for target in targets - {""}:
+                at = canonical.find(target)
+                while at != -1:
+                    out.append((spans[at][0], spans[at + len(target) - 1][1]))
+                    at = canonical.find(target, at + 1)
     return out
 
 
@@ -321,13 +334,14 @@ class Gateway:
             return self.scanner(text)
 
     def _scan_all(self, text):
-        """The scanner's findings on text as written, with its escapes decoded (line breaks
-        kept, for line-oriented rules such as a private key's), and in both canonical forms,
+        """The scanner's findings on text as written, with its escapes decoded and with its
+        invisible characters dropped too (line breaks kept in both, for line-oriented rules
+        such as a private key's), and in both canonical forms,
         each mapped back to its original range, with the view's spelling among its values:
         a credential that only a reader of one of those views would see (a name and its
         value split by an invisible character, or an escaped one) is found too."""
         findings = list(self._scan(text))
-        for canonical, spans in (decoded_view(text), canon(text, False), canon(text, True)):
+        for canonical, spans in (decoded_view(text), cleaned_view(text), canon(text, False), canon(text, True)):
             if canonical == text:
                 continue
             for finding in self._scan(canonical):

@@ -569,6 +569,31 @@ class ToolGateTest(unittest.TestCase):
         released = OutputGate(g).release(github_token() + " tail")
         self.assertFalse(released.safe)
 
+    def test_round10_a_quoted_copy_of_a_value_holding_a_backslash_is_hidden(self):
+        # Review W2-10 finding 1: the declared value holds a backslash and an n; its JSON-quoted
+        # copy doubles the backslash.
+        bs = chr(92)
+        value = "harbor" + bs + "nslate-42"
+        quoted = "harbor" + bs + bs + "nslate-42"
+        g = gateway(declared=[value])
+        admission = g.admit([Span("request", "request", 'say "' + quoted + '"')])
+        self.assertNotIn(quoted, admission.text)
+        released = OutputGate(g).release('it is "' + quoted + '"')
+        self.assertNotIn(quoted, released.text)
+        self.assertTrue(released.safe)
+
+    def test_round10_a_private_key_split_by_an_invisible_character_is_found(self):
+        # Review W2-10 finding 2: a zero-width space inside a body line, line breaks kept.
+        nl = chr(10)
+        body = "MIIEowIBAAKCAQEA" + "q1W2" * 8 + chr(0x200B) + "q1W2" * 8
+        block = "-----BEGIN " + "RSA PRIVATE KEY-----" + nl + body + nl + "-----END " + "RSA PRIVATE KEY-----"
+        tail = "q1W2" * 8
+        admission = gateway().admit([Span("request", "request", block)])
+        self.assertNotIn(tail, admission.text)
+        released = OutputGate(gateway_admitted()).release(block)
+        self.assertNotIn(tail, released.text)
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

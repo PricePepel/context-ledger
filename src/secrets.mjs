@@ -389,13 +389,13 @@ const lineControls = new Set([9, 10, 11, 12, 13]);
  * The character at i with an escape decoded, as a whole code point, and the index after it.
  * A high surrogate, escaped or not, joins the low surrogate right after it, escaped or not.
  */
-function characterAt(text, i) {
-  const escape = escapeAt(text, i);
+function characterAt(text, i, decode = true) {
+  const escape = decode ? escapeAt(text, i) : null;
   let character = escape ? escape.character : text[i];
   let next = i + (escape ? escape.length : 1);
   const high = character.charCodeAt(0);
   if (high >= 0xd800 && high <= 0xdbff && next < text.length) {
-    const lowEscape = escapeAt(text, next);
+    const lowEscape = decode ? escapeAt(text, next) : null;
     const low = lowEscape ? lowEscape.character : text[next];
     const code = low.charCodeAt(0);
     if (code >= 0xdc00 && code <= 0xdfff) {
@@ -419,14 +419,15 @@ function blankOrInvisible(character) {
  * space or separator character, tab or line break and any run of them read as one space,
  * and each other control or format character read as a space too (drop false: what one-line
  * printing does) or as nothing (drop true: what a display shows). The same forms as canon
- * in runtime/latent_team/gateway.py, judged on whole code points.
+ * in runtime/latent_team/gateway.py, judged on whole code points. decode false reads a
+ * value's own backslashes as written (for values that hold one).
  */
-function canonical(text, drop) {
+function canonical(text, drop, decode = true) {
   const chars = [];
   const spans = [];
   for (let i = 0; i < text.length;) {
     const start = i;
-    const { character, next } = characterAt(text, i);
+    const { character, next } = characterAt(text, i, decode);
     i = next;
     const kind = blankOrInvisible(character);
     if (kind === 'invisible' && drop) continue;
@@ -448,7 +449,9 @@ function canonical(text, drop) {
 
 /**
  * The original [start, end) ranges of text where either canonical form holds the same
- * form of one of values: an escaped, spaced or invisibly split copy of a value.
+ * form of one of values: an escaped, spaced or invisibly split copy of a value. Each value
+ * is looked for with its escapes decoded and as written, so a value holding a backslash is
+ * found in a JSON-quoted copy too.
  */
 export function canonicalRanges(text, values) {
   const out = [];
@@ -457,10 +460,12 @@ export function canonicalRanges(text, values) {
     const { flat, spans, charOfUnit } = canonical(text, drop);
     for (const value of values) {
       if (typeof value !== 'string') continue;
-      const target = canonical(value, drop).flat.trim();
-      if (!target) continue;
-      for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
-        out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
+      const targets = new Set([canonical(value, drop).flat.trim(), canonical(value, drop, false).flat.trim()]);
+      for (const target of targets) {
+        if (!target) continue;
+        for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
+          out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
+        }
       }
     }
   }

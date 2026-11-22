@@ -98,6 +98,14 @@ test('W2: a declared value is redacted in its escaped spelling too', async () =>
   assert.ok(!result.answer.includes(escaped), result.answer);
 });
 
+test('W2: a quoted copy of a declared value holding a backslash is redacted (review W2-10)', async () => {
+  const bs = String.fromCodePoint(92);
+  const value = 'harbor'.concat(bs, 'nslate-42');
+  const quoted = 'harbor'.concat(bs, bs, 'nslate-42');
+  const result = await latentTeam({ question: 'q', secrets: [value] }, { fetchImpl: fakeRuntime(200, { ...ok, answer: `it is "${quoted}"` }) });
+  assert.ok(!result.answer.includes(quoted) && !result.answer.includes(value), result.answer);
+});
+
 test('W2: a marker never writes a value back (review W2-9)', async () => {
   // ACT is inside REDACTED, and so is a declared REDACTED: another marker is chosen.
   for (const [input, answer, value] of [[{ question: 'q' }, 'password=ACT', 'ACT'],
