@@ -39,6 +39,11 @@ test('W2: a second bare assignment has its value listed, the first cut where it 
   assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
 });
 
+test('W2: a structured assignment after a bare value cuts it (review W2-18)', () => {
+  const [finding] = findSecrets('password=paper-harbor, aws_secret_access_key='.concat('A'.repeat(40)), { values: true });
+  assert.ok(finding.values.includes('paper-harbor'), finding.values.join(' | '));
+});
+
 test('W2: what the quotes hold is a value when a full stop follows them (review W2-14)', () => {
   const [finding] = findSecrets('password="paper-harbor".', { values: true });
   assert.ok(finding.values.includes('paper-harbor'), finding.values.join(' | '));

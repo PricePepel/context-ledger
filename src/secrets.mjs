@@ -194,7 +194,8 @@ function trimmedEnd(text, end) {
   return stop;
 }
 
-// A value longer than this is never only a stand-in, so judging it stays bounded (rules: placeholders).
+// Judging bound (rules: placeholders.maxJudged): a candidate's longer judged value is judged once its
+// line's leads are known (lineTails); a longer value collected from a finding is kept, not judged.
 const judgedMax = secretRules.placeholders.maxJudged;
 const placeholderAt = (text, start, stop) => stop - start <= judgedMax && isPlaceholder(text.slice(start, stop));
 
@@ -203,12 +204,13 @@ const placeholderAt = (text, start, stop) => stop - start <= judgedMax && isPlac
  * Every lead is read, in source order across all free-text rules, so every assignment on a
  * line has its own value (review W2-11 to W2-13). A candidate keeps offsets, never a copy:
  * valueEnd, where its judged value ends, and coreEnd, where its own assignment ends (the
- * next lead of any kind on the line, for a value that is not a closed quote). The spans all
- * end at the line end, so the merged spans do not change.
+ * next lead of any kind on the line, free-text or a structured value rule's, otherLeads,
+ * for a value that is not a closed quote). The spans all end at the line end, so the merged
+ * spans do not change.
  */
-function lineTails(text) {
+function lineTails(text, otherLeads = []) {
   const found = [];
-  const leads = [];
+  const leads = [...otherLeads];
   for (const rule of freeTextLeads) {
     const pattern = new RegExp(rule.lead.source, rule.lead.flags);
     // Leads come in order, so the line end found for one is reused for later leads on the
@@ -383,10 +385,12 @@ function candidates(text) {
       pattern.lastIndex = Math.max(pattern.lastIndex, end);
     }
   });
+  const valueLeads = [];   // where each named assignment begins, to cut free-text values (review W2-18)
   valueRules.forEach((rule, index) => {
     const pattern = new RegExp(rule.lead.source, rule.lead.flags);
     let cached = null;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      valueLeads.push(match.index);
       let start = match.index + match[0].length;
       let end;
       const quote = text[start];
@@ -421,7 +425,7 @@ function candidates(text) {
       // A rejected value is not skipped: a real secret may sit inside it, after its own name.
     }
   });
-  for (const candidate of lineTails(text)) all.push({ ...candidate, rank: 2 + simpleRules.length + valueRules.length });
+  for (const candidate of lineTails(text, valueLeads)) all.push({ ...candidate, rank: 2 + simpleRules.length + valueRules.length });
   return all;
 }
 

@@ -316,18 +316,21 @@ def _trimmed_end(text, end):
 
 
 def _placeholder_at(text, start, stop):
-    """Is text[start:stop] only a stand-in? A value longer than maxJudged never is."""
+    """Is text[start:stop] only a stand-in, for a value collected from a finding? One longer
+    than maxJudged is not judged here (it is kept as a value); a candidate's own judged value
+    of that length is judged once its line's leads are known (line_tails)."""
     return stop - start <= JUDGED_MAX and is_placeholder(text[start:stop])
 
 
-def line_tails(text):
+def line_tails(text, other_leads=()):
     """Card P4c: one span per free-text lead, from the value's start to the end of its line.
     Every lead is read, in source order across all free-text rules, so every assignment on a
     line has its own value (review W2-11 to W2-13). A candidate keeps offsets, never a copy:
     value_end, where its judged value ends, and core_end, where its own assignment ends (the
-    next lead of any kind on the line, for a value that is not a closed quote). The spans all
-    end at the line end, so the merged spans do not change."""
-    found, leads = [], []
+    next lead of any kind on the line, free-text or a structured value rule's, other_leads,
+    for a value that is not a closed quote). The spans all end at the line end, so the merged
+    spans do not change."""
+    found, leads = [], list(other_leads)
     for rule in FREE_TEXT:
         line_end, trimmed, position = -1, -1, 0
         while True:
@@ -465,12 +468,14 @@ def candidates(text):
                 found.append({"kind": rule["kind"], "start": start, "end": end, "rank": 2 + index,
                               "prefix": min(len(prefix.group(0)) if prefix else 0, len(value))})
             position = max(match.end(), end)
+    value_leads = []   # where each named assignment begins, to cut free-text values (review W2-18)
     for index, rule in enumerate(VALUES):
         position, cached = 0, None
         while True:
             match = rule["lead"].search(text, position)
             if match is None:
                 break
+            value_leads.append(match.start())
             position = match.end() if match.end() > match.start() else match.end() + 1
             start = match.end()
             quote = _at(text, start)
@@ -492,7 +497,7 @@ def candidates(text):
                 found.append({"kind": rule["kind"], "start": start, "end": end,
                               "rank": 2 + len(SIMPLE) + index, "prefix": 0, "value": value})
                 position = max(position, end)
-    found += [dict(c, rank=2 + len(SIMPLE) + len(VALUES)) for c in line_tails(text)]
+    found += [dict(c, rank=2 + len(SIMPLE) + len(VALUES)) for c in line_tails(text, value_leads)]
     return found
 
 
