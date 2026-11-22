@@ -175,7 +175,7 @@ function lineEndFrom(text, from) {
  * comma or semicolon. Every scan stops at end, and the trim is a backward scan, so long
  * runs of spaces cost nothing.
  */
-function judgedValue(text, start, end, quote) {
+function judgedValue(text, start, end, quote, trimmed = null) {
   if (quote) {
     let close = start;
     while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
@@ -185,9 +185,17 @@ function judgedValue(text, start, end, quote) {
     if (after < end && !',;)]}'.includes(text[after])) return text.slice(start, end);
     return text.slice(start, close);
   }
+  // The line's end without trailing spaces, tabs, commas and semicolons, found once a line.
+  if (trimmed !== null) return text.slice(start, Math.max(start, trimmed));
   let stop = end;
   while (stop > start && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
   return text.slice(start, stop);
+}
+
+function trimmedEnd(text, end) {
+  let stop = end;
+  while (stop > 0 && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
+  return stop;
 }
 
 /** Card P4c: one span per free-text lead, from the value's start to the end of its line. */
@@ -198,23 +206,38 @@ function lineTails(text) {
     // Leads come in order, so the line end found for one is reused for later leads on the
     // same line: rejected leads never rescan the line.
     let lineEnd = -1;
+    let trimmed = -1;
+    let previous = null;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       let start = match.index + match[0].length;
       // An opening quote stays visible; the value starts after it. A quote just before
       // Bearer opens the value too, as in "Authorization": "Bearer ...".
       let quote = /["'`]/u.test(text[start] ?? '') ? text[start] : (rule.kind === 'bearer-token' ? (match[0].match(/(["'])[ \t]*Bearer/iu)?.[1] ?? '') : '');
       if (/["'`]/u.test(text[start] ?? '')) start += 1;
-      if (start > lineEnd) lineEnd = lineEndFrom(text, start);
+      if (start > lineEnd) {
+        lineEnd = lineEndFrom(text, start);
+        trimmed = trimmedEnd(text, lineEnd);
+        previous = null;
+      }
       const end = lineEnd;
-      const value = judgedValue(text, start, end, quote);
+      if (previous) {
+        // A bare value runs to the line end; where another assignment begins, the part before
+        // it is a value of its own too (review W2-12).
+        const cut = text.slice(previous.start, match.index).replace(/[ \t,;]+$/u, '');
+        if (cut && cut !== previous.value && !isPlaceholder(cut)) previous.parts.push(cut);
+        previous = null;
+      }
+      const value = judgedValue(text, start, end, quote, quote ? null : trimmed);
       if (!value || isPlaceholder(value)) continue;
-      found.push({ kind: rule.kind, start, end, prefix: 0, value });
-      // The rest of the line is already covered. After a quoted value that closes before the
-      // line end, the next lead is looked for right after it, so another assignment on the
-      // line has its own value read (review W2-11); its span ends at the same line end, so
-      // the merged spans do not change. Otherwise the next lead is looked for after the line.
+      const candidate = { kind: rule.kind, start, end, prefix: 0, value, parts: [] };
+      found.push(candidate);
+      // The rest of the line is already covered. The next lead is looked for right after a
+      // quoted value that closes before the line end, else right after this lead, so every
+      // assignment on the line has its own value read (review W2-11, W2-12); every span
+      // still ends at the line end, so the merged spans do not change.
       const closed = Boolean(quote) && start + value.length < end;
-      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? start + value.length + 1 : end);
+      previous = quote ? null : candidate;
+      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? start + value.length + 1 : start);
     }
   }
   return found;
@@ -365,13 +388,13 @@ export function findSecrets(text, { values = false } = {}) {
   const spans = [];
   for (const candidate of candidates(text).sort((a, b) => a.start - b.start || a.rank - b.rank)) {
     const last = spans.at(-1);
-    const core = candidate.value ?? text.slice(candidate.start, candidate.end);
+    const core = [candidate.value ?? text.slice(candidate.start, candidate.end), ...(candidate.parts ?? [])];
     if (last && candidate.start < last.end) {
       last.end = Math.max(last.end, candidate.end);
-      last.values.add(core);
+      core.forEach(value => last.values.add(value));
       if (candidate.rank < last.best.rank) last.best = candidate;
     } else {
-      spans.push({ start: candidate.start, end: candidate.end, best: candidate, values: new Set([core]) });
+      spans.push({ start: candidate.start, end: candidate.end, best: candidate, values: new Set(core) });
     }
   }
   return spans.map(({ start, end, best, values: found }) => ({

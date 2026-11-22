@@ -273,7 +273,7 @@ def line_end_from(text, start):
     return len(text)
 
 
-def judged_value(text, start, end, quote):
+def judged_value(text, start, end, quote, trimmed=None):
     if quote:
         close = start
         while close < end and text[close] != quote:
@@ -286,16 +286,24 @@ def judged_value(text, start, end, quote):
         if after < end and text[after] not in ",;)]}":
             return text[start:end]
         return text[start:close]
+    if trimmed is not None:   # the line's end without trailing spaces, tabs, commas and semicolons
+        return text[start:max(start, trimmed)]
     stop = end
     while stop > start and text[stop - 1] in " \t,;":
         stop -= 1
     return text[start:stop]
 
 
+def _trimmed_end(text, end):
+    while end > 0 and text[end - 1] in " \t,;":
+        end -= 1
+    return end
+
+
 def line_tails(text):
     found = []
     for rule in FREE_TEXT:
-        line_end, position = -1, 0
+        line_end, trimmed, position, previous = -1, -1, 0, None
         while True:
             match = rule["lead"].search(text, position)
             if match is None:
@@ -313,18 +321,29 @@ def line_tails(text):
                 start += 1
             if start > line_end:
                 line_end = line_end_from(text, start)
+                trimmed, previous = _trimmed_end(text, line_end), None
             end = line_end
-            value = judged_value(text, start, end, quote)
+            if previous is not None:
+                # A bare value runs to the line end; where another assignment begins, the part
+                # before it is a value of its own too (review W2-12).
+                cut = text[previous["start"]:match.start()].rstrip(" \t,;")
+                if cut and cut != previous["value"] and not is_placeholder(cut):
+                    previous["parts"].append(cut)
+                previous = None
+            value = judged_value(text, start, end, quote, None if quote else trimmed)
             if not value or is_placeholder(value):
                 continue
             # The redaction span runs to the line end; the value itself is the judged part
             # (inside its quotes, without trailing punctuation), kept for the gateway.
-            found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value": value})
-            # A quoted value that closes before the line end: the next lead is looked for right
-            # after it, so another assignment on the line has its own value read (review W2-11).
-            # Its span ends at the same line end, so the merged spans do not change.
+            candidate = {"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value": value, "parts": []}
+            found.append(candidate)
+            # The next lead is looked for right after a quoted value that closes before the line
+            # end, else right after this lead, so every assignment on the line has its own value
+            # read (review W2-11, W2-12). Every span still ends at the line end, so the merged
+            # spans do not change.
             closed = bool(quote) and start + len(value) < end
-            position = max(position, start + len(value) + 1 if closed else end)
+            previous = None if quote else candidate
+            position = max(position, start + len(value) + 1 if closed else start)
     return found
 
 
@@ -446,15 +465,15 @@ def find_secrets(text, values=False):
         return []
     spans = []
     for candidate in sorted(candidates(text), key=lambda c: (c["start"], c["rank"])):
-        core = candidate.get("value", text[candidate["start"]:candidate["end"]])
+        core = {candidate.get("value", text[candidate["start"]:candidate["end"]])} | set(candidate.get("parts", ()))
         if spans and candidate["start"] < spans[-1]["end"]:
             last = spans[-1]
             last["end"] = max(last["end"], candidate["end"])
-            last["values"].add(core)
+            last["values"] |= core
             if candidate["rank"] < last["best"]["rank"]:
                 last["best"] = candidate
         else:
-            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate, "values": {core}})
+            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate, "values": core})
     out = []
     for span in spans:
         best = span["best"]

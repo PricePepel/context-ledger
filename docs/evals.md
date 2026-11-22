@@ -4923,6 +4923,18 @@ Codex confirmed round 10's fixes (the JSON-quoted backslash value and the zero-w
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 542 passed and 10 skipped, `npx playwright test` 32 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the squad, gateway and shared-rule tests (79) all passed.
 
+### W2 review, round 12 (2026-11-22, Codex, read-only, of PR #71 at 97edffe)
+
+Codex confirmed round 11's fixes for comma-separated quoted assignments and for a backslash split from its n. Its findings, each fixed with a regression test:
+
+- (high) A second unquoted assignment on a line (`password=synthetic-first, api_key=synthetic-second`) still had no value of its own: a bare value runs to the line end and the scan resumed there. Both scanners now look for the next lead right after a bare value's lead, so each assignment has its value, and a bare value's part before the next assignment is a value too; the line's trimmed end is found once per line, so a long line of assignments is still read in linear time (a test reads 5,000 on one line). The shared conformance spans are unchanged.
+- (high) A declared value just before a token hid the word boundary the token's rule needs, and the placeholder's or the marker's closing bracket gave it back, so the token reached the model and a public answer. The rendered prompt is now scanned again after substitution, and a finding outside the placeholders holds the run (`unsafe-render`); the output gate scans its final text after substitution, redacts what no marker, placeholder or restoration authorised, and checks again.
+- (medium) The cleared-output rescan dropped a value of only punctuation (`password=` put back, then `!?`). A finding is now judged by the values the scanner identified and where they lie: a value that overlaps a value put back is allowed except where it reaches outside it with a word character (a sentence's full stop), and any other value outside the markers, placeholders and values put back is redacted, whatever its characters.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 608 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the squad, gateway and shared-rule tests (84) all passed.
+
+After twelve rounds, each round has found one or two more ways a copy of a secret can be changed on its way to a reader (escapes, invisible characters, quoting, line structure, word boundaries made or hidden by substitution). Each is closed and tested, but the family is open: the gateway can only refuse forms it knows. This is the part of W2 where a human security review matters most.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.

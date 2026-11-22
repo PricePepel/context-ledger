@@ -48,6 +48,26 @@ class CanonicalCasesTest(unittest.TestCase):
                 self.assertEqual(covered, sorted(expand(c) for c in case["covered"]))
 
 
+class EveryAssignmentTest(unittest.TestCase):
+    """Review W2-12 finding 1: every assignment on a line has its value, the spans unchanged."""
+
+    def test_a_second_bare_assignment_has_its_value(self):
+        text = "password=synthetic-first, api_key=" + "synthetic-second"
+        [finding] = secret_scan.find_secrets(text, values=True)
+        self.assertIn("synthetic-second", finding["values"])
+        self.assertIn("synthetic-first", finding["values"])
+        self.assertEqual([(f["start"], f["end"]) for f in secret_scan.find_secrets(text)],
+                         [(finding["start"], finding["end"])])
+
+    def test_many_assignments_on_one_long_line_are_read_in_linear_time(self):
+        import time
+        line = "password=a1b2c3d4, " * 5000 + " " * 100000
+        started = time.perf_counter()
+        [finding] = secret_scan.find_secrets(line, values=True)
+        self.assertGreater(len(finding["values"]), 1000)
+        self.assertLess(time.perf_counter() - started, 10)
+
+
 class SecretConformanceTest(unittest.TestCase):
     def test_every_shared_case(self):
         self.assertGreaterEqual(len(CASES), 40)
