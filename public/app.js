@@ -516,9 +516,12 @@ function reviewRow(graph, node) {
     button.disabled = reviewing || !hash;
     button.addEventListener('click', () => {
       if (decision !== 'edit') return reviewNode(node.id, hash, decision);
-      editingNode = node.id;
-      editDraft = null;
-      renderReview(graph);
+      // A second click on an open editor keeps what was typed.
+      if (editingNode !== node.id) {
+        editingNode = node.id;
+        editDraft = null;
+        renderReview(graph);
+      }
       reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] .edit-label`)?.focus();
     });
     actions.append(button);

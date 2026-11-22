@@ -4581,3 +4581,7 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
 - **Codex review, round 4:** one medium, fixed with a test: node:sqlite cuts a stored string at a NUL, so a NUL and suffix added to a stored field hashed as the original and verify missed it. Verify now reads every text column as its stored bytes and decodes them as strict UTF-8. A NUL is hashed, and bytes that are not UTF-8 make the event unreadable.
 - **Codex review, round 5:** one medium and one low, fixed with a test. (medium) The UTF-8 decoder dropped a leading U+FEFF, so a BOM added to a stored field was missed. It is now kept and hashed. (low) A seq past 2^53 made node:sqlite throw while reading. Verify reads seq as text, and such an event is broken, named by its position.
+- **Codex review, round 6:** one medium and two low, fixed with tests:
+  - (medium) With the table rebuilt without its CHECK, a label added to an approval was parsed and then left out of the hash, so the chain still verified. Verify now breaks the chain when a non-edit has a label or an edit has none.
+  - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
+  - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.

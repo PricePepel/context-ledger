@@ -369,3 +369,40 @@ test('P3 review 5: a leading BOM added to a stored field, or a seq past 2^53, is
   raw.exec('UPDATE review_events SET seq = 9007199254740993 WHERE seq = 2;');
   assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
 });
+
+test('P3 review 6: a label added to an approval, or removed from an edit, breaks the chain', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-label-');
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'approve', reviewer: 'Mira' });
+  store.reviewNode(graph.id, { nodeId: 'test', nodeSha256: hash('test'), decision: 'edit', label: 'Tomas tests on Monday', reviewer: 'Mira' });
+  const head = store.verifyReviews().head;
+  // The CHECK and triggers are bypassed by rebuilding the table without them.
+  const raw = keep(new DatabaseSync(path));
+  raw.exec(`
+    PRAGMA writable_schema = OFF;
+    CREATE TABLE loose AS SELECT * FROM review_events;
+    DROP TABLE review_events;
+    ALTER TABLE loose RENAME TO review_events;
+    UPDATE review_events SET label_json = '"a label"' WHERE seq = 1;
+  `);
+  assert.deepEqual(store.verifyReviews(head), { events: 1, brokenAt: 1 });
+  raw.exec("UPDATE review_events SET label_json = NULL WHERE seq = 1; UPDATE review_events SET label_json = NULL WHERE seq = 2;");
+  assert.deepEqual(store.verifyReviews(head), { events: 2, brokenAt: 2 });
+});
+
+test('P3 review 6: a UTF-16 ledger verifies', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-utf16-');
+  const raw = new DatabaseSync(path);
+  raw.exec("PRAGMA encoding = 'UTF-16le'; CREATE TABLE touch (x); DROP TABLE touch;");
+  raw.close();
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label: 'Port 7100 · Mira', reviewer: 'Mira' });
+  store.reviewNode(graph.id, { nodeId: 'test', nodeSha256: hash('test'), decision: 'approve', reviewer: 'Tomas' });
+  const check = keep(new DatabaseSync(path));
+  assert.equal(check.prepare('PRAGMA encoding').get().encoding, 'UTF-16le');
+  const verified = store.verifyReviews();
+  assert.equal(verified.events, 2);
+  assert.equal(verified.brokenAt, undefined);
+});

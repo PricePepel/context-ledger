@@ -195,3 +195,17 @@ test('P3 review 2: the corrected label cannot change while its save is pending',
   release();
   await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 as sent');
 });
+
+test('P3 review 6: clicking Edit again keeps what was typed', async ({ page, request, baseURL }) => {
+  const marker = `p3-again-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317, typed once');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317, typed once');
+});

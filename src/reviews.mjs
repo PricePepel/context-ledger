@@ -56,14 +56,15 @@ const textColumns = { prev: 'prev', hash: 'hash', session_id: 'sessionId', party
 // seq is read as text too: a stored value past 2^53 would make node:sqlite throw. Its alias
 // is not seq, so ORDER BY seq still sorts by the number.
 const byteColumns = ['CAST(seq AS TEXT) AS seqText', ...Object.keys(textColumns).map(column => `CAST(${column} AS BLOB) AS ${textColumns[column]}`)].join(', ');
-// ignoreBOM keeps a leading U+FEFF, which is part of the stored value and its hash.
-const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-function fromBytes(row) {
+// A blob cast of text holds it in the database's encoding (PRAGMA encoding). ignoreBOM keeps
+// a leading U+FEFF, which is part of the stored value and its hash.
+const decoders = { 'UTF-8': 'utf-8', 'UTF-16le': 'utf-16le', 'UTF-16be': 'utf-16be' };
+function fromBytes(row, decoder) {
   const seq = /^[1-9][0-9]{0,15}$/u.test(row.seqText) && Number.isSafeInteger(Number(row.seqText)) ? Number(row.seqText) : 0;
   if (!seq) return { seq, unreadable: true };
   const event = { seq };
   try {
-    for (const name of Object.values(textColumns)) event[name] = row[name] === null ? null : utf8.decode(row[name]);
+    for (const name of Object.values(textColumns)) event[name] = row[name] === null ? null : decoder.decode(row[name]);
   } catch {
     return { seq, unreadable: true };
   }
@@ -93,7 +94,9 @@ export function checkChain(events, trustedHead) {
   let trustedAt = trustedHead === genesis ? 0 : null;
   for (const event of events) {
     count += 1;
-    if (event.unreadable || event.seq !== count || event.prev !== prev || event.hash !== eventHash(event)) return { events: count, brokenAt: count };
+    // Only an edit has a label, and an edit always has one; anything else was not written by a store.
+    const labelled = (event.decision === 'edit') === (typeof event.label === 'string');
+    if (event.unreadable || !labelled || event.seq !== count || event.prev !== prev || event.hash !== eventHash(event)) return { events: count, brokenAt: count };
     prev = event.hash;
     if (event.hash === trustedHead) trustedAt = count;
   }
@@ -151,7 +154,9 @@ export function mountReviews(database, readGraph) {
 
     /** Checks every event in order: the count and head hash, or the first event that breaks; see checkChain. */
     verifyReviews(trustedHead) {
-      return checkChain(statement(`SELECT ${byteColumns} FROM review_events ORDER BY seq`).all().map(fromBytes), trustedHead);
+      const encoding = decoders[statement('PRAGMA encoding').get().encoding] ?? 'utf-8';
+      const decoder = new TextDecoder(encoding, { fatal: true, ignoreBOM: true });
+      return checkChain(statement(`SELECT ${byteColumns} FROM review_events ORDER BY seq`).all().map(row => fromBytes(row, decoder)), trustedHead);
     },
 
     /** Records one person's decision on one node of a graph; undefined when there is no such graph. */
