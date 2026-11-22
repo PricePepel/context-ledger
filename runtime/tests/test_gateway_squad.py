@@ -369,6 +369,32 @@ class LabelEvalTest(unittest.TestCase):
             self.assertNotIn("mismatchedAnswers", measured)
             self.assertEqual(outcome.audits.get("mismatchedMemory"), "not-run")
 
+    def test_the_budget_counts_from_admission_and_holds_to_the_release(self):
+        # Review W2-20 finding 3: time spent before inference, and inside the output gate.
+        from latent_team.gateway import Gateway, OutputGate, Permissions, Span
+        from latent_team.guard import Guard
+        team = text_team()
+        for late in ("before", "gate"):
+            now = [1000.0]
+            gateway = Gateway("proj-a")
+            gateway.clock = lambda: now[0]
+            gateway.fix_permissions(Permissions(max_seconds=60.0))
+            gateway.admit([Span("request", "request", "2+2?")])
+            guard = Guard(team, thresholds=None, sample=lambda: False)
+            guard.clock = lambda: now[0]
+            release = OutputGate.release
+
+            def slow(gate, text):
+                now[0] += 120.0 if late == "gate" else 0.0
+                return release(gate, text)
+
+            if late == "before":
+                now[0] += 120.0
+            with mock.patch.object(OutputGate, "release", slow):
+                [outcome] = guard.run(["unused"], steps=STEPS, max_new_tokens=TOKENS, gateways=[gateway])
+            self.assertEqual(outcome.answer, None, late)
+            self.assertEqual(outcome.decision["action"], "hold", late)
+
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
         from latent_team.guard import Guard
@@ -447,14 +473,32 @@ class NothingOnDiskTest(unittest.TestCase):
         before = sys.dont_write_bytecode
         sys.dont_write_bytecode = True
         type(self).active = True
+        from latent_team import guard as guard_module
+        audits = []
+        audit = guard_module.Guard.audit
+
+        def counted(*args, **kwargs):
+            audits.append(1)
+            return audit(*args, **kwargs)
+
         try:
             service({"question": f"Keep {secret} safe.", "secrets": [secret], "latentSteps": STEPS,
                      "maxNewTokens": TOKENS})
             service.chat({"model": MODEL_ID, "max_tokens": TOKENS, "messages": [{"role": "user", "content": "2+2?"}]})
+            # Every release path in the window (review W2-20): an audited request whose solver
+            # alone disagrees, so the replay runs and the run falls back.
+            service.guard.sample = lambda: True
+            with mock.patch.object(guard_module.Guard, "audit", counted), \
+                    mock.patch.object(guard_module, "agreement", lambda a, b: "disagree"):
+                audited = service({"question": "Audit me.", "latentSteps": STEPS, "maxNewTokens": TOKENS})
         finally:
             type(self).active = False
             sys.dont_write_bytecode = before
+            service.guard.sample = lambda: False
         self.assertEqual(self.writes, [])
+        self.assertTrue(audits, "the audits ran in the measured window")
+        self.assertNotEqual(audited["receipt"]["audits"].get("replay"), "not-run")
+        self.assertIn("fallback", audited["receipt"]["decision"]["marks"])
 
     def test_a_fresh_process_writes_nothing_from_its_first_request(self):
         # Review W2-1 finding 8: a separate process with its own empty home, working and
@@ -545,6 +589,11 @@ class NothingOnDiskTest(unittest.TestCase):
             "service({'question': 'Keep cnry0123456789abcdef0123456789abcdef safe.', "
             "'secrets': ['cnry0123456789abcdef0123456789abcdef'], 'latentSteps': 3, 'maxNewTokens': 6})\n"
             "service.chat({'model': MODEL_ID, 'max_tokens': 6, 'messages': [{'role': 'user', 'content': '2+2?'}]})\n"
+            "from latent_team import guard as guard_module\n"
+            "service.guard.sample = lambda: True\n"
+            "guard_module.agreement = lambda a, b: 'disagree'\n"
+            "audited = service({'question': 'Audit me.', 'latentSteps': 3, 'maxNewTokens': 6})\n"
+            "audit_path = [audited['receipt']['audits'].get('replay'), 'fallback' in audited['receipt']['decision']['marks']]\n"
             "after = listing()\n"
             "run_writes = list(writes)\n"
             "fds = None if fds_before is None else fd_changes(fds_before)\n"
@@ -575,7 +624,7 @@ class NothingOnDiskTest(unittest.TestCase):
             "process_control = [w for w in writes if w[1] == 'process'] and os.path.exists(helper)\n"
             "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control), "
             "'handle': control_handle, 'fds': fds, 'fdControl': fd_control, 'process': bool(process_control), "
-            "'truncate': truncate_control}))\n")
+            "'truncate': truncate_control, 'auditPath': audit_path}))\n")
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:
             env = dict(os.environ, HOME=folder, USERPROFILE=folder, TMPDIR=folder, TEMP=folder, TMP=folder,
                        PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime, OUTSIDE_DIR=outside)
@@ -589,6 +638,8 @@ class NothingOnDiskTest(unittest.TestCase):
                                                "folders (positive control, review W2-15)")
             self.assertTrue(report["truncate"], "the hook sees a read-only open that truncates a file outside the "
                                                 "folders (positive control, review W2-19)")
+            replay, fell_back = report["auditPath"]
+            self.assertTrue(replay != "not-run" and fell_back, f"an audited fallback ran in the window: {report['auditPath']}")
             self.assertTrue(report["handle"], "a write through a handle opened earlier changes the content "
                                               "comparison (positive control)")
             # Review W2-8 finding 5: where the system lists a process's open files (Linux), the

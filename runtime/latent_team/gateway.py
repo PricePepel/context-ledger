@@ -707,6 +707,9 @@ class ToolGate:
         import json
         together = [json.dumps(final, ensure_ascii=False, default=str)] + \
             [f"{k}={v}" for k, v in final.items()] + [f"{k}: {v}" for k, v in final.items()]
+        if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v, collapsed=True)
+                                    for v in together):
+            return "placeholder"   # a known value the fields only make together (review W2-20)
         if not tool.cleared and any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound + together):
             return "secret"
         return "allowed"
