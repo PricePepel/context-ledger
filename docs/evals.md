@@ -4491,3 +4491,21 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
+
+For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
+
+**Task (synthetic):** N incident reports, generated from a fixed seed (service, cause, downtime in minutes, date, a short narrative). Each agent reads one report and returns `{service, cause, downtimeMinutes, quote}`. The page combines them: which services went down because of a configuration change, and their total downtime.
+
+| Eval | Expected |
+| --- | --- |
+| Live run | With a local OpenAI-compatible server (vLLM) configured, `POST /api/swarm/runs` with `agents: 100` sends one request per agent, at most `SWARM_CONCURRENCY` at a time (default 32), assigns agents round-robin across the configured models, and records each agent's model, state, time and tokens. |
+| Local only | Model servers come from `SWARM_URLS` (comma-separated) and must be `http://127.0.0.1` or `http://localhost`; any other host is refused at start. Nothing in a request body chooses a URL or a model. |
+| Checked quotes | An agent's answer is **verified** only when its quote appears in its report (after whitespace folding) and its downtime number appears in the quote. It is **correct** when service, cause and downtime match the generator's truth. Both counts are shown; unverified answers are left out of the combined answer. |
+| Combined answer | The answer lists the services and total downtime from verified answers, beside the truth from the generator and the number of agents that agree with it. |
+| GPU numbers | During a live run the page shows the server's KV-cache use, prefix-cache hit rate and running requests from its `/metrics`, when the server exposes them; missing metrics show as not reported, never as zero. |
+| Simulation | `mode: "simulated"` runs without any model server, with seeded timings and a few seeded wrong answers. The page says **Simulated** in the header and on every number; nothing simulated is labelled as measured. |
+| Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
+| Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
+| Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
