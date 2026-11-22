@@ -53,8 +53,12 @@ test('replies are parsed leniently but typed strictly', () => {
     { service: 'Search', cause: 'bad deploy', downtimeMinutes: 12, quote: 'q' });
   assert.equal(parseAnswer('no json'), null);
   assert.equal(parseAnswer('[1, 2]'), null);
-  assert.equal(parseAnswer('{"downtimeMinutes": "12"}').downtimeMinutes, null, 'a string is not a number');
-  assert.equal(parseAnswer('{"downtimeMinutes": 1.5}').downtimeMinutes, null);
+  const base = { service: 's', cause: 'bad deploy', quote: 'q' };
+  assert.equal(parseAnswer(JSON.stringify({ ...base, downtimeMinutes: '12' })), null, 'a string is not a number');
+  assert.equal(parseAnswer(JSON.stringify({ ...base, downtimeMinutes: 1.5 })), null);
+  // Round 2: {} or a partial object is no answer.
+  assert.equal(parseAnswer('{}'), null);
+  assert.equal(parseAnswer('{"service": "", "cause": "x", "quote": "q", "downtimeMinutes": 3}'), null);
   const long = parseAnswer(JSON.stringify({ service: 's'.repeat(5000), cause: 'c'.repeat(500), quote: 'q'.repeat(5000), downtimeMinutes: -3 }));
   assert.deepEqual([long.service.length, long.cause.length, long.quote.length, long.downtimeMinutes], [80, 40, 400, null], 'fields are capped');
 });
@@ -128,7 +132,7 @@ test('a simulated run finishes, says it is simulated and reports no GPU numbers'
 });
 
 /** A local OpenAI-compatible stand-in that answers from the report, counting concurrent requests. */
-async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => '' }) {
+async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => '', reply, onComplete = () => {}, delayMs = 15 }) {
   const state = { active: 0, peak: 0, calls: 0, prompts: [] };
   const server = createServer(async (request, response) => {
     if (request.url === '/v1/models') return response.end(JSON.stringify({ data: [{ id: model }] }));
@@ -140,11 +144,13 @@ async function fakeModelServer(t, { model, failFor = new Set(), metrics = () => 
     state.active += 1;
     state.peak = Math.max(state.peak, state.active);
     state.prompts.push(input.messages);
-    await new Promise(resolve => setTimeout(resolve, 15));
+    await new Promise(resolve => setTimeout(resolve, delayMs));
     state.active -= 1;
     const report = input.messages[1].content.replace(/^Report: /u, '');
     const id = Number(/^Incident (\d+)/u.exec(report)[1]);
     if (failFor.has(id)) { response.statusCode = 500; return response.end('{}'); }
+    onComplete();
+    if (reply) return response.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
     const truth = incidents(id, 7)[id - 1].truth;
     const quote = report.split('. ').find(part => part.includes(' minutes after '));
     response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ...truth, quote: `${quote}.` }) } }],
@@ -225,9 +231,11 @@ test('review round 1: the prefix-cache rate needs a baseline and counters that o
 });
 
 test('review round 1: a short live run still gets its metrics, and a run where every agent fails is a failure', async t => {
+  // Round 2: the counters move only when the completion finishes, so only a scrape after
+  // the agent finished can see the hits; an earlier scrape sees no queries at all.
   let hits = 0;
   const metricsText = () => `vllm:prefix_cache_hits_total ${hits}\nvllm:prefix_cache_queries_total ${hits * 4}\n`;
-  const ok = await fakeModelServer(t, { model: 'm', metrics: () => { const text = metricsText(); hits += 10; return text; } });
+  const ok = await fakeModelServer(t, { model: 'm', metrics: metricsText, onComplete: () => { hits += 10; } });
   const swarm = createSwarm({ env: { SWARM_URLS: ok.url } });
   const { id } = swarm.start({ agents: 1, mode: 'live' });
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
@@ -239,6 +247,30 @@ test('review round 1: a short live run still gets its metrics, and a run where e
   const failed = await until(() => (swarm2.snapshot(second).state === 'failed' ? swarm2.snapshot(second) : null));
   assert.match(failed.error, /Every agent failed/u);
   assert.equal(failed.answer, null);
+
+  // Round 2: a model that answers {} to every agent gives no usable answer either.
+  const empty = await fakeModelServer(t, { model: 'm', reply: '{}' });
+  const swarm3 = createSwarm({ env: { SWARM_URLS: empty.url } });
+  const third = swarm3.start({ agents: 2, mode: 'live' }).id;
+  const emptyRun = await until(() => (swarm3.snapshot(third).state === 'failed' ? swarm3.snapshot(third) : null));
+  assert.match(emptyRun.error, /Every agent failed/u);
+});
+
+test('round 2: when the last metrics scrape fails, the earlier sample is marked stale and nothing is "running now"', async t => {
+  let scrapes = 0;
+  let stopAfter = Infinity;
+  const metrics = () => {
+    scrapes += 1;
+    return scrapes > stopAfter ? '' : 'vllm:num_requests_running 2\nvllm:kv_cache_usage_perc 0.3\n';
+  };
+  const slow = await fakeModelServer(t, { model: 'm', metrics, onComplete: () => { stopAfter = scrapes; }, delayMs: 1200 });
+  const swarm = createSwarm({ env: { SWARM_URLS: slow.url } });
+  const { id } = swarm.start({ agents: 1, mode: 'live' });
+  const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
+  assert.ok(run.metrics, 'a scrape during the 1.2 s agent saw the server');
+  assert.equal(run.metrics.stale, true);
+  assert.equal(run.metrics.requestsRunning, null);
+  assert.equal(run.metrics.kvCacheUsage, 0.3);
 });
 
 async function startServer(t, env = {}) {

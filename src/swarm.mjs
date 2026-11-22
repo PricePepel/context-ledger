@@ -209,7 +209,11 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
       run.agentsDone = true;
       await metrics;
       // A last sample after every agent finished, so a short run still gets its numbers.
-      if (run.mode === 'live') run.metrics = metricsView(await readMetrics(servers), baseline) ?? run.metrics;
+      // If it fails, the last sample from during the run stays, marked stale, with no "running now".
+      if (run.mode === 'live') {
+        run.metrics = metricsView(await readMetrics(servers), baseline)
+          ?? (run.metrics && { ...run.metrics, requestsRunning: null, stale: true });
+      }
       if (run.agents.every(agent => agent.state === 'failed')) {
         run.state = 'failed';
         run.error = 'Every agent failed: the model server did not give usable answers.';

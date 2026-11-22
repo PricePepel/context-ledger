@@ -83,6 +83,9 @@ export function parseAnswer(reply) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     // Fields are capped, since every snapshot carries them to the page.
     const text = (field, max) => (typeof field === 'string' ? field.trim().slice(0, max) : '');
+    // A usable answer has all four fields with the right types; {} or a partial object is no answer.
+    if (typeof value.service !== 'string' || !value.service.trim() || typeof value.cause !== 'string'
+      || typeof value.quote !== 'string' || !Number.isInteger(value.downtimeMinutes)) return null;
     return {
       service: text(value.service, 80),
       cause: text(value.cause, 40).toLowerCase(),

@@ -4520,3 +4520,12 @@ For the investor demo: many small agents work one task at once on the laptop GPU
 - (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
 - (low) The finished message and an agent's token counts were not labelled simulated: both are now.
 - (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
+
+**Codex review, round 2** (of 5b6dd55): the round 1 fixes work. Fixed with tests:
+
+- (medium) A failed last metrics scrape kept the earlier sample unmarked: it is now marked stale, shows no "running now", and the page says "last sample before the end".
+- (medium) A model answering `{}` to every agent made a done run: an answer needs all four fields with the right types, so such a run fails.
+- (medium) A stalled poll never counted as a failure: every page request has a 5-second deadline covering the response.
+- (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
+
+**Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.

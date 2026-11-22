@@ -20,7 +20,8 @@ let timer = null;
 const tiles = new Map();
 
 async function api(path, init = {}) {
-  const response = await fetch(path, { ...init, headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
+  // Round 2: a deadline covers the whole response, so a stalled poll counts as a failure.
+  const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error ?? `Request failed (${response.status}).`);
@@ -107,8 +108,8 @@ function renderStats(run) {
     stat('Speed-up', speedup ? `${speedup.toFixed(1)}×` : '—', 'sum ÷ wall time', sim),
     stat('Tokens out per second', tokensPerSecond ? Math.round(tokensPerSecond).toLocaleString() : '—', `${run.tokensIn.toLocaleString()} in, ${run.tokensOut.toLocaleString()} out`, sim),
     stat('Requests on the server', sim ? 'not measured' : (metrics?.requestsRunning ?? 'not reported').toLocaleString(), sim ? 'simulated run' : 'running now, from the model server'),
-    stat('KV cache in use', sim ? 'not measured' : percent(metrics?.kvCacheUsage), sim ? 'simulated run' : 'from the model server'),
-    stat('Prefix-cache hits', sim ? 'not measured' : percent(metrics?.prefixCacheHitRate), sim ? 'simulated run' : 'shared instructions reused'),
+    stat('KV cache in use', sim ? 'not measured' : percent(metrics?.kvCacheUsage), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'from the model server')),
+    stat('Prefix-cache hits', sim ? 'not measured' : percent(metrics?.prefixCacheHitRate), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'shared instructions reused')),
     stat('Quotes verified', `${run.counts.verified} / ${run.counts.finished}`, 'quote found in its report'),
     stat('Answers correct', `${run.counts.correct} / ${run.counts.finished}`, 'checked against the generator'),
   );
