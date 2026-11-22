@@ -837,3 +837,21 @@ test('P4d review 5: a quoted value full of escapes is still searched for decoded
   ] });
   assert.equal(session.messages[1].text, 'Copied [REDACTED assigned-secret]');
 });
+
+test('P4d review 6: a second named value on a line, and a long decoded passphrase, are searched for whole', () => {
+  const BS = String.fromCodePoint(92);
+  const tail = 'lilac maple cedar birch spruce poplar willow juniper hemlock chestnut sycamore hawthorn sequoia magnolia rhododendron';
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=alphaPrim token=ZephyrMosaic72' },
+    { role: 'assistant', line: 2, text: 'ZephyrMosaic72' },
+  ]), '[REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=alphaPrim secret=lavendergarden' },
+    { role: 'assistant', line: 2, text: 'got lavendergarden' },
+  ]), 'got [REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: `password=${BS}u0061 ${tail}` },
+    { role: 'assistant', line: 2, text: `a ${tail}` },
+  ]), '[REDACTED assigned-secret]');
+});

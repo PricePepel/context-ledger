@@ -392,48 +392,55 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// What one candidate adds to the copy search is capped, across all its entries as written
-// and again across their decoded forms, so one long finding cannot fill the heap; a
-// longer value is still found by its first characters and its first key-like words.
+// What one candidate adds to the copy search is capped, in three budgets (its span; the
+// values inside it; their decoded forms), so one long finding cannot fill the heap; a
+// longer value is still found by its first characters and its first inner values.
 const maxCopyLength = 512;
 const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
 const leadingQuotes = /^["'`]+/u;
 
+/** The end of each word in value, trailing punctuation left out. */
+function wordEnds(value) {
+  return [...value.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
+}
+
 /**
- * What a candidate stands for, to search for elsewhere: entries of a text and the lengths
- * at which a match counts. A candidate can be one key, a line tail after a name
- * (password=...) or a span that holds several, so it counts at the end of each of its
- * words, as written (a passphrase pasted whole is matched whole), and at its end. Every
- * word that mixes letters and digits, as a key does, and a quoted part, count on their
- * own. A text with an escape is also searched for decoded.
+ * What a candidate stands for, to search for elsewhere: entries of a text, each counting at
+ * the end of every word in it, as written (a passphrase pasted whole is matched whole),
+ * and at its end. A candidate can be one key, a line tail after a name (password=...) or a
+ * span that holds several, so the entries are its span; every value after a further name
+ * inside it (a second password= on the line); every word that mixes letters and digits,
+ * as a key does; its quoted part; and each of these decoded, when it holds an escape.
  */
 function copyEntries(text, candidate) {
-  // Separate budgets, so text as written cannot use up what its decoded form needs.
-  const budget = { written: maxCopyLength, decoded: maxCopyLength };
+  const budget = { span: maxCopyLength, inner: maxCopyLength, decoded: maxCopyLength };
   const entries = [];
-  const add = (value, ends, pool = 'written') => {
+  const add = (value, pool) => {
     if (budget[pool] <= 0 || value.length < minCopyLength) return;
     const kept = value.slice(0, budget[pool]);
     budget[pool] -= kept.length;
-    entries.push({ value: kept, ends: [...ends.filter(length => length <= kept.length), kept.length] });
+    entries.push({ value: kept, ends: [...wordEnds(kept), kept.length] });
   };
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
+  add(span, 'span');
   // The quote the scanner saw (it can stand before Bearer), else the character before.
   const before = candidate.start > 0 ? text[candidate.start - 1] : '';
   const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
   if (quote) {
     const close = quotedEnd(text, candidate.start, quote);
-    if (close <= candidate.end) add(text.slice(candidate.start, close), []);
+    if (close <= candidate.end) add(text.slice(candidate.start, close), 'inner');
   }
-  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
-  add(span, [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length));
+  for (const rule of freeTextLeads) {
+    for (const match of span.matchAll(new RegExp(rule.lead.source, rule.lead.flags))) {
+      add(span.slice(match.index + match[0].length).replace(leadingQuotes, ''), 'inner');
+    }
+  }
   for (const match of span.matchAll(/\S+/gu)) {
     const bare = match[0].replace(leadingQuotes, '').replace(trailingPunctuation, '');
-    if (mixed(bare)) add(bare, []);
+    if (mixed(bare)) add(bare, 'inner');
   }
-  for (const entry of [...entries]) {
-    if (!entry.value.includes('\\')) continue;
-    for (const length of entry.ends) add(decoded(entry.value.slice(0, length)), [], 'decoded');
-  }
+  // Each text is decoded once, and its decoded words count as written ones do.
+  for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), 'decoded');
   return entries;
 }
 

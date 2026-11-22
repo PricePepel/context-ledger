@@ -428,6 +428,16 @@ test('verify refuses a correctly signed manifest that is not canonical', async t
     'envelope listed': { ...manifest, files: [...manifest.files, { ...manifest.files[0], name: 'manifest.sig' }] },
     'bad date': { ...manifest, created_at: '2026-02-30T00:00:00.000Z' },
   };
+  // P4d review 6: the version 1 shape with a redaction record is refused by the CLI too.
+  const mixedVersion = copyOf(context, target => {
+    const bytes = Buffer.from(canonicalJson({ ...manifest, version: 1 }), 'utf8');
+    writeFileSync(join(target, 'manifest.json'), bytes);
+    writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
+  });
+  const refused = await run(['verify', mixedVersion]);
+  assert.equal(refused.code, 1);
+  assert.equal(refused.stdout, '');
+  assert.match(refused.stderr, /^The manifest does not match the signed hand-off format\.\r?\nVerification failed\./);
   for (const [label, shape] of Object.entries(shapes)) {
     const dir = copyOf(context, target => {
       const bytes = Buffer.from(canonicalJson(shape), 'utf8');

@@ -4536,6 +4536,12 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
   - (low) The README still called the count a count of values. It now says replacements.
   - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
+- **Codex review, round 6** (of 97d5b68): no medium finding.
+  - (high) A second named value on the same line (`password=a token=b`) was searched for only as part of a whole word, because the scanner reads one lead per line. Fixed: the value after every further name inside a finding is an entry of its own.
+  - (high) Decoded prefixes were each charged to the budget, so a long decoded passphrase lost its last words. Fixed: each text is decoded once, and its decoded words count as written ones do. Budgets are now 512 each for the span, the values inside it and the decoded forms.
+  - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
+  - (low) Two passages still said "values replaced". They now say replacements.
+  - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
