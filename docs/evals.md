@@ -4575,6 +4575,26 @@ For the investor demo: many small agents work one task at once on the laptop GPU
 
 **Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
 
+### Live run on vLLM (2026-11-22)
+
+Laptop RTX 4090 (16 GB), WSL, vLLM serving `Qwen/Qwen2.5-7B-Instruct-AWQ` (max model length 4096, 64 sequences at once, prefix caching on), ledger at commit 7b3db03 with `SWARM_CONCURRENCY=64`. Synthetic incident reports (seed 7). Measured through the API with a script that keeps aggregates only. The GPU had no other job during these runs.
+
+| Agents | Wall time | Correct | Verified | Failed | Output tokens/s | Prefix-cache hits |
+| --- | --- | --- | --- | --- | --- | --- |
+| 25 | 2.1 s | 25 | 25 | 0 | 629 | 77% |
+| 50 | 2.3 s | 50 | 50 | 0 | 1,133 | 89% |
+| 100 (3 runs) | 4.6 s, 3.9 s, 3.5 s | 100 each | 100 each | 0 | 1,140–1,485 | 89%, 98%, 98% |
+
+The combined answer (services hit by a configuration change and their total downtime) matched the generator's truth on every run.
+
+**Speed-up, measured honestly.** One agent alone took 0.86–1.29 s (5 runs, mean 1.05 s), so 100 agents one after another would take about 105 s, against 3.5–4.6 s together: **about 23–30× faster**. The page's "one after another" figure is the sum of each agent's own time *while sharing the GPU* (244 s for the first 100-agent run, a 53× ratio). It is labelled as that sum, but the ratio overstates the gain because each request is slower under load. Quote the measured single-agent baseline, not the page's ratio, until the page measures it (Backlog card S1b).
+
+**KV cache in use** read 0% in every run, because the last sample is taken after the agents finish. The peak during the run is not captured yet (S1b).
+
+**Two models on one GPU** (7B AWQ plus `Qwen/Qwen2.5-1.5B-Instruct`). They fit only with both servers in eager mode (`--enforce-eager --max-num-batched-tokens 2048`), the 1.5B at `VLLM_GPU_UTIL=0.40` started first, then the 7B at `0.90`. On this vLLM, the second server's setting is a cap on the whole GPU, including the first server's memory, so `0.55` plus `0.3` does not start. 100 agents split 50/50: the 7B was 50 of 50 correct and the 1.5B 45–46 of 50 correct with 48 verified, so two or three of its answers quote real text but get a fact wrong, and the combined answer no longer matched the truth. Timings from these runs are **not usable**: another session's GPU evaluation started at the same minute, so three jobs shared the GPU (100 agents took 32–45 s, median agent 13 s on the 7B and 7 s on the 1.5B). The first 25-agent run after the 7B started had 13 of its 13 7B agents time out; warm the servers before a demo.
+
+What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.

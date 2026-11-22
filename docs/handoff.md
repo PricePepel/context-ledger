@@ -8,6 +8,11 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
+
+100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
+
+
 ## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
 
 Phi-3.5-mini (3.8B) to Qwen2.5-1.5B, trained on the 16 GB laptop GPU and evaluated on 300 SQuAD questions. Three gates pass and retention is reported: `swat` F1 0.872 vs text summary (`t2t`) 0.460, paired 95% interval for the F1 difference [0.36, 0.46]; the mismatched cache scores 0.153 and the zeroed one 0.002, so the gain depends on the correct passage's cache; 426 ms mean end to end vs 3,666 ms for `t2t`. Against the receiver reading the passage, the containment difference is −0.003 [−0.047, 0.040], so claim "finds the answer as often as reading it, within 5 points", not "beats it". Full table in [evals](evals.md) under M2b-S. Next owner: Codex review of the record, then the budget-matched compaction card (Attention Matching) and a receiver fine-tuned on the same SQuAD data as the fair control. Checkpoint stays on the GPU machine at `~/m2b-scale/run1/best.pt`.
