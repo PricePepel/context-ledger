@@ -4861,3 +4861,28 @@ Rounds 1 and 2 put all the chatter after the last requirement, so a builder read
 2. Cost: the whole `ledger` condition (one publish plus three builders) costs less than the whole `chat` condition (three builders).
 
 A failed first agent fails its whole condition; nothing is rerun. Deviations are reported beside the runs, as in round 2.
+
+### Round 3 (2026-11-22): result as run
+
+Run folder `demo/out/website/2026-11-22T23-40-17-606Z` (`--chatter 800 --interleave --builder-model haiku --reuse --runs 3`). The chat had 1,680 messages, nine `session_read` pages.
+
+| Condition | Requirements met | Stale | Ruled out | Builder input tokens, mean | Chat pages read | Cost, whole condition (3 sites) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `chat` | 7, 7, 7 | 12 | 3 | 106,326 | 3 of 9 in each run | $0.24 |
+| `notes` | 3, 3, 3 | 3 | 0 | 7,977 | 1 of 9 (note writer, once) | $0.21 |
+| `ledger` | 14, 15, 15 | 1 | 0 | 18,877 | 9 of 9 (publisher, once) | $0.97 |
+
+**Gates:** gate 1 passes. The ledger builders met 14.7 requirements on average against 7 (`chat`) and 3 (`notes`), with 1 stale or ruled-out item against 15 and 3. Gate 2 fails: $0.97 against $0.24. The publish cost $0.875 (843,143 input tokens across 12 steps). Each ledger build then cost about $0.03, against about $0.08 for a whole-chat build, so the publish pays for itself only after about 18 builds, and that counts the whole-chat sites even though they were wrong.
+
+**Why:**
+- The agents that read the chat stopped early, against the instruction to read every turn.
+- Every whole-chat Haiku builder read pages 1 to 3 and built from them, so it used the forest green, the old hours and the $5.00 oat latte, and kept the wholesale page or the order button.
+- The Sonnet note writer read page 1, wrote "The remaining turns are the same loop repeating", and wrote a note with the green colour, no hours, no prices and no menu, so every note builder started from that note.
+- The Sonnet publisher, with the same instruction to read the chat, read all nine pages.
+- So the ledger's gain here is that one complete read was published and reused, not that the builder did better with the same information.
+
+**Limits:**
+- Our chatter cycles through 16 exchanges, which makes stopping early tempting; a real chat does not repeat, so this round probably overstates how often readers stop.
+- `notes` and `ledger` each rest on a single first-agent run, reused three times. One stopped early and one did not, and two runs cannot show which first agent stops more often.
+- One ledger site (run 2) used the old green `#2F5D50` as one stop of a background gradient, counted as stale. The one ledger miss (run 1) was "Closed on Tuesdays".
+- The whole-chat and note builders also invented contact details the client never gave: an email at `tidewaterroast.com` and the phone `+1234567890`.
