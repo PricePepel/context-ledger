@@ -49,6 +49,22 @@ const eventColumns = `seq, prev, hash, session_id AS sessionId, party, node_id A
   decision, label_json AS labelJson, reviewer, decided_at AS decidedAt`;
 // An edit's label is stored as a JSON string literal, like message text, because SQLite
 // cuts a string at a NUL and the hash covers every character.
+// Verify reads every text column as its stored bytes: node:sqlite cuts a string at a NUL,
+// so a value with a NUL and more added would otherwise hash as the original.
+const textColumns = { prev: 'prev', hash: 'hash', session_id: 'sessionId', party: 'party', node_id: 'nodeId',
+  node_sha256: 'nodeSha256', decision: 'decision', label_json: 'labelJson', reviewer: 'reviewer', decided_at: 'decidedAt' };
+const byteColumns = ['seq', ...Object.keys(textColumns).map(column => `CAST(${column} AS BLOB) AS ${textColumns[column]}`)].join(', ');
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+function fromBytes(row) {
+  const event = { seq: row.seq };
+  try {
+    for (const name of Object.values(textColumns)) event[name] = row[name] === null ? null : utf8.decode(row[name]);
+  } catch {
+    return { seq: row.seq, unreadable: true };
+  }
+  return fromRow(event);
+}
+
 // A stored label that is not a JSON string marks the event unreadable; verify reports it by number.
 function fromRow({ labelJson, ...row }) {
   if (labelJson === null) return { ...row };
@@ -130,7 +146,7 @@ export function mountReviews(database, readGraph) {
 
     /** Checks every event in order: the count and head hash, or the first event that breaks; see checkChain. */
     verifyReviews(trustedHead) {
-      return checkChain(statement(`SELECT ${eventColumns} FROM review_events ORDER BY seq`).all().map(fromRow), trustedHead);
+      return checkChain(statement(`SELECT ${byteColumns} FROM review_events ORDER BY seq`).all().map(fromBytes), trustedHead);
     },
 
     /** Records one person's decision on one node of a graph; undefined when there is no such graph. */

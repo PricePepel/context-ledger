@@ -4579,3 +4579,4 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 - **Codex review, round 3:** two low findings, fixed with tests:
   - (low) A stored label holding an escaped lone surrogate passed the string check, then made verify throw. It is now an unreadable event, named by number.
   - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
+- **Codex review, round 4:** one medium, fixed with a test: node:sqlite cuts a stored string at a NUL, so a NUL and suffix added to a stored field hashed as the original and verify missed it. Verify now reads every text column as its stored bytes and decodes them as strict UTF-8. A NUL is hashed, and bytes that are not UTF-8 make the event unreadable.
