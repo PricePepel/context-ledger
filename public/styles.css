@@ -223,6 +223,9 @@ footer { padding-block: 1rem 1.5rem; color: var(--muted); }
 .proposals li { padding-block: .85rem; border-top: 1px solid var(--rule); }
 .proposals li[data-state="agreed"] { padding-left: .75rem; border-left: 4px solid #2f6b46; }
 .proposals li[data-state="rejected"] { padding-left: .75rem; border-left: 4px solid var(--accent); }
+.proposals li[data-state="edited"] { padding-left: .75rem; border-left: 4px dashed #2f6b46; }
+.edit-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
+.edit-form input { flex: 1 1 16rem; min-width: 0; }
 .proposal-state { margin-top: .2rem; color: var(--muted); font-size: .9rem; }
 .proposal-actions { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-top: .5rem; }
 .choice-group { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }

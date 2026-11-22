@@ -604,6 +604,34 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
+## Current checkpoint — S1 swarm demo (2026-11-21)
+
+Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and [the run sheet](swarm-demo.md). `/swarm/` runs up to 200 agents at once on local OpenAI-compatible model servers (`SWARM_URLS`, loopback only), shows each agent live, checks each quote against its report, and combines verified answers beside the generator's truth. A seeded simulation, labelled on every number, runs without a GPU.
+
+- **Next owner:** run it live on the laptop GPU once the M2b-S training (branch `claude/m2b-scale`) frees it: one 7B server, then two models. Record wall time, tokens per second, KV-cache use and prefix-cache hit rate at 25, 50 and 100 agents in the eval log.
+- Then add the latent lane: a second pass where agents hand a compacted cache instead of text, once M2b-S and Attention Matching pass.
+
+## Current checkpoint — G9b scoped briefing says what it left out (2026-11-21)
+
+Branch `claude/g9b-scoped-state`. Read the G9b section of [the eval log](evals.md). Found while rehearsing the investor demo from a clean install: a `context_for` briefing scoped to a question said `open questions: none` when the graph had an open question the question did not match, and a live agent told Ali that Leo needed nothing from him.
+
+- Each state list in a scoped briefing names the shown items, then counts the rest (`1 left out`, `port; 1 more left out`). The scope line ends with `call context_for without a question for the whole graph` whenever a node is not shown. Unscoped briefings are unchanged.
+- A budget now tries the full briefing first, since the hint makes a cut briefing longer.
+- Live re-run: 3 of 3 runs no longer say Leo needs nothing.
+- **Next owner:** in every live run the agent's first `context_for` call passed `budget` without `question` and was refused. Consider accepting a budget alone (cut the whole briefing), as a separate card.
+
+## Current checkpoint — I3 on P1c message rows (2026-11-21)
+
+PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
+
+Next owner: any later schema step goes after version 6. If the `messages` table is rebuilt again, recreate the `sessions_messages` trigger.
+
+## Current checkpoint — P3 review events (2026-11-21)
+
+PR #67, branch `ruslan/p3-review-events`, merged after I3 (#34) on 2026-11-22; its schema step is version 7. Review decisions are append-only, hash-chained events in `review_events` (ADR-17). The browser review section has Approve, Edit and Reject, and `ledger reviews verify` checks the chain. P2c's rows are migrated.
+
+Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 prototype (#52) keeps its own decisions in browser storage. Wiring it to `POST /api/graphs/<id>/reviews` is a choice for Ali.
+
 ## Current checkpoint — watchdog design for the latent team (2026-11-21)
 
 Docs only, written on `ruslan/console-direction` (commit a467e6f) and brought onto `main` with W1. Cards W1 to W3 are on the board as Backlog; nobody has claimed them.
@@ -618,6 +646,21 @@ Next steps:
 1. Leo and Ali read the design, in particular open question 3 (soft thoughts only).
 2. Claim W1 first. Its first results are new numbers on our own runs: how often a replay matches, how often team and solver agree, and how often the squad changes the answer at all.
 3. W2 is required before the latent team is given real project files or tools.
+
+## Current checkpoint — W1 latent team watchdogs: integrity and audits (2026-11-22)
+
+Branch `claude/w1-watchdog-integrity-82aa3b`, PR #73 (to `main`, which it also brings the watchdog design to: the cherry-picked commit a467e6f from `ruslan/console-direction`). Card W1, built by Claude Code for Ruslan. The design is [watchdog-security.md](watchdog-security.md); evals, results and three review rounds are in the W1 section of [the eval log](evals.md).
+
+- **What it is.** One code watchdog per squad (`runtime/latent_team/watchdog.py`): hooks on the model's base see every input and hidden state, the watchdog derives each soft thought's record (16 token ids and weights) itself, and seven exact checks run per question: turn structure against its own plan, configuration (soft, no adapter, no LoRA, weights unchanged and pinned), legibility, span ledger with mask and position checks, a keyed per-row memory checksum at every hand-off, numbers, and budgets. Two statistical scores (degenerate record, relative Mahalanobis distance) are measured, not trusted. Reports are number-only and HMAC-signed (`reports.py`); the supervisor (`supervisor.py`) decides by the fail-closed table; the guard (`guard.py`) runs sampled audits (replay, mismatched memory, solver alone) and the fallback; both service routes go through it, and a hold is HTTP 409 with no answer.
+- **Threshold set.** `runtime/latent_team/thresholds/qwen2.5-3b-instruct-soft-m40.json`: quantiles only, pinned to the weights hash. The distance reference statistics stay on the GPU machine (`~/w1/out/reference.pt`); the service uses them only when `LATENT_WATCH_REFERENCE` points at a file whose SHA-256 the threshold set names. Without it, releases are marked `unscreened`.
+- **Measured** on block 1 of GSM8K test (200 questions; details in the eval log, "W1 results"): no exact-check failure on clean runs; replay matched on 100% (answer, every top token, memory bitwise equal at every hand-off), so replay stays an exact check; team and solver alone agree on 81.5% (the squad changed the answer on 18.5%); another question's memory changed the answer on 20%; the statistical scores' false alarms were 2.0% (degenerate), 0.5% (distance) and 2.5% (supervisor rule), and they are no signal of a wrong answer (AUROC 0.38 and 0.62); all 19 injected faults were caught on 64 of 64 questions by the check named for each; the watchdog's checks cost 2.2% of median wall time, and audits at 1 in 20 plus every flagged run about 18% more on average.
+
+Next steps:
+
+1. **A human security review** of the PR before merge (watchdog, signatures, fail-closed routes).
+2. Leo and Ali: confirm "soft thoughts only" as the production rule (design decision 9).
+3. W2 (data gateway) is stacked on this branch; W3 (calibrated abstention) on W2.
+4. Not covered, by design and stated in the code: a change made in place in the middle of a turn, and a rewrite of the answer text after decoding (both need code inside the trusted runtime); interrupting a model call that stalls needs a timeout outside the process.
 
 ## Current checkpoint — W2 data gateway for latent teams (2026-11-22)
 

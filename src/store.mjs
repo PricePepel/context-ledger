@@ -57,7 +57,45 @@ function isCodexContext(text, kind) {
     || /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>[\s\S]*<\/INSTRUCTIONS>$/u.test(value);
 }
 
+// Card I3: an agent path is short; anything else is shown as unknown.
+const agentPath = value => (typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : 'unknown');
+
+/**
+ * A Codex multi-agent message between two agents, such as /root and /root/worker. Codex
+ * writes it in two forms: the model-facing response_item of type agent_message, with
+ * input_text and encrypted_content blocks, and the rollout's own inter_agent_communication
+ * record, with plain content and an optional encrypted_content. Only plain text is kept;
+ * encrypted content is never imported. null means the record is neither form.
+ */
+function agentMessageAt(record, line) {
+  const payload = record?.payload;
+  let text;
+  if (record?.type === 'response_item' && payload?.type === 'agent_message' && Array.isArray(payload.content)) {
+    text = payload.content.filter(block => block?.type === 'input_text' && typeof block.text === 'string')
+      .map(block => block.text).join('\n');
+  } else if (record?.type === 'inter_agent_communication' && typeof payload?.content === 'string') {
+    text = payload.content;
+  } else {
+    return null;
+  }
+  if (!text.trim()) return undefined;
+  return { role: 'agent', author: agentPath(payload.author), recipient: agentPath(payload.recipient), text, line };
+}
+
+/**
+ * The same delivery written in both Codex forms on adjacent records: opposite forms, and
+ * the same original paths and text. Two records of one form are two deliveries.
+ */
+const bothForms = (previous, record, message) => previous?.message.text === message.text
+  && previous.record.type !== record.type
+  && previous.record.payload.author === record.payload.author
+  && previous.record.payload.recipient === record.payload.recipient;
+
 function messageAt(record, provider, line) {
+  if (provider === 'codex') {
+    const agent = agentMessageAt(record, line);
+    if (agent !== null) return agent;
+  }
   const message = provider === 'claude' ? record?.message : record?.payload;
   const role = message?.role;
   if (role !== 'user' && role !== 'assistant') return;
@@ -117,7 +155,11 @@ function transcriptParser(provider) {
   const messages = [];
   // The count covers every skipped line; only the first few line numbers are kept.
   const skipped = { count: 0, lines: [] };
+  // Card I3: the agent message on the previous readable record, if there was one.
+  let previousAgent = null;
   const skip = line => {
+    // Card I3: records on either side of a skipped line are not adjacent.
+    previousAgent = null;
     skipped.count += 1;
     if (skipped.lines.length < skippedLinesShown) skipped.lines.push(line);
   };
@@ -130,7 +172,11 @@ function transcriptParser(provider) {
     add(rawLine) {
       line += 1;
       const value = rawLine.trim();
-      if (!value) return;
+      if (!value) {
+        // Card I3: only records on adjacent lines can be one delivery in two forms.
+        previousAgent = null;
+        return;
+      }
 
       let record;
       try {
@@ -141,7 +187,12 @@ function transcriptParser(provider) {
       }
       readable += 1;
       const message = messageAt(record, provider, line);
-      if (!message) return;
+      const agent = message?.role === 'agent' ? { record, message } : null;
+      const repeat = agent && bothForms(previousAgent, record, message);
+      // A dropped repeat ends its pair: the record after it starts a new delivery.
+      previousAgent = repeat ? null : agent;
+      // A delivery written in both Codex forms, one right after the other, is kept once.
+      if (!message || repeat) return;
       bytes += Buffer.byteLength(JSON.stringify(message), 'utf8') + 1;
       if (bytes > maxMessageBytes) {
         throw new InputError('This transcript has more than 64 MiB of messages, more than one session can hold.');
@@ -393,15 +444,31 @@ export function openStore(path) {
     ON CONFLICT (id) DO NOTHING
   `);
   const insertMessage = database.prepare(`
-    INSERT INTO messages (session_id, seq, line, role, text_json, key) VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json, recipient_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const writeRows = (id, messages) => {
+    for (const [seq, message] of messages.entries()) {
+      // Paths are JSON string literals, like the text, because SQLite cuts a string at a NUL.
+      insertMessage.run(id, seq, message.line, message.role, JSON.stringify(message.text), message.key,
+        message.role === 'agent' ? JSON.stringify(message.author) : null,
+        message.role === 'agent' ? JSON.stringify(message.recipient) : null);
+    }
+  };
+  // Card I3: the copy in sessions.messages, for builds from before versions, leaves agent
+  // turns out: those builds know only user and assistant turns.
+  const legacyCopy = messages => JSON.stringify(messages.filter(message => message.role !== 'agent')
+    .map(({ role, text, line }) => ({ role, text, line })));
+  const deleteRows = database.prepare('DELETE FROM messages WHERE session_id = ?');
+  const refreshSession = database.prepare('UPDATE sessions SET message_count = ?, messages = ?, search_text = ? WHERE id = ?');
   const getSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
-  const selectMessages = database.prepare('SELECT role, text_json, line, key FROM messages WHERE session_id = ? ORDER BY seq');
+  const selectMessages = database.prepare('SELECT role, text_json, line, key, author_json, recipient_json FROM messages WHERE session_id = ? ORDER BY seq');
   // Plain objects, as the JSON column gave. The text is a JSON string literal, because
   // node:sqlite cuts a string at a NUL when reading and replaces lone surrogates when
   // binding; the JSON form keeps every turn exactly as imported.
-  const readMessages = id => selectMessages.all(id)
-    .map(({ role, text_json: text, line, key }) => ({ role, text: JSON.parse(text), line, key }));
+  const readMessages = id => selectMessages.all(id).map(({ role, text_json: text, line, key, author_json: author, recipient_json: recipient }) => (
+    role === 'agent'
+      ? { role, author: JSON.parse(author), recipient: JSON.parse(recipient), text: JSON.parse(text), line, key }
+      : { role, text: JSON.parse(text), line, key }));
   const readDetail = id => {
     const row = getSummary.get(id);
     if (row) return { ...row, messages: readMessages(id) };
@@ -448,12 +515,48 @@ export function openStore(path) {
     throw error;
   }
 
-  function save(id, provider, name, project, { messages, skipped }) {
-    const existing = getSummary.get(id);
-    if (existing) return withSkipped(existing, skipped);
+  /**
+   * Card I3: a Codex file imported before agent messages were read gains them when it is
+   * imported again. Its ID stays, and every turn it had is matched by line, role and text
+   * and keeps its key, an l:<line> key from the version 3 copy included, so graphs that
+   * cite it hold. A session whose turns would change in any other way is left as it is.
+   * Returns the session's summary, read under the write lock, or undefined when the
+   * session is gone.
+   */
+  function addAgentTurns(id, messages, searchText) {
+    database.exec('BEGIN IMMEDIATE');
+    let pending = true;
+    try {
+      if (!getSummary.get(id)) return undefined;
+      const old = readMessages(id);
+      const atLine = new Map(messages.map(message => [message.line, message]));
+      const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
+      if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
+          && old.length < messages.length && old.every(same)) {
+        const keyAt = new Map(old.map(message => [message.line, message.key]));
+        const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+        // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
+        if (new Set(merged.map(message => message.key)).size === merged.length) {
+          deleteRows.run(id);
+          writeRows(id, merged);
+          refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
+        }
+      }
+      const summary = getSummary.get(id);
+      database.exec('COMMIT');
+      pending = false;
+      return summary;
+    } finally {
+      if (pending) database.exec('ROLLBACK');
+    }
+  }
 
+  function save(id, provider, name, project, { messages, skipped }) {
     const title = titleFor(messages);
     const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
+    const stored = getSummary.get(id) && addAgentTurns(id, messages, searchText);
+    if (stored) return withSkipped(stored, skipped);
+
     database.exec('BEGIN IMMEDIATE');
     let pending = true;
     try {
@@ -463,11 +566,8 @@ export function openStore(path) {
       insertProject.run(randomBytes(16).toString('hex'), project, project);
       // Rows first: the foreign key is deferred, and a session inserted with rows
       // already in place is left alone by the trigger for older builds.
-      for (const [seq, message] of messages.entries()) {
-        insertMessage.run(id, seq, message.line, message.role, JSON.stringify(message.text), message.key);
-      }
-      const copy = messages.map(({ role, text, line }) => ({ role, text, line }));
-      insert.run(id, provider, name, title, messages.length, JSON.stringify(copy), searchText, projectId.get(project).id);
+      writeRows(id, messages);
+      insert.run(id, provider, name, title, messages.length, legacyCopy(messages), searchText, projectId.get(project).id);
       database.exec('COMMIT');
       pending = false;
     } finally {

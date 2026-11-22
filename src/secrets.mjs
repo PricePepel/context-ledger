@@ -509,8 +509,14 @@ export function redactSession(session) {
   };
   const source = typeof session.source === 'string' ? record(session.source, null) : session.source;
   const messages = session.messages.map(message => {
-    const text = record(message.text, message.line);
-    return text === message.text ? message : { ...message, text };
+    const redacted = { ...message, text: record(message.text, message.line) };
+    // Card I3: an agent turn's paths are printed in its heading, so they are checked too.
+    if (message.role === 'agent') {
+      for (const field of ['author', 'recipient']) {
+        if (typeof message[field] === 'string') redacted[field] = record(message[field], message.line);
+      }
+    }
+    return ['text', 'author', 'recipient'].every(field => redacted[field] === message[field]) ? message : redacted;
   });
   return { session: { ...session, source, messages }, findings };
 }
