@@ -59,6 +59,13 @@ class EveryAssignmentTest(unittest.TestCase):
         self.assertEqual([(f["start"], f["end"]) for f in secret_scan.find_secrets(text)],
                          [(finding["start"], finding["end"])])
 
+    def test_shell_syntax_ends_a_values_head(self):
+        # Review W2-19.
+        for text in ("password=paper-harbor; export aws_secret_access_key=" + "A" * 40,
+                     "password=paper-harbor && api_key=" + "synthetic-second"):
+            [finding] = secret_scan.find_secrets(text, values=True)
+            self.assertIn("paper-harbor", finding["values"], text)
+
     def test_a_structured_assignment_after_a_bare_value_cuts_it(self):
         # Review W2-18.
         [finding] = secret_scan.find_secrets("password=paper-harbor, aws_secret_access_key=" + "A" * 40, values=True)

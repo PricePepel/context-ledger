@@ -422,7 +422,7 @@ class NothingOnDiskTest(unittest.TestCase):
             if event == "open":
                 path, mode, flags = (list(args) + [None, None, 0])[:3]
                 writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or \
-                    (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND))
+                    (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC))
                 if writing:
                     cls.writes.append((event, str(path)))
             elif event in ("os.rename", "os.replace", "os.remove", "os.unlink", "os.mkdir", "os.rmdir",
@@ -530,7 +530,7 @@ class NothingOnDiskTest(unittest.TestCase):
             "    if event == 'open':\n"
             "        path, mode, flags = (list(args) + [None, None, 0])[:3]\n"
             "        by_mode = isinstance(mode, str) and any(c in mode for c in 'wax+')\n"
-            "        by_flags = isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND)\n"
+            "        by_flags = isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC)\n"
             "        if by_mode or by_flags:\n"
             "            writes.append([event, str(path)])\n"
             "    elif event in ('os.rename', 'os.replace', 'os.remove', 'os.unlink', 'os.mkdir', 'os.rmdir',\n"
@@ -563,12 +563,19 @@ class NothingOnDiskTest(unittest.TestCase):
             "os.write(fd, b'x')\n"
             "os.close(fd)\n"
             "control = [w for w in writes if w[1].endswith('existing.txt')]\n"
+            "victim = os.path.join(os.environ['OUTSIDE_DIR'], 'truncated.txt')\n"
+            "open(victim, 'w').close()\n"
+            "seen_before = len(writes)\n"
+            "fd = os.open(victim, os.O_RDONLY | os.O_TRUNC)\n"
+            "os.close(fd)\n"
+            "truncate_control = any(w[1] == victim for w in writes[seen_before:])\n"
             "import subprocess\n"
             "helper = os.path.join(os.environ['OUTSIDE_DIR'], 'helper-left.txt')\n"
             "subprocess.run([sys.executable, '-c', 'import sys; open(sys.argv[1], \"w\").write(\"x\")', helper], check=True)\n"
             "process_control = [w for w in writes if w[1] == 'process'] and os.path.exists(helper)\n"
             "sys.stdout.write(json.dumps({'writes': run_writes, 'added': added, 'control': len(control), "
-            "'handle': control_handle, 'fds': fds, 'fdControl': fd_control, 'process': bool(process_control)}))\n")
+            "'handle': control_handle, 'fds': fds, 'fdControl': fd_control, 'process': bool(process_control), "
+            "'truncate': truncate_control}))\n")
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as outside:
             env = dict(os.environ, HOME=folder, USERPROFILE=folder, TMPDIR=folder, TEMP=folder, TMP=folder,
                        PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=runtime, OUTSIDE_DIR=outside)
@@ -580,6 +587,8 @@ class NothingOnDiskTest(unittest.TestCase):
             self.assertGreater(report["control"], 0, "the hook sees a numeric-flag write (positive control)")
             self.assertTrue(report["process"], "the hook sees a helper process that leaves a file outside the "
                                                "folders (positive control, review W2-15)")
+            self.assertTrue(report["truncate"], "the hook sees a read-only open that truncates a file outside the "
+                                                "folders (positive control, review W2-19)")
             self.assertTrue(report["handle"], "a write through a handle opened earlier changes the content "
                                               "comparison (positive control)")
             # Review W2-8 finding 5: where the system lists a process's open files (Linux), the

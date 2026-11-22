@@ -771,6 +771,30 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn("paper-harbor", released.text)
         self.assertTrue(released.safe)
 
+    def test_round19_shell_syntax_after_a_password_leaves_no_bare_copy(self):
+        # Review W2-19 finding 1: "; export" and "&&" end the value's head.
+        aws = "aws_secret_access_key=" + "A" * 40
+        for line in ("password=paper-harbor; export " + aws, "password=paper-harbor && api_key=synthetic-second"):
+            text = "Copy: paper-harbor" + chr(10) + line
+            self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text, line)
+            released = OutputGate(gateway_admitted()).release(text)
+            self.assertNotIn("paper-harbor", released.text, line)
+            self.assertTrue(released.safe)
+
+    def test_round19_no_tool_call_after_the_run_deadline(self):
+        # Review W2-19 finding 2: a fake clock past the run's max_seconds.
+        lookup = Tool("lookup", outside_effect=False, arguments=(Argument("q", required=False),))
+        g = gateway(tools=(lookup,))
+        now = [100.0]
+        g.clock = lambda: now[0]
+        g.admit([Span("request", "request", "Hello")])
+        sent = []
+        gate = ToolGate(g)
+        self.assertTrue(gate.submit({"name": "lookup", "arguments": {"q": "ok"}}, lambda n, a: sent.append(a)).sent)
+        now[0] += g.permissions.max_seconds + 1
+        result = gate.submit({"name": "lookup", "arguments": {"q": "late"}}, lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, result.reason, sent), (False, "deadline", [{"q": "ok"}]))
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
