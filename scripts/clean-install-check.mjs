@@ -145,8 +145,14 @@ function remember(entry, tree) {
 // nothing by ID, so a program that reuses an ID is never touched (P5d review round 4).
 // A launcher does not exit before its descendants here: cmd.exe waits for the node it
 // starts, and on macOS and Linux the bin link runs node itself.
+// Accepted risk (P5d review round 5): taskkill looks the ID up itself, so a launcher that
+// exits on its own in the few milliseconds between this check and that lookup leaves its ID
+// free for reuse. Closing that needs a Windows Job Object, which plain Node cannot make;
+// this script runs on throwaway CI runners and a developer's own machine.
 async function stopTree(entry) {
   remember(entry, await treeOf(entry).catch(() => []));
+  // A tree never recorded cannot be confirmed gone, so it fails the eval (round 5).
+  if (!entry.tree.length) throw new Error('The check could not record the processes it started, so it cannot confirm they stopped.');
   // Checked and signalled in one turn of the event loop, so Node cannot release the
   // launcher in between.
   if (entry.running) {
@@ -160,7 +166,8 @@ async function stopTree(entry) {
   let left = entry.tree;
   while (left.length && Date.now() < deadline) {
     const table = await processTable().catch(() => undefined);
-    if (table) left = entry.tree.filter(item => table.get(item.pid)?.start === item.start);
+    // A reading that finishes after the deadline does not count (round 5).
+    if (table && Date.now() <= deadline) left = entry.tree.filter(item => table.get(item.pid)?.start === item.start);
     if (left.length) await new Promise(done => setTimeout(done, 500));
   }
   if (left.length) throw new Error(`Processes ${left.map(item => item.pid).join(', ')} were still running after the check stopped them.`);
