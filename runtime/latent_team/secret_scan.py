@@ -539,6 +539,12 @@ def _span_values(text, members):
                 head = core[:cut.start()].rstrip(" \t,;") if cut else ""
                 if head and not is_placeholder(head):
                     out.add(head)
+                # Right after "=", the first word is a value too (a shell assignment's right-hand
+                # word, review W2-24; rules: freeText.valueWordAbout).
+                if candidate["start"] > 0 and text[candidate["start"] - 1] == "=":
+                    word = re.split(r"[ \t]", core, maxsplit=1)[0].rstrip(",;")
+                    if word and word != core and not is_placeholder(word):
+                        out.add(word)
             if tail:
                 out.add(text[candidate["start"]:candidate["value_end"]])
                 tail = False

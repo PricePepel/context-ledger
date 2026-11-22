@@ -298,6 +298,12 @@ function spanValues(text, members) {
         const cut = headEnd.exec(core);
         const head = cut ? core.slice(0, cut.index).replace(/[ \t,;]+$/u, '') : '';
         if (head && !isPlaceholder(head)) out.add(head);
+        // Right after "=", the first word is a value too (a shell assignment's right-hand word,
+        // review W2-24; rules: freeText.valueWordAbout).
+        if (candidate.start > 0 && text[candidate.start - 1] === '=') {
+          const word = core.split(/[ \t]/u, 1)[0].replace(/[,;]+$/u, '');
+          if (word && word !== core && !isPlaceholder(word)) out.add(word);
+        }
       }
       if (tail) {
         out.add(text.slice(candidate.start, candidate.valueEnd));
