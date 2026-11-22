@@ -4491,3 +4491,18 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## P1f — Origin-scoped browser credential (defined 2026-11-21, before the code)
+
+The P1e review's open high finding: browsers send the P1e session cookie to every port on 127.0.0.1, so any program serving a page on another local port (another user's server, a container with a published port, a dev server) receives the cookie and can replay it from a native client. P1f replaces the cookie with a secret that only the ledger's own origin (scheme, host and port) can read. Synthetic transcripts only.
+
+Threat model change: a page or server on another port of 127.0.0.1 or localhost no longer receives any credential. Not protected, as before: same-user malware that reads the token file or the browser profile, root or an administrator, script running in the ledger's own origin (the strict CSP and `textContent` rendering stay the control), and a sign-in link someone else opens first.
+
+| Eval | Expected |
+| --- | --- |
+| No cookie | The server never sets a session cookie and never reads one: a request whose only credential is a cookie, including a live session secret sent as a P1e-style `context_ledger_<port>` cookie, is 401 on every guarded route. Redeeming a code clears an old P1e cookie for the port (`Max-Age=0`). |
+| Sign-in page | `GET /login?code=…` serves a static sign-in page and uses up nothing. Its script takes the code from the address, removes it from the address bar and history entry, and sends it once to `POST /api/session` as JSON from the ledger's own Origin. |
+| Redeem | `POST /api/session` with one valid code answers `{ session, expiresInSeconds }` (a fresh 32-byte secret, not the token, 12 hours) and uses the code up. A used, expired, unknown or malformed code, the token itself, a missing or foreign Origin, or a body that is not one `code` string is refused (401, or 403 for the Origin) and mints nothing. It is open without the bearer token, like the sign-in page. |
+| Header credential | Every guarded route accepts the session in an `X-Context-Ledger-Session` header in place of the bearer token, with the same checks as before (Host, Origin on writes). A wrong, malformed, expired or earlier-start session is 401. The node-review route still takes only a browser session (not the bearer), with its Origin and `Sec-Fetch-Site` rules. |
+| Origin-scoped storage | The browser app and the console keep the session in the ledger origin's `localStorage` and send it on every API request; a page on another port can neither read it nor receive it. On a 401 the page forgets it and shows the sign-in help. A Playwright test serves a page from a second local port, loads it in the signed-in browser and checks that it received no cookie or session header and cannot read the ledger's storage. |
+| Suites | Every node test and Playwright spec that used the cookie passes with the header. Node, graph, Playwright and Python suites pass. ADR-10's text and the README describe the header credential. |
