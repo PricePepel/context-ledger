@@ -4508,3 +4508,29 @@ Run 1 of M2b (Qwen2.5-0.5B to SmolLM2-360M) passed its gate, but both models are
 | Retention | Reported, with containment beside F1, because stage 2 trains the answer style (run 1's F1 retention of 1.86 was inflated by short answers). |
 
 Not covered here, and named so nobody reads more into a pass: budget-matched compaction (Attention Matching), the fair control of a receiver fine-tuned on the same SQuAD data, and more than one task.
+
+### Result — run 1 (2026-11-22)
+
+Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, stage 2 20,000 steps at batch 2 (QA share 0.7), mapper 100.5M parameters (8 blocks, width 384, 6 heads), passages capped at 256 tokens, seed 0. Stage 2 ran at about 0.54 s per step. Best dev F1 0.8275 (100 held-out dev questions), checkpoint `ade79c34041fd529`. Eval: 300 SQuAD v1.1 validation questions, seed 0, greedy.
+
+| Condition | F1 | Containment | Mean answer words |
+| --- | --- | --- | --- |
+| `text` (receiver reads the passage) | 0.778 | 0.857 | 4.9 |
+| `swat` (receiver reads the mapped sender cache) | **0.872** | 0.853 | 3.1 |
+| `t2t` (receiver reads the sender's summary) | 0.460 | 0.433 | 3.7 |
+| `mismatched` (another item's cache) | 0.153 | 0.087 | 3.2 |
+| `closed` (no passage) | 0.170 | 0.117 | 4.2 |
+| `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
+
+Paired bootstrap 95% intervals: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135].
+
+Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
+
+| Gate | Result |
+| --- | --- |
+| Carries the passage | **Pass.** Both intervals are far above zero; the mismatched cache scores near the closed-book floor, so the receiver is reading this passage, not a generic prior. |
+| Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms, about 8.6× faster. Also faster than the receiver reading the passage itself (475 ms). |
+| Retention | Reported: F1 retention 1.12 against `text`, but containment is level (0.853 vs 0.857). The F1 edge over `text` comes from shorter answers that stage 2 trained, not from finding more answers. The honest claim is "matches reading the passage, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+
+Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.

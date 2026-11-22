@@ -8,6 +8,10 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
+
+Phi-3.5-mini (3.8B) to Qwen2.5-1.5B, trained on the 16 GB laptop GPU and evaluated on 300 SQuAD questions. All gates pass: `swat` F1 0.872 vs text summary (`t2t`) 0.460, interval [0.36, 0.46]; mismatched cache 0.153 and zeroed 0.002, so the receiver reads this passage; 426 ms end to end vs 3,666 ms for `t2t`. Containment equals the receiver reading the passage (0.853 vs 0.857), so claim "matches reading the passage", not "beats it". Full table in [evals](evals.md) under M2b-S. Next owner: Codex review of the record, then the budget-matched compaction card (Attention Matching) and a receiver fine-tuned on the same SQuAD data as the fair control. Checkpoint stays on the GPU machine at `~/m2b-scale/run1/best.pt`.
+
 ## Current checkpoint — 2026-11-06
 
 The initial import/search and CLI handoff cycles are implemented and tested. Claude reviewed the design and the CLI. The independent Codex reviewer checked the backend, browser and CLI and verified the review fixes. The fixtures are synthetic. Start a new eval cycle before adding format coverage, incremental imports, or automatic discovery. Preserve explicit user control over which transcript content is ingested and which handoff is shared.
