@@ -271,6 +271,15 @@ W1 implementation choices (2026-11-22), each the simplest that meets the design:
 - **Agreement** between team and solver alone means the same final number; text without a number is "not comparable" and never causes a fallback.
 - **Thresholds** are committed as quantiles of clean scores (`runtime/latent_team/thresholds/`), pinned to the weights hash. The reference statistics for the distance score are not committed; their SHA-256 is.
 
+## Measured on W1 (2026-11-22)
+
+On Qwen2.5-3B-Instruct with soft thoughts, m = 40, GSM8K test (the numbers are in [the eval log](evals.md), "W1 results"):
+
+- **Replay is an exact check.** Clean replays matched on 100% of 200 scored questions on answer, every top token and the memory at every hand-off, and the memories were bitwise equal, so the replay tolerance is 0.0. The tables above stand as written.
+- **The statistical scores stay measured, not trusted.** Their false-alarm rate out of sample was 2.5% (the supervisor's rule), so about 1 run in 40 falls back to the solver alone; they catch changes to the thoughts or the memory's values on every question and structural faults only at that false-alarm rate. They are no signal of a wrong answer (AUROC 0.38 and 0.62).
+- **Cost.** The watchdog's checks add 2.2% to the median wall time. Sampled audits at 1 in 20 plus every flagged run add about 18% on average: an audit costs about 2.4 times the team run it checks.
+- **Every injected fault was caught** by an exact check on all 64 questions, by the check named for it, including the swaps inside `think`, `forward` and `decode` that round 1 of the review found.
+
 ## Open questions for the team
 
 Each has a default, taken under "Decisions taken" (7 to 9) so the build is not blocked; the team can still change it.

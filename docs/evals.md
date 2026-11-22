@@ -4729,3 +4729,53 @@ Codex confirmed round 2's fixes (signed-report copy, zero-mask detection, solver
 - (medium) The eval accepted a reference or threshold set from the wrong block: the reference must be the block-2 build of the pinned setting and the threshold set must be fitted on block 0.
 - (medium) Eval 2 counted an unavailable score as a miss: measured and unmeasured rows are reported apart, and AUROC uses measured rows only. Replay time now includes its comparisons, and each audit's time is divided by the questions it audited.
 - (low) One squad listing a span twice could quarantine it alone: spans are counted per distinct squad.
+
+### W1 results (2026-11-22, live: Qwen2.5-3B-Instruct, bf16, soft thoughts, no adapter, m = 40, GSM8K test seed 0)
+
+The GPU ran a snapshot of W1 at 482f4cb. Block 0 (200 questions) set the threshold set, block 2 built the distance reference (24,000 thought samples, statistics kept on the GPU machine, SHA-256 recorded), and block 1 (200 questions) was scored; each fault ran on the first 64 questions of block 1. The committed threshold set is `runtime/latent_team/thresholds/qwen2.5-3b-instruct-soft-m40.json` (quantiles and hashes only).
+
+**Clean runs.**
+
+| | Block 0 (thresholds) | Block 1 (scored) |
+| --- | --- | --- |
+| Exact-check failures, any check | 0 of 200 | 0 of 200 |
+| Largest legibility error (tolerance 0.001) | 0.00048 | 0.00047 |
+| Team accuracy / solver alone | 83.5% / 82.0% | 85.5% / 85.0% |
+| Team and solver alone agree | 83.5% (167) | 81.5% (163) |
+| Squad changed the answer (disagreements) | 16.5% | 18.5% |
+| Team accuracy when they agree / disagree | 92.8% / 36.4% | 96.3% / 37.8% (solver alone 35.1%) |
+| Answer changed under another question's memory | 16.0% (32) | 20.0% (40) |
+| Replay: same answer, same top token at every step, memory equal at every hand-off | 100%, 100%, 100% (largest difference 0.0) | 100%, 100%, 100% (largest difference 0.0) |
+| Replay's own exact checks clean | 100% | 100% |
+| False alarms, degenerate / distance / supervisor rule | 1.0% / 1.0% / 2.0% (in sample) | 2.0% / 0.5% / 2.5% |
+| AUROC for a wrong answer, degenerate / distance | 0.39 / 0.54 | 0.38 / 0.62 |
+
+**Faults (eval 1), 64 questions each.** Every fault was caught on all 64 questions by an exact check, and by the check named for it:
+
+| Fault | Named check | Caught (exact) | Statistical catch, degenerate / distance / rule |
+| --- | --- | --- | --- |
+| noise thoughts | legibility | 64 of 64 | 73% / 100% / 100% |
+| aligned thoughts | legibility | 64 of 64 | 80% / 100% / 100% |
+| thought adapter loaded | configuration | 64 of 64 | 3% / 0% / 3% |
+| missing turn close | turn structure | 64 of 64 | 6% / 3% / 9% |
+| repeated system turn | turn structure | 64 of 64 | 0% / 3% / 3% |
+| span inserted | span ledger | 64 of 64 | 2% / 0% / 2% |
+| span lengthened | span ledger | 64 of 64 | 2% / 2% / 3% |
+| span removed | span ledger | 64 of 64 | 9% / 5% / 14% |
+| cache values random | memory checksum | 64 of 64 | 2% / 100% / 100% |
+| cache scaled | memory checksum | 64 of 64 | 0% / 100% / 100% |
+| cache values replaced | memory checksum | 64 of 64 | 9% / 100% / 100% |
+| cache swapped between rows | memory checksum | 64 of 64 | 0% / 9% / 9% |
+| a subagent writes text | budgets | 64 of 64 | 5% / 2% / 6% |
+| extra latent steps | budgets | 64 of 64 | 3% / 0% / 3% |
+| memory swapped inside think | memory checksum | 64 of 64 | 0% / 9% / 9% |
+| memory swapped inside decode | memory checksum | 64 of 64 | 3% / 0% / 3% |
+| hidden state changed in forward | span ledger | 64 of 64 | 20% / 100% / 100% |
+| positions shifted | span ledger | 64 of 64 | 2% / 2% / 3% |
+| latent column masked | span ledger | 64 of 64 | 100% / 31% / 100% |
+
+**Replay (eval 3).** With another question's cache swapped in just before the solver and the in-run checksum ignored, replay's memory comparison flagged 64 of 64 (62 also with different masks, 2 with equal masks), and the in-run checksum also caught 64 of 64.
+
+**Cost (eval 6).** The first two batches of block 1 (64 questions), five timed runs each way, alternating: median 118.7 s with the watchdog's checks, 116.1 s without, an overhead of **2.2%** (1.86 against 1.81 s per question; limit 10%). Two runs, one each way, were slower (148 and 157 s) while a CPU test ran on the same machine; the medians are unaffected. The audits cost, per audited question, 1.90 s for replay, 1.53 s for mismatched memory and 1.08 s for the solver alone, against 1.87 s for the team: about 2.4 times a team run. Audited at 1 in 20 plus every flagged run (2.5% of clean runs), that adds about 18% on average, and the fallback for flagged runs about 1.4%.
+
+**What this decides.** Replay matched on 100% of clean runs on all three measures, above the 99% the design set, and the memories were bitwise equal (tolerance 0.0), so replay stays an exact check. The statistical scores are integrity signals, not correctness signals: their AUROC for a wrong answer is near or below chance (the degenerate score is lower on wrong answers, 0.38), they catch faults that change the thoughts or the memory's values (noise, aligned thoughts, cache values, a changed hidden state, a masked column) on 100% of questions, and structural faults only near their 2.5% false-alarm rate, which the exact checks catch instead. A 2.5% false-alarm rate means about 1 in 40 clean runs falls back to the solver alone (85.0% accurate here against the team's 85.5%).

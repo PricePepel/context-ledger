@@ -1,0 +1,51 @@
+{
+ "id": "w1-qwen2.5-3b-instruct-soft-m40-1",
+ "model": "Qwen/Qwen2.5-3B-Instruct",
+ "weightsHash": "1ed1d8351e77573daa9f25ebf768e8e3030c4a4b3637304b1d5ad05e8c7948ae",
+ "mode": "soft",
+ "topK": 16,
+ "temperature": 1.0,
+ "steps": 40,
+ "legibilityTolerance": 0.001,
+ "replayTolerance": 0.0,
+ "parameterNames": "ca91020bf6aaa3d81a0376828b9fed717afb30ef865417da6ce04bc2ba7348ae",
+ "degenerate": {
+  "edges": [
+   0.21666668355464935,
+   0.22505699396133422,
+   0.23333334922790527,
+   0.2388889044523239,
+   0.24722222983837128,
+   0.2527884989976883,
+   0.26389034926891325,
+   0.26669448792934414,
+   0.2694722434878349
+  ],
+  "flag": 0.26669448792934414
+ },
+ "distance": {
+  "edges": [
+   8.981204986572266,
+   9.537244033813476,
+   10.505526828765866,
+   12.171570205688477,
+   13.724647903442381,
+   17.028463459014887,
+   19.05056690216065,
+   19.82167221069336,
+   19.84938382148742
+  ],
+  "flag": 19.82167221069336,
+  "reference": "045442c80afcc98bf5adea3dd18930f1e45ece4deb65f4ab2dc254ce538c8b52",
+  "referenceBlock": 2
+ },
+ "measuredOn": {
+  "split": "test",
+  "seed": 0,
+  "block": 0,
+  "count": 200,
+  "batch": 32,
+  "date": "2026-11-22"
+ },
+ "about": "W1 threshold set (docs/watchdog-security.md). Edges are the clean 50, 60, 70, 80, 90, 95, 98, 99 and 99.5th percentiles of each score on GSM8K test block 0; flag is the 99th. replayTolerance is the largest memory difference among block 0's clean replays whose answer and top tokens matched. The distance reference statistics are not committed; their SHA-256 is recorded. Any change of weights voids this file."
+}
