@@ -134,9 +134,11 @@ class Guard:
                      reference=reference, time_cap=self.time_cap if time_cap is None else time_cap,
                      key=secrets.token_bytes(32), pinned=self.pinned, **kwargs)
 
-    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance, swap=True):
+    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance, swap=True, over=None):
         """Replay, mismatched memory and solver alone for a batch. Returns (per-row audit words,
-        solver-alone answers, measurements for the eval)."""
+        solver-alone answers, measurements for the eval). over: a check of the run's budget, made
+        before each later inference stage; a stage past it does not run (review W2-23)."""
+        over = over or (lambda: False)
         import torch
         team, rows = self.team, len(questions)
         measured = {}
@@ -177,7 +179,7 @@ class Guard:
         again.drop()
 
         mismatched = ["not-run"] * rows
-        if swap and rows >= 2 and watch.handoff is not None:
+        if swap and rows >= 2 and watch.handoff is not None and not over():
             from .team import LATENT_PROMPTS
             started = time.perf_counter()
             with torch.no_grad():   # an audit is inference: no autograd graph through the memory
@@ -191,6 +193,10 @@ class Guard:
             mismatched = ["unchanged" if (predicted_number(o) == predicted_number(a) and predicted_number(a) is not None)
                           or o == a else "changed" for o, a in zip(other, answers)]
 
+        if over():   # no fresh solver-alone inference past the budget
+            words = [{"replay": replay[r], "mismatchedMemory": mismatched[r], "solverAlone": "not-run"}
+                     for r in range(rows)]
+            return words, None, measured
         started = time.perf_counter()
         alone, alone_receipt = team.single(questions, max_new_tokens=max_new_tokens)
         measured["aloneSeconds"] = time.perf_counter() - started
@@ -358,7 +364,7 @@ class Guard:
             # no raw audit text is kept: only the comparison's words.
             labels = {g.admission.label for g in gates and [gate.gateway for gate in gates] or []}
             words, alone, measured = self.audit(questions, steps, max_new_tokens, watch, answers, tolerance,
-                                                swap=len(labels) <= 1)
+                                                swap=len(labels) <= 1, over=lambda: self._over(started, cap))
             if gates is not None:
                 measured.pop("mismatchedAnswers", None)
 

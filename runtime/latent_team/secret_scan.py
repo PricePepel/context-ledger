@@ -510,8 +510,8 @@ SHORT_VALUE = RULES["freeText"]["shortValue"]
 
 
 def _word(character):
-    import unicodedata
-    return character == "_" or unicodedata.category(character)[0] in "LN"
+    """A word character for the short-value rule: ASCII only, so no Unicode version decides."""
+    return character == "_" or ("0" <= character <= "9") or ("a" <= character.lower() <= "z" and character.isascii())
 
 
 def short_value(value):
