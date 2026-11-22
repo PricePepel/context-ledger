@@ -228,9 +228,13 @@ function lineTails(text) {
       const end = lineEnd;
       leads.push(match.index);
       const valueEnd = judgedEnd(text, start, end, quote, trimmed);
-      if (valueEnd <= start || placeholderAt(text, start, valueEnd)) continue;
+      if (valueEnd <= start) continue;
+      // A value up to maxJudged is judged now; a longer one once every lead is known, below,
+      // so a line of many assignments is still read in linear time.
+      const long = valueEnd - start > judgedMax;
+      if (!long && isPlaceholder(text.slice(start, valueEnd))) continue;
       const closed = Boolean(quote) && valueEnd < end;
-      const candidate = { kind: rule.kind, start, end, prefix: 0, valueEnd, closed };
+      const candidate = { kind: rule.kind, start, end, prefix: 0, valueEnd, closed, long };
       if (quote && !closed) {
         // The judged value runs to the line end ("x". is not a stand-in), but what the quotes
         // hold is a value of its own (review W2-14).
@@ -244,21 +248,27 @@ function lineTails(text) {
     }
   }
   leads.sort((a, b) => a - b);
+  const kept = [];
   for (const candidate of found) {
-    let stop = candidate.valueEnd;
-    if (!candidate.closed) {
-      let low = 0;
-      let high = leads.length;
-      while (low < high) {
-        const middle = (low + high) >> 1;
-        if (leads[middle] <= candidate.start) low = middle + 1;
-        else high = middle;
-      }
-      if (low < leads.length && leads[low] < stop) stop = leads[low];
+    const stop = candidate.valueEnd;
+    let low = 0;
+    let high = leads.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (leads[middle] <= candidate.start) low = middle + 1;
+      else high = middle;
     }
-    candidate.coreEnd = stop;
+    const later = low < leads.length && leads[low] < stop ? leads[low] : null;
+    // A long value is a stand-in as P4c judged it (review W2-17), judged once: a value that
+    // holds another assignment never is one, so only the last on its line, or a quoted one,
+    // is read by the stand-in rules.
+    const long = candidate.long;
+    delete candidate.long;
+    if (long && later === null && isPlaceholder(text.slice(candidate.start, stop))) continue;
+    candidate.coreEnd = later !== null && !candidate.closed ? later : stop;
+    kept.push(candidate);
   }
-  return found;
+  return kept;
 }
 
 /**

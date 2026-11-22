@@ -752,6 +752,16 @@ class ToolGateTest(unittest.TestCase):
             gateway().admit([Span("request", "request", "q"), Span("env", "file", "KEY=x")], named={"env"})
         self.assertEqual(raised.exception.reason, "malformed")
 
+    def test_round17_an_argument_named_for_a_secret_is_read_with_its_value(self):
+        # Review W2-17 finding 1: neither the name nor the value alone is a finding.
+        store = Tool("store", outside_effect=False, arguments=(Argument("password", required=False),))
+        g = gateway(tools=(store,))
+        g.admit([Span("request", "request", "Hello")])
+        sent = []
+        result = ToolGate(g).submit({"name": "store", "arguments": {"password": "paper-harbor"}},
+                                    lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, result.reason, sent), (False, "secret", []))
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

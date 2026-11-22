@@ -100,10 +100,12 @@ const cases = [
   { name: 'a dotted capital i does not fold into a lead', text: ['AP', { char: 0x130 }, '_KEY=abcd', '1234xyz'] },
   { name: 'a dotless i does not fold into a lead', text: ['pass', 'word', ' ', 'p', { char: 0x131 }, 'n=abc', '123Def'] },
   { name: 'upper case lead and stand-in', text: ['PASSWORD=CHANGEME', { char: 10 }, 'TOKEN: Abc123', 'Def456'] },
-  // W2 review round 14: a value is judged a stand-in only up to placeholders.maxJudged
-  // characters (4,096), so judging stays bounded; a longer run of digits is a value.
-  { name: 'digits up to the stand-in bound are a stand-in', text: ['password=', r('0', 4096)] },
-  { name: 'digits past the stand-in bound are a value', text: ['password=', r('0', 4097)] },
+  // W2 review rounds 14 and 17: a value longer than placeholders.maxJudged (4,096) is judged
+  // a stand-in as P4c always judged it, once all the line's leads are known.
+  { name: 'digits up to the judging bound are a stand-in', text: ['password=', r('0', 4096)] },
+  { name: 'digits past the judging bound are still a stand-in', text: ['password=', r('0', 4097)] },
+  { name: 'a long run of x after a name is a stand-in', text: ['password=', r('x', 5000)] },
+  { name: 'a long stand-in that holds another assignment is a value', text: ['password=', r('0', 5000), ', api_key=Zz9yWx8v7u6t'] },
 ];
 
 function expand(parts) {

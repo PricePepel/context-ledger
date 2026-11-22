@@ -697,7 +697,12 @@ class ToolGate:
             return "placeholder"
         # A credential can first appear in the call itself (review W2-16): the shared scanner
         # reads what an uncleared tool would be sent.
-        if not tool.cleared and any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound):
+        # Names and values together too, as the tool would receive them (review W2-17): an
+        # argument named password with a value is an assignment though neither alone is.
+        import json
+        together = [json.dumps(final, ensure_ascii=False, default=str)] + \
+            [f"{k}={v}" for k, v in final.items()] + [f"{k}: {v}" for k, v in final.items()]
+        if not tool.cleared and any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound + together):
             return "secret"
         return "allowed"
 
