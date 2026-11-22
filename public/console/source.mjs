@@ -15,7 +15,7 @@ async function getJson(path) {
   const accept = { Accept: 'application/json' };
   const headers = session ? session.headers(accept) : accept;
   const response = await fetch(path, { headers, signal: AbortSignal.timeout(requestMs) });
-  if (response.status === 401) session?.forget(headers);
+  if (response.status === 401) await session?.forget(headers);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
   return body;

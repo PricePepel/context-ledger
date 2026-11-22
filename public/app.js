@@ -38,7 +38,7 @@ function renderRows(container, entries, createRow) {
 async function request(path, options = {}) {
   const headers = ledgerSession.headers(options.headers);
   const response = await fetch(path, { ...options, headers });
-  if (response.status === 401) ledgerSession.forget(headers);
+  if (response.status === 401) await ledgerSession.forget(headers);
   const body = await response.json();
   if (!response.ok) throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), { status: response.status });
   return body;

@@ -69,8 +69,9 @@ async function readJsonText(request, origin, operation, limit = { bytes: maxRequ
   }
 
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size));
-    return { value: JSON.parse(text), text };
+    const bytes = Buffer.concat(chunks, size);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return { value: JSON.parse(text), text, bytes };
   } catch {
     throw new HttpError(400, `${operation} request must contain valid UTF-8 JSON.`);
   }
@@ -196,9 +197,10 @@ const routes = [
     // port is removed, because browsers send cookies to every port of the host.
     // The body must be exactly what the page sends, JSON.stringify({ code }): JSON.parse
     // keeps only the last of repeated keys, so any other spelling is refused unread.
-    const { value: input, text } = await readJsonText(request, origin, 'Signing in', signInLimit);
+    // The bytes are compared, not the decoded text, which has lost a leading BOM.
+    const { value: input, bytes } = await readJsonText(request, origin, 'Signing in', signInLimit);
     const keys = input !== null && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : [];
-    const exact = keys.length === 1 && keys[0] === 'code' && typeof input.code === 'string' && text === JSON.stringify(input);
+    const exact = keys.length === 1 && keys[0] === 'code' && typeof input.code === 'string' && bytes.equals(Buffer.from(JSON.stringify(input), 'utf8'));
     const session = exact ? auth.redeem(input.code) : undefined;
     if (!session) throw new HttpError(401, linkFailure);
     response.setHeader('Set-Cookie', auth.clearOldCookie);

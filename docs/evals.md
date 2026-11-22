@@ -4521,3 +4521,9 @@ Threat model change: a page or server on another port of 127.0.0.1 or localhost 
   - (low) The tests did not pin `Referrer-Policy` on the sign-in page, the Referer of its subresources, or the streamed body cap. Added.
   - (low) The cross-port browser test covered only what the other server receives. Added the foreign page's read, redemption and window-storage attempts.
   - (low) The README, ADR-7c and the threat table still named the cookie or `SameSite=Strict`, and the eval said every guarded route takes a session (`POST /api/login` takes only the bearer). Corrected.
+- **Codex review, round 2** (of f339216): no high or medium finding; confirmed the round 1 fixes and no regression in the token, review or room routes. Four low, all fixed:
+  - (low) Another tab could store a new secret between `forget`'s check and its removal. Fixed: `store` and the compare-and-remove run under one origin-wide Web Lock (`navigator.locks`, present on loopback pages). Playwright checks that a late 401 for an old secret leaves a newer one; the interleaving itself is not reproducible in a test.
+  - (low) The decoder drops a leading BOM, so a BOM-prefixed body passed the exact-text check. Fixed: the raw bytes are compared; a BOM case is in the refused bodies, and the code stays usable.
+  - (low) The cross-port test swallowed the simple POST's failure. Fixed: it now asserts the ledger answered that POST with 403.
+  - (low) The README said every request needs the token, and repeated "sign-in". Corrected, naming the redemption, link-minting and node-review exceptions.
+- **Suites after round 2:** node 526/536 (10 skipped), graph 9/9, Playwright 33/33, Python 239 run, 66 skipped, OK; no raw control or format characters.

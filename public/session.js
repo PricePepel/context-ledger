@@ -15,21 +15,28 @@
       return undefined;
     }
   };
+  // Storing and the compare-and-remove in forget run under one origin-wide Web Lock, so
+  // another tab cannot store a new secret between forget's check and its removal (P1f
+  // review, round 2). Loopback pages are a secure context, where navigator.locks exists;
+  // without it the two steps run directly.
+  const locked = task => (globalThis.navigator?.locks ? navigator.locks.request(key, task) : Promise.resolve().then(task));
   const ledgerSession = Object.freeze({
     /** The given headers, plus the session header when this browser is signed in. */
     headers(extra) {
       const value = read();
       return value === undefined ? { ...extra } : { ...extra, [header]: value };
     },
-    /** Keeps a session secret from POST /api/session; false when storage refused it. */
+    /** Keeps a session secret from POST /api/session; resolves false when storage refused it. */
     store(value) {
-      if (typeof value !== 'string' || !pattern.test(value)) return false;
-      try {
-        localStorage.setItem(key, value);
-        return true;
-      } catch {
-        return false;
-      }
+      if (typeof value !== 'string' || !pattern.test(value)) return Promise.resolve(false);
+      return locked(() => {
+        try {
+          localStorage.setItem(key, value);
+          return true;
+        } catch {
+          return false;
+        }
+      });
     },
     /**
      * Drops the stored secret after the ledger refused a request, given the headers that
@@ -38,12 +45,15 @@
      */
     forget(sentHeaders) {
       const sent = sentHeaders?.[header];
-      if (sent === undefined || read() !== sent) return;
-      try {
-        localStorage.removeItem(key);
-      } catch {
-        // Storage is unavailable, so there is nothing to forget.
-      }
+      if (sent === undefined) return Promise.resolve();
+      return locked(() => {
+        if (read() !== sent) return;
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // Storage is unavailable, so there is nothing to forget.
+        }
+      }).catch(() => {});
     },
   });
   Object.defineProperty(globalThis, 'ledgerSession', { value: ledgerSession });

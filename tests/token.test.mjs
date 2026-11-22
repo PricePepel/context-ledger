@@ -330,7 +330,7 @@ test('the browser signs in once with a short-lived code and then sends its sessi
   // Repeated or escaped keys, which JSON.parse would fold into one valid code, are refused
   // too, as is any spelling other than the page's own JSON.stringify({ code }).
   for (const text of [`{"code":"${second}","code":"${first}"}`, `{"code":"x","code":"${first}"}`, `{"\\u0063ode":"${first}"}`,
-    `{ "code": "${first}" }`, `{"code":"${first}"}\n`, `{"code":"${first.slice(0, 5)}\\u00${first.charCodeAt(5).toString(16)}${first.slice(6)}"}`]) {
+    `{ "code": "${first}" }`, `{"code":"${first}"}\n`, `${String.fromCodePoint(0xFEFF)}{"code":"${first}"}`, `{"code":"${first.slice(0, 5)}\\u00${first.charCodeAt(5).toString(16)}${first.slice(6)}"}`]) {
     const again = await raw(port, { method: 'POST', path: '/api/session', body: text, headers: { 'Content-Type': 'application/json', Origin: origin } });
     assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, text);
   }

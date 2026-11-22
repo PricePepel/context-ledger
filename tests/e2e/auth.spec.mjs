@@ -56,6 +56,15 @@ test('a browser without a session is told how to sign in; a one-time link signs 
   await expect(late.locator('#search-status')).toHaveText(signInHelp);
   expect(await other.cookies()).toEqual([]);
 
+  // A late 401 for an old session leaves a newer one in place (P1f review).
+  expect(await late.evaluate(async key => {
+    await ledgerSession.store('C'.repeat(43));
+    await ledgerSession.forget({ 'X-Context-Ledger-Session': 'D'.repeat(43) });
+    const kept = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    return kept;
+  }, storageKey)).toBe('C'.repeat(43));
+
   // A session the ledger no longer knows (a restart) is forgotten after its first 401.
   await late.evaluate(key => localStorage.setItem(key, 'B'.repeat(43)), storageKey);
   await late.reload();
@@ -99,6 +108,10 @@ test('a page on another local port receives no credential and cannot read the se
     // Script on that page, in the signed-in browser, can neither read the ledger's data,
     // nor redeem a code it got hold of, nor reach into a ledger window's storage.
     const path = await mint(request);
+    const redemptions = [];
+    page.on('response', answer => {
+      if (new URL(answer.url()).pathname === '/api/session' && answer.request().method() === 'POST') redemptions.push(answer.status());
+    });
     const tried = await page.evaluate(async ({ ledger, code, key }) => {
       const outcome = {};
       try { outcome.read = (await fetch(ledger + '/api/sessions')).status; } catch { outcome.read = 'blocked'; }
@@ -112,6 +125,9 @@ test('a page on another local port receives no credential and cannot read the se
       return outcome;
     }, { ledger: baseURL, code: path.slice('/login?code='.length), key: storageKey });
     expect(tried).toEqual({ read: 'blocked', redeem: 'blocked', storage: 'denied' });
+    // The simple POST reached the ledger and was refused for its Origin (the JSON one
+    // never left the browser: its preflight failed).
+    expect(redemptions).toEqual([403]);
     // The code was not used up: it still signs in from the ledger's own page.
     await page.goto(baseURL + path);
     await expect(page).toHaveURL(baseURL + '/');

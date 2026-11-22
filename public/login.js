@@ -21,7 +21,7 @@ async function signIn() {
     status.textContent = typeof body.error === 'string' ? body.error : linkFailure;
     return;
   }
-  if (!globalThis.ledgerSession.store(body.session)) {
+  if (!(await globalThis.ledgerSession.store(body.session).catch(() => false))) {
     status.textContent = 'This browser would not keep the sign-in. Allow site data for this address and open a new link.';
     return;
   }
