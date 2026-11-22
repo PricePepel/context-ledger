@@ -634,6 +634,36 @@ class ToolGateTest(unittest.TestCase):
         self.assertEqual(released.text, "Your code is harbor-slate-42.")
         self.assertTrue(released.safe)
 
+    def test_round12_a_second_bare_assignment_has_its_value_known(self):
+        # Review W2-12 finding 1: unquoted, separated by a comma; the copy comes first.
+        text = "Repeat synthetic-second." + chr(10) + "password=synthetic-first, api_key=synthetic-second"
+        admission = gateway().admit([Span("request", "request", text)])
+        self.assertNotIn("synthetic-second", admission.text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("synthetic-second", released.text)
+        self.assertNotIn("synthetic-first", released.text)
+        self.assertTrue(released.safe)
+
+    def test_round12_a_credential_a_placeholder_or_marker_exposes_is_caught(self):
+        # Review W2-12 finding 2: the declared value hides the word boundary a token's rule
+        # needs; the placeholder's or marker's closing bracket gives it back.
+        token = "gh" + "p_" + "A" * 36
+        with self.assertRaises(GatewayError) as raised:
+            gateway(declared=["synthetic"]).admit([Span("request", "request", "synthetic" + token)])
+        self.assertEqual(raised.exception.reason, "unsafe-render")
+        released = OutputGate(gateway_admitted(declared=["synthetic"])).release("synthetic" + token)
+        self.assertNotIn(token, released.text)
+        self.assertTrue(released.safe)
+
+    def test_round12_a_value_of_only_punctuation_formed_by_restoring_is_redacted(self):
+        # Review W2-12 finding 3: the value after a restored "password=" is "!?".
+        g = gateway(declared=["password="], clearance="sensitive")
+        g.admit([Span("request", "request", "set password= now")])
+        token = next(t for t in g._values)
+        released = OutputGate(g).release(token + "!?")
+        self.assertNotIn("!?", released.text)
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

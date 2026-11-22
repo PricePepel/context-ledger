@@ -416,7 +416,21 @@ class Gateway:
         # placeholder or the neutralised text the gateway wrote itself.
         if self.holds_value(self.masked_out(rendered)) or self.holds_value(rendered):
             raise GatewayError("unsafe-render", "a known value is still in the text the model would read")
+        # A placeholder's closing brackets can give a neighbouring credential the word boundary
+        # its rule needs (review W2-12): the rendered text is scanned again, and a finding
+        # outside the placeholders holds the run.
+        if self.unauthorised(rendered, self._token_ranges(rendered)):
+            raise GatewayError("unsafe-render", "a credential is exposed next to a placeholder")
         return rendered, len(merged)
+
+    def _token_ranges(self, text):
+        ranges = []
+        for token in self._values:
+            at = text.find(token)
+            while at != -1:
+                ranges.append((at, at + len(token)))
+                at = text.find(token, at + 1)
+        return ranges
 
     def masked_out(self, text):
         """text without its placeholder tokens (for checking what else it holds)."""
@@ -497,37 +511,53 @@ class Gateway:
         them: declared values and scanner findings alike."""
         return self.restore_tracked(text)[0]
 
-    def restore_tracked(self, text):
-        """restore(), with the (start, end) of every value put back, in the restored text."""
+    def restore_tracked(self, text, keep=()):
+        """restore(), with the (start, end) of every value put back, in the restored text, and
+        the ranges in keep (which hold no placeholder) moved to where they now are."""
         if not self._values:
-            return text, []
+            return text, [], list(keep)
         pattern = re.compile("|".join(re.escape(token) for token in self._values))
-        pieces, put_back, at, length = [], [], 0, 0
+        pieces, put_back, at, length, shifts = [], [], 0, 0, []
         for match in pattern.finditer(text):
             before, value = text[at:match.start()], self._values[match.group(0)]
             pieces += [before, value]
             put_back.append((length + len(before), length + len(before) + len(value)))
+            shifts.append((match.end(), length + len(before) + len(value) - match.end()))
             length += len(before) + len(value)
             at = match.end()
         pieces.append(text[at:])
-        return "".join(pieces), put_back
 
-    def unauthorised(self, text, allowed):
-        """The parts of text's scanner findings (every view) outside the allowed ranges that
-        hold a word character: a credential the values put back form with the text around
-        them, which no restoration authorised."""
+        def moved(position):
+            delta = 0
+            for end, shift in shifts:
+                if end <= position:
+                    delta = shift
+            return position + delta
+
+        return "".join(pieces), put_back, [(moved(a), moved(b)) for a, b in keep]
+
+    def unauthorised(self, text, allowed=(), put_back=()):
+        """The ranges of text's scanner findings (every view, placeholders masked) that no
+        marker, placeholder or restoration authorised (review W2-11, W2-12). A finding is
+        judged by the values it identified, where they lie in the text (the whole finding
+        where a value cannot be placed): a value inside the allowed ranges is authorised; a
+        value that overlaps a value put back is authorised except where it reaches outside
+        it with a word character (a sentence's full stop is not a credential, more text is);
+        any other value is not, whatever its characters (a value of only punctuation too)."""
         out = []
-        for finding in self._scan_all(text):
-            at, end = finding["start"], finding["end"]
-            for a, b in sorted(allowed):
-                if b <= at or a >= end:
-                    continue
-                if a > at:
-                    out.append((at, a))
-                at = max(at, b)
-            if at < end:
-                out.append((at, end))
-        return self._merge([(a, b) for a, b in out if re.search(r"\w", text[a:b])])
+        for finding in self._scan_all(self.masked(text)):
+            start, end = finding["start"], finding["end"]
+            span = text[start:end]
+            places = []
+            for value in finding.get("values") or [span]:
+                at = span.find(value) if value else -1
+                places.append((start + at, start + at + len(value)) if at != -1 else (start, end))
+            for a, b in places:
+                outside = _subtract((a, b), allowed)
+                if any(x < b and a < y for x, y in put_back):
+                    outside = [(x, y) for x, y in outside if re.search(r"\w", text[x:y])]
+                out += outside
+        return self._merge(out)
 
     def holds_placeholder(self, text):
         return any(token in text for token in self._values)
@@ -659,6 +689,46 @@ class ToolGate:
         return ToolResult(True, "sent", send(tool.name, final))
 
 
+def _subtract(span, ranges):
+    """The parts of span outside every range."""
+    at, end = span
+    out = []
+    for a, b in sorted(ranges):
+        if b <= at or a >= end:
+            continue
+        if a > at:
+            out.append((at, a))
+        at = max(at, b)
+    if at < end:
+        out.append((at, end))
+    return out
+
+
+def _replace(text, ranges, marker, keeps):
+    """text with each of the (sorted, disjoint) ranges replaced by marker; returns the new
+    text, the marker ranges in it, and each list of ranges in keeps (disjoint from those
+    replaced) moved to where it now is."""
+    pieces, markers, at, length = [], [], 0, 0
+    shifts = []
+    for start, end in ranges:
+        before = text[at:start]
+        pieces += [before, marker]
+        markers.append((length + len(before), length + len(before) + len(marker)))
+        shifts.append((end, length + len(before) + len(marker) - end))
+        length += len(before) + len(marker)
+        at = end
+    pieces.append(text[at:])
+
+    def moved(position):
+        delta = 0
+        for end, shift in shifts:
+            if end <= position:
+                delta = shift
+        return position + delta
+
+    return "".join(pieces), markers, [[(moved(a), moved(b)) for a, b in keep] for keep in keeps]
+
+
 def redaction_marker(kind, values):
     """The text that replaces a redacted range: [REDACTED kind] unless that holds one of the
     values it is replacing or checking in any canonical form (a found value ACT is inside
@@ -712,11 +782,16 @@ class OutputGate:
             ranges += gateway.value_ranges(text)
         merged = gateway._merge(ranges)
         checked = found | (gateway.known_values() if uncleared else set())
+        markers = []
         if merged:
-            pieces, at = [], 0
+            pieces, at, length = [], 0, 0
             for start, end in merged:
                 kind = next((k for (a, b), k in kinds.items() if start <= a and b <= end), "secret")
-                pieces.append(text[at:start] + redaction_marker(kind, checked))
+                marker = redaction_marker(kind, checked)
+                before = text[at:start]
+                pieces += [before, marker]
+                markers.append((length + len(before), length + len(before) + len(marker)))
+                length += len(before) + len(marker)
                 at = end
             text = "".join(pieces) + text[at:]
         # Verify the text that would leave, before any value is put back: no value the scan
@@ -725,26 +800,20 @@ class OutputGate:
         # release is refused (safe = False) and the guard holds the run.
         safe = not any(value in text for value in found) and not canon_ranges(text, found) and \
             not (uncleared and gateway.holds_value(text, collapsed=True))
-        restored, count = False, len(merged)
+        restored, count, put_back = False, len(merged), []
         if not uncleared and gateway.holds_placeholder(text):
-            # The values put back are authorised; a credential they form with the model's own
-            # text around them is not (review W2-11): that text is redacted, and the result is
-            # checked again with the values put back and the markers allowed.
-            text, allowed = gateway.restore_tracked(text)
+            text, put_back, markers = gateway.restore_tracked(text, markers)
             restored = True
-            extra = gateway.unauthorised(text, allowed)
-            if extra:
-                marker = redaction_marker("secret", checked | set(gateway._values.values()))
-                pieces, kept, at, length = [], [], 0, 0
-                for start, end in extra:
-                    before = text[at:start]
-                    kept += [(a - at + length, b - at + length) for a, b in allowed if at <= a and b <= start]
-                    pieces += [before, marker]
-                    kept.append((length + len(before), length + len(before) + len(marker)))
-                    length += len(before) + len(marker)
-                    at = end
-                kept += [(a - at + length, b - at + length) for a, b in allowed if a >= at]
-                text = "".join(pieces) + text[at:]
-                count += len(extra)
-                safe = safe and not gateway.unauthorised(text, kept)
+        # What substitution exposes is checked too (review W2-11, W2-12): a marker's brackets
+        # can give a neighbouring credential its word boundary, and a value put back can form
+        # one with the model's own text. The parts no marker, placeholder or restoration
+        # authorised are redacted, and the result is checked again; what still remains holds.
+        allowed = markers + put_back + gateway._token_ranges(text)
+        extra = gateway.unauthorised(text, allowed, put_back)
+        if extra:
+            marker = redaction_marker("secret", checked | set(gateway._values.values()))
+            text, new_markers, (put_back, markers) = _replace(text, extra, marker, [put_back, markers])
+            count += len(extra)
+            allowed = markers + new_markers + put_back + gateway._token_ranges(text)
+            safe = safe and not gateway.unauthorised(text, allowed, put_back)
         return Release(text, ("redacted",) if count else (), count, restored, safe)

@@ -31,6 +31,22 @@ test('W2: a second assignment on a line has its value listed, the span unchanged
   assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
 });
 
+test('W2: a second bare assignment has its value listed, the first cut where it begins (review W2-12)', () => {
+  const text = 'password=synthetic-first, api_key='.concat('synthetic-second');
+  const [finding] = findSecrets(text, { values: true });
+  assert.ok(finding.values.includes('synthetic-second'), finding.values.join(' | '));
+  assert.ok(finding.values.includes('synthetic-first'), finding.values.join(' | '));
+  assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
+});
+
+test('W2: many assignments on one long line are read in linear time', () => {
+  const line = 'password=a1b2c3d4, '.repeat(5000).concat(' '.repeat(100000));
+  const started = Date.now();
+  const [finding] = findSecrets(line, { values: true });
+  assert.ok(finding.values.length > 1000);
+  assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`);
+});
+
 test('W2: a finding lists the value it identified, only when asked (review W2-8)', () => {
   const value = 'harbor'.concat('-slate-42');
   const [finding] = findSecrets(`Authorization: Bearer ${value}`, { values: true });
