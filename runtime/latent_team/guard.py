@@ -279,17 +279,12 @@ class Guard:
             cap = seconds if cap is None else min(cap, seconds)
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
-<<<<<<< HEAD
                            keep_memory=True, time_cap=cap, keep_solver_state=self.keep_solver_state and self.measure)
-        started = time.monotonic()
-=======
-                           keep_memory=True, time_cap=cap)
         started = self.clock()
         if gateways is not None:   # the gateway's budget counts from admission (review W2-20)
             admitted = [g.admitted_at for g in gateways if g.admitted_at is not None]
             if admitted:
                 started = min([started] + admitted)
->>>>>>> claude/w2-data-gateway
         gates = None if gateways is None else [OutputGate(g) for g in gateways]
         try:
             outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
@@ -418,18 +413,15 @@ class Guard:
                 elif released.marks:
                     decision = Decision(decision.action, decision.reason, decision.marks + released.marks,
                                         decision.quarantined)
-<<<<<<< HEAD
                 # W3: a scored team answer is released on the score of the number it is graded
                 # on; when the gate changed that number (a redaction, a value put back), the
                 # score is of a number no reader sees, so the run abstains (review W3-3).
                 if answer is not None and scored and system == "latent_mas" and \
                         not same_graded_number(answers[row], answer):
                     answer, decision = None, Decision("abstain", "number-changed", decision.marks, decision.quarantined)
-=======
             # The run's budget holds until the answer leaves, output gate included (review W2-20).
             if answer is not None and self._over(started, cap):
                 answer, decision = None, Decision("hold", "deadline", decision.marks, decision.quarantined)
->>>>>>> claude/w2-data-gateway
             outcomes.append(Outcome(
                 answer=answer, decision=decision.as_dict(), gateway={"redactions": redactions},
                 checks=dict(report["checks"]) if report else {n: bool(results["checks"][n][row])
