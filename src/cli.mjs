@@ -426,9 +426,13 @@ function redactionLine(findings, sessionId) {
   if (findings.length === 0) {
     return 'Redacted: nothing; the secret checks found no value. They cannot find every secret, so read handoff.md before you send it.';
   }
-  const lines = new Set(findings.map(finding => finding.line ?? 'source')).size;
-  return `Redacted: ${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${lines} ` +
-    `${lines === 1 ? 'line' : 'lines'}, each replaced by [REDACTED <kind>]. ` +
+  // Counted by transcript line (one message each), with the source name named apart.
+  const lines = new Set(findings.filter(finding => finding.line !== null).map(finding => finding.line)).size;
+  const source = findings.some(finding => finding.line === null);
+  const where = [lines ? `${lines} transcript ${lines === 1 ? 'line' : 'lines'}` : '', source ? 'the source name' : '']
+    .filter(Boolean).join(' and ');
+  return `Redacted: ${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${where}, ` +
+    'each replaced by [REDACTED <kind>]. ' +
     `Run npm run ledger -- redact ${sessionId} to see where. Read handoff.md before you send it.`;
 }
 

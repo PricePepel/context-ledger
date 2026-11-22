@@ -532,9 +532,14 @@ test('the P4a files hold no raw control or format characters', () => {
 
 // --- Codex review, round 1 -------------------------------------------------------------
 
-test('verify refuses a version 1 manifest without exactly one handoff.md', async t => {
+test('verify refuses a version 1 or 2 manifest without exactly one handoff.md', async t => {
   const context = await signedBundle(t);
-  const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const signed = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const { redaction: _, ...asVersion1 } = signed;
+  for (const manifest of [signed, { ...asVersion1, version: 1 }]) await refusesOtherFiles(context, manifest);
+});
+
+async function refusesOtherFiles(context, manifest) {
   const [entry] = manifest.files;
   const shapes = {
     'only notes.txt': [{ ...entry, name: 'notes.txt' }],
@@ -552,9 +557,9 @@ test('verify refuses a version 1 manifest without exactly one handoff.md', async
       writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
     });
     assert.deepEqual(await problemsOf(dir, { fingerprint: context.fingerprint }),
-      ['The manifest does not match the signed hand-off format.'], label);
+      ['The manifest does not match the signed hand-off format.'], `version ${manifest.version}: ${label}`);
   }
-});
+}
 
 test('verify checks the size on its own, the exact PEM bytes and the exact signature length', async t => {
   const context = await signedBundle(t);
@@ -1035,7 +1040,8 @@ const fakeSecret = {
 const secretTranscript = [
   JSON.stringify({ type: 'user', message: { role: 'user', content: `Synthetic: deploy with ${fakeSecret.aws} and password=${fakeSecret.password} today.` } }),
   JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: `Synthetic: pushing with ${fakeSecret.github}.` } }),
-  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Synthetic: done, nothing else to hide here.' } }),
+  // A bare copy of the password, with no name before it (P4d review, round 1).
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: `Synthetic: saved ${fakeSecret.password} to the vault.` } }),
 ].join('\n');
 const secretSource = `synthetic-p4d-${fakeSecret.sourceToken}.jsonl`;
 
@@ -1084,7 +1090,7 @@ function assertNoSecret(text, label) {
 test('P4d: handoff --sign signs the redacted hand-off and records the count', async t => {
   const context = await secretBundle(t);
   const { session: redacted, findings } = redactSession(context.secret);
-  assert.equal(findings.length, 4, 'the fixture holds four fake values');
+  assert.equal(findings.length, 5, 'four fake values, one of them pasted twice');
   const markdown = readFileSync(join(context.secretDir, 'handoff.md'), 'utf8');
   assert.equal(markdown, handoffMarkdown(redacted) + '\n');
   for (const kind of ['aws-access-key-id', 'github-token', 'assigned-secret']) {
@@ -1096,7 +1102,7 @@ test('P4d: handoff --sign signs the redacted hand-off and records the count', as
 
   const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
   assert.equal(manifest.version, 2);
-  assert.deepEqual(manifest.redaction, { scanner: scannerName, findings: 4 });
+  assert.deepEqual(manifest.redaction, { scanner: scannerName, findings: 5 });
   // The count is the one the redaction report gives for the same session.
   const port = await servingLedger(t, [context.secret]);
   const report = await run(['redact', context.secret.id, '--json'], { ...context.env, PORT: port });
@@ -1104,13 +1110,15 @@ test('P4d: handoff --sign signs the redacted hand-off and records the count', as
   assert.equal(JSON.parse(report.stdout).count, manifest.redaction.findings);
 
   // The sender sees counts and where to look, never a value.
-  assert.ok(context.signed.stdout.includes('Redacted: 4 possible secrets in 3 lines, each replaced by [REDACTED <kind>]. ' +
-    `Run npm run ledger -- redact ${context.secret.id} to see where.`), context.signed.stdout);
+  assert.ok(context.signed.stdout.includes('Redacted: 5 possible secrets in 3 transcript lines and the source name, ' +
+    `each replaced by [REDACTED <kind>]. Run npm run ledger -- redact ${context.secret.id} to see where.`), context.signed.stdout);
   assertNoSecret(context.signed.stdout + context.signed.stderr, 'the --sign output');
+  // Not even a masked preview: the summary has counts only.
+  for (const prefix of ['AKIA', 'ghp_', 'gho_', 'Zx9q']) assert.ok(!context.signed.stdout.includes(prefix), prefix);
 
   const checked = await run(['verify', context.secretDir, '--fingerprint', context.fingerprint]);
   assert.equal(checked.code, 0, checked.stderr);
-  assert.ok(checked.stdout.includes('Redaction: 4 values replaced, by context-ledger-secrets/1'), checked.stdout);
+  assert.ok(checked.stdout.includes('Redaction: 5 values replaced, by context-ledger-secrets/1'), checked.stdout);
   assert.equal(checked.stderr, '');
   assertNoSecret(checked.stdout, 'the verify output');
 });
@@ -1163,18 +1171,35 @@ test('P4d: verify refuses a version 2 manifest whose redaction record is not exa
     });
     assert.deepEqual(await problemsOf(dir, { fingerprint: context.fingerprint }),
       ['The manifest does not match the signed hand-off format.'], label);
+    if (label === 'other scanner') {
+      const cli = await run(['verify', dir, '--fingerprint', context.fingerprint]);
+      assert.equal(cli.code, 1);
+      assert.equal(cli.stdout, '');
+      assert.match(cli.stderr, /^The manifest does not match the signed hand-off format\.\r?\nVerification failed\./);
+    }
   }
+  // A changed count under the old signature is a broken signature.
+  const recount = copyOf(context, target => {
+    writeFileSync(join(target, 'manifest.json'), Buffer.from(canonicalJson({ ...manifest, redaction: { ...redaction, findings: 1 } }), 'utf8'));
+  });
+  assert.deepEqual(await problemsOf(recount, { fingerprint: context.fingerprint }), ['The signature does not match the manifest.']);
 });
 
 test('P4d: a version 1 bundle from P4a still verifies, with a warning that it was not redacted', async t => {
-  const context = await signedBundle(t);
-  const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const context = await secretBundle(t);
+  // The P4a shape: version 1, no redaction record, and the hand-off as it was, secrets and all.
+  const markdown = Buffer.from(handoffMarkdown(context.secret) + '\n', 'utf8');
+  assert.ok(markdown.toString('utf8').includes(fakeSecret.password));
+  const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
   const { redaction: _, ...rest } = manifest;
-  const dir = copyOf(context, target => {
-    const bytes = Buffer.from(canonicalJson({ ...rest, version: 1 }), 'utf8');
-    writeFileSync(join(target, 'manifest.json'), bytes);
-    writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
-  });
+  const dir = join(context.folder, 'p4a-bundle');
+  cpSync(context.secretDir, dir, { recursive: true });
+  writeFileSync(join(dir, 'handoff.md'), markdown);
+  const bytes = Buffer.from(canonicalJson({
+    ...rest, version: 1, files: [{ name: 'handoff.md', bytes: markdown.length, sha256: createHash('sha256').update(markdown).digest('hex') }],
+  }), 'utf8');
+  writeFileSync(join(dir, 'manifest.json'), bytes);
+  writeFileSync(join(dir, 'manifest.sig'), edSign(null, bytes, context.privateKey));
   const result = await verifyBundle(dir, { fingerprint: context.fingerprint });
   assert.deepEqual(result.problems, []);
   assert.equal(result.version, 1);

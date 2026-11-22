@@ -4477,13 +4477,29 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
 
 | Eval | Expected |
 | --- | --- |
-| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. There is no option to sign without redaction. |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. A value found once (six characters or more) is also replaced where it is pasted again without its name. There is no option to sign without redaction. |
 | Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
 | Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
 | Sender sees the count, not the values | `--sign` prints how many values it redacted on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
 | Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
 | Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
 | Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
+### P4d results (2026-11-22)
+
+- **All rows:** pass. `tests/sign.test.mjs` (the P4d tests at its end, and the P4a tests updated for version 2) and `tests/secrets.test.mjs` (the copy rule).
+- **Codex review, round 1** (of de72f08):
+  - (high) A value found by its name (`password=…`) stayed in the signed hand-off where a later message pasted it bare: redaction cut matched spans, not values. Fixed in `redactSession`: a found value of six characters or more is also replaced everywhere else in the session (source name included), the longer of two values first. Tests: the signed fixture pastes its password into a later message, and scanner tests cover copies, quoted values, overlaps and the short-value limit.
+  - (medium) The session ID is the unkeyed SHA-256 of the original transcript, so a receiver who could rebuild every other byte could confirm a guess of a short redacted value. Not changed, since the session identity is outside this card. It is recorded as a residual in ADR-9a and `docs/signed-handoff.md`.
+  - (low) The sender's summary called transcript records and the source name "lines". It now says `in N transcript lines and the source name`.
+  - (low) The receiver docs said "whole, non-negative count" (the limit is 2^53 − 1) and did not mention placeholder values. The OpenSSL manual check did not give the exact `redaction` keys. All three corrected.
+  - (low) Test gaps, all filled:
+    - The test that version 1 lists exactly one file now runs on version 1 and version 2.
+    - The version 1 test signs a genuinely unredacted hand-off.
+    - A malformed record is now checked through the CLI as well (exit 1, nothing on stdout).
+    - A changed count under the old signature now fails the signature check.
+    - The sender output is checked for key prefixes as well as for pieces of the values.
+  - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

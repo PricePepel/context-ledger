@@ -627,3 +627,51 @@ test('P4b narrowed: a prefix is hidden when the labelled match covers only part 
   assert.equal(maskedPreview(text, finding), '…');
   assert.equal(redactText(text), 'aws_secret_access_key = [REDACTED aws-access-key-id]');
 });
+
+test('P4d: a value found once is removed wherever else it appears in the session', () => {
+  const password = ['Zx9q', 'Wm3v', 'Lt7p', 'Rk2s'].join('');
+  const quoted = ['Ab12', ' Cd34', 'xy'].join('');
+  const session = {
+    id: 'b'.repeat(64), provider: 'claude', source: `notes-${password}.jsonl`,
+    messages: [
+      { role: 'user', line: 1, text: `set password=${password} today.` },
+      { role: 'assistant', line: 2, text: `I copied ${password} into the env file, and ${fake['github-token']}.` },
+      { role: 'user', line: 3, text: `token: "${quoted}" and later ${quoted} again` },
+      { role: 'user', line: 4, text: `push with ${fake['github-token']}` },
+      { role: 'user', line: 5, text: 'password=ab12x then ab12x again, a short value' },
+      { role: 'assistant', line: 6, text: 'Nothing to hide here, today.' },
+    ],
+  };
+  const { session: redacted, findings } = redactSession(session);
+  const shown = JSON.stringify(redacted);
+  for (const value of [password, quoted, fake['github-token']]) assert.ok(!shown.includes(value), value.slice(0, 4));
+  assert.equal(redacted.source, 'notes-[REDACTED assigned-secret].jsonl');
+  assert.equal(redacted.messages[1].text, 'I copied [REDACTED assigned-secret] into the env file, and [REDACTED github-token].');
+  assert.equal(redacted.messages[2].text, 'token: "[REDACTED assigned-secret]');
+  // The rest of the line after a name is cut, but its other words are not searched for.
+  assert.equal(redacted.messages[5], session.messages[5]);
+  // A value shorter than six characters is removed only where it was found.
+  assert.equal(redacted.messages[4].text, 'password=[REDACTED assigned-secret]');
+  assert.deepEqual(findings.map(({ line, kind }) => [line, kind]), [
+    [null, 'assigned-secret'], [1, 'assigned-secret'], [2, 'assigned-secret'], [2, 'github-token'],
+    [3, 'assigned-secret'], [4, 'github-token'], [5, 'assigned-secret'],
+  ]);
+  // A copy shows no prefix; a format found where it stands still does.
+  assert.deepEqual(findings.filter(finding => finding.line === 2).map(finding => finding.preview), ['…', 'ghp_…']);
+  assert.equal(findings.find(finding => finding.line === 4).preview, 'ghp_…');
+});
+
+test('P4d: a copy that overlaps a finding widens it, and the longer of two values is matched whole', () => {
+  const short = ['Qw8e', 'Rt5y', 'Ui'].join('');
+  const long = short + ['Op3a', 'Sd'].join('');
+  const session = {
+    id: 'c'.repeat(64), provider: 'codex', source: 'x.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `secret=${short}` },
+      { role: 'user', line: 2, text: `api_key=${long}` },
+      { role: 'assistant', line: 3, text: `kept ${long} and ${short}` },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[2].text, 'kept [REDACTED assigned-secret] and [REDACTED assigned-secret]');
+});

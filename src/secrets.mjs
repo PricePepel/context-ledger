@@ -387,23 +387,84 @@ export function maskedPreview(text, finding) {
   return `${text.slice(finding.start, finding.start + finding.prefix)}…`;
 }
 
+// Card P4d: a value found once is also removed where it appears again without a name
+// before it (pasted into a later message, say). Shorter values are removed only where
+// they were found: a copy search for them would cut ordinary words and numbers.
+const minCopyLength = 6;
+const lineTailKinds = new Set(['assigned-secret', 'bearer-token']);
+
+/**
+ * The value a finding starts with. A known format is its whole span. A line tail runs to
+ * the end of its line, so its value is the quoted part when the span opens a quote, and
+ * otherwise its first word without trailing punctuation.
+ */
+function coreValue(text, finding) {
+  const span = text.slice(finding.start, finding.end);
+  if (!lineTailKinds.has(finding.kind)) return span;
+  const quote = text[finding.start - 1];
+  if (finding.start > 0 && /["'`]/u.test(quote)) {
+    const close = span.indexOf(quote);
+    if (close > 0) return span.slice(0, close);
+  }
+  return span.split(/\s/u)[0].replace(/[,.;:!?)\]}>"'`]+$/u, '');
+}
+
+/** findings plus every other occurrence in text of a known value, merged into spans. */
+function withCopies(text, findings, values) {
+  const all = findings.map(finding => ({ ...finding, rank: 0 }));
+  for (const [value, kind] of values) {
+    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) {
+      all.push({ kind, start: at, end: at + value.length, prefix: 0, rank: 1 });
+    }
+  }
+  if (all.length === findings.length) return findings;
+  const spans = [];
+  for (const span of all.sort((a, b) => a.start - b.start || a.rank - b.rank)) {
+    const last = spans.at(-1);
+    if (last && span.start < last.end) {
+      // A copy that runs past a finding widens it, and no prefix is shown any more.
+      if (span.end > last.end) Object.assign(last, { end: span.end, prefix: 0 });
+    } else {
+      spans.push({ kind: span.kind, start: span.start, end: span.end, prefix: span.prefix });
+    }
+  }
+  return spans;
+}
+
 /**
  * A copy of the session with its source name and every message redacted, and the
  * findings. Each finding has a line (null for the source name), a kind, a length and a
- * masked preview, never a value.
+ * masked preview, never a value. A value found in one place is also removed everywhere
+ * else it appears in the session, when it is at least six characters long (P4d).
  */
 export function redactSession(session) {
-  const findings = [];
-  const record = (text, line) => {
-    const found = findSecrets(text);
-    for (const finding of found) {
-      findings.push({ line, kind: finding.kind, length: finding.end - finding.start, preview: maskedPreview(text, finding) });
+  const fields = [
+    ...(typeof session.source === 'string' ? [{ text: session.source, line: null }] : []),
+    ...session.messages.map(message => ({ text: message.text, line: message.line })),
+  ];
+  const found = fields.map(field => findSecrets(field.text));
+  const values = new Map();
+  fields.forEach((field, index) => {
+    for (const finding of found[index]) {
+      const value = coreValue(field.text, finding);
+      if (value.length >= minCopyLength && !values.has(value)) values.set(value, finding.kind);
     }
-    return found.length ? redactText(text, found) : text;
-  };
-  const source = typeof session.source === 'string' ? record(session.source, null) : session.source;
-  const messages = session.messages.map(message => {
-    const text = record(message.text, message.line);
+  });
+  // Longest first, so a value that holds another is matched whole.
+  const ordered = [...values].sort((a, b) => b[0].length - a[0].length);
+  const findings = [];
+  const redacted = fields.map((field, index) => {
+    const spans = withCopies(field.text, found[index], ordered);
+    for (const span of spans) {
+      findings.push({ line: field.line, kind: span.kind, length: span.end - span.start, preview: maskedPreview(field.text, span) });
+    }
+    return spans.length ? redactText(field.text, spans) : field.text;
+  });
+  const hasSource = typeof session.source === 'string';
+  const source = hasSource ? redacted[0] : session.source;
+  const offset = hasSource ? 1 : 0;
+  const messages = session.messages.map((message, index) => {
+    const text = redacted[index + offset];
     return text === message.text ? message : { ...message, text };
   });
   return { session: { ...session, source, messages }, findings };
