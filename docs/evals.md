@@ -4492,6 +4492,44 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
 
+## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
+
+For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
+
+**Task (synthetic):** N incident reports, generated from a fixed seed (service, cause, downtime in minutes, date, a short narrative). Each agent reads one report and returns `{service, cause, downtimeMinutes, quote}`. The page combines them: which services went down because of a configuration change, and their total downtime.
+
+| Eval | Expected |
+| --- | --- |
+| Live run | With a local OpenAI-compatible server (vLLM) configured, `POST /api/swarm/runs` with `agents: 100` sends one request per agent, at most `SWARM_CONCURRENCY` at a time (default 32), assigns agents round-robin across the configured models, and records each agent's model, state, time and tokens. |
+| Local only | Model servers come from `SWARM_URLS` (comma-separated) and must be `http://127.0.0.1` or `http://localhost`; any other host is refused at start. Nothing in a request body chooses a URL or a model. |
+| Checked quotes | An agent's answer is **verified** only when its quote appears in its report (after whitespace folding) and its downtime number appears in the quote. It is **correct** when service, cause and downtime match the generator's truth. Both counts are shown; unverified answers are left out of the combined answer. |
+| Combined answer | The answer lists the services and total downtime from verified answers, beside the truth from the generator and the number of agents that agree with it. |
+| GPU numbers | During a live run the page shows the server's KV-cache use, prefix-cache hit rate and running requests from its `/metrics`, when the server exposes them; missing metrics show as not reported, never as zero. |
+| Simulation | `mode: "simulated"` runs without any model server, with seeded timings and a few seeded wrong answers. The page says **Simulated** in the header and on every number; nothing simulated is labelled as measured. |
+| Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
+| Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
+| Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
+
+**Codex review, round 1** (of fa80ac7), each finding fixed with a regression test:
+
+- (high) Overlapping runs escaped the concurrency limit, and a running run could be dropped from the kept five while its agents kept working. One run at a time now (`409` while one runs), and only finished runs are dropped.
+- (medium) Model-server requests followed redirects, which could leave loopback: every request now uses `redirect: 'error'`; a test checks the redirect target is never contacted.
+- (medium) Model-server bodies were unbounded: capped at 256 KiB before parsing (the stream is cancelled), and answer fields are capped (service 80, cause 40, quote 400 characters, downtime 0 to 100,000).
+- (medium) The prefix-cache rate could include traffic from before the run, and a short run could finish without a sample. The baseline is read before the first agent starts, a last sample is taken after the last one, and a server's counters count only when both samples have them and they did not go backwards. The page now shows the server's running requests, "not reported" when missing.
+- (medium) Any number in the quote could verify a wrong downtime (a date, the incident number): the quote must state `<number> minutes`.
+- (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
+- (low) The finished message and an agent's token counts were not labelled simulated: both are now.
+- (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
+
+**Codex review, round 2** (of 5b6dd55): the round 1 fixes work. Fixed with tests:
+
+- (medium) A failed last metrics scrape kept the earlier sample unmarked: it is now marked stale, shows no "running now", and the page says "last sample before the end".
+- (medium) A model answering `{}` to every agent made a done run: an answer needs all four fields with the right types, so such a run fails.
+- (medium) A stalled poll never counted as a failure: every page request has a 5-second deadline covering the response.
+- (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
+
+**Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
