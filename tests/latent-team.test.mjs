@@ -78,6 +78,33 @@ test('W2: a credential the one-line printing creates is redacted', async () => {
   assert.ok(!result.answer.includes(value), result.answer);
 });
 
+test('W2: every copy of a value the printed answer reveals is redacted (review W2-8)', async () => {
+  // One-line printing turns an invisible character after the header's name into a space, so
+  // the header becomes visible; its value's other copies, plain or escaped, go too.
+  const value = 'harbor'.concat('-slate-42');
+  const zwsp = String.fromCodePoint(0x200b);
+  const escaped = 'harbor'.concat(String.fromCodePoint(92), 'u002d', 'slate-42');
+  for (const answer of [`${value} / Authorization:${zwsp}Bearer ${value}`, `${escaped} / Authorization:${zwsp}Bearer ${value}`]) {
+    const result = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(200, { ...ok, answer }) });
+    assert.equal(result.mode, 'latent-team');
+    assert.ok(!result.answer.includes(value) && !result.answer.includes(escaped), result.answer);
+  }
+});
+
+test('W2: a declared value is redacted in its escaped spelling too', async () => {
+  const value = 'harbor'.concat('-slate-42');
+  const escaped = 'harbor'.concat(String.fromCodePoint(92), 'u002d', 'slate-42');
+  const result = await latentTeam({ question: 'q', secrets: [value] }, { fetchImpl: fakeRuntime(200, { ...ok, answer: `it is ${escaped}` }) });
+  assert.ok(!result.answer.includes(escaped), result.answer);
+});
+
+test('W2: an answer that still holds a known value after redaction is held', async () => {
+  // The redaction writes [REDACTED secret], which holds this declared value: the final check
+  // refuses the answer instead of passing it on.
+  const result = await latentTeam({ question: 'q', secrets: ['REDACTED'] }, { fetchImpl: fakeRuntime(200, { ...ok, answer: 'the REDACTED word' }) });
+  assert.deepEqual(result, { mode: 'held', reason: 'output-unsafe' });
+});
+
 test('bad requests never reach the runtime', async () => {
   const calls = [];
   for (const input of [{}, { question: ' ' }, { question: 'x'.repeat(8001) }, { question: 'q', latentSteps: 81 },

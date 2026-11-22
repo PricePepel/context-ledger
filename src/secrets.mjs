@@ -208,7 +208,7 @@ function lineTails(text) {
       const end = lineEnd;
       const value = judgedValue(text, start, end, quote);
       if (!value || isPlaceholder(value)) continue;
-      found.push({ kind: rule.kind, start, end, prefix: 0 });
+      found.push({ kind: rule.kind, start, end, prefix: 0, value });
       // The rest of the line is already covered, so the next lead is looked for after it.
       pattern.lastIndex = Math.max(pattern.lastIndex, end);
     }
@@ -337,7 +337,7 @@ function candidates(text) {
       }
       const value = text.slice(start, end);
       if (value && rule.accept(inString ? decoded(value) : value)) {
-        all.push({ kind: rule.kind, start, end, rank: 2 + simpleRules.length + index, prefix: 0 });
+        all.push({ kind: rule.kind, start, end, rank: 2 + simpleRules.length + index, prefix: 0, value });
         pattern.lastIndex = Math.max(pattern.lastIndex, end);
       }
       // A rejected value is not skipped: a real secret may sit inside it, after its own name.
@@ -351,26 +351,91 @@ function candidates(text) {
  * Every span in text that looks like a credential, in text order. Overlapping candidates
  * merge into one span labelled with the most specific kind. Its prefix may be shown only
  * when that kind's match covers the whole span; otherwise the prefix would be part of an
- * enclosing value.
+ * enclosing value. With values: true each span also lists the values its candidates
+ * identified (a free-text span runs to the end of its line, but its value is the judged
+ * part), so a caller can find bare copies of them; runtime/latent_team/secret_scan.py does
+ * the same.
  */
-export function findSecrets(text) {
+export function findSecrets(text, { values = false } = {}) {
   if (typeof text !== 'string' || !text) return [];
   const spans = [];
   for (const candidate of candidates(text).sort((a, b) => a.start - b.start || a.rank - b.rank)) {
     const last = spans.at(-1);
+    const core = candidate.value ?? text.slice(candidate.start, candidate.end);
     if (last && candidate.start < last.end) {
       last.end = Math.max(last.end, candidate.end);
+      last.values.add(core);
       if (candidate.rank < last.best.rank) last.best = candidate;
     } else {
-      spans.push({ start: candidate.start, end: candidate.end, best: candidate });
+      spans.push({ start: candidate.start, end: candidate.end, best: candidate, values: new Set([core]) });
     }
   }
-  return spans.map(({ start, end, best }) => ({
+  return spans.map(({ start, end, best, values: found }) => ({
     kind: best.kind,
     start,
     end,
     prefix: best.start === start && best.end === end ? best.prefix : 0,
+    ...(values ? { values: [...found].filter(Boolean).sort() } : {}),
   }));
+}
+
+/**
+ * Text in a canonical form, with the original [start, end) of each canonical character.
+ * The forms are how a copy of a value can look between here and a reader: quoted-string
+ * escapes decoded, every space or separator character and any run of them read as one
+ * space, and each control or format character read as a space too (drop false: what
+ * one-line printing does) or as nothing (drop true: what a display shows). The same forms
+ * as canon in runtime/latent_team/gateway.py; JavaScript strings are UTF-16, so an escaped
+ * surrogate pair is the same two units as the literal character.
+ */
+function canonical(text, drop) {
+  let flat = '';
+  const spans = [];
+  for (let i = 0; i < text.length;) {
+    const start = i;
+    const escape = escapeAt(text, i);
+    let character;
+    if (escape) {
+      character = escape.character;
+      i += escape.length;
+    } else {
+      character = text[i];
+      i += 1;
+    }
+    const invisible = /[\p{Cc}\p{Cf}]/u.test(character) && !/\s/u.test(character);
+    if (drop && invisible) continue;
+    if (invisible || /[\s\p{Zl}\p{Zp}\p{Zs}]/u.test(character)) {
+      if (flat.endsWith(' ')) {
+        spans[spans.length - 1] = [spans[spans.length - 1][0], i];
+        continue;
+      }
+      character = ' ';
+    }
+    flat += character;
+    spans.push([start, i]);
+  }
+  return { flat, spans };
+}
+
+/**
+ * The original [start, end) ranges of text where either canonical form holds the same
+ * form of one of values: an escaped, spaced or invisibly split copy of a value.
+ */
+export function canonicalRanges(text, values) {
+  const out = [];
+  if (typeof text !== 'string' || !text) return out;
+  for (const drop of [false, true]) {
+    const { flat, spans } = canonical(text, drop);
+    for (const value of values) {
+      if (typeof value !== 'string') continue;
+      const target = canonical(value, drop).flat.trim();
+      if (!target) continue;
+      for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
+        out.push([spans[at][0], spans[at + target.length - 1][1]]);
+      }
+    }
+  }
+  return out;
 }
 
 /** text with every finding replaced by [REDACTED <kind>]; everything else is unchanged. */
