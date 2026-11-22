@@ -274,6 +274,10 @@ test('G9b review: a budget that fits the full briefing is never refused because 
     fitted += 1;
   }
   assert.ok(fitted > 0);
+  // Round 2: a budget below both sizes names the smaller one, here the full briefing (no hint).
+  assert.ok(estimate(fullAt(50)) > 50, 'the fixture refuses a budget of 50');
+  assert.throws(() => store.getGraphContext(graph.id, { question: 'goal', budget: 50 }),
+    { message: `budget is below the smallest briefing of this graph, about ${estimate(fullAt(50))} tokens.` });
   store.close();
 });
 
