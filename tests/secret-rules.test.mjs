@@ -42,7 +42,8 @@ test('W2: a second bare assignment has its value listed, the first cut where it 
 test('W2: shell syntax ends a value\'s head (review W2-19, W2-20)', () => {
   for (const text of ['password=paper-harbor; export aws_secret_access_key='.concat('A'.repeat(40)),
     'password=paper-harbor && api_key='.concat('synthetic-second'), 'password=paper-harbor > result.txt',
-    'password=paper-harbor & sleep 1', 'password=paper-harbor 2>> errors.log']) {
+    'password=paper-harbor & sleep 1', 'password=paper-harbor 2>> errors.log', 'password=paper-harbor>result.txt',
+    'password=paper-harbor& sleep 1', 'password=paper-harbor<input.txt']) {
     const [finding] = findSecrets(text, { values: true });
     assert.ok(finding.values.includes('paper-harbor'), `${text}: ${finding.values.join(' | ')}`);
   }

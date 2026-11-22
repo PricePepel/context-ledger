@@ -814,6 +814,29 @@ class ToolGateTest(unittest.TestCase):
         result = ToolGate(g).submit({"name": "store", "arguments": {"note": "paper-harbor"}}, lambda n, a: sent.append(a))
         self.assertEqual((result.sent, sent), (False, []))
 
+    def test_round21_operators_right_after_a_value_end_its_head(self):
+        # Review W2-21 finding 1: no space before the operator.
+        for line in ("password=paper-harbor>result.txt", "password=paper-harbor& sleep 1",
+                     "password=paper-harbor<input.txt"):
+            text = "Copy: paper-harbor" + chr(10) + line
+            self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text, line)
+            released = OutputGate(gateway_admitted()).release(text)
+            self.assertNotIn("paper-harbor", released.text, line)
+        # A head under four characters is not a value of its own.
+        from latent_team import secret_scan
+        [finding] = secret_scan.find_secrets("password=a&bcdefgh", values=True)
+        self.assertNotIn("a", finding["values"])
+
+    def test_round21_a_credential_a_call_brings_to_an_outside_effect_from_untrusted_memory(self):
+        # Review W2-21 finding 2: the tool is cleared, but the call brings the credential.
+        tool = Tool("post", outside_effect=True, arguments=(Argument("password", required=False),), cleared=True)
+        g = gateway(tools=(tool,), clearance="sensitive")
+        g.admit([Span("chat", "chat", "Hello")])
+        sent = []
+        result = ToolGate(g).submit({"name": "post", "arguments": {"password": "paper-harbor"}},
+                                    lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, result.reason, sent), (False, "rule-of-two", []))
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

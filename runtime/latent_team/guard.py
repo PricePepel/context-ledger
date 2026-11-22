@@ -286,6 +286,9 @@ class Guard:
             if admitted:
                 started = min([started] + admitted)
         gates = None if gateways is None else [OutputGate(g) for g in gateways]
+        if self._over(started, cap):   # the budget is spent before inference (review W2-21)
+            watch.drop()
+            return [self._held(steps, "deadline") for _ in range(rows)]
         try:
             outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
                                  calibration=calibration, cap=cap)
@@ -293,6 +296,10 @@ class Guard:
             outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
             watch.drop()
+        # The release boundary is here, after cleanup: an answer past the deadline holds.
+        if self._over(started, cap):
+            outcomes = [o if o.answer is None else self._held(steps, "deadline", o.tokens, o.latent_vectors, o.seconds)
+                        for o in outcomes]
         if gates is not None:
             for outcome, gateway in zip(outcomes, gateways):
                 outcome.gateway = dict(gateway.admission.receipt(), redactions=outcome.gateway.get("redactions", 0))

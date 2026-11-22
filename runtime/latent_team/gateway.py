@@ -710,8 +710,13 @@ class ToolGate:
         if not tool.cleared and any(self.gateway.holds_placeholder(v) or self.gateway.holds_value(v, collapsed=True)
                                     for v in together):
             return "placeholder"   # a known value the fields only make together (review W2-20)
-        if not tool.cleared and any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound + together):
+        found = any(self.gateway._scan_all(self.gateway.masked(v)) for v in outbound + together)
+        if not tool.cleared and found:
             return "secret"
+        # The rule of two for the call itself (review W2-21): untrusted memory, a credential the
+        # call brings, and an outside effect are all three, cleared tool or not.
+        if found and tool.outside_effect and self.admission.label.trust == "untrusted":
+            return "rule-of-two"
         return "allowed"
 
     def submit(self, call, send):

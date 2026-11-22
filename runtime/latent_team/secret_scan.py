@@ -504,6 +504,8 @@ def candidates(text):
 # Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
 # and "x && ..." name the value x (review W2-19).
 _HEAD_END = _compile(RULES["freeText"]["valueHeadEnd"])
+# A shorter head is not a value of its own, so "a&b" never makes every "a" a secret.
+_HEAD_MIN = RULES["freeText"]["valueHeadMin"]
 
 
 def _span_values(text, members):
@@ -520,7 +522,7 @@ def _span_values(text, members):
                 out.add(core)
                 cut = _HEAD_END.search(core)
                 head = core[:cut.start()].rstrip(" \t,;") if cut else ""
-                if head and not is_placeholder(head):
+                if len(head) >= _HEAD_MIN and not is_placeholder(head):
                     out.add(head)
             if tail:
                 out.add(text[candidate["start"]:candidate["value_end"]])
