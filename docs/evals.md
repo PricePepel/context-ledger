@@ -4547,3 +4547,5 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
   - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
   - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
 - **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
+- **Codex review of the rework, round 4:** no findings.
+- **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).
