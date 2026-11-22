@@ -41,6 +41,43 @@ PROPOSE = (0, 2)                       # candidates only: W1 fitted its threshol
 CERTIFY = (1, 3)
 SCORE = (4, 5, 6)                      # 6: the 119 questions after block 5
 FITTED_BY_W1 = (0, 2)
+# The certification plans: (block, how many of its questions, None for all). "full" is the plan
+# decided before any run; "today" is the cut taken on 2026-11-22 so a single-request run
+# finishes in a day on the laptop GPU (about 100 s a request with two shards): 60 proposal
+# questions (they only place the candidate cutoffs), all 200 of block 1 to certify (the least
+# that makes a 10% bound at 0.05 / 20 reachable), and 150 of block 3 to score.
+PLANS = {
+    "full": {"propose": ((0, None), (2, None)), "certify": ((1, None), (3, None)),
+             "score": ((4, None), (5, None), (6, None))},
+    "today": {"propose": ((0, 60),), "certify": ((1, None),), "score": ((3, 150),)},
+}
+
+
+def plan_blocks(plan, part):
+    return tuple(block for block, _ in PLANS[plan][part])
+
+
+def plan_items(items, plan, part):
+    """(block, position, item) for one part of a plan."""
+    out = []
+    for block, count in PLANS[plan][part]:
+        chosen = block_items(items, block)
+        out += [(block, position, item) for position, item in enumerate(chosen if count is None else chosen[:count])]
+    return out
+
+
+def describe(plan, part):
+    """Words for one part of a plan, as in "block 0 (60 questions)"."""
+    return ", ".join(f"block {block}" + ("" if count is None else f" ({count} questions)")
+                     for block, count in PLANS[plan][part])
+
+
+def plan_keys(plan, part):
+    keys = []
+    for block, count in PLANS[plan][part]:
+        size = COUNT if block < 6 else GSM8K_TEST - 6 * COUNT
+        keys += [("gsm8k", block, position) for position in range(size if count is None else count)]
+    return keys
 PROBE_TRAIN, PROBE_TEST = (0, 1, 2), (3, 4, 5)
 TRANSFER_BLOCK, TRANSFER = 3, 64       # batched questions also run one at a time in the batched run
 TARGET, DELTA, GRID = 0.10, 0.05, 20
@@ -225,7 +262,7 @@ def part_certify(args):
     team.latent_mas(warm, steps=2, max_new_tokens=8)
     thresholds = load_thresholds(MODEL, team_weights(team)[0])   # the committed set, as the service loads it
     fitted = {thresholds["measuredOn"]["block"], thresholds["distance"]["referenceBlock"]}
-    if fitted != set(FITTED_BY_W1) or fitted & set(CERTIFY + SCORE):
+    if fitted != set(FITTED_BY_W1) or fitted & set(plan_blocks(args.plan, "certify") + plan_blocks(args.plan, "score")):
         raise SystemExit(f"W1 fitted blocks {sorted(fitted)}: they may not certify or score")
     service = TeamService(team, steps=STEPS)
     if service.guard.reference is None:
@@ -234,11 +271,11 @@ def part_certify(args):
     service.guard.calibration = lambda task, *rest, **kw: PROBE_SCORE if task else None
     # The proposal blocks run as single requests too, since the batched run that carried them
     # crashed (its scores would only have proposed candidates anyway).
-    work = [("gsm8k", block, position, item) for block in PROPOSE + CERTIFY + SCORE
-            for position, item in enumerate(block_items(items, block))]
+    work = [("gsm8k", block, position, item) for part in ("propose", "certify", "score")
+            for block, position, item in plan_items(items, args.plan, part)]
     work += [("fresh", None, position, item) for position, item in enumerate(fresh_items())]
     path = os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json")
-    manifest = {"weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"], "reference": True,
+    manifest = {"plan": args.plan, "weightsHash": team_weights(team)[0], "thresholdSet": thresholds["id"], "reference": True,
                 "fittedByW1": sorted(fitted), "dataset": dataset, "shard": args.shard, "shards": args.shards,
                 "commit": open(os.path.join(REPO, "COMMIT")).read().strip()
                 if os.path.exists(os.path.join(REPO, "COMMIT")) else None}
@@ -277,9 +314,9 @@ def part_certify(args):
         rows.append({"kind": kind, "block": block, "position": position, "action": action, "reason": reason,
                      "fallback": fallback, "confidence": confidence, "teamAnswer": action == "release" and not fallback,
                      "releasedCorrect": good, "seconds": round(seconds, 3)})
-        if len(rows) % 10 == 0:
+        if len(rows) % 5 == 0:
             save(False)
-        if len(rows) % 25 == 0:
+        if len(rows) % 5 == 0:
             print(f"shard {args.shard}: {len(rows)} done, {sum(r['seconds'] for r in rows) / len(rows):.1f} s each",
                   flush=True)
     save(True)
@@ -414,8 +451,8 @@ def part_analyze(args):
         if data.get("complete") is not True:
             raise SystemExit(f"{path} is not complete")
         single += data["rows"]
-        manifests.append({k: data.get(k) for k in ("weightsHash", "thresholdSet", "reference", "fittedByW1", "dataset",
-                                                  "shards", "commit")} | {"shard": data.get("shard")})
+        manifests.append({k: data.get(k) for k in ("plan", "weightsHash", "thresholdSet", "reference", "fittedByW1",
+                                                  "dataset", "shards", "commit")} | {"shard": data.get("shard")})
     # One run (review W3-3): every shard of one manifest, each once, and exactly the expected
     # requests, each once.
     if not manifests or any({k: v for k, v in m.items() if k != "shard"} !=
@@ -427,15 +464,17 @@ def part_analyze(args):
     if batched is not None and (meta["weightsHash"] != batched["weightsHash"] or
                                 meta["thresholdSet"] != batched["thresholdSet"]):
         batched = None   # of another run: not used, even for exploration
-    expected = sorted([("gsm8k", b, p) for b in PROPOSE + CERTIFY + SCORE
-                       for p in range(COUNT if b < 6 else GSM8K_TEST - 6 * COUNT)]
+    plan = meta.get("plan") or "full"
+    expected = sorted(plan_keys(plan, "propose") + plan_keys(plan, "certify") + plan_keys(plan, "score")
                       + [("fresh", None, p) for p in range(len(fresh_items()))], key=str)
     if sorted(((r["kind"], r["block"], r["position"]) for r in single), key=str) != expected:
         raise SystemExit("the certification requests are not exactly the expected ones, each once")
     gsm = [r for r in single if r["kind"] == "gsm8k"]
-    proposal = [released_score(r)[0] for r in gsm if r["block"] in PROPOSE]
-    cert = [r for r in gsm if r["block"] in CERTIFY]
-    scored = [r for r in gsm if r["block"] in SCORE]
+    keys = {part: set(plan_keys(plan, part)) for part in ("propose", "certify", "score")}
+    part_of = lambda r, part: (r["kind"], r["block"], r["position"]) in keys[part]   # noqa: E731
+    proposal = [released_score(r)[0] for r in gsm if part_of(r, "propose")]
+    cert = [r for r in gsm if part_of(r, "certify")]
+    scored = [r for r in gsm if part_of(r, "score")]
     fresh_all = [r for r in single if r["kind"] == "fresh"]
     fresh = [r for r in fresh_all if r["releasedCorrect"] is not None]   # graded rows only
     cert_pairs, score_pairs = [released_score(r) for r in cert], [released_score(r) for r in scored]
@@ -445,7 +484,8 @@ def part_analyze(args):
     result.update(counts(scored, score_pairs, threshold))
     seconds = [r["seconds"] for r in single]
     summary = {
-        "threshold": threshold, "certification": chosen, "candidates": len(steps),
+        "plan": plan, "threshold": threshold, "certification": chosen, "candidates": len(steps),
+        "proposalQuestions": len(proposal), "scoredQuestions": len(scored),
         "certificationQuestions": len(cert), "eval11": result,
         "releasedAccuracyBeforeThreshold": {
             "certify": round(sum(r["releasedCorrect"] for r in cert) / len(cert), 4),
@@ -526,6 +566,7 @@ def finish(args, summary, result, threshold, chosen, meta):
     print(json.dumps(summary, indent=1, default=str))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(summary, handle, indent=1, default=str)
+    plan = meta.get("plan") or "full"
     if args.calibration_dir and result["passed"]:
         from .abstain import artifact_name, validate
         os.makedirs(args.calibration_dir, exist_ok=True)
@@ -535,8 +576,11 @@ def finish(args, summary, result, threshold, chosen, meta):
             "steps": STEPS, "maxNewTokens": TOKENS, "batch": 1, "gated": True, "grid": GRID,
             "score": "answer-number-logprob", "threshold": threshold, "target": TARGET, "delta": DELTA,
             "certified": True,
-            "measuredOn": {"split": "test", "seed": SEED, "blockSize": COUNT, "propose": list(PROPOSE),
-                           "certify": list(CERTIFY), "score": list(SCORE), "fittedByW1": list(FITTED_BY_W1),
+            "measuredOn": {"split": "test", "seed": SEED, "blockSize": COUNT, "plan": meta.get("plan") or "full",
+                           "propose": [list(x) for x in PLANS[meta.get("plan") or "full"]["propose"]],
+                           "certify": [list(x) for x in PLANS[meta.get("plan") or "full"]["certify"]],
+                           "score": [list(x) for x in PLANS[meta.get("plan") or "full"]["score"]],
+                           "fittedByW1": list(FITTED_BY_W1),
                            "requests": "single, through TeamService", "date": time.strftime("%Y-%m-%d")},
             "certification": {"threshold": threshold, "released": chosen["released"], "errors": chosen["errors"],
                               "upper": upper_bound(chosen["errors"], chosen["released"], DELTA / GRID)},
@@ -545,10 +589,10 @@ def finish(args, summary, result, threshold, chosen, meta):
             "about": ("W3 calibration (docs/watchdog-security.md): for single requests through the latent team "
                       "service on this kind of task, an answer is released when the log-probability of its graded "
                       "number reaches the threshold (a fallback answer is released, a held run is not). Candidates "
-                      "came from the scores of GSM8K test blocks 0 and 2, were tested on blocks 1 and 3 at 0.05 / 20 "
-                      "each (Bonferroni over the grid, one-sided Clopper-Pearson) for a 10% error ceiling, and the "
-                      "threshold was scored on blocks 4, 5 and the rest of the test set. Void for any other weights, "
-                      "task or policy."),
+                      f"came from the scores of GSM8K test {describe(plan, 'propose')}, were tested on "
+                      f"{describe(plan, 'certify')} at 0.05 / 20 each (Bonferroni over the grid, one-sided "
+                      f"Clopper-Pearson) for a 10% error ceiling, and the threshold was scored on {describe(plan, 'score')} "
+                      f"(plan {plan!r}). Void for any other weights, task or policy."),
         }
         validate(calibration, TASK, MODEL)
         with open(os.path.join(args.calibration_dir, artifact_name(TASK, MODEL)), "w") as handle:
@@ -564,6 +608,7 @@ def main():
     parser.add_argument("--calibration-dir", default=None)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
+    parser.add_argument("--plan", choices=sorted(PLANS), default="full")
     args = parser.parse_args()
     args.out = os.path.expanduser(args.out)
     args.w1 = os.path.expanduser(args.w1)
