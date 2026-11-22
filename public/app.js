@@ -85,12 +85,22 @@ async function search() {
   }
 }
 
+// Card I3: a message between two Codex agents shows who sent it to whom.
+// Paths are shown with control and format characters escaped, so they cannot reorder or hide text.
+const pathLabel = path => path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, character => [...Array(character.length).keys()]
+  .map(index => '\\u' + character.charCodeAt(index).toString(16).padStart(4, '0')).join(''));
+
+function speaker(message) {
+  if (message.role === 'agent') return `Agent ${pathLabel(message.author)} to ${pathLabel(message.recipient)}`;
+  return message.role === 'user' ? 'User' : 'Assistant';
+}
+
 function messageRow(message) {
   const item = document.createElement('li');
   const meta = document.createElement('div');
   meta.className = 'message-meta';
   meta.append(
-    textElement('span', message.role === 'user' ? 'User' : 'Assistant'),
+    textElement('span', speaker(message)),
     textElement('span', `Line ${message.line}`, 'line-number'),
   );
   item.append(meta, textElement('p', message.text, 'message-text'));
