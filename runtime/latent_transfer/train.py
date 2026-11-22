@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 from .data import doc_text, f1, question_suffix, squad, wikitext
 from .mapper import calibrate_sigma, parameter_count
-from .pair import TransferPair
+from .pair import RECEIVER, SENDER, TransferPair
 
 DEV_TITLES = 20  # SQuAD train articles kept out of training, for dev F1 during training
 
@@ -133,6 +133,8 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--resume", help="checkpoint to start stage 2 from (skips stage 1)")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--sender", default=SENDER, help="Hugging Face id of the sender model")
+    parser.add_argument("--receiver", default=RECEIVER, help="Hugging Face id of the receiver model (ChatML template)")
     args = parser.parse_args()
     os.makedirs(os.path.expanduser(args.out), exist_ok=True)
     out = os.path.expanduser(args.out)
@@ -147,7 +149,7 @@ def main():
             handle.write(json.dumps(fields) + "\n")
 
     config = dict(dim=args.dim, heads=args.heads, ffn=args.ffn, blocks=args.blocks)
-    pair = TransferPair(mapper_config=config, checkpoint=args.resume)
+    pair = TransferPair(sender=args.sender, receiver=args.receiver, mapper_config=config, checkpoint=args.resume)
     log(event="start", args=vars(args), mapperParams=parameter_count(pair.mapper))
 
     squad_train, squad_dev = split_squad(args.seed)
