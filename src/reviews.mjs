@@ -20,8 +20,8 @@ export const labelRule = 'An edit needs label: the corrected label, 1 to 500 cha
 const lineBreak = /[\n\r\v\f\u0085\p{Zl}\p{Zp}]/u;
 // The two patterns of a version 3 graph label (schemas/semantic-graph-v3.schema.json):
 // something visible, and no control, separator or bidi control.
-const visibleLabel = /[^\s\p{C}\p{M}ᅟᅠㅤﾠ⠀]/u;
-const plainLabel = /^[^\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]*$/u;
+const visibleLabel = /[^\s\p{C}\p{M}\u115F\u1160\u3164\uFFA0\u2800]/u;
+const plainLabel = /^[^\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]*$/u;
 /** The prev of the first event. */
 export const genesis = '0'.repeat(64);
 

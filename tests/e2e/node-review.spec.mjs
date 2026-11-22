@@ -129,6 +129,8 @@ test('P3: a person edits a node label; the edit is kept as an event and shown as
   await expect(port).toContainText('Edited by Mira (self-asserted)');
   await expect(port.locator('.edited-label .node-label')).toHaveText(`Port 4317 ${hostile} from Friday`);
   await expect(port).toHaveAttribute('data-state', 'edited');
+  // P3 review 10: focus returns to the node's Edit button after the save.
+  await expect(port.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
   await expect(port.getByLabel('Corrected label')).toHaveCount(0);
   expect(await page.locator('#review-nodes img').count()).toBe(0);
   // The graph's own label is unchanged.

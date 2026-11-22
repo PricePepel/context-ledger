@@ -632,7 +632,7 @@ async function reviewNode(nodeId, nodeSha256, decision, label) {
     if (reviewGraph && reviewGraph !== graph) renderReview(reviewGraph);
   }
   // Focus goes back only to the graph this decision was for (P2c review round 2).
-  if (reviewGraph === graph) reviewNodes.querySelector(`li[data-node="${nodeId}"] button[data-decision="${decision}"]`)?.focus();
+  if (reviewGraph?.id === graph.id) reviewNodes.querySelector(`li[data-node="${CSS.escape(nodeId)}"] button[data-decision="${decision}"]`)?.focus();
 }
 
 reviewForm.addEventListener('submit', async (event) => {
