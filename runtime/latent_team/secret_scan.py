@@ -351,11 +351,16 @@ def line_tails(text):
             end = line_end
             leads.append(match.start())
             value_end = judged_end(text, start, end, quote, trimmed)
-            if value_end <= start or _placeholder_at(text, start, value_end):
+            if value_end <= start:
+                continue
+            # A value up to maxJudged is judged now; a longer one once every lead is known,
+            # below, so a line of many assignments is still read in linear time.
+            long = value_end - start > JUDGED_MAX
+            if not long and is_placeholder(text[start:value_end]):
                 continue
             closed = bool(quote) and value_end < end
             candidate = {"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value_end": value_end,
-                         "closed": closed}
+                         "closed": closed, "long": long}
             if quote and not closed:
                 # The judged value runs to the line end ("x". is not a stand-in), but what the
                 # quotes hold is a value of its own (review W2-14).
@@ -367,14 +372,19 @@ def line_tails(text):
             # this lead.
             position = max(position, value_end + 1 if closed else start)
     leads.sort()
+    kept = []
     for candidate in found:
         stop = candidate["value_end"]
-        if not candidate["closed"]:
-            at = bisect.bisect_right(leads, candidate["start"])
-            if at < len(leads) and leads[at] < stop:
-                stop = leads[at]
-        candidate["core_end"] = stop
-    return found
+        at = bisect.bisect_right(leads, candidate["start"])
+        later = leads[at] if at < len(leads) and leads[at] < stop else None
+        # A long value is a stand-in as P4c judged it (review W2-17), judged once: a value that
+        # holds another assignment never is one, so only the last on its line, or a quoted
+        # one, is read by the stand-in rules.
+        if candidate.pop("long") and later is None and is_placeholder(text[candidate["start"]:stop]):
+            continue
+        candidate["core_end"] = later if later is not None and not candidate["closed"] else stop
+        kept.append(candidate)
+    return kept
 
 
 def jwts(text):
