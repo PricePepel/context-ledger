@@ -4608,3 +4608,15 @@ Codex confirmed the round-2 fixes (ranges found on the original text, the assemb
 - (medium) Eval 9's wording said an outside-effect call from a sensitive memory is never sent, while a tool cleared for sensitive data can receive one (a trusted sensitive memory holds two of the rule of two's three). The policy stays; the eval now says it exactly, and a test shows the cleared tool is reachable and the uncleared one is not.
 - (medium) Eval 10 could miss a write through a handle opened before the run: the fresh process now compares the contents of every file in its folders, with a positive control that writes through such a handle. Writes outside those folders by native code stay out of scope.
 
+### W2 review, round 4 (2026-11-22, Codex, read-only, of d0f61ec)
+
+Codex confirmed the round-3 unit regressions and found no raw control character. Its findings, all fixed in 2ba8176 with a regression test each:
+
+- (high) A finding written with JSON escapes (a `G` for its first letter) was known only in that spelling, so its decoded copy reached the model and an uncleared answer: both spellings are known values now.
+- (high) A credential first seen in the answer survived at its other occurrences (`password=harbor-slate-42`, then `Again: harbor-slate-42`): every occurrence of each value the answer scan finds is redacted and covered by the safety check.
+- (medium) The cut marker of an oversized chat could bring a declared value into the text: the cut text is checked and refused like any other.
+- (medium) The tool gate validated one read of a call and sent another, and two concurrent submissions could both pass a budget of one: it checks and sends one deep copy, and the check and the budget reservation are one locked step.
+- (medium) Eval 7 read only the top rank of the thought record: every rank is read as a sequence, and the positive control puts its canary at a lower rank.
+
+**Local suites (W2 tree, which holds W1), 2026-11-22:** `npm run -s test:graph` passes; `node --test tests/*.test.mjs` 530 pass, 10 skipped, 1 failed before the fix below; `npx playwright test` 32/32; runtime 372 tests with torch (WSL). The one node failure was `tests/paging.test.mjs`'s cap on the MCP tool list (3,500 characters over 19f6522): the `secrets` and `clearance` fields made it 488 characters too long, so they are not in the MCP tool's schema; the ledger's HTTP API and the runtime's routes still take them.
+
