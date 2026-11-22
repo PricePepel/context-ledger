@@ -555,14 +555,24 @@ class Gateway:
             places = []
             for value in finding.get("values") or [span]:
                 at = span.find(value) if value else -1
-                places.append((start + at, start + at + len(value)) if at != -1 else (start, end))
-            for a, b in places:
+                if at != -1:
+                    found_at = [(start + at, start + at + len(value))]
+                else:
+                    # A spelling only a decoded or canonical view shows (an escape, an invisible
+                    # character): where it lies in the text, through those views (review W2-15).
+                    found_at = [(start + a, start + b) for a, b in canon_ranges(span, [value])] or [(start, end)]
+                places += [(a, b, value) for a, b in found_at]
+            for a, b, value in places:
                 outside = _subtract((a, b), allowed)
                 if any(x < b and a < y for x, y in put_back):
                     outside = [(x, y) for x, y in outside if re.search(r"\w", text[x:y])]
                 out += outside
-                if values is not None:
+                if values is not None and outside:
+                    # The parts not authorised, and the value as the scanner identified it, so
+                    # its copies are found in every spelling (review W2-14, W2-15).
                     values.update(text[x:y] for x, y in outside if text[x:y].strip())
+                    if value and value.strip():
+                        values.add(value)
         return self._merge(out)
 
     def holds_placeholder(self, text):
