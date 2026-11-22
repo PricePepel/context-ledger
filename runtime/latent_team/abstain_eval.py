@@ -17,8 +17,8 @@ W1's thresholds come from block 0 and its distance reference from block 2, so bl
 certify them, and blocks 4 and 5 and the 119 questions after block 5 are scored.
 
 The batched run (--part run) is exploratory: it gives the proposal scores, the probe of
-eval 13 and how batched decisions compare with single ones. Eval 14 (refusals) is not run
-here.
+eval 13 and how batched decisions compare with single ones. Eval 14 (refusals) runs in
+safety_eval.py.
 
 Written to --out on this machine only: per-question numbers (decision, correct or not,
 scores, seconds) and the probe's aggregate results. No question, answer, thought record,
