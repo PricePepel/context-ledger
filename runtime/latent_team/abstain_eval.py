@@ -74,6 +74,70 @@ def work_keys(plan, fresh=None):
             + [("fresh", None, position) for position in range(fresh)])
 
 
+PARTS = ("propose", "certify", "score", "fresh")
+BARRIER_POLL, BARRIER_LIMIT = 10, 3 * 3600   # seconds
+
+
+def part_of_keys(plan, fresh=None):
+    """{request key: its part} for every request of a plan."""
+    fresh = len(fresh_items()) if fresh is None else fresh
+    parts = {key: part for part in ("propose", "certify", "score") for key in plan_keys(plan, part)}
+    parts.update({("fresh", None, position): "fresh" for position in range(fresh)})
+    return parts
+
+
+def barrier_ready(out, manifest, part, order, parts):
+    """True when every shard of this run has saved every request it owns from the parts before
+    `part` (review W3-6). The shards share one GPU, so a request of one part could otherwise
+    slow another shard's request of an earlier part past its deadline: the proposal grid could
+    then depend on certification requests, and the certification on scored ones."""
+    earlier = set(PARTS[:PARTS.index(part)])
+    shards = manifest["shards"]
+    same = {k: v for k, v in manifest.items() if k != "shard"}
+    for shard in range(shards):
+        needed = {key for number, key in enumerate(order) if number % shards == shard and parts[key] in earlier}
+        if not needed:
+            continue
+        try:
+            with open(os.path.join(out, f"certify-{shard}-of-{shards}.json")) as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        if {k: data.get(k) for k in same} != same:   # no file of this run yet
+            return False
+        if not needed <= {(r["kind"], r["block"], r["position"]) for r in data.get("rows", [])}:
+            return False
+    return True
+
+
+def wait_for_part(out, manifest, part, order, parts, poll=BARRIER_POLL, limit=BARRIER_LIMIT, sleep=time.sleep):
+    waited = 0
+    while not barrier_ready(out, manifest, part, order, parts):
+        if waited >= limit:
+            raise SystemExit(f"waited {limit} s for the other shards to finish the parts before {part}")
+        sleep(poll)
+        waited += poll
+
+
+def run_work(work, shard, shards, done, rows, ask, save, wait_part, parts):
+    """This shard's requests in order. Before its first request of each part it saves its rows
+    and waits until every shard has finished the parts before it (review W3-6)."""
+    current = None
+    for number, (kind, block, position, item) in enumerate(work):
+        if number % shards != shard or (kind, block, position) in done:
+            continue
+        part = parts[(kind, block, position)]
+        if part != current:
+            save(False)
+            wait_part(part)
+            current = part
+        rows.append(ask(kind, block, position, item))
+        if len(rows) % 5 == 0:
+            save(False)
+            print(f"shard {shard}: {len(rows)} done, {sum(r['seconds'] for r in rows) / len(rows):.1f} s each",
+                  flush=True)
+
+
 def describe(plan, part):
     """Words for one part of a plan, as in "block 0 (60 questions)"."""
     return ", ".join(f"block {block}" + ("" if count is None else f" ({count} questions)")
@@ -322,7 +386,7 @@ def part_certify(args):
     path = os.path.join(args.out, f"certify-{args.shard}-of-{args.shards}.json")
     manifest = {"run": args.run, "plan": args.plan, "weightsHash": team_weights(team)[0],
                 "thresholdSet": thresholds["id"], "reference": True, "fittedByW1": sorted(fitted), "dataset": dataset,
-                "shard": args.shard, "shards": args.shards, "commit": commit}
+                "shard": args.shard, "shards": args.shards, "commit": commit, "phases": "separated"}
     rows = resumed(path, manifest, owned)
     done = {(r["kind"], r["block"], r["position"]) for r in rows}
 
@@ -332,9 +396,9 @@ def part_certify(args):
             json.dump(dict(manifest, rows=rows, complete=complete), handle)
         os.replace(temporary, path)
 
-    for number, (kind, block, position, item) in enumerate(work):
-        if number % args.shards != args.shard or (kind, block, position) in done:
-            continue
+    order, parts = work_keys(args.plan), part_of_keys(args.plan)
+
+    def ask(kind, block, position, item):
         started = time.perf_counter()
         try:
             answer, outcome, _ = service.run(item["question"], STEPS, TOKENS, task=TASK)
@@ -349,14 +413,12 @@ def part_certify(args):
             good = released is not None and correct(released, item["gold"])
         else:
             good = grade_fresh(item["entry"], released)
-        rows.append({"kind": kind, "block": block, "position": position, "action": action, "reason": reason,
-                     "fallback": fallback, "confidence": confidence, "teamAnswer": action == "release" and not fallback,
-                     "releasedCorrect": good, "seconds": round(seconds, 3)})
-        if len(rows) % 5 == 0:
-            save(False)
-        if len(rows) % 5 == 0:
-            print(f"shard {args.shard}: {len(rows)} done, {sum(r['seconds'] for r in rows) / len(rows):.1f} s each",
-                  flush=True)
+        return {"kind": kind, "block": block, "position": position, "action": action, "reason": reason,
+                "fallback": fallback, "confidence": confidence, "teamAnswer": action == "release" and not fallback,
+                "releasedCorrect": good, "seconds": round(seconds, 3)}
+
+    run_work(work, args.shard, args.shards, done, rows, ask, save,
+             lambda part: wait_for_part(args.out, manifest, part, order, parts), parts)
     save(True)
     print(f"shard {args.shard} done: {len(rows)} requests", flush=True)
 
@@ -389,8 +451,9 @@ def worst_case_eval11(scored, threshold):
     from .abstain import passes, score_threshold
     pairs = [worst_case(r) for r in scored]
     result = score_threshold([p[0] for p in pairs], [p[1] for p in pairs], threshold, TARGET)
-    held = sum(r["action"] != "release" for r in scored)
-    result["heldCountedWrong"] = held if threshold is not None else 0
+    # released() takes math.inf scores at any threshold, None too, so the holds are always in
+    # the tally (review W3-6).
+    result["heldCountedWrong"] = sum(r["action"] != "release" for r in scored)
     result["releasedWithoutHolds"] = result["released"] - result["heldCountedWrong"]
     result["passed"] = bool(threshold is not None and passes(result["errors"], result["released"], len(scored), TARGET)
                             and result["releasedWithoutHolds"] >= len(scored) / 2)
@@ -516,7 +579,7 @@ def part_analyze(args):
         single += data["rows"]
         by_shard[data.get("shard")] = data["rows"]
         manifests.append({k: data.get(k) for k in ("run", "plan", "weightsHash", "thresholdSet", "reference",
-                                                  "fittedByW1", "dataset", "shards", "commit")}
+                                                  "fittedByW1", "dataset", "shards", "commit", "phases")}
                          | {"shard": data.get("shard")})
     # One run (review W3-3): every shard of one manifest, each once, and exactly the expected
     # requests, each once.
@@ -531,6 +594,8 @@ def part_analyze(args):
     if not all(isinstance(meta.get(k), str) and meta[k] for k in ("run", "commit")) or \
             not isinstance(meta.get("dataset"), dict) or not meta["dataset"].get("labels"):
         raise SystemExit("the certification shards do not name their run, commit and labelled dataset")
+    if meta.get("phases") != "separated":   # review W3-6
+        raise SystemExit("the certification shards did not wait for each other between parts")
     if batched is not None and (meta["weightsHash"] != batched["weightsHash"] or
                                 meta["thresholdSet"] != batched["thresholdSet"]):
         batched = None   # of another run: not used, even for exploration
@@ -582,11 +647,12 @@ def part_analyze(args):
         "singleSeconds": {"median": sorted(seconds)[len(seconds) // 2], "mean": round(sum(seconds) / len(seconds), 2)},
     }
     # Eval 12: the same threshold on the fresh set; nothing to transfer when nothing certified.
-    if threshold is None:
-        summary["eval12"] = {"skipped": "no threshold certified"}
-    else:
-        fresh_pairs = [released_score(r) for r in fresh]
-        summary["eval12"] = score_threshold([p[0] for p in fresh_pairs], [p[1] for p in fresh_pairs], threshold, TARGET)
+    # At the threshold that would ship, the worst case's (review W3-6), and apart at the
+    # pre-registered count's.
+    fresh_pairs = [released_score(r) for r in fresh]
+    for name, value in (("eval12", worst_threshold), ("eval12AtPreRegisteredThreshold", threshold)):
+        summary[name] = {"skipped": "no threshold certified"} if value is None else \
+            score_threshold([p[0] for p in fresh_pairs], [p[1] for p in fresh_pairs], value, TARGET)
     summary["eval12Ungraded"] = len(fresh_all) - len(fresh)
     fresh_fallbacks = [r for r in fresh if r["fallback"]]
     summary["eval12Baseline"] = {"questions": len(fresh), "fallbacksReleased": len(fresh_fallbacks),

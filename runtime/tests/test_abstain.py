@@ -253,7 +253,7 @@ class RunProvenanceTest(unittest.TestCase):
     def manifest(self, shard, **changes):
         data = {"run": "run-1", "plan": "today", "weightsHash": "w", "thresholdSet": "t-1", "reference": True,
                 "fittedByW1": [0, 2], "dataset": {"revision": "r", "fingerprint": "f", "labels": "l"},
-                "shard": shard, "shards": 2, "commit": "abc1234"}
+                "shard": shard, "shards": 2, "commit": "abc1234", "phases": "separated"}
         data.update(changes)
         return data
 
@@ -292,7 +292,8 @@ class RunProvenanceTest(unittest.TestCase):
                               (self.manifest(0, run=None), self.manifest(1, run=None)),
                               (self.manifest(0, commit=None), self.manifest(1, commit=None)),
                               (self.manifest(0, dataset={"revision": "r", "fingerprint": "f"}),
-                               self.manifest(1, dataset={"revision": "r", "fingerprint": "f"}))):
+                               self.manifest(1, dataset={"revision": "r", "fingerprint": "f"})),
+                              (self.manifest(0, phases=None), self.manifest(1, phases=None))):   # review W3-6
             with self.subTest((first, second)), self.assertRaises(SystemExit):
                 self.analyse([(first, shard_rows(even)), (second, shard_rows(odd))])
 
@@ -329,6 +330,36 @@ class RunProvenanceTest(unittest.TestCase):
         self.assertEqual(summary["holdsByReason"]["score"], {"deadline": 40})
         # worst_case itself: a hold is released and wrong at every threshold.
         self.assertEqual(abstain_eval.worst_case({"action": "hold"}), (math.inf, True))
+
+    def test_certification_holds_can_withhold_the_calibration(self):
+        # Review W3-6: holds in the certification move the worst case's cutoff; enough of
+        # them leave nothing certified, and no calibration, though the pre-registered count
+        # certifies; with no cutoff the report still counts the holds it tallied.
+        from latent_team import abstain_eval
+        keys = abstain_eval.work_keys("today")
+        rows = shard_rows(keys)
+        for r in [r for r in rows if r["block"] == 1][:30]:
+            r.update(action="hold", reason="deadline", teamAnswer=False, releasedCorrect=False, confidence=None)
+        even = [r for n, r in enumerate(rows) if n % 2 == 0]
+        odd = [r for n, r in enumerate(rows) if n % 2 == 1]
+        with tempfile.TemporaryDirectory() as calibration_dir:
+            summary = self.analyse([(self.manifest(0), even), (self.manifest(1), odd)], calibration_dir=calibration_dir)
+            self.assertIsNotNone(summary["threshold"])
+            self.assertIsNone(summary["worstCaseForHolds"]["threshold"])
+            self.assertEqual(os.listdir(calibration_dir), [])
+        worst = summary["worstCaseForHolds"]["eval11"]
+        self.assertEqual((worst["heldCountedWrong"], worst["releasedWithoutHolds"], worst["passed"]), (0, 0, False))
+        self.assertEqual(summary["eval12"], {"skipped": "no threshold certified"})
+        self.assertNotIn("skipped", summary["eval12AtPreRegisteredThreshold"])
+
+    def test_no_cutoff_still_counts_scored_holds(self):
+        from latent_team import abstain_eval
+        scored = shard_rows([("gsm8k", 3, p) for p in range(10)])
+        for r in scored[:4]:
+            r.update(action="hold", reason="deadline", confidence=None, releasedCorrect=False)
+        result = abstain_eval.worst_case_eval11(scored, None)
+        self.assertEqual((result["released"], result["heldCountedWrong"], result["releasedWithoutHolds"]), (4, 4, 0))
+        self.assertFalse(result["passed"])
 
     def test_a_request_in_the_wrong_shard_is_refused(self):
         from latent_team import abstain_eval
@@ -394,6 +425,69 @@ class RunProvenanceTest(unittest.TestCase):
             with self.assertRaises(abstain.CalibrationInvalid):
                 abstain.load_calibration(abstain_eval.MODEL, "w", abstain_eval.TASK, profile="request-public",
                                          **settings)
+
+
+class BarrierTest(unittest.TestCase):
+    """Review W3-6: no shard starts a part while another shard is still in an earlier one."""
+
+    def setUp(self):
+        from latent_team import abstain_eval
+        self.ev = abstain_eval
+        self.order = abstain_eval.work_keys("today", fresh=8)
+        self.parts = abstain_eval.part_of_keys("today", fresh=8)
+        self.manifest = RunProvenanceTest().manifest(0)
+
+    def write(self, folder, shard, keys, **changes):
+        with open(os.path.join(folder, f"certify-{shard}-of-2.json"), "w") as handle:
+            json.dump(dict(self.manifest, shard=shard, rows=shard_rows(keys), complete=False, **changes), handle)
+
+    def owned(self, shard, part):
+        return [k for n, k in enumerate(self.order) if n % 2 == shard and self.parts[k] == part]
+
+    def test_ready_only_when_every_shard_finished_the_earlier_parts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ready = lambda part: self.ev.barrier_ready(folder, self.manifest, part, self.order, self.parts)   # noqa: E731
+            self.assertTrue(ready("propose"))          # nothing comes before the proposal
+            self.assertFalse(ready("certify"))         # no shard has saved yet
+            self.write(folder, 0, self.owned(0, "propose"))
+            self.assertFalse(ready("certify"))         # shard 1 has not
+            self.write(folder, 1, self.owned(1, "propose")[:-1])
+            self.assertFalse(ready("certify"))         # shard 1's last proposal request is still running
+            self.write(folder, 1, self.owned(1, "propose"), run="run-0")
+            self.assertFalse(ready("certify"))         # a file of another run does not count
+            self.write(folder, 1, self.owned(1, "propose"))
+            self.assertTrue(ready("certify"))
+            self.assertFalse(ready("score"))           # certification not finished
+
+    def test_waiting_gives_up_after_its_limit(self):
+        slept = []
+        with tempfile.TemporaryDirectory() as folder, self.assertRaises(SystemExit):
+            self.ev.wait_for_part(folder, self.manifest, "certify", self.order, self.parts, poll=10, limit=30,
+                                  sleep=slept.append)
+        self.assertEqual(slept, [10, 10, 10])
+
+    def test_each_part_starts_after_a_save_and_a_wait(self):
+        events, rows = [], []
+        work = [(k[0], k[1], k[2], None) for k in self.order]
+
+        def ask(kind, block, position, item):
+            events.append(("ask", self.parts[(kind, block, position)]))
+            return {"kind": kind, "block": block, "position": position, "seconds": 1.0}
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.ev.run_work(work, 1, 2, set(), rows, ask, lambda complete: events.append(("save", complete)),
+                             lambda part: events.append(("wait", part)), self.parts)
+        waits = [e for e in events if e[0] == "wait"]
+        self.assertEqual(waits, [("wait", p) for p in self.ev.PARTS])
+        for index, event in enumerate(events):
+            if event[0] == "wait":
+                self.assertEqual(events[index - 1], ("save", False))   # its rows are visible first
+                following = next(e for e in events[index:] if e[0] == "ask")
+                self.assertEqual(following[1], event[1])
+        asked = [e[1] for e in events if e[0] == "ask"]
+        self.assertEqual(asked, sorted(asked, key=self.ev.PARTS.index))   # parts never interleave
+        self.assertEqual(len(rows), len(self.order) // 2)
 
 
 def old_predicted_number(text):
