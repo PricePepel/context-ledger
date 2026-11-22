@@ -559,7 +559,10 @@ class ToolGateTest(unittest.TestCase):
         # Review W2-9 finding 2: ACT is inside REDACTED, so another marker is chosen, and the
         # final check covers every found value, whatever its length.
         released = OutputGate(gateway_admitted()).release("password=ACT")
-        self.assertNotIn("ACT", released.text)
+        # Since review W2-22 a short value is a whole token, so ACT inside a marker's word is
+        # not a copy of it; as a token it is gone.
+        import re
+        self.assertIsNone(re.search(r"\bACT\b", released.text), released.text)
         self.assertTrue(released.safe)
 
     def test_round9_a_known_value_a_marker_spells_with_its_neighbours_is_refused(self):
@@ -822,10 +825,13 @@ class ToolGateTest(unittest.TestCase):
             self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text, line)
             released = OutputGate(gateway_admitted()).release(text)
             self.assertNotIn("paper-harbor", released.text, line)
-        # A head under four characters is not a value of its own.
+        # Since review W2-22 a short head is a value too, matched only as a whole token, so it
+        # never redacts the inside of other words.
         from latent_team import secret_scan
         [finding] = secret_scan.find_secrets("password=a&bcdefgh", values=True)
-        self.assertNotIn("a", finding["values"])
+        self.assertIn("a", finding["values"])
+        released = OutputGate(gateway_admitted()).release("banana bread" + chr(10) + "password=a&bcdefgh")
+        self.assertIn("banana bread", released.text)
 
     def test_round21_a_credential_a_call_brings_to_an_outside_effect_from_untrusted_memory(self):
         # Review W2-21 finding 2: the tool is cleared, but the call brings the credential.
@@ -836,6 +842,22 @@ class ToolGateTest(unittest.TestCase):
         result = ToolGate(g).submit({"name": "post", "arguments": {"password": "paper-harbor"}},
                                     lambda n, a: sent.append(a))
         self.assertEqual((result.sent, result.reason, sent), (False, "rule-of-two", []))
+
+    def test_round22_a_digit_before_a_redirection_and_a_short_value_stay_known(self):
+        # Review W2-22 finding 1: "optional9>" is not a descriptor; "ink" is short but a value.
+        for value in ("optional9", "ink"):
+            text = f"Copy: {value}" + chr(10) + f"password={value}>result.txt"
+            g = gateway()
+            admission = g.admit([Span("request", "request", text)])
+            self.assertNotIn(f"Copy: {value}", admission.text, value)
+            released = OutputGate(gateway_admitted()).release(text)
+            self.assertNotIn(f"Copy: {value}", released.text, value)
+        # A short value is matched as a whole token only: "ink" inside "thinking" stays.
+        g = gateway()
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("thinking about ink" + chr(10) + "password=ink>result.txt")
+        self.assertIn("thinking about", released.text)
+        self.assertNotIn("about ink", released.text)
 
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of

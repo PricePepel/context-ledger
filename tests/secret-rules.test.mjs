@@ -3,12 +3,13 @@
 // rules/secret-conformance.json the cases this file and runtime/tests/test_secret_rules.py
 // both run, so a rule changed in one language only fails one suite (the H4 pattern).
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { canonicalRanges, findSecrets, redactText } from '../src/secrets.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
-const { cases } = read('rules/secret-conformance.json');
+const { cases, valueCases } = read('rules/secret-conformance.json');
 const canonicalCases = read('rules/canonical-cases.json').cases;
 const rules = read('rules/secret-rules.json');
 
@@ -102,6 +103,15 @@ test('W2: every shared canonical case is read as the gateway reads it (review W2
     const full = expand(text);
     const found = [...new Set(canonicalRanges(full, values.map(expand)).map(([start, end]) => full.slice(start, end)))].sort();
     assert.deepEqual(found, covered.map(expand).sort(), name);
+  }
+});
+
+test('W2: every shared value case gives the values the gateway gives (review W2-22)', () => {
+  assert.ok(valueCases.length >= 8);
+  const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
+  for (const { name, text, valueDigests } of valueCases) {
+    const found = findSecrets(expand(text), { values: true }).map(f => f.values.map(digest).sort());
+    assert.deepEqual(found, valueDigests, name);
   }
 });
 

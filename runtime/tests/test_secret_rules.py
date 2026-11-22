@@ -99,6 +99,18 @@ class EveryAssignmentTest(unittest.TestCase):
 
 
 class SecretConformanceTest(unittest.TestCase):
+    def test_every_shared_value_case(self):
+        # Review W2-22: the values a finding identifies are alike in both scanners.
+        with open(REPO / "rules" / "secret-conformance.json", encoding="utf-8") as handle:
+            value_cases = json.load(handle)["valueCases"]
+        self.assertGreaterEqual(len(value_cases), 8)
+        import hashlib
+        for case in value_cases:
+            with self.subTest(case["name"]):
+                found = [sorted(hashlib.sha256(v.encode("utf-8")).hexdigest() for v in f["values"])
+                         for f in secret_scan.find_secrets(expand(case["text"]), values=True)]
+                self.assertEqual(found, case["valueDigests"])
+
     def test_every_shared_case(self):
         self.assertGreaterEqual(len(CASES), 40)
         for case in CASES:

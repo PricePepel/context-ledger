@@ -1,4 +1,5 @@
 // W2: builds rules/secret-conformance.json from the ledger scanner. Usage: node scripts/make-secret-conformance.mjs .
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -117,6 +118,21 @@ function codePoints(text, index) {
   return [...text.slice(0, index)].length;
 }
 
+// W2 review rounds 18 to 22: the values a finding identifies, which both scanners must
+// give alike. Kept as SHA-256 digests of their UTF-8, sorted, so no committed file holds a
+// value in a credential format.
+const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
+const valueCases = [
+  { name: 'a structured assignment cuts a bare value', text: ['password=paper-harbor, aws_secret_access_key=', r('A', 40)] },
+  { name: 'shell syntax ends a value head', text: ['password=paper-harbor; export api_key=', 'synthetic-second'] },
+  { name: 'a redirection right after a value ending in a digit', text: ['password=optional9>result.txt'] },
+  { name: 'a short value before a redirection', text: ['password=ink>result.txt'] },
+  { name: 'a numbered redirection after a space', text: ['password=paper-harbor 2>> errors.log'] },
+  { name: 'supplementary characters as a value', text: ['password=', { char: 0x1f600 }, { char: 0x1f600 }, '>out.txt'] },
+  { name: 'mixed leads on one line', text: ['password=synthetic-first, Authorization: Bearer ', 'synthetic-second'] },
+  { name: 'a quoted value with a full stop after it', text: ['password="paper-harbor".'] },
+];
+
 const out = {
   about: 'Cases both scanners run: src/secrets.mjs (tests/secret-rules.test.mjs) and runtime/latent_team/secret_scan.py (runtime/tests/test_secret_rules.py). A text is a list of parts joined in order: a string, {repeat, times} or {char: code point}, so no committed file holds a whole string in a credential format. Expected spans count code points. Built from the ledger scanner (the P4b and P4c rules) on 2026-11-22.',
   cases: cases.map(({ name, text }) => {
@@ -127,6 +143,11 @@ const out = {
       spans: findSecrets(full).map(f => ({ kind: f.kind, start: codePoints(full, f.start), end: codePoints(full, f.end), prefix: f.prefix })),
     };
   }),
+  valueCases: valueCases.map(({ name, text }) => ({
+    name,
+    text,
+    valueDigests: findSecrets(expand(text), { values: true }).map(f => f.values.map(digest).sort()),
+  })),
 };
 writeFileSync(join(root, 'rules/secret-conformance.json'), JSON.stringify(out, null, 1) + '\n');
 console.log(out.cases.map(c => `${c.name}: ${c.spans.map(s => s.kind).join(',') || '-'}`).join('\n'));

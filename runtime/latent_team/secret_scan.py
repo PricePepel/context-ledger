@@ -504,8 +504,23 @@ def candidates(text):
 # Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
 # and "x && ..." name the value x (review W2-19).
 _HEAD_END = _compile(RULES["freeText"]["valueHeadEnd"])
-# A shorter head is not a value of its own, so "a&b" never makes every "a" a secret.
-_HEAD_MIN = RULES["freeText"]["valueHeadMin"]
+# A short value is matched only as a whole token (rules: freeText.shortValue), so a head of any
+# length is a value: "a&b" never makes every "a" inside a word a secret (review W2-22).
+SHORT_VALUE = RULES["freeText"]["shortValue"]
+
+
+def _word(character):
+    import unicodedata
+    return character == "_" or unicodedata.category(character)[0] in "LN"
+
+
+def short_value(value):
+    return len(value) < SHORT_VALUE
+
+
+def at_token(text, start, end):
+    """Is text[start:end] a whole token: no letter, digit or underscore just before or after?"""
+    return not (start > 0 and _word(text[start - 1])) and not (end < len(text) and _word(text[end]))
 
 
 def _span_values(text, members):
@@ -522,7 +537,7 @@ def _span_values(text, members):
                 out.add(core)
                 cut = _HEAD_END.search(core)
                 head = core[:cut.start()].rstrip(" \t,;") if cut else ""
-                if len(head) >= _HEAD_MIN and not is_placeholder(head):
+                if head and not is_placeholder(head):
                     out.add(head)
             if tail:
                 out.add(text[candidate["start"]:candidate["value_end"]])

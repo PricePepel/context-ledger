@@ -318,6 +318,11 @@ class Guard:
             decisions.append(runs[row].decide(calibrated=False, label_broken=broken))
         fallback_rows = [r for r, d in enumerate(decisions) if d.action == "fallback"]
         fallback = {}
+        if fallback_rows and alone is None and self._over(started, cap):
+            # No fresh inference past the deadline (review W2-22): the fallback fails, unrun.
+            for r in fallback_rows:
+                decisions[r] = runs[r].after_fallback(within_limits=False)
+            fallback_rows = []
         if fallback_rows:
             # Once, with tools off, inside the same fence: its budget and time are checked
             # before it may be released.

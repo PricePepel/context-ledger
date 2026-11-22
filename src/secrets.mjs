@@ -280,8 +280,10 @@ function lineTails(text, otherLeads = []) {
 // Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
 // and "x && ..." name the value x (review W2-19).
 const headEnd = new RegExp(secretRules.freeText.valueHeadEnd, 'u');
-// A shorter head is not a value of its own, so "a&b" never makes every "a" a secret.
-const headMin = secretRules.freeText.valueHeadMin;
+// A short value is matched only as a whole token (rules: freeText.shortValue, in code points), so
+// a head of any length is a value: "a&b" never makes every "a" inside a word a secret (review W2-22).
+const shortValue = secretRules.freeText.shortValue;
+const isWord = character => /^[\p{L}\p{N}_]$/u.test(character);
 
 function spanValues(text, members) {
   const out = new Set();
@@ -294,7 +296,7 @@ function spanValues(text, members) {
         out.add(core);
         const cut = headEnd.exec(core);
         const head = cut ? core.slice(0, cut.index).replace(/[ \t,;]+$/u, '') : '';
-        if (head.length >= headMin && !isPlaceholder(head)) out.add(head);
+        if (head && !isPlaceholder(head)) out.add(head);
       }
       if (tail) {
         out.add(text.slice(candidate.start, candidate.valueEnd));
@@ -557,7 +559,13 @@ export function canonicalRanges(text, values) {
     for (const decode of [true, false]) {
       const { flat, spans, charOfUnit } = canonical(text, drop, decode);
       for (const target of targets) {
+        const short = [...target].length < shortValue;
         for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
+          if (short) {   // a short value only as a whole token
+            const before = [...flat.slice(0, at)].at(-1);
+            const after = [...flat.slice(at + target.length)][0];
+            if ((before && isWord(before)) || (after && isWord(after))) continue;
+          }
           out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
         }
       }
