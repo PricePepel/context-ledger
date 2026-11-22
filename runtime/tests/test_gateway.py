@@ -664,6 +664,36 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn("!?", released.text)
         self.assertTrue(released.safe)
 
+    def test_round13_the_last_substitution_cannot_spell_a_declared_value(self):
+        # Review W2-13 finding 1: the second redaction's marker and the text after it spell
+        # a declared value.
+        token = "gh" + "p_" + "A" * 36
+        g = gateway(declared=["synthetic-prefix", "] trailing"])
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release("synthetic-prefix" + token + " trailing")
+        self.assertFalse(released.safe and "] trailing" in released.text, released.text)
+
+    def test_round13_mixed_leads_on_a_line_leave_no_bare_copy(self):
+        # Review W2-13 finding 2: the copy comes first, the assignment and the header after.
+        for line in ("password=synthetic-first, Authorization: Bearer synthetic-second",
+                     "Authorization: Bearer synthetic-first, api_key=synthetic-second"):
+            text = "Copy: synthetic-first" + chr(10) + line
+            self.assertNotIn("synthetic-first", gateway().admit([Span("request", "request", text)]).text, line)
+            released = OutputGate(gateway_admitted()).release(text)
+            self.assertNotIn("synthetic-first", released.text, line)
+
+    def test_round13_a_cut_that_exposes_a_credential_holds(self):
+        # Review W2-13 finding 3: the letter before the token hides its word boundary; the
+        # cut drops the letter, and the token would start the kept tail.
+        token = "gh" + "p_" + "A" * 36
+        text = "q" * 300 + "a" + token + " " + "w" * 106
+        g = gateway()
+        admission = g.admit([Span("request", "request", text)])
+        self.assertIn(token, admission.text, "not a finding before the cut")
+        with self.assertRaises(GatewayError) as raised:
+            g.fit(200, "[...]")
+        self.assertEqual(raised.exception.reason, "unsafe-render")
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

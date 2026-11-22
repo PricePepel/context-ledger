@@ -59,12 +59,22 @@ class EveryAssignmentTest(unittest.TestCase):
         self.assertEqual([(f["start"], f["end"]) for f in secret_scan.find_secrets(text)],
                          [(finding["start"], finding["end"])])
 
-    def test_many_assignments_on_one_long_line_are_read_in_linear_time(self):
+    def test_mixed_leads_on_one_line_each_have_their_value(self):
+        # Review W2-13 finding 2: an assignment, then a bearer header, and the reverse.
+        for text, first in (("password=synthetic-first, Authorization: Bearer synthetic-second", "synthetic-first"),
+                            ("Authorization: Bearer synthetic-first, api_key=synthetic-second", "synthetic-first")):
+            [finding] = secret_scan.find_secrets(text, values=True)
+            self.assertIn(first, finding["values"], text)
+            self.assertIn("synthetic-second", finding["values"], text)
+
+    def test_many_assignments_on_one_long_line_stay_linear(self):
+        # Review W2-13 finding 4: values are bounded pieces, not one suffix per assignment.
         import time
-        line = "password=a1b2c3d4, " * 5000 + " " * 100000
+        line = "".join(f"password=v{i}x, " for i in range(5000)) + " " * 100000
         started = time.perf_counter()
         [finding] = secret_scan.find_secrets(line, values=True)
-        self.assertGreater(len(finding["values"]), 1000)
+        self.assertGreater(len(finding["values"]), 4000)
+        self.assertLess(sum(len(v) for v in finding["values"]), 3 * len(line))
         self.assertLess(time.perf_counter() - started, 10)
 
 

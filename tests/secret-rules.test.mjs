@@ -39,11 +39,21 @@ test('W2: a second bare assignment has its value listed, the first cut where it 
   assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
 });
 
-test('W2: many assignments on one long line are read in linear time', () => {
-  const line = 'password=a1b2c3d4, '.repeat(5000).concat(' '.repeat(100000));
+test('W2: mixed leads on one line each have their value (review W2-13)', () => {
+  for (const [text, first] of [['password=synthetic-first, Authorization: Bearer '.concat('synthetic-second'), 'synthetic-first'],
+    ['Authorization: Bearer synthetic-first, api_key='.concat('synthetic-second'), 'synthetic-first']]) {
+    const [finding] = findSecrets(text, { values: true });
+    assert.ok(finding.values.includes(first), `${text}: ${finding.values.join(' | ')}`);
+    assert.ok(finding.values.includes('synthetic-second'), `${text}: ${finding.values.join(' | ')}`);
+  }
+});
+
+test('W2: many assignments on one long line stay linear (review W2-13)', () => {
+  const line = Array.from({ length: 5000 }, (_, i) => `password=v${i}x, `).join('').concat(' '.repeat(100000));
   const started = Date.now();
   const [finding] = findSecrets(line, { values: true });
-  assert.ok(finding.values.length > 1000);
+  assert.ok(finding.values.length > 4000);
+  assert.ok(finding.values.reduce((sum, value) => sum + value.length, 0) < 3 * line.length);
   assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`);
 });
 
