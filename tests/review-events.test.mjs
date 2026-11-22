@@ -98,9 +98,17 @@ test('P3: the database refuses to change or delete an event', async t => {
   const raw = keep(new DatabaseSync(path));
   assert.throws(() => raw.exec("UPDATE review_events SET decision = 'reject'"), /append-only/u);
   assert.throws(() => raw.exec('DELETE FROM review_events'), /append-only/u);
-  assert.throws(() => raw.prepare("INSERT INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label, reviewer, decided_at) VALUES (2, ?, ?, 's', 'p', 'n', 'h', 'approve', 'a label', 'r', 't')")
-    .run(genesis, 'f'.repeat(64)), /CHECK/u, 'only an edit has a label');
+  const head = store.verifyReviews().head;
+  const insert = (sql, ...values) => raw.prepare(`${sql} INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label_json, reviewer, decided_at) VALUES (?, ?, ?, 's', 'p', 'n', 'h', ?, ?, 'r', 't')`).run(...values);
+  assert.throws(() => insert('INSERT', 2, head, 'f'.repeat(64), 'approve', '"a label"'), /CHECK/u, 'only an edit has a label');
+  // P3 review: INSERT OR REPLACE deletes without firing the delete trigger, so an insert
+  // must be the next event after the head.
+  assert.throws(() => insert('INSERT OR REPLACE', 1, genesis, 'e'.repeat(64), 'reject', null), /follow the head/u);
+  assert.throws(() => insert('REPLACE', 1, genesis, 'e'.repeat(64), 'reject', null), /follow the head/u);
+  assert.throws(() => insert('INSERT', 3, head, 'e'.repeat(64), 'reject', null), /follow the head/u, 'no gap in seq');
+  assert.throws(() => insert('INSERT', 2, genesis, 'e'.repeat(64), 'reject', null), /follow the head/u, 'prev is the head');
   assert.equal(store.verifyReviews().events, 1);
+  assert.equal(store.verifyReviews().brokenAt, undefined);
 });
 
 test('P3: verify recomputes the chain and names the first event that does not match', async t => {
@@ -205,9 +213,21 @@ test('P3: ledger reviews verify prints the count and head, and names a broken ev
   assert.equal(ok.code, 0, ok.stderr);
   assert.equal(ok.stdout, `Review chain verified: 2 events.\nHead: ${head}\n`);
   assert.notEqual(first[0].event, head);
+  assert.match(ok.stderr, /events removed from the end would not show/u);
+
+  // P3 review: a trusted head shows a chain cut short or rewritten at its end.
+  const trusted = await cli(['reviews', 'verify', '--head', first[0].event], { CONTEXT_LEDGER_DB: path });
+  assert.equal(trusted.code, 0, trusted.stderr);
+  assert.equal(trusted.stdout, `Review chain verified: 2 events, with the trusted head at event 1 (1 added since).\nHead: ${head}\n`);
+  const unknown = await cli(['reviews', 'verify', '--head', 'c'.repeat(64)], { CONTEXT_LEDGER_DB: path });
+  assert.notEqual(unknown.code, 0);
+  assert.match(unknown.stderr, /The trusted head is not in this review chain/u);
+  const badHead = await cli(['reviews', 'verify', '--head', 'not-a-hash'], { CONTEXT_LEDGER_DB: path });
+  assert.match(badHead.stderr, /--head must be a 64-character lowercase hex hash\./u);
+  assert.equal(badHead.stderr.includes('not-a-hash'), false);
 
   const raw = keep(new DatabaseSync(path));
-  raw.exec("DROP TRIGGER review_events_no_update; UPDATE review_events SET label = 'synthetic-tampered-label' WHERE seq = 2;");
+  raw.exec(`DROP TRIGGER review_events_no_update; UPDATE review_events SET label_json = '"synthetic-tampered-label"' WHERE seq = 2;`);
   const broken = await cli(['reviews', 'verify'], { CONTEXT_LEDGER_DB: path });
   assert.notEqual(broken.code, 0);
   assert.match(broken.stderr, /Review chain broken at event 2: it does not match the events before it\./u);
@@ -220,4 +240,64 @@ test('P3: ledger reviews verify prints the count and head, and names a broken ev
   assert.equal(raw.prepare('PRAGMA user_version').get().user_version, 6);
   const usage = await cli(['reviews'], { CONTEXT_LEDGER_DB: path });
   assert.match(usage.stderr, /reviews verify/u);
+});
+
+test('P3 review: an edit label with a NUL is kept whole, and the chain still verifies', () => {
+  const store = openStore(':memory:');
+  const { graph, hash } = setup(store);
+  const label = `Corrected${String.fromCodePoint(0)}suffix`;
+  const reviews = store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label, reviewer: 'Mira' });
+  assert.equal(reviews[0].label, label);
+  assert.equal(store.graphReviews(graph.id)[0].label, label);
+  assert.equal(store.verifyReviews().brokenAt, undefined);
+  store.close();
+});
+
+test('P3 review: a trusted head is found in the chain, or reported missing after the end is cut', () => {
+  const store = openStore(':memory:');
+  const { graph, hash } = setup(store);
+  const approve = store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'approve', reviewer: 'Mira' })[0].event;
+  const reject = store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'reject', reviewer: 'Mira' })[0].event;
+  assert.equal(store.verifyReviews(approve).trustedAt, 1);
+  assert.equal(store.verifyReviews(reject).trustedAt, 2);
+  assert.equal(store.verifyReviews(genesis).trustedAt, 0);
+  assert.equal(store.verifyReviews('d'.repeat(64)).trustedAt, null);
+  assert.equal('trustedAt' in store.verifyReviews(), false);
+  // The same events without the last one: the earlier head is still in it, the later one is not.
+  const events = [];
+  let prev = genesis;
+  for (const [seq, decision] of [[1, 'approve'], [2, 'reject']]) {
+    const event = { seq, prev, sessionId: 's', party: 'p', nodeId: 'n', nodeSha256: 'a'.repeat(64), decision, reviewer: 'Mira', decidedAt: 't' };
+    event.hash = eventHash(event);
+    events.push(event);
+    prev = event.hash;
+  }
+  assert.equal(checkChain(events.slice(0, 1), events[1].hash).trustedAt, null);
+  assert.equal(checkChain(events.slice(0, 1), events[0].hash).trustedAt, 1);
+  store.close();
+});
+
+test('P3 review: two processes appending at the same time keep one chain', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-race-');
+  const store = openStore(path);
+  const { graph, hash } = setup(store);
+  store.close();
+  const child = reviewer => new Promise((resolve, reject) => {
+    const script = `
+      import { openStore } from './src/store.mjs';
+      const store = openStore(process.env.DB);
+      for (let index = 0; index < 25; index += 1) {
+        store.reviewNode(process.env.GRAPH, { nodeId: 'port', nodeSha256: process.env.HASH, decision: index % 2 ? 'approve' : 'reject', reviewer: process.env.WHO });
+      }
+      store.close();
+    `;
+    execFile(process.execPath, ['--input-type=module', '--no-warnings', '-e', script],
+      { env: { ...process.env, DB: path, GRAPH: graph.id, HASH: hash('port'), WHO: reviewer } },
+      error => (error ? reject(error) : resolve()));
+  });
+  await Promise.all([child('Mira'), child('Tomas'), child('Ana')]);
+  const check = keep(openStore(path));
+  const verified = check.verifyReviews();
+  assert.equal(verified.events, 75);
+  assert.equal(verified.brokenAt, undefined);
 });

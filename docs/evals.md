@@ -4565,3 +4565,10 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 - `tests/review-events.test.mjs` 9/9: events and the fold, a changed node starting unreviewed, edit labels and fixed-word errors, the append-only triggers, verify naming the first rewritten event, `checkChain` on seq, prev and label, two stores on one file keeping one chain, a version 6 file with P2c rows migrating in decision order, and `ledger reviews verify` (count and head, a broken event named by number only, an older file left unmigrated, usage).
 - `tests/e2e/node-review.spec.mjs` 5/5, with an edit saved and shown as text beside the unchanged graph label, then replaced by an approval, and Cancel recording nothing.
 - The P2c tests now expect the new decision list, the edit label in the key list and the version 7 table.
+- **Codex review, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) An edit label with a NUL was cut by SQLite while its hash covered every character, so a valid edit broke the chain. The label is stored as a JSON string literal (`label_json`).
+  - (medium) `INSERT OR REPLACE` deletes a row without firing the delete trigger, so an event could be overwritten. A new insert trigger requires the next seq and the head as prev.
+  - (medium) A chain with its last events removed still verified. `ledger reviews verify --head <hash>` now checks against a head kept from earlier, and the plain check says that removal from the end would not show. The ADR no longer claims more.
+  - (low) A failed save redrew the edit field from the stored label, losing what was typed. The draft is kept.
+  - (low) The two-store test wrote one after the other. It now runs three processes appending 25 events each at the same time, and expects one chain of 75.
+  - `tests/review-events.test.mjs` 12/12, `tests/e2e/node-review.spec.mjs` 6/6, `node --test tests/*.test.mjs` 556/556.

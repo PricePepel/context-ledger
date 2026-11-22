@@ -44,29 +44,36 @@ export function eventHash(event) {
 }
 
 const eventColumns = `seq, prev, hash, session_id AS sessionId, party, node_id AS nodeId, node_sha256 AS nodeSha256,
-  decision, label, reviewer, decided_at AS decidedAt`;
+  decision, label_json AS labelJson, reviewer, decided_at AS decidedAt`;
+// An edit's label is stored as a JSON string literal, like message text, because SQLite
+// cuts a string at a NUL and the hash covers every character.
+const fromRow = ({ labelJson, ...row }) => (labelJson === null ? { ...row } : { ...row, label: JSON.parse(labelJson) });
 
 /**
  * Checks a chain of events in seq order: seq counts from 1, each prev is the hash before
  * it, and each hash is the hash of its own event. Returns the count and head, or the
- * first seq that breaks.
+ * first seq that breaks. A chain whose last events were removed still checks; with a
+ * trusted head (one seen earlier, or signed), trustedAt is the seq of that head, or
+ * null when the chain does not contain it.
  */
-export function checkChain(events) {
+export function checkChain(events, trustedHead) {
   let prev = genesis;
   let count = 0;
+  let trustedAt = trustedHead === genesis ? 0 : null;
   for (const event of events) {
     count += 1;
     if (event.seq !== count || event.prev !== prev || event.hash !== eventHash(event)) return { events: count, brokenAt: count };
     prev = event.hash;
+    if (event.hash === trustedHead) trustedAt = count;
   }
-  return { events: count, head: prev };
+  return trustedHead === undefined ? { events: count, head: prev } : { events: count, head: prev, trustedAt };
 }
 
 /** One event row, as appendEvent and the version 7 migration write it. */
 export function insertEvent(database, event) {
-  database.prepare(`INSERT INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label, reviewer, decided_at)
+  database.prepare(`INSERT INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label_json, reviewer, decided_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(event.seq, event.prev, event.hash, event.sessionId, event.party, event.nodeId,
-    event.nodeSha256, event.decision, event.decision === 'edit' ? event.label : null, event.reviewer, event.decidedAt);
+    event.nodeSha256, event.decision, event.decision === 'edit' ? JSON.stringify(event.label) : null, event.reviewer, event.decidedAt);
 }
 
 /**
@@ -93,7 +100,7 @@ export function mountReviews(database, readGraph) {
   function reviewsOf(graph) {
     if (graph?.packet.version !== 3 || !Array.isArray(graph.nodeHashes)) return [];
     const events = statement(`SELECT ${eventColumns} FROM review_events WHERE session_id = ? AND party = ? ORDER BY seq`)
-      .all(graph.packet.sessionId, graph.packet.party);
+      .all(graph.packet.sessionId, graph.packet.party).map(fromRow);
     const current = new Map(graph.nodeHashes.map(entry => [entry.id, entry.sha256]));
     const latest = new Map();
     for (const event of events) {
@@ -109,9 +116,9 @@ export function mountReviews(database, readGraph) {
   return {
     graphReviews: id => reviewsOf(readGraph(id)),
 
-    /** Checks every event in order: the count and head hash, or the first event that breaks. */
-    verifyReviews() {
-      return checkChain(statement(`SELECT ${eventColumns} FROM review_events ORDER BY seq`).all().map(row => ({ ...row })));
+    /** Checks every event in order: the count and head hash, or the first event that breaks; see checkChain. */
+    verifyReviews(trustedHead) {
+      return checkChain(statement(`SELECT ${eventColumns} FROM review_events ORDER BY seq`).all().map(fromRow), trustedHead);
     },
 
     /** Records one person's decision on one node of a graph; undefined when there is no such graph. */

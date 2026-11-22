@@ -478,8 +478,9 @@ const reviewNodes = document.querySelector('#review-nodes');
 const reviewSubmit = reviewForm.querySelector('button[type="submit"]');
 const decisionWords = { approve: 'Approved', edit: 'Edited', reject: 'Rejected' };
 const stateOf = { approve: 'agreed', edit: 'edited', reject: 'rejected' };
-// The node whose edit field is open, if any.
+// The node whose edit field is open, if any, and what was typed in it.
 let editingNode = null;
+let editDraft = null;
 let reviewGraph = null;
 let reviewing = false;
 
@@ -516,6 +517,7 @@ function reviewRow(graph, node) {
     button.addEventListener('click', () => {
       if (decision !== 'edit') return reviewNode(node.id, hash, decision);
       editingNode = node.id;
+      editDraft = null;
       renderReview(graph);
       reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] .edit-label`)?.focus();
     });
@@ -538,7 +540,8 @@ function editForm(node, hash, review) {
   input.className = 'edit-label';
   input.maxLength = 500;
   input.required = true;
-  input.value = review?.decision === 'edit' ? review.label : node.label;
+  input.value = editDraft ?? (review?.decision === 'edit' ? review.label : node.label);
+  input.addEventListener('input', () => { editDraft = input.value; });
   const save = textElement('button', 'Save edit', 'choice-button');
   save.type = 'submit';
   save.disabled = reviewing;
@@ -546,6 +549,7 @@ function editForm(node, hash, review) {
   cancel.type = 'button';
   cancel.addEventListener('click', () => {
     editingNode = null;
+    editDraft = null;
     renderReview(reviewGraph);
   });
   form.addEventListener('submit', event => {
@@ -571,6 +575,7 @@ async function loadReview(id) {
   reviewNodes.replaceChildren();
   reviewGraph = null;
   editingNode = null;
+  editDraft = null;
   try {
     const { graph } = await request(`/api/graphs/${id}`);
     if (graph.packet.version !== 3) {
@@ -605,7 +610,10 @@ async function reviewNode(nodeId, nodeSha256, decision, label) {
     });
     reviewing = false;
     if (reviewGraph !== graph) return;
-    if (editingNode === nodeId) editingNode = null;
+    if (editingNode === nodeId) {
+      editingNode = null;
+      editDraft = null;
+    }
     renderReview({ ...graph, reviews });
     reviewStatus.textContent = `${decisionWords[decision]} ${nodeId}.`;
   } catch (error) {

@@ -157,3 +157,22 @@ test('P3: Cancel closes the edit field without recording anything', async ({ pag
   await expect(notes.getByLabel('Corrected label')).toHaveCount(0);
   await expect(notes).toContainText('Not reviewed');
 });
+
+test('P3 review: a failed save keeps the corrected label the person typed', async ({ page, request, baseURL }) => {
+  const marker = `p3-draft-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317 from Friday, draft');
+  // The first save fails on the network; the field and what was typed stay.
+  await page.route(`**/api/graphs/${graph.id}/reviews`, route => route.abort(), { times: 1 });
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(page.locator('#review-status')).toContainText('Review failed.');
+  await expect(port.getByLabel('Corrected label')).toHaveValue('Port 4317 from Friday, draft');
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 from Friday, draft');
+});
