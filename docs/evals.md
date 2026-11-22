@@ -4620,3 +4620,13 @@ Codex confirmed the round-3 unit regressions and found no raw control character.
 
 **Local suites (W2 tree, which holds W1), 2026-11-22:** `npm run -s test:graph` passes; `node --test tests/*.test.mjs` 530 pass, 10 skipped, 1 failed before the fix below; `npx playwright test` 32/32; runtime 372 tests with torch (WSL). The one node failure was `tests/paging.test.mjs`'s cap on the MCP tool list (3,500 characters over 19f6522): the `secrets` and `clearance` fields made it 488 characters too long, so they are not in the MCP tool's schema; the ledger's HTTP API and the runtime's routes still take them.
 
+### W2 review, round 5 (2026-11-22, Codex, read-only, of 8c21527)
+
+Codex confirmed the round-4 fixes and that the MCP schema omits the new fields. Its findings, all fixed with a regression test each:
+
+- (high) A quoted free-text finding (`password="harbor-slate-42",`) has a redaction span that runs past its closing quote and comma, so the bare value was never known and its copies passed both gates. The scanner now also reports the value each candidate identified (`find_secrets(text, values=True)`; the spans shared with the ledger are unchanged), and the gateway treats those values as known.
+- (high) The ledger prints the answer on one line after the runtime's output gate, so a spaced copy (`harbor  slate 42`) became a declared value (`harbor slate 42`) after the gate cleared it. The runtime now treats a whitespace-folded match as unsafe, and the ledger redacts every declared value in the text as it prints it.
+- (high) A declared secret in untrusted input, with a cleared tool that has outside effect, escaped the rule of two, because only the memory's label counted: values held for restoration now count as the run's sensitive data.
+- (medium) Fixed permissions kept the caller's mutable argument list: they are snapshot into immutable, validated rules.
+- (medium) `/latent/team` echoed unknown field names in its 400, which could carry a declared secret: the message is fixed.
+
