@@ -618,3 +618,17 @@ Next steps:
 1. Leo and Ali read the design, in particular open question 3 (soft thoughts only).
 2. Claim W1 first. Its first results are new numbers on our own runs: how often a replay matches, how often team and solver agree, and how often the squad changes the answer at all.
 3. W2 is required before the latent team is given real project files or tools.
+
+## Current checkpoint — W2 data gateway for latent teams (2026-11-22)
+
+Branch `claude/w2-data-gateway`, stacked on W1; its PR targets `claude/w1-watchdog-integrity-82aa3b` until W1 merges, then `main`. Card W2, built by Claude Code for Ruslan. Evals, results and the review rounds are in the W2 section of [the eval log](evals.md).
+
+- **What it is.** `runtime/latent_team/gateway.py`: labels by origin, need to know (only the request unless a span is named; secret paths refused), placeholders for declared secrets, scanner findings and every other occurrence of those values (128-bit run nonce; the gateway verifies the text the model will read and refuses it if a known value survives), one label for the whole memory, permissions fixed before data, the rule of two, a tool gate on the arguments as sent, and an output gate that redacts and verifies what leaves. Both routes use it: `/latent/team`'s question is the caller's request, the chat route is untrusted as a whole. `secrets` (declared values) are accepted on both routes and through the ledger's HTTP API, `clearance` on `/latent/team`; the ledger's MCP tool does not take them, to keep the tool list within its size budget (`tests/paging.test.mjs`).
+- **One set of secret rules.** `rules/secret-rules.json` is read by `src/secrets.mjs` and by `runtime/latent_team/secret_scan.py`; `rules/secret-conformance.json` (60 cases, rebuilt with `node scripts/make-secret-conformance.mjs .` from the ledger's scanner) is run by both suites. Change a rule in the JSON, rebuild the cases, and both suites must pass.
+- **Measured.** The scanner finds 100% of the known formats on the synthetic set, with 0% false alarms when look-alikes end their line and 12–14% when prose follows on the line; a canary in no known format is found 0% of the time, which is why declarations matter.
+
+Next steps:
+
+1. **A human security review** before merge (sensitive-data handling, the shared scanner).
+2. When the latent team gets file input or tools, give each file its own span (origin `file`, a path, a sensitivity from the project's settings) and name the spans the task needs; declare tools with their argument rules and clearance in `Permissions` before admitting anything. A step that calls a tool with outside effect still has to run in text (design decision 3); that is not built.
+3. Not covered, and said in the code: a fragment of a secret value, and writes by native code outside the run's folders.
