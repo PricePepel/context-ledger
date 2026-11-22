@@ -4522,15 +4522,17 @@ Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, st
 | `closed` (no passage) | 0.170 | 0.117 | 4.2 |
 | `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
 
-Paired bootstrap 95% intervals: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135].
+Paired bootstrap 95% intervals (10,000 resamples) for the per-item difference in token F1: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135]. For containment, `swat − text` is −0.003 [−0.047, 0.040]. For latency per item, `text − swat` is 49 ms [15, 85] and `t2t − swat` is 3,240 ms [3,023, 3,473].
 
 Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
 
 | Gate | Result |
 | --- | --- |
-| Carries the passage | **Pass.** Both intervals are far above zero; the mismatched cache scores near the closed-book floor, so the receiver is reading this passage, not a generic prior. |
+| Carries the passage | **Pass.** Both intervals are far above zero, and the mismatched cache scores near the closed-book floor: the gain depends on supplying the correct passage's cache, not on a generic prior from the mapper. |
 | Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
-| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms, about 8.6× faster. Also faster than the receiver reading the passage itself (475 ms). |
-| Retention | Reported: F1 retention 1.12 against `text`, but containment is level (0.853 vs 0.857). The F1 edge over `text` comes from shorter answers that stage 2 trained, not from finding more answers. The honest claim is "matches reading the passage, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms mean, about 8.6× faster. On this run it was also faster on average than the receiver reading the passage itself (426 vs 475 ms, per-item interval above zero); one machine, one run. |
+| Retention | Reported: F1 retention 1.12 against `text` (interval above zero), while containment shows no detectable difference (−0.003, interval [−0.047, 0.040], so any gap is under 5 points either way). `swat` answers are shorter (3.1 vs 4.9 words), which likely explains part of the F1 edge; these aggregates do not show how much. The claim we make: "finds the answer as often as reading the passage, within 5 points, and beats a text summary by 0.41 F1 at 8.6× the speed". |
 
 Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.
+
+Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
