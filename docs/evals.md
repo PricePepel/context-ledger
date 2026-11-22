@@ -4491,6 +4491,35 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
+
+Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
+
+| Eval | Expected |
+| --- | --- |
+| Counts | In a scoped briefing, each state list (ready actions, current decisions, open questions) names the shown items, then the number it leaves out: `open questions: 1 left out`, `current decisions: port; 1 more left out`. A list with nothing left out reads as before (`none` or the IDs), so an unscoped briefing and a scoped one that shows everything are unchanged. |
+| Budget | The counts hold when the budget, not the question, drops a node. |
+| Way back | When a scoped briefing leaves out any node, its scope line ends with `call context_for without a question for the whole graph`, as the no-match line already does. |
+| No IDs leak | A left-out node's ID, label and links still never appear; only the count does. |
+| Live | The demo question re-run against a live agent no longer gets "Leo needs nothing from you": the agent either reports the open question or says some were left out. |
+
+### G9b results (2026-11-21)
+
+- **Counts, no IDs leak, way back:** `tests/scope.test.mjs` checks `1 left out`, `port; 1 more left out` (rendered), the hint at the end of the scope line, and that no left-out ID or label appears. A scoped briefing that shows every node has the same state section as the unscoped one and no hint. The unscoped golden briefing is unchanged.
+- **Budget:** a question dropped by the budget is counted (`open questions: 1 left out`). Over MCP paging, the reassembled pages match the HTTP briefing byte for byte and carry the count and the hint once.
+- **Live:** Leo's graph from the clean-install rehearsal (8 nodes, published by Claude Sonnet), Ali's prompt sent unchanged to a fresh Claude Sonnet session over MCP, 3 runs on this branch. Before the fix (a08c6e9, 1 run), the agent said Leo needed nothing from Ali. After it: 2 runs named "Who owns the GPU box?", and 1 said one open question was left out of the filtered view. All 3 answered port 4317 and Saturday 17:00. Cost $0.03–0.07 per run. In every run the agent's first call passed a `budget` without a `question` and was refused (`budget needs a question.`); that is a separate usability point, not part of this card.
+- **Suites (Windows, before the review fixes):** node 530 of 540 (10 skipped), graph suite passing.
+
+**Codex review, round 1** (of a2a877d):
+
+- (medium) The whole-graph hint makes a cut briefing longer, so a budget that fits the full briefing could be refused before the full briefing was tried (for example a v1 graph with one goal). The full briefing is now tried first, and the refusal names the smaller of the two sizes. Regression test: every budget the full briefing fits returns it; it fails without the fix.
+- (low) The mixed-list case was checked only on `graphWith`'s data: a rendered test now asserts `current decisions: port; 1 more left out`.
+- (low) The MCP paging fixture matched every node: it now has an unmatched open question, and the test checks the count and hint appear once in the reassembled pages and the question does not.
+- (low) No live result was recorded: recorded above.
+
+**Codex review, round 2** (of 6ad003f): every round 1 fix confirmed, no new production issue. (low) The budget regression never checked the refusal message: the test now asserts that a budget below both sizes names the full briefing's estimate when it is the smaller. Suites after round 1 fixes (Windows): node 532 of 542 (10 skipped), graph suite passing.
+
 ## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
 
 Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
@@ -4549,3 +4578,56 @@ P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user 
 - **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
 - **Codex review of the rework, round 4:** no findings.
 - **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).
+
+## P3 — review events (defined 2026-11-21, before implementation)
+
+P2c (ADR-7c) records one person's approve or reject decision per version 3 node hash as a plain row that a later decision overwrites. ADR-6 asks for append-only, hash-chained review events whose state is a fold, and the reviewer needs an edit decision as well. Synthetic graphs and reviewer names only.
+
+### What is tested and the expected result
+
+- **Events, not rows.** Every decision appends one row to `review_events` (schema version 7). An UPDATE or DELETE on it is refused by the database. The current decision for a node hash is the latest event for it.
+- **Hash chain.** Each event stores `prev` (the previous event's hash, 64 zeros for the first) and `hash`, SHA-256 of the RFC 8785 JCS form of the event: prev, session, party, node ID, node hash, decision, label when it is an edit, reviewer and time. `ledger reviews verify` recomputes the chain and reports the event count and head hash, or the first event that does not match. Changing any field of a stored event, by a raw write with the triggers dropped, is reported.
+- **Edit.** A third decision, `edit`, carries the corrected label (1 to 500 characters, well-formed Unicode, not only spaces). The graph itself never changes: the edit is a review outcome shown beside the node. Approve and reject carry no label.
+- **Same rules as P2c.** Only version 3 nodes with a current hash are reviewed; a stale hash is a 409; the reviewer is 1 to 64 visible characters on one line and self-asserted; the POST route still needs a browser sign-in; errors never echo a value.
+- **Migration.** A version 6 file with P2c rows gains one event per row, in the order they were decided, with a valid chain, and `node_reviews` is dropped. The decisions a graph shows are the same before and after.
+- **Browser.** The review section has Approve, Edit and Reject. Edit opens a field with the label filled in; saving shows "Edited by <name> (self-asserted)" and the new label as text. Everything is set with `textContent`.
+- **Concurrency.** Two stores appending to one file keep one chain: each append reads the head under the write lock.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs`, `npm run -s test:graph`, `npx playwright test` and the runtime Python checks pass, with the cases above in `tests/review-events.test.mjs` and the review browser spec.
+- No new dependency.
+
+### P3 results (2026-11-21)
+
+- `tests/review-events.test.mjs` 9/9: events and the fold, a changed node starting unreviewed, edit labels and fixed-word errors, the append-only triggers, verify naming the first rewritten event, `checkChain` on seq, prev and label, two stores on one file keeping one chain, a version 6 file with P2c rows migrating in decision order, and `ledger reviews verify` (count and head, a broken event named by number only, an older file left unmigrated, usage).
+- `tests/e2e/node-review.spec.mjs` 5/5, with an edit saved and shown as text beside the unchanged graph label, then replaced by an approval, and Cancel recording nothing.
+- The P2c tests now expect the new decision list, the edit label in the key list and the version 7 table.
+- **Codex review, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) An edit label with a NUL was cut by SQLite while its hash covered every character, so a valid edit broke the chain. The label is stored as a JSON string literal (`label_json`).
+  - (medium) `INSERT OR REPLACE` deletes a row without firing the delete trigger, so an event could be overwritten. A new insert trigger requires the next seq and the head as prev.
+  - (medium) A chain with its last events removed still verified. `ledger reviews verify --head <hash>` now checks against a head kept from earlier, and the plain check says that removal from the end would not show. The ADR no longer claims more.
+  - (low) A failed save redrew the edit field from the stored label, losing what was typed. The draft is kept.
+  - (low) The two-store test wrote one after the other. It now runs three processes appending 25 events each at the same time, and expects one chain of 75.
+  - `tests/review-events.test.mjs` 12/12, `tests/e2e/node-review.spec.mjs` 6/6, `node --test tests/*.test.mjs` 556/556.
+- **Codex review, round 2:** one medium and two low findings, fixed with tests:
+  - (medium) `INSERT OR REPLACE` could still remove the head through the unique hash: a row with the next seq and the head as both prev and hash. The insert trigger now refuses a hash already in the chain.
+  - (low) A malformed stored label made verify fail as "Cannot read the ledger database", hiding which event broke and any earlier break. An unreadable label now counts as a broken event, by number, and the fold leaves it out.
+  - (low) The edit field stayed editable while a save was pending, so the label shown could differ from the one sent. It is locked until the save finishes.
+- **Codex review, round 3:** two low findings, fixed with tests:
+  - (low) A stored label holding an escaped lone surrogate passed the string check, then made verify throw. It is now an unreadable event, named by number.
+  - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
+- **Codex review, round 4:** one medium, fixed with a test: node:sqlite cuts a stored string at a NUL, so a NUL and suffix added to a stored field hashed as the original and verify missed it. Verify now reads every text column as its stored bytes and decodes them as strict UTF-8. A NUL is hashed, and bytes that are not UTF-8 make the event unreadable.
+- **Codex review, round 5:** one medium and one low, fixed with a test. (medium) The UTF-8 decoder dropped a leading U+FEFF, so a BOM added to a stored field was missed. It is now kept and hashed. (low) A seq past 2^53 made node:sqlite throw while reading. Verify reads seq as text, and such an event is broken, named by its position.
+- **Codex review, round 6:** one medium and two low, fixed with tests:
+  - (medium) With the table rebuilt without its CHECK, a label added to an approval was parsed and then left out of the hash, so the chain still verified. Verify now breaks the chain when a non-edit has a label or an edit has none.
+  - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
+  - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
+- **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.
+- **Codex review, round 8:** one low, fixed with a test: edit labels were limited to 500 UTF-16 units while graph labels allow 500 code points, so a label with emoji could not be kept. Both count code points now, and the browser field has no maxLength (which counts UTF-16 units).
+- **Codex review, round 9:** one low, fixed with a test: an edit label of only invisible characters (a zero-width space, say) was accepted. Edit labels now follow the version 3 graph label patterns: something visible, and no control, separator or bidi control.
+- **Codex review, round 10:** two low, fixed: the label patterns held raw bidi and filler characters, which the editor had turned from escapes. They are \u escapes now, and a scan finds no raw control or format character in src, tests or public. Focus was also lost after a saved edit. It returns to the node's button, with a browser test.
+- **Codex review, round 11:** one low, fixed with a browser test: Cancel removed the focused button. Focus now returns to the node's Edit button.
+- **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
+- **Codex review, round 12:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).

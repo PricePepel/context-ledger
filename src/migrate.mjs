@@ -1,6 +1,8 @@
 // Schema versions of ledger.sqlite, kept in PRAGMA user_version. A file written before
 // versions existed is version 0 and is upgraded in place when a store opens it.
-export const schemaVersion = 6;
+import { appendEvent } from './reviews.mjs';
+
+export const schemaVersion = 7;
 
 const userVersion = database => database.prepare('PRAGMA user_version').get().user_version;
 const columns = (database, table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -361,6 +363,49 @@ export function migrate(database, bootstrap = () => {}) {
         `);
       }
       database.exec('PRAGMA user_version = 6;');
+    }
+    if (version < 7) {
+      // Card P3 (ADR-6, ADR-17): review decisions become append-only events chained by
+      // hash. The triggers refuse any change to a stored event, and an insert that does not
+      // follow the head (INSERT OR REPLACE included). The label is a JSON string literal. P2c's rows are copied in
+      // the order they were decided, as a chain, and node_reviews is dropped.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS review_events (
+          seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+          prev TEXT NOT NULL,
+          hash TEXT NOT NULL UNIQUE,
+          session_id TEXT NOT NULL,
+          party TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          node_sha256 TEXT NOT NULL,
+          decision TEXT NOT NULL CHECK (decision IN ('approve', 'edit', 'reject')),
+          label_json TEXT,
+          reviewer TEXT NOT NULL,
+          decided_at TEXT NOT NULL,
+          CHECK ((decision = 'edit') = (label_json IS NOT NULL))
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS review_events_graph ON review_events(session_id, party);
+        CREATE TRIGGER IF NOT EXISTS review_events_no_update BEFORE UPDATE ON review_events BEGIN
+          SELECT RAISE(ABORT, 'Review events are append-only.');
+        END;
+        CREATE TRIGGER IF NOT EXISTS review_events_no_delete BEFORE DELETE ON review_events BEGIN
+          SELECT RAISE(ABORT, 'Review events are append-only.');
+        END;
+        CREATE TRIGGER IF NOT EXISTS review_events_next BEFORE INSERT ON review_events
+        WHEN NEW.seq IS NOT (SELECT coalesce(max(seq), 0) + 1 FROM review_events)
+          OR EXISTS (SELECT 1 FROM review_events WHERE hash = NEW.hash)
+          OR NEW.prev IS NOT coalesce((SELECT hash FROM review_events ORDER BY seq DESC LIMIT 1), '0000000000000000000000000000000000000000000000000000000000000000') BEGIN
+          SELECT RAISE(ABORT, 'A review event must follow the head of the chain.');
+        END;
+      `);
+      const hasRows = database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'node_reviews'").get();
+      if (hasRows) {
+        const rows = database.prepare(`SELECT session_id AS sessionId, party, node_id AS nodeId, node_sha256 AS nodeSha256,
+          decision, reviewer, decided_at AS decidedAt FROM node_reviews ORDER BY decided_at, rowid`).all();
+        for (const row of rows) appendEvent(database, { ...row });
+        database.exec('DROP TABLE node_reviews;');
+      }
+      database.exec('PRAGMA user_version = 7;');
     }
     database.exec('COMMIT');
   } catch (error) {
