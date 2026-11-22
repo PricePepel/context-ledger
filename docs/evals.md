@@ -4470,3 +4470,24 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 **Codex review, round 5** (of 513a69f): (medium) a tree that was never recorded passed unverified: it now fails the eval. (low) A table reading that finished after the 15 s deadline could still clear it: it no longer counts. (high, accepted) On Windows `taskkill` resolves the launcher's ID itself, so a launcher that exits on its own in the milliseconds between the check and that lookup leaves its ID free for reuse. Closing this needs a Windows Job Object, which Node cannot create without a native module, and adding a runtime dependency for a test script is not worth it. The script runs on throwaway CI runners and on a developer's own machine, and the window is a launcher exiting by itself at the moment cleanup starts. It is written down in the script.
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
+
+## P5e — Launch docs (defined 2026-11-21, before the docs)
+
+| Eval | Expected |
+| --- | --- |
+| Install | The README opens with an Install section: a global install from the GitHub repository, which works today, the same by the npm name once the user publishes it, and `npx` for one-off commands with the whole prefix on each. The package name `@pricepepel/context-ledger` and the command `context-ledger` are both named, with why they differ. |
+| First run | It says what `start` prints (the address and a one-time sign-in link), where the data lives (`~/.context-ledger`, `USERPROFILE` on Windows) and how to import a first transcript from the browser or the command line. |
+| Agents | It shows `context-ledger install` (and `--dry-run`), what it registers through `npx` and from a global install, and that agents need the ledger running. |
+| Upgrade and remove | It says how to upgrade (re-run with a newer version; a database is upgraded in place, an older build refuses a newer one), how to remove the agents' blocks (`uninstall`) and the data folder. |
+| Not in this release | It lists what this release leaves out: the license key and paid tier (ADR-13), hosted sync, hash-chained review events and edits (P3), automatic transcript discovery. |
+| Accurate | Every command in the section runs as written: a node test runs each `context-ledger` command the section shows (through the bin, against a temporary home) and checks that the commands it does not run (`npx`, `npm install`) name the right package and bin. |
+
+**Codex review, round 1** (of b19c33b):
+
+- (high) After the `npx` quick start there was no `context-ledger` command for the next steps. The section now leads with a global install, which works from GitHub today (`npm install --global github:PricePepel/context-ledger`, checked into an empty prefix: it installs the command) and by name once published; `npx` is kept for one-off commands, with the whole prefix on each.
+- (medium) Removing `.context-ledger` left a database named in `CONTEXT_LEDGER_DB`: the removal step names it. (medium) The agent step left out that the `claude` and `codex` CLIs must be on `PATH` (a missing one gets the instruction block but no registration), the `cmd /c` wrapper on Windows, the fallback to the published name and version, and what a global install registers: all said now.
+- (medium) The test did not check the npx subcommand, passed with no global install line, and never ran `uninstall`: it checks each, and says that the installed command is driven by P5d's clean-install eval.
+- (low) The GitHub install needs Git: named as a prerequisite. (low) The handoff called P5 closed before P5d merged: reworded.
+
+**Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
+

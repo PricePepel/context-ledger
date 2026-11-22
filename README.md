@@ -2,6 +2,37 @@
 
 A local transcript library for handing work between Claude Code and Codex. Import a selected JSONL transcript, find a conversation by keyword, and give another agent the relevant turns with their original line numbers.
 
+## Install
+
+Requires Node.js 22.14 or later, and Git for the install from GitHub. The package is `@pricepepel/context-ledger` (the plain name `context-ledger` is taken on npm by an unrelated project); the command it installs is `context-ledger`.
+
+Install the command once, from GitHub today:
+
+```sh
+npm install --global github:PricePepel/context-ledger
+context-ledger start
+```
+
+Once the package is published to npm (the maintainer publishes it with `npm publish --access public`), install it by name instead: `npm install --global @pricepepel/context-ledger`.
+
+To try it without installing, `npx` runs one command at a time, so every command needs the whole prefix, for example `npx -y --package github:PricePepel/context-ledger context-ledger start` in one terminal and `npx -y --package github:PricePepel/context-ledger context-ledger login` in another. The steps below assume the installed command.
+
+`start` prints the address it listens on (`http://127.0.0.1:4317`) and a one-time sign-in link: open the link within 60 seconds to use the browser app. For a new link, run `context-ledger login`. Keep the server running while you or your agents use the ledger; stop it with Ctrl-C.
+
+**Your data** lives in `.context-ledger` in your home folder (`%USERPROFILE%` on Windows): the database, which holds the transcript text you import, and the access token of the running server. Set `CONTEXT_LEDGER_DB` to another file to keep it elsewhere, and `PORT` for another port; give the server, the CLI and your agents the same values.
+
+**Import a first transcript** in the browser (**Add a transcript**), or from a terminal: `context-ledger import --provider claude path/to/session.jsonl` (or `--provider codex`). Then `context-ledger search WORDS` lists matching sessions.
+
+**Connect your agents.** `context-ledger install` registers the ledger's MCP server with Claude Code and Codex at user scope, through their own CLIs (`claude` and `codex` on your `PATH`, or their paths in `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN`: for a missing one, install says so, registers nothing for it, still adds its instruction block and exits with status 1; run it again once the CLI is there), and adds a short "check the ledger first" block to each agent's instructions. `--dry-run` shows what it would do, and `--agent claude` or `--agent codex` limits it to one. From a global install it registers `node` with the installed adapter file. Run through `npx`, it registers `npx -y --package <spec> context-ledger mcp` instead, with the spec npm was given (on Windows inside `cmd /c`), or the published name and version when npm names no spec; a spec it cannot write safely is refused. Agents reach the ledger only while `context-ledger start` is running. See [Connect an agent over MCP](#connect-an-agent-over-mcp) for the tools and the manual setup.
+
+**Upgrade** by installing again (`npm install --global github:PricePepel/context-ledger`, or the npm name once published). A database is upgraded in place on first start; an older build refuses a newer database rather than change it. If you registered the agents with an older install, remove the registration and run `install` again (see below).
+
+**Remove** the agents' blocks with `context-ledger uninstall` (it prints the commands that remove the two MCP registrations, for you to run), the command with `npm uninstall --global @pricepepel/context-ledger`, and your data by deleting the `.context-ledger` folder while the server is stopped, or the database you named in `CONTEXT_LEDGER_DB` and the token files beside it.
+
+**Not in this release:** a license key or paid tier (a product decision still open, ADR-13), hosted or team sync, hash-chained review events and editing nodes (card P3; today a person approves or rejects version 3 nodes, see [Approving nodes](#approving-nodes)), and automatic discovery of transcripts: you import each one yourself.
+
+The rest of this README works from a checkout of the repository, where `npm start` and `npm run --silent ledger -- …` stand in for `context-ledger start` and `context-ledger …`.
+
 ## For judges
 
 Built on 2026-11-07 at the Anything Applied Agentic Hackathon for the "Your Agent, My Agent" challenge.
