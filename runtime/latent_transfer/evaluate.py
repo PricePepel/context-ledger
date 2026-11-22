@@ -9,6 +9,7 @@ Conditions (same receiver, same question text):
   swat    mapped sender cache of the passage             (the transfer)
   zeroed  the mapper with the sender cache set to zero   (control: the mapper also sees the
           receiver's token embeddings, so this is what it can do without the sender)
+  mismatched  the sender's cache of another item's passage (audit control: content, not style)
   t2t     sender's summary of the passage, as text       (text-to-text baseline)
   sender  the sender answers from the passage itself     (reference: is the transfer worth it
           over just asking the sender?)
@@ -24,7 +25,7 @@ import time
 import torch
 
 from .data import closed_prompt, contains, doc_text, f1, question_suffix, sample, squad, summary_prompt
-from .pair import TransferPair
+from .pair import RECEIVER, SENDER, TransferPair
 
 GATE_RETENTION = 0.90
 
@@ -74,10 +75,19 @@ def run(pair, items, conditions, log_every=50):
             record["swatMs"] = (time.perf_counter() - start) * 1000
         if "zeroed" in conditions:
             record["zeroed"], _ = pair.answer_from_sender(document, suffix, zero_sender=True)
+        if "mismatched" in conditions:
+            # Audit control (arXiv 2608.04893): the sender's cache of another item's passage.
+            # If this scores like swat, the gain is not the passage's content.
+            other = items[(index + 1) % len(items)]
+            record["mismatched"], _ = pair.answer_from_sender(doc_text(other["context"]), suffix)
         if "t2t" in conditions:
-            summary = pair.sender_generate(summary_prompt(row["context"]))
+            start = time.perf_counter()
+            chatml = pair.sender_name == SENDER  # the run 1 sender keeps its exact prompt
+            summary = pair.sender_generate(summary_prompt(row["context"], tokenizer=None if chatml else pair.sender_tok))
             record["summary"] = summary
             record["t2t"] = pair.answer_from_text(doc_text(summary), suffix)
+            # End to end: the sender writes the summary and the receiver answers from it.
+            record["t2tMs"] = (time.perf_counter() - start) * 1000
         if "sender" in conditions:
             # Same prompt tokens and answer budget as the receiver's text condition.
             record["sender"] = pair.sender_generate(document + suffix, max_new_tokens=24)
@@ -109,6 +119,13 @@ def summarize(results, conditions):
     if "swat" in mean and "zeroed" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["zeroedF1"] for r in results])
         summary["swatMinusZeroed95"] = [round(low, 4), round(high, 4)]
+    if "swat" in mean and "mismatched" in mean:
+        low, high = bootstrap([r["swatF1"] for r in results], [r["mismatchedF1"] for r in results])
+        summary["swatMinusMismatched95"] = [round(low, 4), round(high, 4)]
+    if "swat" in mean and "t2t" in mean:
+        low, high = bootstrap([r["swatF1"] for r in results], [r["t2tF1"] for r in results])
+        summary["swatMinusT2t95"] = [round(low, 4), round(high, 4)]
+        summary["t2tMeanMs"] = round(sum(r["t2tMs"] for r in results) / len(results), 2)
     if "swat" in mean and "sender" in mean:
         low, high = bootstrap([r["swatF1"] for r in results], [r["senderF1"] for r in results])
         summary["swatMinusSender95"] = [round(low, 4), round(high, 4)]
@@ -140,12 +157,14 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--sender", default=SENDER)
+    parser.add_argument("--receiver", default=RECEIVER)
     args = parser.parse_args()
     conditions = [c for c in args.conditions.split(",") if c]
     if ({"swat", "zeroed"} & set(conditions)) and not args.checkpoint:
         parser.error("--checkpoint is required for the swat and zeroed conditions")
     torch.manual_seed(args.seed)
-    pair = TransferPair(checkpoint=args.checkpoint)
+    pair = TransferPair(sender=args.sender, receiver=args.receiver, checkpoint=args.checkpoint)
     items = eval_items(pair, args.count, args.seed, args.max_tokens)
     # Warm-up (CUDA kernels, allocator) on a training-free text, so item 1's timing is fair.
     pair.answer_from_text(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)

@@ -4492,6 +4492,89 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
 
+## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
+
+Run 1 of M2b (Qwen2.5-0.5B to SmolLM2-360M) passed its gate, but both models are far below the 3B–32B range of the SwaT paper (arXiv 2610.15095). This card scales the sender about 8× on the same 16 GB laptop GPU. A 7B pair does not fit in bf16 with the backward pass through the receiver, so 7B waits for quantized-receiver training or a larger GPU.
+
+- **Pair:** `microsoft/Phi-3.5-mini-instruct` (3.8B, Phi-3 architecture, 32 KV heads, LongRoPE) to `Qwen/Qwen2.5-1.5B-Instruct` (Qwen2, 2 KV heads, RoPE base 1e6). Different families, tokenizers and RoPE, large to small like the paper's Gemma3-12B to Qwen3-4B.
+- **Training:** `latent_transfer.train` with `--sender` and `--receiver`, the same two stages as run 1. Batch, mapper size and passage length are set by what fits in 16 GB without spilling to host memory, and recorded with the result.
+- **Eval:** 300 SQuAD v1.1 validation questions (seed 0), greedy, token F1 and containment, conditions `text, closed, swat, zeroed, mismatched, t2t`. `t2t` uses the sender's own chat template; run 1's ChatML prompt is unchanged.
+
+| Gate | Pass when |
+| --- | --- |
+| Carries the passage | `swat` beats `zeroed` and `mismatched` (another item's passage through the same mapper), each with the paired bootstrap 95% interval above zero. The mismatched control comes from the audit in arXiv 2608.04893. |
+| Better than text | `swat` beats `t2t` (the sender's 40-word summary read by the receiver), interval above zero. Budgets are not matched in this card. |
+| Faster than text | Mean `swat` end to end (sender prefill, mapper, receiver answer) is below mean `t2t` end to end (sender writes the summary, receiver answers). |
+| Retention | Reported, with containment beside F1, because stage 2 trains the answer style (run 1's F1 retention of 1.86 was inflated by short answers). |
+
+Not covered here, and named so nobody reads more into a pass: budget-matched compaction (Attention Matching), the fair control of a receiver fine-tuned on the same SQuAD data, and more than one task.
+
+### Result — run 1 (2026-11-22)
+
+Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, stage 2 20,000 steps at batch 2 (QA share 0.7), mapper 100.5M parameters (8 blocks, width 384, 6 heads), passages capped at 256 tokens, seed 0. Stage 2 ran at about 0.54 s per step. Best dev F1 0.8275 (100 held-out dev questions), checkpoint `ade79c34041fd529`. Eval: 300 SQuAD v1.1 validation questions, seed 0, greedy.
+
+| Condition | F1 | Containment | Mean answer words |
+| --- | --- | --- | --- |
+| `text` (receiver reads the passage) | 0.778 | 0.857 | 4.9 |
+| `swat` (receiver reads the mapped sender cache) | **0.872** | 0.853 | 3.1 |
+| `t2t` (receiver reads the sender's summary) | 0.460 | 0.433 | 3.7 |
+| `mismatched` (another item's cache) | 0.153 | 0.087 | 3.2 |
+| `closed` (no passage) | 0.170 | 0.117 | 4.2 |
+| `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
+
+Paired bootstrap 95% intervals (10,000 resamples) for the per-item difference in token F1: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135]. For containment, `swat − text` is −0.003 [−0.047, 0.040]. For latency per item, `text − swat` is 49 ms [15, 85] and `t2t − swat` is 3,240 ms [3,023, 3,473].
+
+Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
+
+| Gate | Result |
+| --- | --- |
+| Carries the passage | **Pass.** Both intervals are far above zero, and the mismatched cache scores near the closed-book floor: the gain depends on supplying the correct passage's cache, not on a generic prior from the mapper. |
+| Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms mean, about 8.6× faster. On this run it was also faster on average than the receiver reading the passage itself (426 vs 475 ms, per-item interval above zero); one machine, one run. |
+| Retention | Reported: F1 retention 1.12 against `text` (interval above zero), while containment shows no detectable difference (−0.003, interval [−0.047, 0.040], so any gap is under 5 points either way). `swat` answers are shorter (3.1 vs 4.9 words), which likely explains part of the F1 edge; these aggregates do not show how much. The claim we make: "finds the answer as often as reading the passage, within 5 points, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+
+Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.
+
+Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
+
+## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
+
+For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
+
+**Task (synthetic):** N incident reports, generated from a fixed seed (service, cause, downtime in minutes, date, a short narrative). Each agent reads one report and returns `{service, cause, downtimeMinutes, quote}`. The page combines them: which services went down because of a configuration change, and their total downtime.
+
+| Eval | Expected |
+| --- | --- |
+| Live run | With a local OpenAI-compatible server (vLLM) configured, `POST /api/swarm/runs` with `agents: 100` sends one request per agent, at most `SWARM_CONCURRENCY` at a time (default 32), assigns agents round-robin across the configured models, and records each agent's model, state, time and tokens. |
+| Local only | Model servers come from `SWARM_URLS` (comma-separated) and must be `http://127.0.0.1` or `http://localhost`; any other host is refused at start. Nothing in a request body chooses a URL or a model. |
+| Checked quotes | An agent's answer is **verified** only when its quote appears in its report (after whitespace folding) and its downtime number appears in the quote. It is **correct** when service, cause and downtime match the generator's truth. Both counts are shown; unverified answers are left out of the combined answer. |
+| Combined answer | The answer lists the services and total downtime from verified answers, beside the truth from the generator and the number of agents that agree with it. |
+| GPU numbers | During a live run the page shows the server's KV-cache use, prefix-cache hit rate and running requests from its `/metrics`, when the server exposes them; missing metrics show as not reported, never as zero. |
+| Simulation | `mode: "simulated"` runs without any model server, with seeded timings and a few seeded wrong answers. The page says **Simulated** in the header and on every number; nothing simulated is labelled as measured. |
+| Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
+| Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
+| Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
+
+**Codex review, round 1** (of fa80ac7), each finding fixed with a regression test:
+
+- (high) Overlapping runs escaped the concurrency limit, and a running run could be dropped from the kept five while its agents kept working. One run at a time now (`409` while one runs), and only finished runs are dropped.
+- (medium) Model-server requests followed redirects, which could leave loopback: every request now uses `redirect: 'error'`; a test checks the redirect target is never contacted.
+- (medium) Model-server bodies were unbounded: capped at 256 KiB before parsing (the stream is cancelled), and answer fields are capped (service 80, cause 40, quote 400 characters, downtime 0 to 100,000).
+- (medium) The prefix-cache rate could include traffic from before the run, and a short run could finish without a sample. The baseline is read before the first agent starts, a last sample is taken after the last one, and a server's counters count only when both samples have them and they did not go backwards. The page now shows the server's running requests, "not reported" when missing.
+- (medium) Any number in the quote could verify a wrong downtime (a date, the incident number): the quote must state `<number> minutes`.
+- (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
+- (low) The finished message and an agent's token counts were not labelled simulated: both are now.
+- (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
+
+**Codex review, round 2** (of 5b6dd55): the round 1 fixes work. Fixed with tests:
+
+- (medium) A failed last metrics scrape kept the earlier sample unmarked: it is now marked stale, shows no "running now", and the page says "last sample before the end".
+- (medium) A model answering `{}` to every agent made a done run: an answer needs all four fields with the right types, so such a run fails.
+- (medium) A stalled poll never counted as a failure: every page request has a 5-second deadline covering the response.
+- (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
+
+**Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
@@ -4631,3 +4714,32 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
 - **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
 - **Codex review, round 12:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).
+
+## P3b — review head in signed hand-offs (defined 2026-11-22, before implementation)
+
+P3's review chain shows a change in the middle, but a chain cut short at its end still checks, and `--head` needs a head someone kept. P4a's signed hand-off is the natural place to keep one: the sender's key signs it. Synthetic sessions, keys and names only.
+
+### What is tested and the expected result
+
+- **Manifest version 2.** `ledger handoff <id> --sign <folder>` writes manifest version 2, which adds `reviews`: `{ "events": <count>, "head": "<64 hex>" }`, the ledger's review chain at signing time (64 zeros and 0 for an empty chain). It is in the signed JCS bytes, so changing it breaks the signature.
+- **No signing over a broken chain.** If `ledger reviews verify` would report a break, signing refuses, names the event by number, and writes nothing.
+- **Verify shows it.** `ledger verify <folder>` checks the `reviews` shape (a safe non-negative integer, and 64 lowercase hex, which is the genesis hash exactly when events is 0) and prints "Review chain at signing: N events, head H". Version 1 bundles still verify, unchanged, and say they carry no review head. Any other version is refused.
+- **Check a ledger against a bundle.** `ledger reviews verify --bundle <folder> [--fingerprint <fp>]` first verifies the bundle as `ledger verify` does, with the same problems listed on failure, then checks the ledger's chain against the signed head. The check passes when the head is in the chain and the event count at the head matches. It fails when events up to the head were removed or rewritten, and when the bundle has no review head (version 1). `--bundle` and `--head` cannot be combined.
+- **OpenSSL path unchanged.** The OpenSSL commands in docs/signed-handoff.md still verify a version 2 bundle.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/sign.test.mjs` and `tests/review-events.test.mjs`.
+- No new dependency. docs/signed-handoff.md describes version 2.
+
+### P3b results (2026-11-22)
+
+- `tests/signed-review-head.test.mjs` 9/9. It covers signing recording the chain and verify showing it; `--bundle` passing as the ledger grows; a ledger cut short failing against the bundle while passing alone; a bundle with the wrong key, or a changed head (signature broken), not trusted; a signed count that does not match the head's position; a version 1 bundle verifying and reporting no head; an empty chain; a broken chain never signed, with nothing written; and option conflicts.
+- `tests/sign.test.mjs` now expects version 2 with `reviews`, and refuses a version 3 manifest, version 2 without `reviews`, version 1 with `reviews`, and malformed `reviews` (a count with the empty head, no events with a head, a negative count, an uppercase head, an extra key).
+- **Codex review, round 1:** no high; one medium and two low, fixed with tests:
+  - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
+  - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
+  - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.
+- **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
+- **Codex review, round 3:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
