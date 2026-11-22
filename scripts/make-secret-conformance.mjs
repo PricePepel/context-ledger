@@ -100,6 +100,10 @@ const cases = [
   { name: 'a dotted capital i does not fold into a lead', text: ['AP', { char: 0x130 }, '_KEY=abcd', '1234xyz'] },
   { name: 'a dotless i does not fold into a lead', text: ['pass', 'word', ' ', 'p', { char: 0x131 }, 'n=abc', '123Def'] },
   { name: 'upper case lead and stand-in', text: ['PASSWORD=CHANGEME', { char: 10 }, 'TOKEN: Abc123', 'Def456'] },
+  // W2 review round 14: a value is judged a stand-in only up to placeholders.maxJudged
+  // characters (4,096), so judging stays bounded; a longer run of digits is a value.
+  { name: 'digits up to the stand-in bound are a stand-in', text: ['password=', r('0', 4096)] },
+  { name: 'digits past the stand-in bound are a value', text: ['password=', r('0', 4097)] },
 ];
 
 function expand(parts) {

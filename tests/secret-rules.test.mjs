@@ -39,6 +39,11 @@ test('W2: a second bare assignment has its value listed, the first cut where it 
   assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
 });
 
+test('W2: what the quotes hold is a value when a full stop follows them (review W2-14)', () => {
+  const [finding] = findSecrets('password="paper-harbor".', { values: true });
+  assert.ok(finding.values.includes('paper-harbor'), finding.values.join(' | '));
+});
+
 test('W2: mixed leads on one line each have their value (review W2-13)', () => {
   for (const [text, first] of [['password=synthetic-first, Authorization: Bearer '.concat('synthetic-second'), 'synthetic-first'],
     ['Authorization: Bearer synthetic-first, api_key='.concat('synthetic-second'), 'synthetic-first']]) {

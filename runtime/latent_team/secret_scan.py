@@ -297,6 +297,14 @@ def judged_end(text, start, end, quote, trimmed):
     return max(start, trimmed)
 
 
+def quoted_close(text, start, end, quote):
+    """Where the quote that opened at start closes on its line (past escaped quotes), or None."""
+    close = start
+    while close < end and text[close] != quote:
+        close += 2 if text[close] == BACKSLASH else 1
+    return close if close < end else None
+
+
 def judged_value(text, start, end, quote, trimmed=None):
     return text[start:judged_end(text, start, end, quote, _trimmed_end(text, end) if trimmed is None else trimmed)]
 
@@ -346,8 +354,15 @@ def line_tails(text):
             if value_end <= start or _placeholder_at(text, start, value_end):
                 continue
             closed = bool(quote) and value_end < end
-            found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value_end": value_end,
-                          "closed": closed})
+            candidate = {"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value_end": value_end,
+                         "closed": closed}
+            if quote and not closed:
+                # The judged value runs to the line end ("x". is not a stand-in), but what the
+                # quotes hold is a value of its own (review W2-14).
+                close = quoted_close(text, start, end, quote)
+                if close is not None and close > start:
+                    candidate["quoted_end"] = close
+            found.append(candidate)
             # After a closed quote, the next lead is looked for after it; otherwise right after
             # this lead.
             position = max(position, value_end + 1 if closed else start)
@@ -478,6 +493,8 @@ def _span_values(text, members):
     out, tail = set(), True
     for candidate in members:
         if "core_end" in candidate:
+            if "quoted_end" in candidate:
+                out.add(text[candidate["start"]:candidate["quoted_end"]])
             core = text[candidate["start"]:candidate["core_end"]].rstrip(" \t,;")
             if core and not _placeholder_at(text, candidate["start"], candidate["start"] + len(core)):
                 out.add(core)

@@ -59,6 +59,11 @@ class EveryAssignmentTest(unittest.TestCase):
         self.assertEqual([(f["start"], f["end"]) for f in secret_scan.find_secrets(text)],
                          [(finding["start"], finding["end"])])
 
+    def test_what_the_quotes_hold_is_a_value_when_a_full_stop_follows(self):
+        # Review W2-14 finding 2.
+        [finding] = secret_scan.find_secrets('password="paper-harbor".', values=True)
+        self.assertIn("paper-harbor", finding["values"])
+
     def test_mixed_leads_on_one_line_each_have_their_value(self):
         # Review W2-13 finding 2: an assignment, then a bearer header, and the reverse.
         for text, first in (("password=synthetic-first, Authorization: Bearer synthetic-second", "synthetic-first"),

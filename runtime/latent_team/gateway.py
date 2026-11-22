@@ -539,14 +539,15 @@ class Gateway:
 
         return "".join(pieces), put_back, [(moved(a), moved(b)) for a, b in keep]
 
-    def unauthorised(self, text, allowed=(), put_back=()):
+    def unauthorised(self, text, allowed=(), put_back=(), values=None):
         """The ranges of text's scanner findings (every view, placeholders masked) that no
         marker, placeholder or restoration authorised (review W2-11, W2-12). A finding is
         judged by the values it identified, where they lie in the text (the whole finding
         where a value cannot be placed): a value inside the allowed ranges is authorised; a
         value that overlaps a value put back is authorised except where it reaches outside
         it with a word character (a sentence's full stop is not a credential, more text is);
-        any other value is not, whatever its characters (a value of only punctuation too)."""
+        any other value is not, whatever its characters (a value of only punctuation too).
+        values: a set that receives the text of each part not authorised (review W2-14)."""
         out = []
         for finding in self._scan_all(self.masked(text)):
             start, end = finding["start"], finding["end"]
@@ -560,6 +561,8 @@ class Gateway:
                 if any(x < b and a < y for x, y in put_back):
                     outside = [(x, y) for x, y in outside if re.search(r"\w", text[x:y])]
                 out += outside
+                if values is not None:
+                    values.update(text[x:y] for x, y in outside if text[x:y].strip())
         return self._merge(out)
 
     def holds_placeholder(self, text):
@@ -815,10 +818,21 @@ class OutputGate:
         # one with the model's own text. The parts no marker, placeholder or restoration
         # authorised are redacted, and the result is checked again; what still remains holds.
         allowed = markers + put_back + gateway._token_ranges(text)
-        extra = gateway.unauthorised(text, allowed, put_back)
+        exposed = set()
+        extra = gateway.unauthorised(text, allowed, put_back, exposed)
         if extra:
-            marker = redaction_marker("secret", checked | set(gateway._values.values()))
-            text, new_markers, (put_back, markers) = _replace(text, extra, marker, [put_back, markers])
+            # A value this rescan found has other copies too (review W2-14): every copy outside
+            # what was authorised is redacted with it, and it joins the final check.
+            for value in list(exposed):
+                exposed |= spellings(value)
+            exposed.discard("")
+            copies = gateway._occurrences(text, sorted(exposed, key=len, reverse=True)) + canon_ranges(text, exposed)
+            extra = gateway._merge([tuple(r) for r in extra] +
+                                   [piece for copy in copies for piece in _subtract(copy, allowed)])
+            found |= exposed
+            marker = redaction_marker("secret", checked | exposed | set(gateway._values.values()))
+            text, new_markers, (put_back, markers) = _replace(text, [tuple(r) for r in extra], marker,
+                                                              [put_back, markers])
             count += len(extra)
             allowed = markers + new_markers + put_back + gateway._token_ranges(text)
             safe = safe and not gateway.unauthorised(text, allowed, put_back)

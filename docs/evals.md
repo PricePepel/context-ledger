@@ -4945,3 +4945,13 @@ Codex confirmed round 12's fixes for consecutive bare assignments of one kind an
 - (medium) Round 12's values were suffixes of the line, one per assignment, so 5,000 assignments on a 125,000-character line built over 300 million characters, and the eval log's linear-time note was wrong. Candidates now keep offsets; values are built only when asked for, as each assignment's own part and one whole tail per line, and a value longer than 4,096 characters (`placeholders.maxJudged` in the shared rules) is never judged a stand-in, so judging stays bounded. A test reads 5,000 distinct assignments on one line in both languages with the values' total size under three times the line.
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 609 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks ran with 126 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (401) passed.
+
+### W2 review, round 14 (2026-11-22, Codex, read-only, of PR #71 at 793167d)
+
+Codex confirmed round 13's checks of the fitted and rendered prompts and of known values after the last substitution. Its findings:
+
+- (high, fixed) The final rescan redacted a credential that a redaction exposed (`syntheticPrefix` declared, then `password=paper-harbor` after it) but not that value's earlier bare copy, and the last check did not know the value. The parts the rescan finds not authorised are now values too: every copy of them outside what was authorised is redacted with them, and they join the final check.
+- (high, fixed) A full stop after a quoted value (`password="paper-harbor".`) makes the judged value run to the line end (the P4c rule: what follows the quote is part of the value), so the quoted part was not known and its bare copy survived. What the quotes hold is now a value of its own in both scanners; spans are unchanged.
+- (low, documented) Round 13's bound on judging stand-ins changed one P4c behaviour: a run of more than 4,096 digits (or other stand-in characters) after a name is now a value, where before it was a stand-in. It is conservative (more is redacted), and it is now a shared boundary case in `rules/secret-conformance.json` (4,096 digits a stand-in, 4,097 a value), so both scanners keep agreeing on it.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 610 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 126 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (404) passed.
