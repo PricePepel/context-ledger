@@ -47,7 +47,15 @@ const eventColumns = `seq, prev, hash, session_id AS sessionId, party, node_id A
   decision, label_json AS labelJson, reviewer, decided_at AS decidedAt`;
 // An edit's label is stored as a JSON string literal, like message text, because SQLite
 // cuts a string at a NUL and the hash covers every character.
-const fromRow = ({ labelJson, ...row }) => (labelJson === null ? { ...row } : { ...row, label: JSON.parse(labelJson) });
+// A stored label that is not a JSON string marks the event unreadable; verify reports it by number.
+function fromRow({ labelJson, ...row }) {
+  if (labelJson === null) return { ...row };
+  try {
+    const label = JSON.parse(labelJson);
+    if (typeof label === 'string') return { ...row, label };
+  } catch {}
+  return { ...row, unreadable: true };
+}
 
 /**
  * Checks a chain of events in seq order: seq counts from 1, each prev is the hash before
@@ -62,7 +70,7 @@ export function checkChain(events, trustedHead) {
   let trustedAt = trustedHead === genesis ? 0 : null;
   for (const event of events) {
     count += 1;
-    if (event.seq !== count || event.prev !== prev || event.hash !== eventHash(event)) return { events: count, brokenAt: count };
+    if (event.unreadable || event.seq !== count || event.prev !== prev || event.hash !== eventHash(event)) return { events: count, brokenAt: count };
     prev = event.hash;
     if (event.hash === trustedHead) trustedAt = count;
   }
@@ -100,7 +108,9 @@ export function mountReviews(database, readGraph) {
   function reviewsOf(graph) {
     if (graph?.packet.version !== 3 || !Array.isArray(graph.nodeHashes)) return [];
     const events = statement(`SELECT ${eventColumns} FROM review_events WHERE session_id = ? AND party = ? ORDER BY seq`)
-      .all(graph.packet.sessionId, graph.packet.party).map(fromRow);
+      .all(graph.packet.sessionId, graph.packet.party).map(fromRow)
+      // A damaged event is left out of the fold; ledger reviews verify names it.
+      .filter(event => !event.unreadable);
     const current = new Map(graph.nodeHashes.map(entry => [entry.id, entry.sha256]));
     const latest = new Map();
     for (const event of events) {

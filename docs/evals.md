@@ -4572,3 +4572,7 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (low) A failed save redrew the edit field from the stored label, losing what was typed. The draft is kept.
   - (low) The two-store test wrote one after the other. It now runs three processes appending 25 events each at the same time, and expects one chain of 75.
   - `tests/review-events.test.mjs` 12/12, `tests/e2e/node-review.spec.mjs` 6/6, `node --test tests/*.test.mjs` 556/556.
+- **Codex review, round 2:** one medium and two low findings, fixed with tests:
+  - (medium) `INSERT OR REPLACE` could still remove the head through the unique hash: a row with the next seq and the head as both prev and hash. The insert trigger now refuses a hash already in the chain.
+  - (low) A malformed stored label made verify fail as "Cannot read the ledger database", hiding which event broke and any earlier break. An unreadable label now counts as a broken event, by number, and the fold leaves it out.
+  - (low) The edit field stayed editable while a save was pending, so the label shown could differ from the one sent. It is locked until the save finishes.

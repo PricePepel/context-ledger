@@ -392,6 +392,7 @@ export function migrate(database, bootstrap = () => {}) {
         END;
         CREATE TRIGGER IF NOT EXISTS review_events_next BEFORE INSERT ON review_events
         WHEN NEW.seq IS NOT (SELECT coalesce(max(seq), 0) + 1 FROM review_events)
+          OR EXISTS (SELECT 1 FROM review_events WHERE hash = NEW.hash)
           OR NEW.prev IS NOT coalesce((SELECT hash FROM review_events ORDER BY seq DESC LIMIT 1), '0000000000000000000000000000000000000000000000000000000000000000') BEGIN
           SELECT RAISE(ABORT, 'A review event must follow the head of the chain.');
         END;

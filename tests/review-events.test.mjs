@@ -301,3 +301,31 @@ test('P3 review: two processes appending at the same time keep one chain', async
   assert.equal(verified.events, 75);
   assert.equal(verified.brokenAt, undefined);
 });
+
+test('P3 review 2: INSERT OR REPLACE cannot reuse a stored hash to remove the head', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-hash-');
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'approve', reviewer: 'Mira' });
+  const head = store.verifyReviews().head;
+  const raw = keep(new DatabaseSync(path));
+  assert.throws(() => raw.prepare(`INSERT OR REPLACE INTO review_events (seq, prev, hash, session_id, party, node_id, node_sha256, decision, label_json, reviewer, decided_at)
+    VALUES (2, ?, ?, 's', 'p', 'n', 'h', 'reject', NULL, 'r', 't')`).run(head, head), /follow the head/u);
+  assert.deepEqual({ ...store.verifyReviews() }, { events: 1, head });
+});
+
+test('P3 review 2: a damaged label is reported by event number, and an earlier break still comes first', async t => {
+  const { path, keep } = await fileStore(t, 'ledger-p3-damaged-');
+  const store = keep(openStore(path));
+  const { graph, hash } = setup(store);
+  for (const label of ['Port 7100 first', 'Port 7100 second', 'Port 7100 third']) {
+    store.reviewNode(graph.id, { nodeId: 'port', nodeSha256: hash('port'), decision: 'edit', label, reviewer: 'Mira' });
+  }
+  const raw = keep(new DatabaseSync(path));
+  raw.exec("DROP TRIGGER review_events_no_update; UPDATE review_events SET label_json = '{not json' WHERE seq = 3;");
+  assert.deepEqual(store.verifyReviews(), { events: 3, brokenAt: 3 });
+  // The fold leaves the damaged event out and shows the one before it.
+  assert.equal(store.graphReviews(graph.id)[0].label, 'Port 7100 second');
+  raw.exec("UPDATE review_events SET reviewer = 'Tomas' WHERE seq = 2;");
+  assert.deepEqual(store.verifyReviews(), { events: 2, brokenAt: 2 });
+});

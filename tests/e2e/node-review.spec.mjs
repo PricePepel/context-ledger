@@ -176,3 +176,22 @@ test('P3 review: a failed save keeps the corrected label the person typed', asyn
   await port.getByRole('button', { name: 'Save edit' }).click();
   await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 from Friday, draft');
 });
+
+test('P3 review 2: the corrected label cannot change while its save is pending', async ({ page, request, baseURL }) => {
+  const marker = `p3-pending-${Date.now().toString(36)}`;
+  const { graph } = await publishV3(request, baseURL, marker);
+  await page.goto('/');
+  await page.getByLabel('Graph ID', { exact: true }).fill(graph.id);
+  await page.getByLabel('Your name').fill('Mira');
+  await page.getByRole('button', { name: 'Show nodes' }).click();
+  const port = page.locator('#review-nodes li[data-node="port"]');
+  await port.getByRole('button', { name: 'Edit' }).click();
+  await port.getByLabel('Corrected label').fill('Port 4317 as sent');
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route(`**/api/graphs/${graph.id}/reviews`, async route => { await held; await route.continue(); }, { times: 1 });
+  await port.getByRole('button', { name: 'Save edit' }).click();
+  await expect(port.getByLabel('Corrected label')).toBeDisabled();
+  release();
+  await expect(port.locator('.edited-label .node-label')).toHaveText('Port 4317 as sent');
+});

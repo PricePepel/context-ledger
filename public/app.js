@@ -541,6 +541,8 @@ function editForm(node, hash, review) {
   input.maxLength = 500;
   input.required = true;
   input.value = editDraft ?? (review?.decision === 'edit' ? review.label : node.label);
+  // Locked while a decision is being saved, so what is shown is what was sent.
+  input.disabled = reviewing;
   input.addEventListener('input', () => { editDraft = input.value; });
   const save = textElement('button', 'Save edit', 'choice-button');
   save.type = 'submit';
@@ -601,7 +603,7 @@ async function reviewNode(nodeId, nodeSha256, decision, label) {
   }
   reviewing = true;
   const graph = reviewGraph;
-  for (const button of reviewNodes.querySelectorAll('button')) button.disabled = true;
+  for (const control of reviewNodes.querySelectorAll('button, input')) control.disabled = true;
   try {
     const { reviews } = await request(`/api/graphs/${graph.id}/reviews`, {
       method: 'POST',
