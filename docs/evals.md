@@ -5036,3 +5036,13 @@ Codex confirmed round 21's fixes (long shell heads, the rule of two for calls, t
 - (medium) A squad that ended past the budget could still start a fresh solver-alone fallback. The guard now fails such a fallback without running it; a fake-clock test asserts the solver alone never runs.
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 130 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (425) passed.
+
+### W2 review, round 23 (2026-11-22, Codex, read-only, of PR #71 at 7849a39)
+
+Codex confirmed round 22's fixes (`optional9>`, short heads, the value digests, the fallback deadline). Its findings, each fixed with a regression test:
+
+- (high) A closing subshell bracket (`(password=paper-harbor)`) stayed in the value, so the password's bare copy, before the line, reached the model and a public answer. `freeText.valueHeadEnd` now also ends a head at `)`, `}` or a backtick.
+- (medium) The short-value rule's word characters came from each runtime's Unicode tables, and Node (Unicode 16) and Python (Unicode 15.1) disagree on a character such as U+1C89, so the same text was redacted differently. The word characters are now ASCII letters, digits and the underscore in both, and two shared canonical cases cover it.
+- (medium) An audit's replay could spend the budget and the solver alone (and the mismatched memory) still started. The audit now checks the run's budget before each later inference stage and skips what would start past it (`not-run`); a fake-clock test asserts the solver alone never runs after a replay that crosses the deadline.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (427) passed.

@@ -326,6 +326,37 @@
       ]
     },
     {
+      "name": "a short value after a non-ASCII letter is a whole token (ASCII word characters only)",
+      "text": [
+        {
+          "char": 7305
+        },
+        "ink and more"
+      ],
+      "values": [
+        [
+          "ink"
+        ]
+      ],
+      "covered": [
+        [
+          "ink"
+        ]
+      ]
+    },
+    {
+      "name": "a short value inside an ASCII word is not matched",
+      "text": [
+        "thinking"
+      ],
+      "values": [
+        [
+          "ink"
+        ]
+      ],
+      "covered": []
+    },
+    {
       "name": "nothing to find",
       "text": [
         "nothing here"

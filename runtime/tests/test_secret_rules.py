@@ -65,7 +65,7 @@ class EveryAssignmentTest(unittest.TestCase):
                      "password=paper-harbor && api_key=" + "synthetic-second", "password=paper-harbor > result.txt",
                      "password=paper-harbor & sleep 1", "password=paper-harbor 2>> errors.log",
                      "password=paper-harbor>result.txt", "password=paper-harbor& sleep 1",
-                     "password=paper-harbor<input.txt"):
+                     "password=paper-harbor<input.txt", "(password=paper-harbor)"):
             [finding] = secret_scan.find_secrets(text, values=True)
             self.assertIn("paper-harbor", finding["values"], text)
 

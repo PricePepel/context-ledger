@@ -283,7 +283,8 @@ const headEnd = new RegExp(secretRules.freeText.valueHeadEnd, 'u');
 // A short value is matched only as a whole token (rules: freeText.shortValue, in code points), so
 // a head of any length is a value: "a&b" never makes every "a" inside a word a secret (review W2-22).
 const shortValue = secretRules.freeText.shortValue;
-const isWord = character => /^[\p{L}\p{N}_]$/u.test(character);
+// ASCII only, so no runtime's Unicode tables decide (review W2-23).
+const isWord = character => /^[A-Za-z0-9_]$/u.test(character);
 
 function spanValues(text, members) {
   const out = new Set();

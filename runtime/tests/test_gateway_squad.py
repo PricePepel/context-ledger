@@ -462,6 +462,38 @@ class LabelEvalTest(unittest.TestCase):
         self.assertEqual(calls, [], "the solver alone never ran")
         self.assertEqual((outcome.answer, outcome.decision["action"]), (None, "hold"))
 
+    def test_no_audit_inference_after_the_replay_spends_the_budget(self):
+        # Review W2-23 finding 3: the replay crosses the deadline; the solver alone (and the
+        # mismatched memory) must not start.
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        team = text_team()
+        now = [1000.0]
+        gateway = Gateway("proj-a")
+        gateway.clock = lambda: now[0]
+        gateway.fix_permissions(Permissions(max_seconds=60.0))
+        gateway.admit([Span("request", "request", "2+2?")])
+        guard = Guard(team, thresholds=None, sample=lambda: True)
+        guard.clock = lambda: now[0]
+        latent, single, decode, runs, singles = team.latent_mas, team.single, team.decode, [], []
+
+        def squad(*args, **kwargs):
+            runs.append(1)
+            out = latent(*args, **kwargs)
+            if len(runs) == 2:   # the replay
+                now[0] += 120.0
+            return out
+
+        def counted_single(*args, **kwargs):
+            singles.append(1)
+            return single(*args, **kwargs)
+
+        with mock.patch.object(team, "latent_mas", squad), mock.patch.object(team, "single", counted_single):
+            [outcome] = guard.run(["unused"], steps=STEPS, max_new_tokens=TOKENS, gateways=[gateway])
+        self.assertEqual(len(runs), 2, "the squad and its replay ran")
+        self.assertEqual(singles, [], "the solver alone never ran")
+        self.assertEqual((outcome.answer, outcome.decision["action"]), (None, "hold"))
+
     def test_a_sensitive_memory_with_an_uncleared_output_is_held(self):
         from latent_team.gateway import Gateway, Permissions, Span
         from latent_team.guard import Guard
