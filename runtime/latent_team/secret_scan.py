@@ -501,6 +501,11 @@ def candidates(text):
     return found
 
 
+# Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
+# and "x && ..." name the value x (review W2-19).
+_HEAD_END = _compile(RULES["freeText"]["valueHeadEnd"])
+
+
 def _span_values(text, members):
     """The values a merged span's candidates identified, each bounded: a free-text
     candidate's own assignment, the first one's whole judged tail, and any other candidate's
@@ -513,6 +518,10 @@ def _span_values(text, members):
             core = text[candidate["start"]:candidate["core_end"]].rstrip(" \t,;")
             if core and not _placeholder_at(text, candidate["start"], candidate["start"] + len(core)):
                 out.add(core)
+                cut = _HEAD_END.search(core)
+                head = core[:cut.start()].rstrip(" \t,;") if cut else ""
+                if head and not is_placeholder(head):
+                    out.add(head)
             if tail:
                 out.add(text[candidate["start"]:candidate["value_end"]])
                 tail = False

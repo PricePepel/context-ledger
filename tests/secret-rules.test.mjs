@@ -39,6 +39,14 @@ test('W2: a second bare assignment has its value listed, the first cut where it 
   assert.deepEqual(findSecrets(text).map(({ start, end }) => [start, end]), [[finding.start, finding.end]]);
 });
 
+test('W2: shell syntax ends a value\'s head (review W2-19)', () => {
+  for (const text of ['password=paper-harbor; export aws_secret_access_key='.concat('A'.repeat(40)),
+    'password=paper-harbor && api_key='.concat('synthetic-second')]) {
+    const [finding] = findSecrets(text, { values: true });
+    assert.ok(finding.values.includes('paper-harbor'), `${text}: ${finding.values.join(' | ')}`);
+  }
+});
+
 test('W2: a structured assignment after a bare value cuts it (review W2-18)', () => {
   const [finding] = findSecrets('password=paper-harbor, aws_secret_access_key='.concat('A'.repeat(40)), { values: true });
   assert.ok(finding.values.includes('paper-harbor'), finding.values.join(' | '));

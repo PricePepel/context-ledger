@@ -40,6 +40,7 @@ Plain code and standard library only. Nothing here is stored.
 import re
 import secrets
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
@@ -280,6 +281,8 @@ class Gateway:
     NEUTRAL = "[(secret-"
 
     def __init__(self, project, declared_secrets=(), scanner=secret_scan.find_secrets, secret_path=None):
+        self.clock = time.monotonic   # the run's time; the tool gate's deadline counts from admission
+        self.admitted_at = None
         self.project = _identifier(project, "project")
         self.declared = tuple(sorted({s for s in declared_secrets if isinstance(s, str) and s}, key=len,
                                      reverse=True))
@@ -444,6 +447,8 @@ class Gateway:
         named never enters (need to know)."""
         if self.permissions is None:
             raise GatewayError("permissions-not-fixed", "fix the permissions before reading any span")
+        if self.admission is None:
+            self.admitted_at = self.clock()
         if self.admission is not None:
             raise GatewayError("admitted", "one admission per run")
         label, kept, chosen = None, [], []
@@ -711,6 +716,11 @@ class ToolGate:
         snapshot = copy.deepcopy(call)   # one read of the call: what is checked is what is sent
         with self.gateway.tool_lock:     # the check and the budget reservation are one step
             reason, tool, final = self._check(snapshot)
+            # The run's time budget holds for tool calls too (review W2-19).
+            started = self.gateway.admitted_at
+            if reason == "allowed" and started is not None and \
+                    self.gateway.clock() - started > self.permissions.max_seconds:
+                reason = "deadline"
             if reason == "allowed":
                 self.gateway.tool_calls += 1
         if reason != "allowed":

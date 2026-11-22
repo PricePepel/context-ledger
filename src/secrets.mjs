@@ -277,6 +277,10 @@ function lineTails(text, otherLeads = []) {
  * The values a merged span's candidates identified, each bounded: a free-text candidate's
  * own assignment, the first one's whole judged tail, and any other candidate's value or text.
  */
+// Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
+// and "x && ..." name the value x (review W2-19).
+const headEnd = new RegExp(secretRules.freeText.valueHeadEnd, 'u');
+
 function spanValues(text, members) {
   const out = new Set();
   let tail = true;
@@ -284,7 +288,12 @@ function spanValues(text, members) {
     if (candidate.coreEnd !== undefined) {
       if (candidate.quotedEnd !== undefined) out.add(text.slice(candidate.start, candidate.quotedEnd));
       const core = text.slice(candidate.start, candidate.coreEnd).replace(/[ \t,;]+$/u, '');
-      if (core && !placeholderAt(text, candidate.start, candidate.start + core.length)) out.add(core);
+      if (core && !placeholderAt(text, candidate.start, candidate.start + core.length)) {
+        out.add(core);
+        const cut = headEnd.exec(core);
+        const head = cut ? core.slice(0, cut.index).replace(/[ \t,;]+$/u, '') : '';
+        if (head && !isPlaceholder(head)) out.add(head);
+      }
       if (tail) {
         out.add(text.slice(candidate.start, candidate.valueEnd));
         tail = false;
