@@ -177,7 +177,8 @@ export function mountReviews(database, readGraph) {
       if (!decisions.includes(decision)) throw new InputError('decision must be approve, edit or reject.');
       if (typeof reviewer !== 'string' || !reviewerPattern.test(reviewer) || !/\S/u.test(reviewer)) throw new InputError(reviewerRule);
       if (decision === 'edit') {
-        if (typeof label !== 'string' || label.length < 1 || label.length > 500 || !label.isWellFormed() || !/\S/u.test(label) || lineBreak.test(label)) {
+        // Counted in code points, as graph labels are, so any graph label can be kept as an edit.
+        if (typeof label !== 'string' || label.length < 1 || [...label].length > 500 || !label.isWellFormed() || !/\S/u.test(label) || lineBreak.test(label)) {
           throw new InputError(labelRule);
         }
       } else if (label !== undefined) {

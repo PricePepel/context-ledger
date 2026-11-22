@@ -4586,3 +4586,4 @@ P2c (ADR-7c) records one person's approve or reject decision per version 3 node 
   - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
   - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
 - **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.
+- **Codex review, round 8:** one low, fixed with a test: edit labels were limited to 500 UTF-16 units while graph labels allow 500 code points, so a label with emoji could not be kept. Both count code points now, and the browser field has no maxLength (which counts UTF-16 units).

@@ -86,7 +86,11 @@ test('P3: edits carry a label; approve and reject do not; errors never echo a va
   refused({ ...base, decision: 'reject', label: secret }, 'Only an edit carries a label.');
   refused({ ...base, decision: secret }, 'decision must be approve, edit or reject.');
   store.reviewNode(graph.id, { ...base, decision: 'edit', label: 'x'.repeat(500) });
-  assert.equal(store.verifyReviews().events, 1);
+  // P3 review 8: 500 code points, as for graph labels, even when that is more UTF-16 units.
+  const emoji = String.fromCodePoint(0x1f680);
+  store.reviewNode(graph.id, { ...base, decision: 'edit', label: emoji.repeat(20) + 'x'.repeat(480) });
+  refused({ ...base, decision: 'edit', label: emoji.repeat(21) + 'x'.repeat(480) }, labelRule);
+  assert.equal(store.verifyReviews().events, 2);
   store.close();
 });
 

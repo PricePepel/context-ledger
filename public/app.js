@@ -541,7 +541,7 @@ function editForm(node, hash, review) {
   const input = document.createElement('input');
   input.id = id;
   input.className = 'edit-label';
-  input.maxLength = 500;
+  // No maxLength: it counts UTF-16 units, while labels are limited to 500 code points.
   input.required = true;
   input.value = editDrafts.get(node.id) ?? (review?.decision === 'edit' ? review.label : node.label);
   // Locked while a decision is being saved, so what is shown is what was sent.
