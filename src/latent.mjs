@@ -162,6 +162,15 @@ const oneLine = text => [...text.slice(0, 4000)]
  * spelling the canonical forms match (escaped, spaced or invisibly split), and the result
  * is checked again before it leaves: null when a finding or a known value survives.
  */
+/**
+ * The text that replaces a redacted range: [REDACTED kind] unless that holds one of the
+ * values in any canonical form (a found value ACT is inside REDACTED), else a stand-in the
+ * scanner also reads as none. runtime/latent_team/gateway.py chooses the same.
+ */
+function redactionMarker(kind, values) {
+  return [`[REDACTED ${kind}]`, '***', '###', '---'].find(marker => !canonicalRanges(marker, values).length) ?? '***';
+}
+
 function redactedAnswer(text, declared) {
   const findings = findSecrets(text, { values: true });
   const known = new Set();
@@ -186,7 +195,7 @@ function redactedAnswer(text, declared) {
   let at = 0;
   for (const [start, end] of merged) {
     const kind = findings.find(finding => start <= finding.start && finding.end <= end)?.kind ?? 'secret';
-    out += `${text.slice(at, start)}[REDACTED ${kind}]`;
+    out += text.slice(at, start) + redactionMarker(kind, [...known]);
     at = end;
   }
   out += text.slice(at);

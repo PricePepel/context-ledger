@@ -9,6 +9,7 @@ import { canonicalRanges, findSecrets, redactText } from '../src/secrets.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'));
 const { cases } = read('rules/secret-conformance.json');
+const canonicalCases = read('rules/canonical-cases.json').cases;
 const rules = read('rules/secret-rules.json');
 
 // A text is a list of parts, so no committed file holds a whole credential-shaped string.
@@ -39,6 +40,15 @@ test('W2: canonical copies of a value are found in both forms, as the gateway fi
   const covered = canonicalRanges(text, [value, 'harbor slate 42']).map(([start, end]) => text.slice(start, end));
   for (const copy of [escaped, `harbor${zwsp}-slate-42`, `harbor  ${String.fromCodePoint(9)}slate 42`]) assert.ok(covered.includes(copy), copy);
   assert.deepEqual(canonicalRanges('nothing here', [value]), []);
+});
+
+test('W2: every shared canonical case is read as the gateway reads it (review W2-9)', () => {
+  assert.ok(canonicalCases.length >= 8);
+  for (const { name, text, values, covered } of canonicalCases) {
+    const full = expand(text);
+    const found = [...new Set(canonicalRanges(full, values.map(expand)).map(([start, end]) => full.slice(start, end)))].sort();
+    assert.deepEqual(found, covered.map(expand).sort(), name);
+  }
 });
 
 test('W2: every shared case is found as the gateway finds it', () => {
