@@ -182,6 +182,15 @@ class TeamServiceTest(unittest.TestCase):
             guard.run(["q"], steps=3, max_new_tokens=6, gateways=[tight])
         self.assertEqual(self.team.calls, [], "nothing ran")
 
+    def test_w2_an_unknown_field_name_is_never_echoed(self):
+        # Review W2-5 finding 5: the name could be a declared secret.
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        with self.assertRaises(ApiError) as raised:
+            self.service({"question": "q", "secrets": [canary], canary: 1})
+        self.assertEqual(raised.exception.status, 400)
+        self.assertNotIn(canary, raised.exception.message)
+
     def test_w2_bad_declarations_are_refused(self):
         for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
                      {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},

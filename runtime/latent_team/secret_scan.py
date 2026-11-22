@@ -317,7 +317,9 @@ def line_tails(text):
             value = judged_value(text, start, end, quote)
             if not value or is_placeholder(value):
                 continue
-            found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0})
+            # The redaction span runs to the line end; the value itself is the judged part
+            # (inside its quotes, without trailing punctuation), kept for the gateway.
+            found.append({"kind": rule["kind"], "start": start, "end": end, "prefix": 0, "value": value})
             position = max(position, end)
     return found
 
@@ -425,28 +427,39 @@ def candidates(text):
             value = text[start:end]
             if value and rule["accept"].fullmatch(decoded(value) if in_string else value):
                 found.append({"kind": rule["kind"], "start": start, "end": end,
-                              "rank": 2 + len(SIMPLE) + index, "prefix": 0})
+                              "rank": 2 + len(SIMPLE) + index, "prefix": 0, "value": value})
                 position = max(position, end)
     found += [dict(c, rank=2 + len(SIMPLE) + len(VALUES)) for c in line_tails(text)]
     return found
 
 
-def find_secrets(text):
-    """Every span in text that looks like a credential, in text order: [{kind, start, end, prefix}]."""
+def find_secrets(text, values=False):
+    """Every span in text that looks like a credential, in text order: [{kind, start, end,
+    prefix}], the same spans as src/secrets.mjs. With values=True each span also lists the
+    values its candidates identified ("values"): a free-text span runs to the end of the line,
+    but its value is the judged part, so the gateway can find bare copies of it."""
     if not isinstance(text, str) or not text:
         return []
     spans = []
     for candidate in sorted(candidates(text), key=lambda c: (c["start"], c["rank"])):
+        core = candidate.get("value", text[candidate["start"]:candidate["end"]])
         if spans and candidate["start"] < spans[-1]["end"]:
             last = spans[-1]
             last["end"] = max(last["end"], candidate["end"])
+            last["values"].add(core)
             if candidate["rank"] < last["best"]["rank"]:
                 last["best"] = candidate
         else:
-            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate})
-    return [{"kind": s["best"]["kind"], "start": s["start"], "end": s["end"],
-             "prefix": s["best"]["prefix"] if s["best"]["start"] == s["start"] and s["best"]["end"] == s["end"] else 0}
-            for s in spans]
+            spans.append({"start": candidate["start"], "end": candidate["end"], "best": candidate, "values": {core}})
+    out = []
+    for span in spans:
+        best = span["best"]
+        finding = {"kind": best["kind"], "start": span["start"], "end": span["end"],
+                   "prefix": best["prefix"] if best["start"] == span["start"] and best["end"] == span["end"] else 0}
+        if values:
+            finding["values"] = sorted(v for v in span["values"] if v)
+        out.append(finding)
+    return out
 
 
 def redact_text(text, findings=None):

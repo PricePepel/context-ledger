@@ -146,6 +146,11 @@ class Admission:
                 "refused": self.refused, "placeholders": self.placeholders, "toolsOff": self.rule_of_two}
 
 
+def fold(text):
+    """Runs of whitespace as one space, ends trimmed."""
+    return " ".join(text.split())
+
+
 def spellings(value):
     """A found value as written and as its quoted-string escapes decode (the scanner decodes
     them to recognise a value): both are the same secret."""
@@ -188,8 +193,26 @@ class Gateway:
             raise GatewayError("permissions-after-data", "permissions must be fixed before any span is read")
         if not isinstance(permissions, Permissions) or permissions.clearance not in SENSITIVITY:
             raise GatewayError("malformed", "permissions")
-        self.permissions = permissions
-        return permissions
+        # A snapshot of every rule, in tuples of frozen values: nothing the caller still holds
+        # can widen them later.
+        tools = []
+        for tool in permissions.tools:
+            if not isinstance(tool, Tool) or not all(isinstance(a, Argument) for a in tool.arguments):
+                raise GatewayError("malformed", "tools")
+            arguments = tuple(Argument(a.name, a.kind, a.required, a.max_length, a.pattern, a.low, a.high)
+                              for a in tool.arguments)
+            tools.append(Tool(tool.name, bool(tool.outside_effect), arguments, bool(tool.cleared)))
+        self.permissions = Permissions(tuple(tools), int(permissions.max_tool_calls), int(permissions.max_steps),
+                                       int(permissions.max_new_tokens), float(permissions.max_seconds),
+                                       permissions.clearance)
+        return self.permissions
+
+    def _scan(self, text):
+        """Findings with the values they identified, whatever scanner the gateway was given."""
+        try:
+            return self.scanner(text, values=True)
+        except TypeError:
+            return self.scanner(text)
 
     def _placeholder(self, value):
         if value not in self._tokens:
@@ -228,12 +251,18 @@ class Gateway:
         for text in texts:
             offsets.append(at)
             at += len(text) + len(separator)
-        ranges = [(f["start"], f["end"]) for f in self.scanner(joined)]
+        findings = self._scan(joined)
+        ranges = [(f["start"], f["end"]) for f in findings]
         for text, offset in zip(texts, offsets):   # each span read alone, as the ledger would read it
-            ranges += [(offset + f["start"], offset + f["end"]) for f in self.scanner(text)]
+            alone = self._scan(text)
+            findings += alone
+            ranges += [(offset + f["start"], offset + f["end"]) for f in alone]
         self._egress.update(v for v in self.declared)
         for start, end in ranges:   # the spelling in the text, and the value its escapes decode to
             self._egress.update(spellings(joined[start:end]))
+        for finding in findings:    # the value each finding identified (a free-text span runs on)
+            for value in finding.get("values", ()):
+                self._egress.update(spellings(value))
         known = sorted((v for v in self._egress if v), key=len, reverse=True)
         merged = self._merge(ranges + self._occurrences(joined, known))
         pieces, at = [], 0
@@ -289,7 +318,10 @@ class Gateway:
         text, placeholders = self._hide_all(chosen, "\n\n")
         tools = tuple(self.permissions.tools)
         outside = any(t.outside_effect for t in tools)
-        off = label.trust == "untrusted" and label.sensitivity == "sensitive" and outside
+        # Values held for restoration are sensitive data of the run even though the memory
+        # holds only their placeholders: a cleared tool could receive them.
+        sensitive_data = label.sensitivity == "sensitive" or bool(self._values) or bool(self._egress)
+        off = label.trust == "untrusted" and sensitive_data and outside
         if off:
             tools = ()
         self.admission = Admission(text, label, tools, tuple(kept), left_out, refused, placeholders, off)
@@ -329,10 +361,17 @@ class Gateway:
     def holds_placeholder(self, text):
         return any(token in text for token in self._values)
 
-    def holds_value(self, text):
+    def holds_value(self, text, collapsed=False):
         """Does text hold a known secret value itself: a declared one or an original finding,
-        whether or not it has a placeholder of its own?"""
-        return any(value and value in text for value in self._egress | set(self.declared))
+        whether or not it has a placeholder of its own? collapsed=True also compares with runs
+        of whitespace folded to one space, as a client printing the answer on one line does."""
+        values = [v for v in self._egress | set(self.declared) if v]
+        if any(value in text for value in values):
+            return True
+        if collapsed:
+            folded = fold(text)
+            return any(fold(value) and fold(value) in folded for value in values)
+        return False
 
     def value_ranges(self, text):
         return self._occurrences(text, sorted((v for v in self._egress | set(self.declared) if v), key=len,
@@ -466,9 +505,11 @@ class OutputGate:
         Then, for a cleared output only, the placeholders are put back."""
         gateway = self.gateway
         kinds, found = {}, set()
-        for finding in gateway.scanner(gateway.masked(text)):
+        for finding in gateway._scan(gateway.masked(text)):
             kinds[(finding["start"], finding["end"])] = finding["kind"]
             found |= spellings(text[finding["start"]:finding["end"]])
+            for value in finding.get("values", ()):
+                found |= spellings(value)
         ranges = list(kinds)
         # Every occurrence of a value this scan found, and (uncleared) of every known value.
         ranges += gateway._occurrences(text, sorted(found, key=len, reverse=True))
@@ -488,6 +529,6 @@ class OutputGate:
         # Verify the text that would leave: for an output not cleared, no known value may be
         # in it, not even one the redaction itself wrote. Such a release is refused (safe =
         # False) and the guard holds the run.
-        safe = (self.clearance == "sensitive" or not gateway.holds_value(text)) and \
+        safe = (self.clearance == "sensitive" or not gateway.holds_value(text, collapsed=True)) and \
             not any(value in text for value in found if len(value) > 3)
         return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)

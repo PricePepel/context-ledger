@@ -60,6 +60,15 @@ test('W2: declared secrets and the clearance pass to the runtime, checked first'
   assert.equal(calls.length, 1);
 });
 
+test('W2: a declared value the one-line printing would rebuild is redacted', async () => {
+  const declared = 'harbor slate 42';
+  const body = { ...ok, answer: 'It is harbor  slate\n42.' };
+  const result = await latentTeam({ question: 'q', secrets: [declared] }, { fetchImpl: fakeRuntime(200, body) });
+  assert.ok(!result.answer.includes(declared), result.answer);
+  const cleared = await latentTeam({ question: 'q', secrets: [declared], clearance: 'sensitive' }, { fetchImpl: fakeRuntime(200, body) });
+  assert.ok(cleared.answer.includes(declared));
+});
+
 test('bad requests never reach the runtime', async () => {
   const calls = [];
   for (const input of [{}, { question: ' ' }, { question: 'x'.repeat(8001) }, { question: 'q', latentSteps: 81 },

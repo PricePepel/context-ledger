@@ -745,7 +745,15 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   if (body?.mode !== 'latent-team' || typeof body.answer !== 'string') {
     throw new LatentError(502, 'The latent runtime returned an unexpected team response.');
   }
-  return { mode: 'latent-team', answer: oneLine(body.answer).slice(0, 4000), answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
+  // W2: the answer is printed on one line here, after the runtime's output gate, so the
+  // declared values are checked again on the text as printed (also folded to one line).
+  let answer = oneLine(body.answer).slice(0, 4000);
+  if (request.clearance !== 'sensitive') {
+    for (const secret of [...(request.secrets ?? [])].sort((a, b) => b.length - a.length)) {
+      for (const form of new Set([secret, oneLine(secret)])) if (form) answer = answer.split(form).join('[REDACTED secret]');
+    }
+  }
+  return { mode: 'latent-team', answer, answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
 }
 
 /**

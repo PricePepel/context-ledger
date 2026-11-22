@@ -225,6 +225,47 @@ class PlaceholderTest(unittest.TestCase):
         with self.assertRaises(GatewayError):
             g.fit(100, " [... middle omitted ...] ")
 
+    def test_round5_a_quoted_finding_is_known_without_its_quote(self):
+        # Review W2-5 finding 1: the free-text span runs on past the closing quote and comma.
+        value = "harbor" + "-slate-42"
+        text = f'password="{value}",' + chr(10) + f"Again: {value}"
+        g = gateway()
+        self.assertNotIn(value, g.admit([Span("request", "request", text)]).text)
+        g = gateway()
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release(text)
+        self.assertNotIn(value, released.text)
+
+    def test_round5_whitespace_folding_cannot_rebuild_a_declared_value(self):
+        # Review W2-5 finding 2, the runtime half: an answer that a one-line printer would
+        # turn into a declared value is not safe to release.
+        g = gateway(declared=["harbor slate 42"])
+        g.admit([Span("request", "request", "q")])
+        self.assertFalse(OutputGate(g).release("it is harbor  slate" + chr(10) + "42").safe)
+
+    def test_round5_a_declared_secret_counts_for_the_rule_of_two(self):
+        # Review W2-5 finding 3: untrusted input, a declared secret only as a placeholder, and
+        # a cleared tool with outside effect: the tools go off, so send is never called.
+        secret = canary()
+        g = gateway(tools=(VAULT,), declared=[secret])
+        admission = g.admit([Span("chat", "chat", f"store {secret}")])
+        self.assertTrue(admission.rule_of_two)
+        sent = []
+        token = admission.text.split()[-1]
+        self.assertEqual(ToolGate(g).submit({"name": "vault_write", "arguments": {"value": token}},
+                                            lambda n, a: sent.append(a)).reason, "tools-off")
+        self.assertEqual(sent, [])
+
+    def test_round5_permissions_are_a_snapshot(self):
+        # Review W2-5 finding 4: changing the caller's list after fixing changes nothing.
+        rules = [Argument("to", pattern="safe")]
+        tool = Tool("send_email", outside_effect=True, arguments=rules)
+        g = Gateway("proj-a")
+        g.fix_permissions(Permissions(tools=(tool,), max_tool_calls=2))
+        g.admit([Span("request", "request", "q")])
+        rules[0] = Argument("to", pattern=".*")
+        self.assertEqual(ToolGate(g).check({"name": "send_email", "arguments": {"to": "other"}}), "argument-rule")
+
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
         secret = canary()

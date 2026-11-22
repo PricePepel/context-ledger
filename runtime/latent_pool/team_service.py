@@ -174,9 +174,8 @@ class TeamService:
 
     # ------------------------------------------------------------ /latent/team
     def __call__(self, body, gone=None):
-        extra = sorted(set(body) - TEAM_FIELDS)
-        if extra:
-            raise ApiError(400, f"Unknown field(s): {', '.join(extra)}. Allowed: {', '.join(sorted(TEAM_FIELDS))}.")
+        if set(body) - TEAM_FIELDS:   # never echo a field name: it could be a declared secret
+            raise ApiError(400, f"Unknown field. Allowed: {', '.join(sorted(TEAM_FIELDS))}.")
         question = body.get("question")
         if not isinstance(question, str) or not question.strip() or len(question) > MAX_QUESTION_CHARS:
             raise ApiError(400, f"question must be 1 to {MAX_QUESTION_CHARS} characters.")
