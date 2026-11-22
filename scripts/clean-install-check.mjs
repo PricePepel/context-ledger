@@ -93,11 +93,18 @@ async function processTable() {
   return table;
 }
 
-// The tree under a running process, from the table: a child counts only when it began
-// after its parent, so a parent ID that an exited process left behind, now held by
-// another program, adds nothing. Entries are { pid, start }.
-async function treeOf(pid) {
+// The tree under a launcher the check started, from the table: a child counts only when it
+// began after its parent, so a parent ID that an exited process left behind, now held by
+// another program, adds nothing. It is read only while Node has not seen the launcher
+// exit: until then Node still holds the launcher (a process handle on Windows, an unreaped
+// child elsewhere), so its ID cannot have been given to another program. Entries are
+// { pid, start }.
+async function treeOf(entry) {
+  if (!entry.running) return [];
+  const pid = entry.child.pid;
   const table = await processTable();
+  // A launcher that exited while the table was read may have given up its ID already.
+  if (!entry.running) return [];
   const root = table.get(pid);
   if (!root) return [];
   const tree = [{ pid, start: root.start }];
@@ -119,7 +126,7 @@ const startChild = (file, list, options) => {
   // The tree is read every 2 s while the launcher runs, so a descendant is known even
   // when a step fails before its readiness check (P5d review round 3).
   const watch = setInterval(() => {
-    if (entry.running) treeOf(child.pid).then(tree => remember(entry, tree), () => {});
+    treeOf(entry).then(tree => remember(entry, tree), () => {});
   }, 2000);
   watch.unref();
   ended.then(() => { entry.running = false; clearInterval(watch); });
@@ -130,30 +137,33 @@ function remember(entry, tree) {
   for (const item of tree) if (!entry.tree.some(known => known.pid === item.pid && known.start === item.start)) entry.tree.push(item);
 }
 
-// Stops a child and everything it started, and confirms they are gone. While the launcher
-// still runs, its tree is read again and the whole tree is stopped through it (taskkill /T
-// on Windows, where the .cmd shim's node is a grandchild; the process group elsewhere).
-// A process seen in the tree is then killed by ID only while the same ID still has the
-// same creation time, so nothing that merely reuses an ID is touched. Fails unless all are
-// gone within 15 s.
+// Stops a child and everything it started, then confirms they are gone. The only signal
+// goes through the launcher, and only while Node still holds it (see treeOf): taskkill /T
+// on Windows, where the .cmd shim's node is a grandchild, or the launcher's own process
+// group elsewhere. The check then only looks: if any process of the tree it saw is still
+// there (the same ID with the same creation time) after 15 s, the eval fails, and it kills
+// nothing by ID, so a program that reuses an ID is never touched (P5d review round 4).
+// A launcher does not exit before its descendants here: cmd.exe waits for the node it
+// starts, and on macOS and Linux the bin link runs node itself.
 async function stopTree(entry) {
+  remember(entry, await treeOf(entry).catch(() => []));
+  // Checked and signalled in one turn of the event loop, so Node cannot release the
+  // launcher in between.
   if (entry.running) {
-    remember(entry, await treeOf(entry.child.pid).catch(() => []));
     if (windows) {
       await run(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(entry.child.pid), '/T', '/F'], { timeout: 15_000 }).catch(() => {});
     } else {
       try { process.kill(-entry.child.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
   }
-  const ours = table => entry.tree.filter(item => table.get(item.pid)?.start === item.start);
-  let left = [];
-  for (let waited = 0; waited <= 15_000; waited += 500) {
-    left = ours(await processTable());
-    if (!left.length) return;
-    if (waited >= 5000) for (const item of left) { try { process.kill(item.pid, 'SIGKILL'); } catch { /* gone */ } }
-    await new Promise(done => setTimeout(done, 500));
+  const deadline = Date.now() + 15_000;
+  let left = entry.tree;
+  while (left.length && Date.now() < deadline) {
+    const table = await processTable().catch(() => undefined);
+    if (table) left = entry.tree.filter(item => table.get(item.pid)?.start === item.start);
+    if (left.length) await new Promise(done => setTimeout(done, 500));
   }
-  throw new Error(`Processes ${left.map(item => item.pid).join(', ')} were still running after the check stopped them.`);
+  if (left.length) throw new Error(`Processes ${left.map(item => item.pid).join(', ')} were still running after the check stopped them.`);
 }
 
 let port;
@@ -200,7 +210,7 @@ try {
     });
     server.ended.then(() => { clearTimeout(timer); fail(new Error(redact('The ledger exited before listening: ' + output))); });
   });
-  remember(server, await treeOf(server.child.pid));
+  remember(server, await treeOf(server));
   // Loopback only: the port answers on 127.0.0.1 and on none of this machine's other
   // addresses (P5d review: the banner alone does not prove the bind address).
   assert.ok(await accepts('127.0.0.1', port), 'the ledger answers on 127.0.0.1');
@@ -257,7 +267,7 @@ try {
   const send = message => adapter.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } });
   assert.equal((await reply(1)).result.serverInfo.name, 'context-ledger');
-  remember(adapter, await treeOf(adapter.child.pid));
+  remember(adapter, await treeOf(adapter));
   send({ id: 2, method: 'tools/list' });
   assert.ok((await reply(2)).result.tools.some(tool => tool.name === 'session_search'));
   send({ id: 3, method: 'tools/call', params: { name: 'session_search', arguments: { query: 'adapter' } } });
