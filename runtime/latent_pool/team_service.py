@@ -144,9 +144,9 @@ class TeamService:
         return gateway
 
     def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public",
-            task=None):
+            task=None, gateway=None):
         from latent_team.gateway import GatewayError, Span
-        gateway = self.gateway(steps, max_new_tokens, secrets, clearance)
+        gateway = gateway if gateway is not None else self.gateway(steps, max_new_tokens, secrets, clearance)
         try:
             gateway.admit([Span(origin, origin, question)])
             # The cut of an oversized conversation comes after the gateway, so no secret can
@@ -229,17 +229,21 @@ class TeamService:
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages):
             raise ApiError(400, "messages must be a non-empty list of objects.")
-        question = build_question(messages, limit=None)
         limit = body.get("max_completion_tokens") or body.get("max_tokens") or 512
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ApiError(400, "max_tokens must be a positive integer.")
         limit = min(limit, MAX_NEW_TOKENS)
+        # Permissions are fixed before any message is read (review W2-16): the gateway exists,
+        # its budgets and clearance set, before the conversation is flattened.
+        # W3: "task" is accepted here too, as an extension field like "secrets", so a calibrated
+        # kind of task can abstain on this route (review W3-1); it is checked before any message.
+        task = task_name(body)
+        gateway = self.gateway(self.steps, limit, declared_secrets(body))
+        question = build_question(messages, limit=None)
         # The flattened conversation mixes system text, history and the new message, so its
         # origin is lost: it is untrusted as a whole (docs/watchdog-security.md, "The gateway").
-        # W3: "task" is accepted here too, as an extension field like "secrets", so a calibrated
-        # kind of task can abstain on this route (review W3-1).
-        answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat",
-                                             secrets=declared_secrets(body), task=task_name(body))
+        answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat", gateway=gateway,
+                                             task=task)
         if answer is None:   # abstained (W3): a fixed sentence, never model text
             answer = ABSTAINED
         completion = outcome.tokens

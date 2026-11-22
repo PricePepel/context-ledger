@@ -204,6 +204,23 @@ class TeamServiceTest(unittest.TestCase):
                       "messages": [{"role": "user", "content": " harbor-slate-42 "}]})
         self.assertNotIn("harbor-slate-42", self.team.calls[-1][0])
 
+    def test_w2_the_chat_route_fixes_permissions_before_reading_messages(self):
+        # Review W2-16 finding 4: the gateway exists before the conversation is flattened, and
+        # a bad budget is refused before any message is read.
+        from unittest import mock
+        from latent_pool import team_service
+        order = []
+        service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team))
+        real_gateway, real_build = service.gateway, team_service.build_question
+        with mock.patch.object(service, "gateway", lambda *a, **k: order.append("gateway") or real_gateway(*a, **k)), \
+                mock.patch.object(team_service, "build_question", lambda *a, **k: order.append("read") or real_build(*a, **k)):
+            service.chat({"model": MODEL_ID, "messages": [{"role": "user", "content": "2+2?"}]})
+            self.assertEqual(order[:2], ["gateway", "read"])
+            order.clear()
+            with self.assertRaises(ApiError):
+                service.chat({"model": MODEL_ID, "max_tokens": -1, "messages": [{"role": "user", "content": "2+2?"}]})
+            self.assertNotIn("read", order)
+
     def test_w2_bad_declarations_are_refused(self):
         for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
                      {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},
