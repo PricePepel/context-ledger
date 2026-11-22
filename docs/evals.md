@@ -5006,6 +5006,17 @@ Codex confirmed round 18's fix. Its findings, each fixed with a regression test:
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 612 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 127 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (416) passed.
 
+### W2 review, round 20 (2026-11-22, Codex, read-only, of PR #71 at 71753c5)
+
+Codex confirmed round 19's fixes (`; export`, `&&`, the tool deadline, `O_TRUNC`). Its findings, each fixed with a regression test:
+
+- (high) Shell redirections and a single `&` (`password=paper-harbor > result.txt`, `... & sleep 1`, `2>> errors.log`) stayed in the value, so the password's bare copy reached the model and a public answer. `freeText.valueHeadEnd` now also ends a value's head at a space followed by `&`, `>`, `>>`, a numbered redirection or `<`.
+- (medium) Known values and placeholders were checked against each tool argument alone, so fields that make a declared value only together (`note=paper-harbor` declared, `{"note": "paper-harbor"}` sent) reached `send`. The combined forms of the call are checked for them too.
+- (medium) The guard's deadline started after admission and was not checked after the output gate. It now counts from the gateway's admission and is checked again just before an answer leaves; a run past it holds (`deadline`). A test with a fake clock covers time spent before inference and inside the output gate.
+- (medium) Eval 10 relied on the audit sampler, so a write made only during a replay or a fallback could go unseen. Both its runs now include, inside the measured window, an audited request whose solver alone disagrees, and assert that the replay ran and the run fell back.
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 612 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 128 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (419) passed.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.

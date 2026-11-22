@@ -795,6 +795,25 @@ class ToolGateTest(unittest.TestCase):
         result = gate.submit({"name": "lookup", "arguments": {"q": "late"}}, lambda n, a: sent.append(a))
         self.assertEqual((result.sent, result.reason, sent), (False, "deadline", [{"q": "ok"}]))
 
+    def test_round20_redirections_and_a_single_ampersand_end_a_values_head(self):
+        # Review W2-20 finding 1.
+        for line in ("password=paper-harbor > result.txt", "password=paper-harbor & sleep 1",
+                     "password=paper-harbor 2>> errors.log"):
+            text = "Copy: paper-harbor" + chr(10) + line
+            self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text, line)
+            released = OutputGate(gateway_admitted()).release(text)
+            self.assertNotIn("paper-harbor", released.text, line)
+            self.assertTrue(released.safe)
+
+    def test_round20_fields_that_make_a_declared_value_together_are_not_sent(self):
+        # Review W2-20 finding 2: note=paper-harbor declared, {"note": "paper-harbor"} sent.
+        tool = Tool("store", outside_effect=False, arguments=(Argument("note", required=False),))
+        g = gateway(tools=(tool,), declared=["note=paper-harbor"])
+        g.admit([Span("request", "request", "Hello")])
+        sent = []
+        result = ToolGate(g).submit({"name": "store", "arguments": {"note": "paper-harbor"}}, lambda n, a: sent.append(a))
+        self.assertEqual((result.sent, sent), (False, []))
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.
