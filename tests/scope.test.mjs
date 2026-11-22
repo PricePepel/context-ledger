@@ -242,6 +242,41 @@ test('G9b: a node dropped by the budget is counted too', () => {
   store.close();
 });
 
+test('G9b review: a rendered list with one item shown and one left out names the first and counts the second', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'two.jsonl', transcript: [
+    say('The ledger stays on port 4317.'), say('The server binds to loopback only.'),
+  ].join('\n') });
+  const graph = store.publishGraph({ version: 2, sessionId: session.id, party: 'leo', edges: [], nodes: [
+    { id: 'port', kind: 'decision', label: 'The ledger stays on port 4317', evidenceLines: [1] },
+    { id: 'loopback', kind: 'decision', label: 'The server binds to loopback only', evidenceLines: [2] },
+  ] });
+  const { text } = store.getGraphContext(graph.id, { question: 'port' });
+  assert.match(text, /^current decisions: port; 1 more left out$/mu);
+  assert.ok(!text.includes('loopback'));
+  store.close();
+});
+
+test('G9b review: a budget that fits the full briefing is never refused because a cut one is longer', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'one.jsonl', transcript: say('Ship it.') });
+  const graph = store.publishGraph({ version: 1, sessionId: session.id, edges: [],
+    nodes: [{ id: 'g', kind: 'goal', label: 'Ship', evidenceLines: [1] }] });
+  // The full briefing under a budget names that budget in its scope line; build it for each.
+  const big = store.getGraphContext(graph.id, { question: 'goal', budget: 100000 }).text;
+  assert.doesNotMatch(big, /without a question/u, 'the full briefing shows every node, so it has no hint');
+  const fullAt = budget => big.replace('budget of 100000 tokens', `budget of ${budget} tokens`);
+  let fitted = 0;
+  for (let budget = 50; budget <= estimate(big) + 10; budget += 1) {
+    if (estimate(fullAt(budget)) > budget) continue;
+    // The full briefing fits this budget, so it is the answer, even where a cut one (with the hint) would not fit.
+    assert.equal(store.getGraphContext(graph.id, { question: 'goal', budget }).text, fullAt(budget), String(budget));
+    fitted += 1;
+  }
+  assert.ok(fitted > 0);
+  store.close();
+});
+
 test('the scope line never repeats the question, even one with control or bidi characters', () => {
   const { store, graph } = setup();
   const rlo = String.fromCodePoint(0x202e);
@@ -397,7 +432,9 @@ test('the context route checks question and budget with fixed messages', async t
   assert.equal(astral.status, 200, '500 characters outside the BMP are within the limit');
   // A briefing too long for one MCP page, through the real route and the adapter.
   const big = await post('/api/import', { provider: 'claude', source: 'big.jsonl', transcript: say('Port '.repeat(20) + 'notes.') });
-  const nodes = Array.from({ length: 100 }, (_, index) => ({ id: `port-${index}`, kind: 'decision', label: `Port note ${index} ${'with many words '.repeat(28)}`, evidenceLines: [1] }));
+  const nodes = Array.from({ length: 99 }, (_, index) => ({ id: `port-${index}`, kind: 'decision', label: `Port note ${index} ${'with many words '.repeat(28)}`, evidenceLines: [1] }));
+  // G9b review: one open question the question does not match, so the pages carry its count.
+  nodes.push({ id: 'gpu-owner', kind: 'question', to: 'ali', status: 'open', label: 'Who owns the GPU box?', evidenceLines: [1] });
   const bigGraph = (await post('/api/graphs', { version: 2, sessionId: big.session.id, party: 'leo', nodes, edges: [] })).graph;
   const client = mcp(t, Number(new URL(origin).port), { CONTEXT_LEDGER_DB: database });
   const pages = [];
@@ -414,6 +451,10 @@ test('the context route checks question and budget with fixed messages', async t
   assert.ok(pages.length > 1, 'the scoped briefing needed more than one page');
   const whole = await fetch(`${origin}/api/graphs/${bigGraph.id}/context?question=port+note&budget=100000`, { headers: auth }).then(response => ({ body: response.json() })).then(async r => ({ body: await r.body }));
   assert.equal(pages.join('\n'), whole.body.context.text);
+  const joined = pages.join('\n');
+  assert.equal(joined.match(/^open questions: 1 left out$/gmu)?.length, 1);
+  assert.equal(joined.match(/call context_for without a question for the whole graph/gu)?.length, 1);
+  assert.ok(!joined.includes('gpu-owner') && !joined.includes('GPU'));
 });
 
 test('review round 2: ASCII words find mixed-script labels, and letter pairs end at whole letters', () => {

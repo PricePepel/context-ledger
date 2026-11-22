@@ -140,10 +140,14 @@ export function scopedText(graph, { question, budget }, render) {
   };
   if (budget === undefined) return textFor(order.length);
   const fits = k => estimateTokens(textFor(k)) <= budget;
+  // G9b review: the whole-graph hint makes every briefing that leaves a node out a little
+  // longer, so the full briefing can be shorter than a cut one. Try it first.
+  if (fits(order.length)) return textFor(order.length);
   // Review of 103051b: even with no nodes the header and state lines cost tokens. A
   // budget below that is refused rather than answered over budget.
   if (!fits(0)) {
-    throw new InputError(`budget is below the smallest briefing of this graph, about ${estimateTokens(textFor(0))} tokens.`);
+    const smallest = Math.min(estimateTokens(textFor(0)), estimateTokens(textFor(order.length)));
+    throw new InputError(`budget is below the smallest briefing of this graph, about ${smallest} tokens.`);
   }
   return textFor(largest(1, order.length, fits));
 }
