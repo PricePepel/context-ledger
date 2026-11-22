@@ -4521,6 +4521,11 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (low) Tests:
     - Every malformed redaction record is now checked through the CLI as well.
     - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
+- **Codex review, round 3** (of 5ecc8b0):
+  - (high) A key or Bearer value nested in a longer finding lost its own boundaries when candidates merged, so a copy of it glued to other text survived. Fixed: copies are searched for each accepted candidate before the merge, under the kind of the finding that holds it.
+  - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
+  - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
+  - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
 
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 

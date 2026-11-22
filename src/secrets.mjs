@@ -391,47 +391,59 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// A finding's first words are searched for as one value, up to this many words.
-const maxPrefixWords = 8;
+// What one value adds to the copy search is capped, so one long finding cannot fill the
+// heap; a longer value is still found by its first characters and its key-like words.
+const maxCopyLength = 512;
 const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
 const leadingQuotes = /^["'`]+/u;
 
 /**
- * The values a finding stands for, to search for elsewhere. A finding can be one key, a
- * line tail after a name (password=...) or several candidates merged into one span, so it
- * stands for its whole span; its first word, its first two words and so on, as written
- * (a passphrase is matched whole); every word that mixes letters and digits, as a key
- * does; and the quoted part when the span opens a quote. Each value is also searched for
- * with its escapes decoded.
+ * What a candidate stands for, to search for elsewhere: entries of a text and the lengths
+ * at which a match counts. A candidate can be one key, a line tail after a name
+ * (password=...) or a span that holds several, so it counts at the end of each of its
+ * words, as written (a passphrase pasted whole is matched whole), and at its end. Every
+ * word that mixes letters and digits, as a key does, and a quoted part, count on their
+ * own. A text with an escape is also searched for decoded.
  */
-function copyValues(text, finding) {
-  const span = text.slice(finding.start, finding.end);
-  const values = [span, span.trim().replace(trailingPunctuation, '')];
-  // Word ends in the span itself, so a prefix keeps the spaces it was written with.
-  const ends = [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].length);
-  for (const end of ends.slice(0, maxPrefixWords)) values.push(span.slice(0, end).trim().replace(trailingPunctuation, ''));
-  for (const word of span.split(/\s+/u)) {
-    const bare = word.replace(leadingQuotes, '').replace(trailingPunctuation, '');
-    if (mixed(bare)) values.push(bare);
+function copyEntries(text, candidate) {
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
+  const ends = [...span.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
+  const entries = [{ value: span, ends: [...ends, span.length] }];
+  for (const match of text.slice(candidate.start, candidate.end).matchAll(/\S+/gu)) {
+    const bare = match[0].replace(leadingQuotes, '').replace(trailingPunctuation, '');
+    if (mixed(bare)) entries.push({ value: bare.slice(0, maxCopyLength), ends: [Math.min(bare.length, maxCopyLength)] });
   }
-  const quote = finding.start > 0 ? text[finding.start - 1] : '';
+  const quote = candidate.start > 0 ? text[candidate.start - 1] : '';
   if (/["'`]/u.test(quote)) {
-    const close = quotedEnd(text, finding.start, quote);
-    if (close < finding.end) values.push(text.slice(finding.start, close));
+    const close = quotedEnd(text, candidate.start, quote);
+    if (close <= candidate.end) {
+      const raw = text.slice(candidate.start, Math.min(close, candidate.start + maxCopyLength));
+      entries.push({ value: raw, ends: [raw.length] });
+    }
   }
-  return [...values, ...values.map(decoded)];
+  for (const entry of [...entries]) {
+    if (!entry.value.includes('\\')) continue;
+    for (const length of entry.ends) {
+      const plain = decoded(entry.value.slice(0, length));
+      entries.push({ value: plain, ends: [plain.length] });
+    }
+  }
+  return entries;
 }
 
 /**
  * A matcher for many values at once (Aho-Corasick over UTF-16 code units): one pass over a
  * text finds, at every position, the longest value that ends there, so the time grows
- * with the text and the values' total length, not with their product.
+ * with the text, the values' total length and the matches, not with their product. An
+ * entry is added once, with a value ending at each of its counted lengths.
  */
-function copyMatcher(values) {
+function copyMatcher(entries) {
   const nodes = [{ next: new Map(), fail: 0, length: 0, kind: '' }];
-  for (const [value, kind] of values) {
+  for (const { value, ends, kind } of entries) {
+    const counted = new Set(ends.filter(length => length >= minCopyLength));
+    const last = Math.max(0, ...counted);
     let node = 0;
-    for (let at = 0; at < value.length; at += 1) {
+    for (let at = 0; at < last; at += 1) {
       const unit = value.charCodeAt(at);
       let child = nodes[node].next.get(unit);
       if (child === undefined) {
@@ -439,8 +451,8 @@ function copyMatcher(values) {
         nodes[node].next.set(unit, child);
       }
       node = child;
+      if (counted.has(at + 1) && at + 1 > nodes[node].length) Object.assign(nodes[node], { length: at + 1, kind });
     }
-    if (value.length > nodes[node].length) Object.assign(nodes[node], { length: value.length, kind });
   }
   // Breadth first: a node's failure link is the longest proper suffix that is a node, and
   // it inherits that suffix's longest value when it has none of its own.
@@ -518,15 +530,17 @@ export function redactSession(session) {
     }
   });
   const found = fields.map(field => findSecrets(field.text));
-  const values = new Map();
+  // Copies are searched for each candidate the scanner accepted, before candidates merge
+  // into findings, so a key inside a longer finding keeps its own boundaries.
+  const entries = [];
   fields.forEach((field, index) => {
-    for (const finding of found[index]) {
-      for (const value of copyValues(field.text, finding)) {
-        if (value.length >= minCopyLength && !values.has(value)) values.set(value, finding.kind);
-      }
+    if (!found[index].length) return;
+    for (const candidate of [...candidates(field.text), ...found[index]]) {
+      const kind = found[index].find(finding => finding.start <= candidate.start && candidate.start < finding.end)?.kind ?? candidate.kind;
+      for (const entry of copyEntries(field.text, candidate)) entries.push({ ...entry, kind });
     }
   });
-  const copiesIn = values.size ? copyMatcher(values) : () => [];
+  const copiesIn = entries.length ? copyMatcher(entries) : () => [];
   const findings = [];
   let source = session.source;
   const changed = new Map();

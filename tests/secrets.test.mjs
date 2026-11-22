@@ -776,3 +776,31 @@ test('P4d review 2: many values that share their first characters stay linear', 
   // Codex's run); the matcher takes under 1 s.
   assert.ok(seconds < 4, `${seconds} s`);
 });
+
+test('P4d review 3: nested keys keep their boundaries, long passphrases match whole, and suffix and crossing matches merge', () => {
+  const token = ['gh', 'p_', 'A1'.repeat(18)].join('');
+  const m = (line, text) => ({ role: 'user', line, text });
+  const cases = [
+    [[m(1, 'password=orchidvault Authorization: Bearer lavendergarden'), m(2, 'lavendergarden')], '[REDACTED assigned-secret]'],
+    [[m(1, `password=orchidvault (${token})/suffix`), m(2, 'X' + token)], 'X[REDACTED github-token]'],
+    [[m(1, 'password=amber birch cedar dune elm frost grove heath indigoorchard is rotated weekly'),
+      m(2, 'amber birch cedar dune elm frost grove heath indigoorchard')], '[REDACTED assigned-secret]'],
+    [[m(1, 'password=violetgarden'), m(2, 'password=northvioletgardenend'), m(3, 'northvioletgarden!')], 'north[REDACTED assigned-secret]!'],
+    [[m(1, 'password=violetgarden'), m(2, 'password=gardennorth'), m(3, 'violetgardennorth')], '[REDACTED assigned-secret]'],
+  ];
+  for (const [messages, expected] of cases) {
+    const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages });
+    assert.equal(session.messages.at(-1).text, expected, messages.at(-1).text);
+  }
+});
+
+test('P4d review 3: one very long finding adds a bounded amount to the copy search', () => {
+  const text = 'password=synthetic9' + 'a'.repeat(1_000_000);
+  const before = process.memoryUsage().heapUsed;
+  const { session, findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [{ role: 'user', line: 1, text }] });
+  const grown = (process.memoryUsage().heapUsed - before) / 2 ** 20;
+  assert.equal(session.messages[0].text, 'password=[REDACTED assigned-secret]');
+  assert.equal(findings.length, 1);
+  // A trie node per character of the whole value took about 290 MiB in Codex's run.
+  assert.ok(grown < 64, `${grown} MiB`);
+});
