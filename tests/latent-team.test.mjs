@@ -98,10 +98,21 @@ test('W2: a declared value is redacted in its escaped spelling too', async () =>
   assert.ok(!result.answer.includes(escaped), result.answer);
 });
 
-test('W2: an answer that still holds a known value after redaction is held', async () => {
-  // The redaction writes [REDACTED secret], which holds this declared value: the final check
-  // refuses the answer instead of passing it on.
-  const result = await latentTeam({ question: 'q', secrets: ['REDACTED'] }, { fetchImpl: fakeRuntime(200, { ...ok, answer: 'the REDACTED word' }) });
+test('W2: a marker never writes a value back (review W2-9)', async () => {
+  // ACT is inside REDACTED, and so is a declared REDACTED: another marker is chosen.
+  for (const [input, answer, value] of [[{ question: 'q' }, 'password=ACT', 'ACT'],
+    [{ question: 'q', secrets: ['REDACTED'] }, 'the REDACTED word', 'REDACTED']]) {
+    const result = await latentTeam(input, { fetchImpl: fakeRuntime(200, { ...ok, answer }) });
+    assert.equal(result.mode, 'latent-team');
+    assert.ok(!result.answer.includes(value), result.answer);
+  }
+});
+
+test('W2: an answer whose redaction spells a known value is held', async () => {
+  // The marker and the text after it spell the declared value: the final check refuses the
+  // answer instead of passing it on.
+  const token = 'gh'.concat('p_', 'Ab3D'.repeat(9));
+  const result = await latentTeam({ question: 'q', secrets: ['token] tail'] }, { fetchImpl: fakeRuntime(200, { ...ok, answer: `${token} tail` }) });
   assert.deepEqual(result, { mode: 'held', reason: 'output-unsafe' });
 });
 

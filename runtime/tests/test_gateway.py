@@ -33,6 +33,12 @@ def gateway(tools=(SEND, SEARCH), declared=(), clearance="public", calls=3, proj
     return g
 
 
+def gateway_admitted(**kwargs):
+    g = gateway(**kwargs)
+    g.admit([Span("request", "request", "q")])
+    return g
+
+
 class LabelTest(unittest.TestCase):
     def test_origin_decides_trust_and_the_memory_takes_the_strictest_label(self):
         g = gateway()
@@ -171,7 +177,11 @@ class PlaceholderTest(unittest.TestCase):
         g = gateway(declared=["[REDACTED secret]", "other" + "Value77"])
         g.admit([Span("request", "request", "q")])
         released = OutputGate(g).release("it is otherValue77")
-        self.assertFalse(released.safe, "the marker the gate wrote is a declared value: refuse")
+        # Since review W2-9 the gate picks a marker that holds no value it checks, so the
+        # declared marker text is never written and the release is safe.
+        self.assertNotIn("[REDACTED secret]", released.text)
+        self.assertNotIn("other" + "Value77", released.text)
+        self.assertTrue(released.safe)
 
     def test_round3_the_reserved_opening_inside_a_value_is_still_hidden(self):
         # Review W2-3 finding 3: discovery runs on the original text.
@@ -531,6 +541,33 @@ class ToolGateTest(unittest.TestCase):
         g = gateway(declared=["harborslate42"])
         g.admit([Span("request", "request", "q")])
         self.assertNotIn("slate42", OutputGate(g).release("it is harbor" + zwj + "slate42").text)
+
+    def test_round9_an_escaped_private_key_is_hidden_both_ways(self):
+        # Review W2-9 finding 1: a private key in a JSON string, its line breaks written as
+        # escapes. The line-oriented key rule reads the escape-decoded view.
+        nl = chr(92) + "n"
+        body = "MIIEowIBAAKCAQEA" + "q1W2" * 16
+        block = "-----BEGIN " + "RSA PRIVATE KEY-----" + nl + body + nl + "-----END " + "RSA PRIVATE KEY-----"
+        g = gateway()
+        admission = g.admit([Span("request", "request", '{"key": "' + block + '"}')])
+        self.assertNotIn(body, admission.text)
+        released = OutputGate(gateway_admitted()).release('key: "' + block + '"')
+        self.assertNotIn(body, released.text)
+        self.assertTrue(released.safe)
+
+    def test_round9_a_short_found_value_is_not_written_back_by_the_marker(self):
+        # Review W2-9 finding 2: ACT is inside REDACTED, so another marker is chosen, and the
+        # final check covers every found value, whatever its length.
+        released = OutputGate(gateway_admitted()).release("password=ACT")
+        self.assertNotIn("ACT", released.text)
+        self.assertTrue(released.safe)
+
+    def test_round9_a_known_value_a_marker_spells_with_its_neighbours_is_refused(self):
+        # The marker and the text after it spell a declared value: the release is refused.
+        g = gateway(declared=["token] tail"])
+        g.admit([Span("request", "request", "q")])
+        released = OutputGate(g).release(github_token() + " tail")
+        self.assertFalse(released.safe)
 
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of

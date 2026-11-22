@@ -30,6 +30,24 @@ with open(REPO / "rules" / "secret-conformance.json", encoding="utf-8") as handl
     CASES = json.load(handle)["cases"]
 
 
+with open(REPO / "rules" / "canonical-cases.json", encoding="utf-8") as handle:
+    CANONICAL = json.load(handle)["cases"]
+
+
+class CanonicalCasesTest(unittest.TestCase):
+    """Review W2-9 finding 3: the gateway's canonical forms decide the shared cases exactly as
+    the ledger's (tests/secret-rules.test.mjs runs the same file)."""
+
+    def test_every_shared_canonical_case(self):
+        from latent_team.gateway import canon_ranges
+        self.assertGreaterEqual(len(CANONICAL), 8)
+        for case in CANONICAL:
+            text = expand(case["text"])
+            with self.subTest(case["name"]):
+                covered = sorted({text[a:b] for a, b in canon_ranges(text, [expand(v) for v in case["values"]])})
+                self.assertEqual(covered, sorted(expand(c) for c in case["covered"]))
+
+
 class SecretConformanceTest(unittest.TestCase):
     def test_every_shared_case(self):
         self.assertGreaterEqual(len(CASES), 40)

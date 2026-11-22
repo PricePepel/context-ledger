@@ -379,42 +379,71 @@ export function findSecrets(text, { values = false } = {}) {
   }));
 }
 
+// Tab and the line breaks: read as a space in both canonical forms, never dropped. Every other
+// control character, and every format character, is invisible. The same policy, by Unicode
+// category and code point only, is in runtime/latent_team/gateway.py; rules/canonical-cases.json
+// holds the cases both suites run.
+const lineControls = new Set([9, 10, 11, 12, 13]);
+
 /**
- * Text in a canonical form, with the original [start, end) of each canonical character.
- * The forms are how a copy of a value can look between here and a reader: quoted-string
- * escapes decoded, every space or separator character and any run of them read as one
- * space, and each control or format character read as a space too (drop false: what
- * one-line printing does) or as nothing (drop true: what a display shows). The same forms
- * as canon in runtime/latent_team/gateway.py; JavaScript strings are UTF-16, so an escaped
- * surrogate pair is the same two units as the literal character.
+ * The character at i with an escape decoded, as a whole code point, and the index after it.
+ * A high surrogate, escaped or not, joins the low surrogate right after it, escaped or not.
+ */
+function characterAt(text, i) {
+  const escape = escapeAt(text, i);
+  let character = escape ? escape.character : text[i];
+  let next = i + (escape ? escape.length : 1);
+  const high = character.charCodeAt(0);
+  if (high >= 0xd800 && high <= 0xdbff && next < text.length) {
+    const lowEscape = escapeAt(text, next);
+    const low = lowEscape ? lowEscape.character : text[next];
+    const code = low.charCodeAt(0);
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      character += low;
+      next += lowEscape ? lowEscape.length : 1;
+    }
+  }
+  return { character, next };
+}
+
+function blankOrInvisible(character) {
+  if (/^[\p{Zl}\p{Zp}\p{Zs}]$/u.test(character) || lineControls.has(character.codePointAt(0))) return 'blank';
+  if (/^[\p{Cc}\p{Cf}]$/u.test(character)) return 'invisible';
+  return null;
+}
+
+/**
+ * Text in a canonical form, with the original [start, end) of each canonical character and,
+ * for each UTF-16 unit of the canonical text, the character it belongs to. The forms are how
+ * a copy of a value can look between here and a reader: quoted-string escapes decoded, every
+ * space or separator character, tab or line break and any run of them read as one space,
+ * and each other control or format character read as a space too (drop false: what one-line
+ * printing does) or as nothing (drop true: what a display shows). The same forms as canon
+ * in runtime/latent_team/gateway.py, judged on whole code points.
  */
 function canonical(text, drop) {
-  let flat = '';
+  const chars = [];
   const spans = [];
   for (let i = 0; i < text.length;) {
     const start = i;
-    const escape = escapeAt(text, i);
-    let character;
-    if (escape) {
-      character = escape.character;
-      i += escape.length;
-    } else {
-      character = text[i];
-      i += 1;
+    const { character, next } = characterAt(text, i);
+    i = next;
+    const kind = blankOrInvisible(character);
+    if (kind === 'invisible' && drop) continue;
+    if (kind && chars.at(-1) === ' ') {
+      spans[spans.length - 1] = [spans[spans.length - 1][0], i];
+      continue;
     }
-    const invisible = /[\p{Cc}\p{Cf}]/u.test(character) && !/\s/u.test(character);
-    if (drop && invisible) continue;
-    if (invisible || /[\s\p{Zl}\p{Zp}\p{Zs}]/u.test(character)) {
-      if (flat.endsWith(' ')) {
-        spans[spans.length - 1] = [spans[spans.length - 1][0], i];
-        continue;
-      }
-      character = ' ';
-    }
-    flat += character;
+    chars.push(kind ? ' ' : character);
     spans.push([start, i]);
   }
-  return { flat, spans };
+  let flat = '';
+  const charOfUnit = [];
+  chars.forEach((character, index) => {
+    flat += character;
+    for (let unit = 0; unit < character.length; unit += 1) charOfUnit.push(index);
+  });
+  return { flat, spans, charOfUnit };
 }
 
 /**
@@ -425,13 +454,13 @@ export function canonicalRanges(text, values) {
   const out = [];
   if (typeof text !== 'string' || !text) return out;
   for (const drop of [false, true]) {
-    const { flat, spans } = canonical(text, drop);
+    const { flat, spans, charOfUnit } = canonical(text, drop);
     for (const value of values) {
       if (typeof value !== 'string') continue;
       const target = canonical(value, drop).flat.trim();
       if (!target) continue;
       for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
-        out.push([spans[at][0], spans[at + target.length - 1][1]]);
+        out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
       }
     }
   }

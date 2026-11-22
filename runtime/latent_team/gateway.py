@@ -149,8 +149,46 @@ class Admission:
                 "refused": self.refused, "placeholders": self.placeholders, "toolsOff": self.rule_of_two}
 
 
-_SPACE = ("Zl", "Zp", "Zs")
-_INVISIBLE = ("Cc", "Cf")
+# Tab and the line breaks: read as a space in both canonical forms, never dropped. Every other
+# control character, and every format character, is invisible. The same policy, by Unicode
+# category and code point only, is in src/secrets.mjs; rules/canonical-cases.json holds the
+# cases both suites run.
+_LINE_CONTROLS = frozenset((9, 10, 11, 12, 13))
+
+
+def _character_at(text, i):
+    """The character at i with an escape decoded, and the index after it. A high surrogate,
+    escaped or not, joins the low surrogate right after it, escaped or not."""
+    escape = secret_scan.escape_at(text, i) if text[i] == BACKSLASH else None
+    character, i = (escape[0], i + escape[1]) if escape else (text[i], i + 1)
+    if 0xD800 <= ord(character) <= 0xDBFF and i < len(text):
+        low = secret_scan.escape_at(text, i) if text[i] == BACKSLASH else (text[i], 1)
+        if low and 0xDC00 <= ord(low[0]) <= 0xDFFF:
+            character = chr(0x10000 + ((ord(character) - 0xD800) << 10) + (ord(low[0]) - 0xDC00))
+            i += low[1]
+    return character, i
+
+
+def _blank_or_invisible(character):
+    category = unicodedata.category(character)
+    if category in ("Zl", "Zp", "Zs") or ord(character) in _LINE_CONTROLS:
+        return "blank"
+    if category in ("Cc", "Cf"):
+        return "invisible"
+    return None
+
+
+def decoded_view(text):
+    """(text with its quoted-string escapes decoded and nothing else changed, the original
+    (start, end) of each character): the view in which a line-oriented rule sees a value
+    written with escaped line breaks, such as a private key in a JSON string."""
+    chars, spans, i = [], [], 0
+    while i < len(text):
+        start = i
+        character, i = _character_at(text, i)
+        chars.append(character)
+        spans.append((start, i))
+    return "".join(chars), spans
 
 
 def canon(text, drop=False):
@@ -158,28 +196,19 @@ def canon(text, drop=False):
 
     The canonical forms are how a copy of a value can look after the transformations a
     secret passes through between here and a reader: quoted-string escapes decoded
-    (surrogate pairs joined), every space or separator character, and any run of them, read
-    as one space, and each control or format character read either as a space too (drop
-    False: what the ledger's one-line printing does) or as nothing (drop True: what a
-    display shows). Matching known values in both forms, with offsets mapped back, finds an
-    escaped, spaced or invisibly split copy of a value. src/secrets.mjs has the same forms."""
-    chars, spans, i, n = [], [], 0, len(text)
-    while i < n:
-        start, character = i, text[i]
-        escape = secret_scan.escape_at(text, i) if character == BACKSLASH else None
-        if escape:
-            character, i = escape[0], i + escape[1]
-            if 0xD800 <= ord(character) <= 0xDBFF:
-                low = secret_scan.escape_at(text, i)
-                if low and 0xDC00 <= ord(low[0]) <= 0xDFFF:
-                    character = chr(0x10000 + ((ord(character) - 0xD800) << 10) + (ord(low[0]) - 0xDC00))
-                    i += low[1]
-        else:
-            i += 1
-        category = unicodedata.category(character)
-        if drop and category in _INVISIBLE and not character.isspace():
+    (surrogate pairs joined), every space or separator character, tab or line break, and any
+    run of them, read as one space, and each other control or format character read either
+    as a space too (drop False: what the ledger's one-line printing does) or as nothing
+    (drop True: what a display shows). Matching known values in both forms, with offsets
+    mapped back, finds an escaped, spaced or invisibly split copy of a value."""
+    chars, spans, i = [], [], 0
+    while i < len(text):
+        start = i
+        character, i = _character_at(text, i)
+        kind = _blank_or_invisible(character)
+        if kind == "invisible" and drop:
             continue
-        if character.isspace() or category in _SPACE or category in _INVISIBLE:
+        if kind:
             if chars and chars[-1] == " ":
                 spans[-1] = (spans[-1][0], i)
                 continue
@@ -292,13 +321,13 @@ class Gateway:
             return self.scanner(text)
 
     def _scan_all(self, text):
-        """The scanner's findings on text as written and on both canonical forms, each mapped
-        back to its original range, with the canonical spelling among its values: a
-        credential that only a reader of a canonical form would see (a name and its value
-        split by an invisible character, or an escaped one) is found too."""
+        """The scanner's findings on text as written, with its escapes decoded (line breaks
+        kept, for line-oriented rules such as a private key's), and in both canonical forms,
+        each mapped back to its original range, with the view's spelling among its values:
+        a credential that only a reader of one of those views would see (a name and its
+        value split by an invisible character, or an escaped one) is found too."""
         findings = list(self._scan(text))
-        for drop in (False, True):
-            canonical, spans = canon(text, drop)
+        for canonical, spans in (decoded_view(text), canon(text, False), canon(text, True)):
             if canonical == text:
                 continue
             for finding in self._scan(canonical):
@@ -468,6 +497,10 @@ class Gateway:
             return bool(canon_ranges(text, values))
         return False
 
+    def known_values(self):
+        """Every value the gates check: declared ones in all their spellings, and the egress set."""
+        return {v for v in self._egress if v} | {s for v in self.declared for s in spellings(v) if s}
+
     def value_ranges(self, text):
         values = sorted((v for v in set(self._egress) | {s for v in self.declared for s in spellings(v)} if v),
                         key=len, reverse=True)
@@ -580,6 +613,16 @@ class ToolGate:
         return ToolResult(True, "sent", send(tool.name, final))
 
 
+def redaction_marker(kind, values):
+    """The text that replaces a redacted range: [REDACTED kind] unless that holds one of the
+    values it is replacing or checking in any canonical form (a found value ACT is inside
+    REDACTED), else a stand-in the scanner also reads as none. src/latent.mjs chooses the same."""
+    for marker in (f"[REDACTED {kind}]", "***", "###", "---"):
+        if not canon_ranges(marker, values):
+            return marker
+    return "***"   # every marker holds a value: the verification that follows refuses the release
+
+
 @dataclass
 class Release:
     text: str
@@ -614,26 +657,29 @@ class OutputGate:
             found |= spellings(text[finding["start"]:finding["end"]])
             for value in finding.get("values", ()):
                 found |= spellings(value)
+        found.discard("")
+        uncleared = self.clearance != "sensitive"
         ranges = list(kinds)
         # Every occurrence of a value this scan found, and (uncleared) of every known value.
         ranges += gateway._occurrences(text, sorted(found, key=len, reverse=True)) + canon_ranges(text, found)
-        if self.clearance != "sensitive":
+        if uncleared:
             ranges += gateway.value_ranges(text)
         merged = gateway._merge(ranges)
+        checked = found | (gateway.known_values() if uncleared else set())
         if merged:
             pieces, at = [], 0
             for start, end in merged:
                 kind = next((k for (a, b), k in kinds.items() if start <= a and b <= end), "secret")
-                pieces.append(text[at:start] + f"[REDACTED {kind}]")
+                pieces.append(text[at:start] + redaction_marker(kind, checked))
                 at = end
             text = "".join(pieces) + text[at:]
+        # Verify the text that would leave, before any value is put back: no value the scan
+        # found, whatever its length, may be in it in any form, and for an output not cleared
+        # no known value either, not even one a marker and its neighbours spell. Such a
+        # release is refused (safe = False) and the guard holds the run.
+        safe = not any(value in text for value in found) and not canon_ranges(text, found) and \
+            not (uncleared and gateway.holds_value(text, collapsed=True))
         restored = False
-        if self.clearance == "sensitive" and gateway.holds_placeholder(text):
+        if not uncleared and gateway.holds_placeholder(text):
             text, restored = gateway.restore(text), True
-        # Verify the text that would leave: for an output not cleared, no known value may be
-        # in it, not even one the redaction itself wrote. Such a release is refused (safe =
-        # False) and the guard holds the run.
-        long_found = [value for value in found if len(value) > 3]
-        safe = (self.clearance == "sensitive" or not gateway.holds_value(text, collapsed=True)) and \
-            not any(value in text for value in long_found) and not canon_ranges(text, long_found)
         return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)
