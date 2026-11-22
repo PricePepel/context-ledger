@@ -57,3 +57,10 @@ test('the client chat parses as a Claude Code transcript and states every requir
   assert.equal(roasterTranscript(0), lines.slice(0, roasterTranscript(0).split('\n').length).join('\n'));
   assert.equal(requirements.length, 15);
 });
+
+test('an hours table that writes "Tue Closed" meets the Tuesday requirement', () => {
+  const table = good.replace('<p>Open 7:00–15:00. Closed on Tuesdays.</p>', '<table><tr><td>Mon</td><td>7:00–15:00</td></tr><tr><td>Tue</td><td>Closed</td></tr></table>');
+  assert.ok(!scoreSite(table).missed.includes('Closed on Tuesdays'));
+  // A "true" or "tuesday-ish" word elsewhere does not count.
+  assert.ok(scoreSite(good.replace('Closed on Tuesdays.', 'Closed for true holidays.')).missed.includes('Closed on Tuesdays'));
+});

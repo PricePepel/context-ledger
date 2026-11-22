@@ -119,7 +119,8 @@ export const requirements = [
   ['Tagline "Roasted slow, poured fresh."', p => p.text.includes('roasted slow, poured fresh')],
   ['Address 41 Harbor Lane, Portland, Maine', p => p.text.includes('41 harbor lane') && p.text.includes('portland')],
   ['Closes at 15:00', p => new RegExp(closeAt, 'u').test(p.text)],
-  ['Closed on Tuesdays', p => /closed[^.|]{0,40}tuesday|tuesdays?[^.|]{0,20}closed/u.test(p.text)],
+  // "Tue Closed" in an hours table counts too (scorer fix after D4 round 2, applied to every site).
+  ['Closed on Tuesdays', p => /closed[^.|]{0,40}\btue(sday)?s?\b|\btue(sday)?s?\b[^.|]{0,20}closed/u.test(p.text)],
   ['Brand colour terracotta #C65D3B', p => p.all.includes('#c65d3b')],
   ['Headings in Fraunces', p => p.all.includes('fraunces')],
   ['Espresso $3.25', p => price('espresso', '3.25').test(p.text)],

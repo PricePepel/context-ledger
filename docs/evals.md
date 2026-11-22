@@ -4799,3 +4799,22 @@ Not covered, and named so nobody reads more into a pass: one job, one client cha
 ### Round 2 (defined 2026-11-22, after round 1 and before running it)
 
 Same chat, scorer, model and 3 runs per condition, with two changes: the harness fix above for every agent, and the `ledger` builder prompt says to call `context_for` exactly once, with no question, and that current decisions are those not marked "(replaced)". The `chat` and `notes` prompts are unchanged. The gates are unchanged. Round 1 stays recorded as run; round 2 is reported beside it, not instead of it.
+
+### Round 2 (2026-11-22): result, and both rounds rescored
+
+After round 2 one scorer check was fixed: an hours table that reads "Tue Closed" did not count as closed on Tuesdays, a false miss in four sites across both rounds. `tests/roaster.test.mjs` covers it, and every saved site in both rounds was rescored with the fixed scorer. Numbers below are the rescored ones.
+
+| Round | Condition | Requirements met | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) | Cost per hand-off (mean) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void (harness bug) | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+- **Gates, round 2: both fail.** The ledger met as many requirements as the note in every built run, but had one ruled-out item to the note's none (the sentence "For wholesale enquiries, please call us directly.", counted because the rule counts any mention of wholesale; round 1 run 1 had the same sentence). The ledger builder read 37,446 input tokens against 36,847 for `chat`, not fewer: most of each builder's input is Claude Code's own prompt and the tool definitions, so the handed-over text (about 800 tokens of briefing against about 10,900 of chat, by the meter) does not move the total. The note builder read the least because it had no tools at all.
+- **The note run that failed** returned 33k output tokens with no complete HTML page; its reply was not kept, so the cause is unknown.
+- **Read by eye, not scored:** builders in every condition invented copy the client never gave (tasting notes, "Casco Bay", "cancel any time", home delivery). One note-built site left "PLACEHOLDER" text where the note had no about-us copy.
+- **Outcome:** on this job, with Claude Sonnet and an 11k-token chat, all three hand-offs produce equally correct sites once the builder reads the ledger briefing whole, and the ledger hand-off costs more because a first agent publishes the graph. The claim we can make from D4 is narrow: the published graph kept all 15 requirements and every change, with replaced decisions marked, in every one of six runs. A quality gain is untested where it is most likely: chats too long to read whole, smaller builder models, or many builders reusing one graph.
+- **The pitch page** (sites side by side, both rounds, these limits) is built from these reports without editing the sites.

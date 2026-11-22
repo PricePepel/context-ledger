@@ -8,6 +8,10 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — D4 website build demo (2026-11-22)
+
+Two Claude agents built a coffee-roaster site from one synthetic client chat three ways (builder reads the chat, a hand-off note, or the ledger briefing), 3 runs each, in two rounds. Round 2: all three met 15/15 in every built site; the ledger hand-off cost more ($0.47 against $0.20 for reading the chat) and its builder did not read fewer tokens. Both gates fail. Round 1 showed builders making a second, scoped `context_for` call and dropping requirements: Backlog card G9c. Runner: `node demo/website-build.mjs` (spends credits). Next owner: test where a gain is plausible (a chat longer than the builder's window, a small builder model, one graph reused by many builders), and G9c.
+
 ## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
 
 100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
