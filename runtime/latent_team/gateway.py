@@ -39,6 +39,7 @@ Plain code and standard library only. Nothing here is stored.
 """
 import re
 import secrets
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -145,6 +146,13 @@ class Admission:
                 "refused": self.refused, "placeholders": self.placeholders, "toolsOff": self.rule_of_two}
 
 
+def spellings(value):
+    """A found value as written and as its quoted-string escapes decode (the scanner decodes
+    them to recognise a value): both are the same secret."""
+    decoded = secret_scan.decoded(value)
+    return {value, decoded} - {""}
+
+
 class Gateway:
     # A placeholder is [[secret-<n>-<32 hex>]]: 128 random bits made for the run. Input text
     # that already holds the reserved opening "[[secret-" is neutralised before anything
@@ -169,6 +177,7 @@ class Gateway:
         self._tokens = {}           # value -> placeholder token
         self._egress = set()        # every declared value and original finding: never out uncleared
         self.tool_calls = 0         # the run's tool budget is counted here, whatever gate sends
+        self.tool_lock = threading.Lock()
         self.admission = None
 
     # ------------------------------------------------------------ before the squad reads
@@ -223,7 +232,8 @@ class Gateway:
         for text, offset in zip(texts, offsets):   # each span read alone, as the ledger would read it
             ranges += [(offset + f["start"], offset + f["end"]) for f in self.scanner(text)]
         self._egress.update(v for v in self.declared)
-        self._egress.update(joined[start:end] for start, end in ranges)
+        for start, end in ranges:   # the spelling in the text, and the value its escapes decode to
+            self._egress.update(spellings(joined[start:end]))
         known = sorted((v for v in self._egress if v), key=len, reverse=True)
         merged = self._merge(ranges + self._occurrences(joined, known))
         pieces, at = [], 0
@@ -301,7 +311,10 @@ class Gateway:
                 if at < tail < at + len(token):
                     tail = at + len(token)
                 at = text.find(token, at + 1)
-        self.admission.text = text[:head] + marker + text[tail:]
+        fitted = text[:head] + marker + text[tail:]
+        if self.holds_value(self.masked_out(fitted)):   # the marker must not bring a known value in
+            raise GatewayError("unsafe-render", "the cut would put a known value in the text")
+        self.admission.text = fitted
         return self.admission.text
 
     # ------------------------------------------------------------ after the squad
@@ -383,13 +396,22 @@ class ToolGate:
 
     def check(self, call):
         """The reason word a call would be refused for, or "allowed"."""
+        return self._check(call)[0]
+
+    def _check(self, call):
+        """(reason, tool, the outbound arguments): every rule is checked on exactly what would
+        be sent."""
         name = call.get("name") if isinstance(call, dict) else None
         tool = self.permissions.tool(name) if isinstance(name, str) else None
         if tool is not None and tool not in self.admission.tools:
-            return "tools-off"
+            return "tools-off", None, None
         if tool is None:
-            return "not-allowed"
+            return "not-allowed", None, None
         final = self._final(tool, call.get("arguments", {}))
+        reason = self._judge(tool, final)
+        return reason, tool, final
+
+    def _judge(self, tool, final):
         if not self._arguments(tool, final):   # the rules apply to what is sent, after restoring
             return "argument-rule"
         if self.gateway.tool_calls >= self.permissions.max_tool_calls:
@@ -402,14 +424,17 @@ class ToolGate:
         return "allowed"
 
     def submit(self, call, send):
-        reason = self.check(call)
+        import copy
+        snapshot = copy.deepcopy(call)   # one read of the call: what is checked is what is sent
+        with self.gateway.tool_lock:     # the check and the budget reservation are one step
+            reason, tool, final = self._check(snapshot)
+            if reason == "allowed":
+                self.gateway.tool_calls += 1
         if reason != "allowed":
             self.refused += 1
             return ToolResult(False, reason)
         self.calls += 1
-        self.gateway.tool_calls += 1   # reserved on the run before anything is sent
-        tool = self.permissions.tool(call["name"])
-        return ToolResult(True, "sent", send(call["name"], self._final(tool, call.get("arguments", {}))))
+        return ToolResult(True, "sent", send(tool.name, final))
 
 
 @dataclass
@@ -440,10 +465,13 @@ class OutputGate:
         ranges are merged and redacted in one pass, so no substitution can hide a finding.
         Then, for a cleared output only, the placeholders are put back."""
         gateway = self.gateway
-        kinds = {}
+        kinds, found = {}, set()
         for finding in gateway.scanner(gateway.masked(text)):
             kinds[(finding["start"], finding["end"])] = finding["kind"]
+            found |= spellings(text[finding["start"]:finding["end"]])
         ranges = list(kinds)
+        # Every occurrence of a value this scan found, and (uncleared) of every known value.
+        ranges += gateway._occurrences(text, sorted(found, key=len, reverse=True))
         if self.clearance != "sensitive":
             ranges += gateway.value_ranges(text)
         merged = gateway._merge(ranges)
@@ -460,5 +488,6 @@ class OutputGate:
         # Verify the text that would leave: for an output not cleared, no known value may be
         # in it, not even one the redaction itself wrote. Such a release is refused (safe =
         # False) and the guard holds the run.
-        safe = self.clearance == "sensitive" or not gateway.holds_value(text)
+        safe = (self.clearance == "sensitive" or not gateway.holds_value(text)) and \
+            not any(value in text for value in found if len(value) > 3)
         return Release(text, ("redacted",) if merged else (), len(merged), restored, safe)

@@ -137,11 +137,11 @@ class TeamService:
         gateway = self.gateway(steps, max_new_tokens, secrets, clearance)
         try:
             gateway.admit([Span(origin, origin, question)])
+            # The cut of an oversized conversation comes after the gateway, so no secret can
+            # straddle it, and it never splits a placeholder; the cut text is checked too.
+            gateway.fit(MAX_QUESTION_CHARS, FIT_MARKER)
         except GatewayError as error:   # fail closed: the squad reads nothing it could not clear
             raise ApiError(400, f"The gateway refused the input ({error.reason}).") from None
-        # The cut of an oversized conversation comes after the gateway, so no secret can
-        # straddle it, and it never splits a placeholder.
-        gateway.fit(MAX_QUESTION_CHARS, FIT_MARKER)
         if not self._slot.acquire(timeout=self.slot_wait):
             raise ApiError(503, BUSY)
         try:

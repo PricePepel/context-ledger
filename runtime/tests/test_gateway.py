@@ -199,6 +199,32 @@ class PlaceholderTest(unittest.TestCase):
                             named={"notes"})
         self.assertEqual(raised.exception.reason, "duplicate-span")
 
+    def test_round4_an_escaped_finding_is_known_in_its_decoded_spelling(self):
+        # Review W2-4 finding 1: a quoted value written with a JSON escape.
+        value = "G" + "wJal" * 9 + "xyz"
+        escaped = chr(92) + "u0047" + value[1:]
+        g = gateway()
+        admission = g.admit([Span("request", "request", f'"aws_secret_access_key={escaped}" and later {value}')])
+        self.assertNotIn(value, admission.text)
+        released = OutputGate(g).release(f"it was {value}")
+        self.assertNotIn(value, released.text)
+        self.assertTrue(released.safe)
+
+    def test_round4_a_credential_first_seen_in_the_answer_is_hidden_everywhere(self):
+        # Review W2-4 finding 2.
+        g = gateway()
+        g.admit([Span("request", "request", "q")])
+        value = "harbor" + "-slate-42"
+        released = OutputGate(g).release(f"password={value}" + chr(10) + f"Again: {value}")
+        self.assertNotIn(value, released.text)
+
+    def test_round4_the_cut_marker_cannot_bring_in_a_declared_value(self):
+        # Review W2-4 finding 3.
+        g = gateway(declared=["middle omitted"])
+        g.admit([Span("request", "request", "x" * 400)])
+        with self.assertRaises(GatewayError):
+            g.fit(100, " [... middle omitted ...] ")
+
     def test_a_long_text_is_cut_outside_every_placeholder(self):
         # Review W2-1 finding 5: the cut comes after admission and never splits a token.
         secret = canary()
@@ -317,6 +343,38 @@ class ToolGateTest(unittest.TestCase):
         _, gate = self.gate([Span("request", "request", "my diary: x", sensitive=True)], tools=(SEARCH,))
         self.assertEqual(gate.submit({"name": "search_notes", "arguments": {"query": "x"}}, self.send).reason, "label")
         self.assertEqual(self.sent, [])
+
+    def test_round4_what_is_checked_is_what_is_sent_and_the_budget_is_atomic(self):
+        # Review W2-4 finding 4: a call that reads differently the second time, and two
+        # submissions at once against a budget of one.
+        import threading
+        secret = canary()
+        g = gateway(tools=(SEARCH,), declared=[secret], calls=1)
+        g.admit([Span("request", "request", f"keep {secret}")])
+
+        class Shifty(dict):
+            reads = 0
+
+            def get(self, key, default=None):
+                if key == "arguments":
+                    type(self).reads += 1
+                    return {"query": "harmless"} if type(self).reads == 1 else {"query": secret[:60]}
+                return super().get(key, default)
+
+        sent = []
+        result = ToolGate(g).submit(Shifty(name="search_notes"), lambda n, a: sent.append(a))
+        self.assertTrue(result.sent)
+        self.assertEqual(sent, [{"query": "harmless"}])
+        g = gateway(tools=(SEARCH,), calls=1)
+        g.admit([Span("request", "request", "q")])
+        gates, outcomes = [ToolGate(g) for _ in range(8)], []
+        threads = [threading.Thread(target=lambda gate=gate: outcomes.append(
+            gate.submit({"name": "search_notes", "arguments": {"query": "q"}}, lambda n, a: "ok").sent)) for gate in gates]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sum(outcomes), 1)
 
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of

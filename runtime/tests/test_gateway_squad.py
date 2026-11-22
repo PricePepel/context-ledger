@@ -83,7 +83,10 @@ class Seen:
             for row in range(watch.rows):
                 seen.prompts.append("".join(seen.tokenizer.decode(c["ids"][row].tolist())
                                             for c in watch.calls if c.get("ids") is not None))
-                seen.tops.append(seen.tokenizer.decode([int(ids[row, 0]) for _, ids, _ in watch.record]))
+                # Every rank of the record, each read as a sequence over the steps (review W2-4).
+                ranks = watch.record[0][1].shape[1] if watch.record else 0
+                seen.tops.append(chr(10).join(seen.tokenizer.decode([int(ids[row, rank]) for _, ids, _ in watch.record])
+                                              for rank in range(ranks)))
             return original(watch, answers, counts, seconds)
 
         self.patch = mock.patch.object(Watch, "finish", spy)
@@ -147,7 +150,7 @@ class PlaceholderEvalTest(unittest.TestCase):
             mix, ids, weights = rebuild(watch, hidden)
             index = len(watch.record) % len(secret)
             ids = ids.clone()
-            ids[:, 0] = 3 + ALPHABET.index(secret[index])
+            ids[:, 3] = 3 + ALPHABET.index(secret[index])   # a lower rank, not the top token
             return mix, ids, weights
 
         with mock.patch.object(Watch, "rebuild", spelling), Seen(team.tokenizer) as seen:
