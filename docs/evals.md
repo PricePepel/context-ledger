@@ -5047,6 +5047,14 @@ Codex confirmed round 22's fixes (`optional9>`, short heads, the value digests, 
 
 Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (427) passed.
 
+### W2 review, round 24 (2026-11-22, Codex, read-only, of PR #71 at f76d019)
+
+One high-severity finding and no medium one; Codex confirmed round 23's fixes (`)`, `}`, the backtick, ASCII word characters, the audit's later stages within the budget).
+
+- (high, fixed) A shell environment assignment before a command (`PASSWORD=paper-harbor printf done`) kept the command in the value, so the password's bare copy, before the line, reached the model and a public answer. A value that starts right after `=` now also gives its first word, up to a space or tab, as a value of its own, in both scanners (`freeText.valueWordAbout` in the shared rules); spans are unchanged, and two shared value cases cover it (an assignment before a command, a subshell).
+
+Local suites at this round: `npm run -s test:graph` passed, `node --test tests/*.test.mjs` 613 passed and 10 skipped, `npx playwright test` 42 passed, and in `runtime/` the Python checks passed with 131 skipped (no torch on this host); in WSL on the CPU the whole runtime suite (428) passed.
+
 ## W3 — Calibrated abstention (defined 2026-11-22, before the code)
 
 Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and W3's evals 11 to 14, made concrete. No one can promise that the team does not hallucinate; what W3 measures is a ceiling on the error rate of released answers, with the team declining to answer below a calibrated confidence, on one kind of task.

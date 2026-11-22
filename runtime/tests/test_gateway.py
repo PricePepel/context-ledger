@@ -867,6 +867,14 @@ class ToolGateTest(unittest.TestCase):
         self.assertNotIn("paper-harbor", released.text)
         self.assertTrue(released.safe)
 
+    def test_round24_a_shell_environment_assignment_gives_its_word(self):
+        # Review W2-24: the copy comes first; the command follows the assignment.
+        text = "Copy: paper-harbor" + chr(10) + "PASSWORD=paper-harbor printf done"
+        self.assertNotIn("paper-harbor", gateway().admit([Span("request", "request", text)]).text)
+        released = OutputGate(gateway_admitted()).release(text)
+        self.assertNotIn("paper-harbor", released.text)
+        self.assertTrue(released.safe)
+
     def test_a_sensitive_memory_reaches_a_cleared_tool_only(self):
         # Review W2-3 finding 6, the policy made explicit: a trusted sensitive memory (two of
         # the rule of two's three) may call a tool cleared for sensitive data, never another.

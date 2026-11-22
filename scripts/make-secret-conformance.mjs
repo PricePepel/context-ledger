@@ -131,6 +131,8 @@ const valueCases = [
   { name: 'supplementary characters as a value', text: ['password=', { char: 0x1f600 }, { char: 0x1f600 }, '>out.txt'] },
   { name: 'mixed leads on one line', text: ['password=synthetic-first, Authorization: Bearer ', 'synthetic-second'] },
   { name: 'a quoted value with a full stop after it', text: ['password="paper-harbor".'] },
+  { name: 'a shell environment assignment before a command', text: ['PASSWORD=paper-harbor printf done'] },
+  { name: 'a subshell around an assignment', text: ['(password=paper-harbor)'] },
 ];
 
 const out = {
