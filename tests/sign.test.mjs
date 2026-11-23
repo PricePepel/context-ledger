@@ -245,10 +245,12 @@ test('handoff --sign writes exactly the hand-off, the key, a canonical manifest 
   assert.equal(canonicalJson(manifest), manifestBytes.toString('utf8'));
   assert.ok(!manifestBytes.toString('utf8').endsWith('\n'));
   assert.deepEqual(Object.keys(manifest).sort(),
-    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'redaction', 'session', 'version']);
+    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'redaction', 'reviews', 'session', 'version']);
   assert.equal(manifest.format, 'context-ledger-signed-handoff');
-  assert.equal(manifest.version, 2);
-  // P4d: the synthetic session holds no secret, so nothing was replaced.
+  // Card P3b records the review chain (this ledger has no reviews yet); card P4d makes it
+  // version 3 with the redaction record, and the synthetic session holds no secret.
+  assert.equal(manifest.version, 3);
+  assert.deepEqual(manifest.reviews, { events: 0, head: '0000000000000000000000000000000000000000000000000000000000000000' });
   assert.deepEqual(manifest.redaction, { scanner: 'context-ledger-secrets/1', findings: 0 });
   assert.equal(manifest.algorithm, 'Ed25519');
   assert.equal(manifest.session, sessionId);
@@ -422,13 +424,23 @@ test('verify refuses a correctly signed manifest that is not canonical', async t
 
   const shapes = {
     'extra key': { ...manifest, note: 'x' },
-    'other version': { ...manifest, version: 3 },
-    'version 1 with a redaction record': { ...manifest, version: 1 },
+    'other version': { ...manifest, version: 4 },
+    'version as text': { ...manifest, version: '3' },
+    // Card P3b: version 2 and later need a review head of the right shape; version 1 has none.
+    'version 3 without reviews': (({ reviews, ...rest }) => rest)(manifest),
+    'version 1 with reviews and redaction': { ...manifest, version: 1 },
+    // Card P4d: only version 3 has a redaction record.
+    'version 2 with a redaction record': { ...manifest, version: 2 },
+    'reviews with a count but the empty head': { ...manifest, reviews: { events: 2, head: '0000000000000000000000000000000000000000000000000000000000000000' } },
+    'reviews with no events but a head': { ...manifest, reviews: { events: 0, head: 'a'.repeat(64) } },
+    'reviews with a negative count': { ...manifest, reviews: { events: -1, head: 'a'.repeat(64) } },
+    'reviews with an uppercase head': { ...manifest, reviews: { events: 1, head: 'A'.repeat(64) } },
+    'reviews with an extra key': { ...manifest, reviews: { events: 1, head: 'a'.repeat(64), note: 'x' } },
     'bad file name': { ...manifest, files: [{ ...manifest.files[0], name: '../handoff.md' }] },
     'envelope listed': { ...manifest, files: [...manifest.files, { ...manifest.files[0], name: 'manifest.sig' }] },
     'bad date': { ...manifest, created_at: '2026-02-30T00:00:00.000Z' },
   };
-  // P4d review 6: the version 1 shape with a redaction record is refused by the CLI too.
+  // P4d review 6: the version 1 shape with the newer records is refused by the CLI too.
   const mixedVersion = copyOf(context, target => {
     const bytes = Buffer.from(canonicalJson({ ...manifest, version: 1 }), 'utf8');
     writeFileSync(join(target, 'manifest.json'), bytes);
@@ -542,11 +554,12 @@ test('the P4a files hold no raw control or format characters', () => {
 
 // --- Codex review, round 1 -------------------------------------------------------------
 
-test('verify refuses a version 1 or 2 manifest without exactly one handoff.md', async t => {
+test('verify refuses a version 1, 2 or 3 manifest without exactly one handoff.md', async t => {
   const context = await signedBundle(t);
   const signed = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
-  const { redaction: _, ...asVersion1 } = signed;
-  for (const manifest of [signed, { ...asVersion1, version: 1 }]) await refusesOtherFiles(context, manifest);
+  const { redaction: _, ...asVersion2 } = signed;
+  const { reviews: __, ...asVersion1 } = asVersion2;
+  for (const manifest of [signed, { ...asVersion2, version: 2 }, { ...asVersion1, version: 1 }]) await refusesOtherFiles(context, manifest);
 });
 
 async function refusesOtherFiles(context, manifest) {
@@ -1111,7 +1124,7 @@ test('P4d: handoff --sign signs the redacted hand-off and records the count', as
   }
 
   const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
-  assert.equal(manifest.version, 2);
+  assert.equal(manifest.version, 3);
   assert.deepEqual(manifest.redaction, { scanner: scannerName, findings: 5 });
   // The count is the one the redaction report gives for the same session.
   const port = await servingLedger(t, [context.secret]);
@@ -1157,7 +1170,7 @@ test('P4d: there is no option to sign without redaction', async t => {
   }
 });
 
-test('P4d: verify refuses a version 2 manifest whose redaction record is not exact', async t => {
+test('P4d: verify refuses a version 3 manifest whose redaction record is not exact', async t => {
   const context = await signedBundle(t);
   const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
   const { redaction } = manifest;
@@ -1195,19 +1208,31 @@ test('P4d: verify refuses a version 2 manifest whose redaction record is not exa
   assert.deepEqual(await problemsOf(recount, { fingerprint: context.fingerprint }), ['The signature does not match the manifest.']);
 });
 
-test('P4d: a version 1 bundle from P4a still verifies, with a warning that it was not redacted', async t => {
+test('P4d: a version 1 or 2 bundle from before P4d still verifies, with a warning that it was not redacted', async t => {
   const context = await secretBundle(t);
-  // The P4a shape: version 1, no redaction record, and the hand-off as it was, secrets and all.
+  // The P3b shape: version 2, the review chain, no redaction record, and the hand-off as
+  // it was, secrets and all.
   const markdown = Buffer.from(handoffMarkdown(context.secret) + '\n', 'utf8');
   assert.ok(markdown.toString('utf8').includes(fakeSecret.password));
   const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
-  const { redaction: _, ...rest } = manifest;
+  const { redaction: _, ...asVersion2 } = manifest;
+  const files = [{ name: 'handoff.md', bytes: markdown.length, sha256: createHash('sha256').update(markdown).digest('hex') }];
+  const older = join(context.folder, 'p3b-bundle');
+  cpSync(context.secretDir, older, { recursive: true });
+  writeFileSync(join(older, 'handoff.md'), markdown);
+  const olderBytes = Buffer.from(canonicalJson({ ...asVersion2, version: 2, files }), 'utf8');
+  writeFileSync(join(older, 'manifest.json'), olderBytes);
+  writeFileSync(join(older, 'manifest.sig'), edSign(null, olderBytes, context.privateKey));
+  const second = await run(['verify', older, '--fingerprint', context.fingerprint]);
+  assert.equal(second.code, 0, second.stderr);
+  assert.ok(second.stdout.includes('Redaction: not recorded (a version 2 bundle)'), second.stdout);
+  assert.match(second.stderr, /^Warning: this bundle was signed before hand-offs were redacted\./);
+
+  // The P4a shape: version 1, no review chain either.
+  const { reviews: __, ...rest } = asVersion2;
   const dir = join(context.folder, 'p4a-bundle');
-  cpSync(context.secretDir, dir, { recursive: true });
-  writeFileSync(join(dir, 'handoff.md'), markdown);
-  const bytes = Buffer.from(canonicalJson({
-    ...rest, version: 1, files: [{ name: 'handoff.md', bytes: markdown.length, sha256: createHash('sha256').update(markdown).digest('hex') }],
-  }), 'utf8');
+  cpSync(older, dir, { recursive: true });
+  const bytes = Buffer.from(canonicalJson({ ...rest, version: 1, files }), 'utf8');
   writeFileSync(join(dir, 'manifest.json'), bytes);
   writeFileSync(join(dir, 'manifest.sig'), edSign(null, bytes, context.privateKey));
   const result = await verifyBundle(dir, { fingerprint: context.fingerprint });

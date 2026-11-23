@@ -16,7 +16,7 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- handoff <session-id> [--sign <new-folder>]\n' +
   '       npm run ledger -- keygen\n' +
   '       npm run ledger -- verify <folder> [--fingerprint <fingerprint>]\n' +
-  '       npm run ledger -- reviews verify [--head <hash>]\n' +
+  '       npm run ledger -- reviews verify [--head <hash> | --bundle <folder> [--fingerprint <fingerprint>]]\n' +
   '       npm run ledger -- redact <session-id> [--json | --text]\n' +
   '       npm run ledger -- delete <session-id>\n' +
   '       npm run ledger -- graph publish <packet.json>\n' +
@@ -43,7 +43,14 @@ function command(argv) {
   if (action === 'keygen' && args.length === 0) return { action };
   // Card P3: check the chain of review events in the ledger database.
   if (action === 'reviews' && args[0] === 'verify') {
-    const { values, positionals } = options(args.slice(1), { head: { type: 'string' } });
+    const { values, positionals } = options(args.slice(1), { head: { type: 'string' }, bundle: { type: 'string' }, fingerprint: { type: 'string' } });
+    // Card P3b: the trusted head comes from a signed hand-off, or is given as it was kept.
+    if (values.bundle !== undefined && values.head !== undefined) throw new Error('Give --head or --bundle, not both.');
+    if (values.fingerprint !== undefined && values.bundle === undefined) throw new Error('--fingerprint goes with --bundle.');
+    if (positionals.length === 0 && values.bundle !== undefined) {
+      const fingerprint = values.fingerprint === undefined ? undefined : normalizeFingerprint(values.fingerprint);
+      return { action: 'reviews-verify', dir: values.bundle, fingerprint };
+    }
     if (positionals.length === 0 && (values.head === undefined || /^[a-f0-9]{64}$/u.test(values.head))) {
       return { action: 'reviews-verify', head: values.head };
     }
@@ -339,17 +346,21 @@ async function importT3(args) {
 }
 
 async function verifyCommand(dir, fingerprint) {
-  const { problems, files, createdAt, session, fingerprint: signer, redaction } = await verifyBundle(dir, { fingerprint });
+  const { problems, files, createdAt, session, fingerprint: signer, reviews, redaction, version } = await verifyBundle(dir, { fingerprint });
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
     throw new Error('Verification failed.');
   }
   const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
-  // The scanner name passed an exact check, so it is printed as it is.
-  const redacted = redaction === null ? 'not recorded (a version 1 bundle)'
+  // Card P3b: version 2 and later say what the review chain was when it was signed.
+  const chain = reviews
+    ? `Review chain at signing: ${reviews.events} ${reviews.events === 1 ? 'event' : 'events'}, head ${reviews.head}`
+    : 'Review chain at signing: not recorded (a version 1 bundle)';
+  // Card P4d: version 3 says what was redacted. The scanner name passed an exact check.
+  const redacted = redaction === null ? `not recorded (a version ${version} bundle)`
     : `${redaction.findings} ${redaction.findings === 1 ? 'replacement' : 'replacements'}, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
-    '\nRedaction: ' + redacted + '\nKey fingerprint: ' + signer);
+    '\nKey fingerprint: ' + signer + '\n' + chain + '\nRedaction: ' + redacted);
   if (redaction === null) {
     console.error('Warning: this bundle was signed before hand-offs were redacted. ' +
       'Its hand-off was not checked for secrets; read it with care before you pass it on.');
@@ -406,17 +417,68 @@ async function openCurrentStore(databasePath, upgradeHint) {
   }
 }
 
+/**
+ * Card P3b review: the review chain, read on the same read-only connection that checks the
+ * schema, so a file swapped in between can never be migrated or read instead.
+ */
+async function readReviewChain(databasePath, trustedHead) {
+  try {
+    await lstat(databasePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
+    throw new Error('Cannot open the ledger database.');
+  }
+  const { DatabaseSync } = await import('node:sqlite');
+  const { schemaVersion } = await import('./migrate.mjs');
+  const { mountReviews } = await import('./reviews.mjs');
+  let database;
+  try {
+    database = new DatabaseSync(databasePath, { readOnly: true });
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  try {
+    let version;
+    try {
+      version = database.prepare('PRAGMA user_version').get().user_version;
+    } catch {
+      throw new Error('Cannot open the ledger database.');
+    }
+    if (version > schemaVersion) {
+      throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+        'Use that version or another CONTEXT_LEDGER_DB.');
+    }
+    if (version < schemaVersion) {
+      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+        'to upgrade it, then verify again.');
+    }
+    try {
+      return mountReviews(database, () => undefined).verifyReviews(trustedHead);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+  } finally {
+    database.close();
+  }
+}
+
 async function readLedgerSession(databasePath, sessionId) {
   const store = await openCurrentStore(databasePath, 'sign');
   try {
     let session;
+    let reviews;
     try {
       session = store.get(sessionId);
+      reviews = store.verifyReviews();
     } catch {
       throw new Error('Cannot read the ledger database.');
     }
     if (session?.id !== sessionId) throw new Error('Session not found.');
-    return session;
+    // Card P3b: a signed head vouches for the chain, so a broken one is never signed.
+    if (reviews.brokenAt !== undefined) {
+      throw new Error(`Review chain broken at event ${reviews.brokenAt}: run reviews verify, and sign once the ledger is repaired.`);
+    }
+    return { session, reviews: { events: reviews.events, head: reviews.head } };
   } finally {
     store.close();
   }
@@ -424,21 +486,28 @@ async function readLedgerSession(databasePath, sessionId) {
 
 // Card P3: recompute the chain of review events. A broken chain is an error, and its
 // first bad event is named by number only, never by what it says.
-async function reviewsVerifyCommand(trustedHead) {
-  const store = await openCurrentStore(ledgerDatabasePath(), 'verify');
-  let result;
-  try {
-    result = store.verifyReviews(trustedHead);
-  } catch {
-    throw new Error('Cannot read the ledger database.');
-  } finally {
-    store.close();
+async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
+  let signed;
+  if (bundleDir !== undefined) {
+    const bundle = await verifyBundle(bundleDir, { fingerprint });
+    if (bundle.problems.length > 0) {
+      for (const problem of bundle.problems) console.error(problem);
+      throw new Error('The signed hand-off did not verify, so its review head is not trusted.');
+    }
+    if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
+    signed = bundle.reviews;
+    trustedHead = signed.head;
   }
+  const result = await readReviewChain(ledgerDatabasePath(), trustedHead);
   if (result.brokenAt !== undefined) {
     throw new Error(`Review chain broken at event ${result.brokenAt}: it does not match the events before it.`);
   }
   if (trustedHead !== undefined && result.trustedAt === null) {
     throw new Error('The trusted head is not in this review chain: events up to it were removed or rewritten.');
+  }
+  // A signed head also fixes how many events led to it.
+  if (signed !== undefined && result.trustedAt !== signed.events) {
+    throw new Error(`The signed head is event ${signed.events} of its chain, but event ${result.trustedAt} here.`);
   }
   const count = `${result.events} ${result.events === 1 ? 'event' : 'events'}`;
   if (trustedHead === undefined) {
@@ -447,6 +516,9 @@ async function reviewsVerifyCommand(trustedHead) {
     console.error('Note: events removed from the end would not show. Keep this head and run again with --head to check.');
     return;
   }
+  if (signed !== undefined && fingerprint === undefined) {
+    console.error('Warning: the key was not checked. Ask the sender for the key fingerprint and run again with --fingerprint.');
+  }
   const since = result.events - result.trustedAt;
   console.log(`Review chain verified: ${count}, with the trusted head at event ${result.trustedAt} (${since} added since).\nHead: ${result.head}`);
 }
@@ -454,10 +526,12 @@ async function reviewsVerifyCommand(trustedHead) {
 async function signCommand(sessionId, signDir) {
   // Load the key first, so a missing key fails before anything is read or written.
   const privateKey = await loadSigningKey(signingKeyPath());
-  const session = await readLedgerSession(ledgerDatabasePath(), sessionId);
+  const { session, reviews } = await readLedgerSession(ledgerDatabasePath(), sessionId);
   // Card P4d: what is signed is always the redacted hand-off; there is no way to opt out.
   const { session: redacted, findings } = redactSession(session);
-  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(redacted) + '\n', findings: findings.length, privateKey });
+  const bundle = buildBundle({
+    sessionId, markdown: handoffMarkdown(redacted) + '\n', findings: findings.length, privateKey, reviews,
+  });
   await writeBundle(signDir, bundle);
   console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\n' + redactionLine(findings, sessionId) +
     '\nKey fingerprint: ' + bundle.fingerprint);
@@ -531,7 +605,7 @@ async function main() {
     return;
   }
   if (action === 'reviews-verify') {
-    await reviewsVerifyCommand(head);
+    await reviewsVerifyCommand(head, dir, fingerprint);
     return;
   }
   if (action === 'handoff' && signDir !== undefined) {

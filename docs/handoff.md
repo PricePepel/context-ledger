@@ -8,6 +8,15 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
+
+100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
+
+
+## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
+
+Phi-3.5-mini (3.8B) to Qwen2.5-1.5B, trained on the 16 GB laptop GPU and evaluated on 300 SQuAD questions. Three gates pass and retention is reported: `swat` F1 0.872 vs text summary (`t2t`) 0.460, paired 95% interval for the F1 difference [0.36, 0.46]; the mismatched cache scores 0.153 and the zeroed one 0.002, so the gain depends on the correct passage's cache; 426 ms mean end to end vs 3,666 ms for `t2t`. Against the receiver reading the passage, the containment difference is −0.003 [−0.047, 0.040], so claim "finds the answer as often as reading it, within 5 points", not "beats it". Full table in [evals](evals.md) under M2b-S. Next owner: Codex review of the record, then the budget-matched compaction card (Attention Matching) and a receiver fine-tuned on the same SQuAD data as the fair control. Checkpoint stays on the GPU machine at `~/m2b-scale/run1/best.pt`.
+
 ## Current checkpoint — 2026-11-06
 
 The initial import/search and CLI handoff cycles are implemented and tested. Claude reviewed the design and the CLI. The independent Codex reviewer checked the backend, browser and CLI and verified the review fixes. The fixtures are synthetic. Start a new eval cycle before adding format coverage, incremental imports, or automatic discovery. Preserve explicit user control over which transcript content is ingested and which handoff is shared.
@@ -633,10 +642,16 @@ PR #67, branch `ruslan/p3-review-events`, merged after I3 (#34) on 2026-11-22; i
 
 Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 prototype (#52) keeps its own decisions in browser storage. Wiring it to `POST /api/graphs/<id>/reviews` is a choice for Ali.
 
-## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
+## Current checkpoint — P3b review head in signed hand-offs (2026-11-22)
+
+PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
+
+Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.
 
-PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 2 with `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
-
-- **Copies of a found value.** `redactSession` also replaces copies of each found value elsewhere in the session (pasted bare into a later message, in an agent heading). It runs one Aho-Corasick pass per field, with a 512-character budget per kind of entry. Eight Codex rounds and one Claude review shaped it; every finding after round 1 was in this layer. Round 8's fixes are not reviewed again.
-- **Owed before merge:** a human security review (signing and export, AGENTS.md section 4). The reviewer should decide whether the copy layer is worth its complexity, or whether a simpler rule plus the documented residuals is enough.
-- **Next owner:** change `scannerName` in `src/secrets.mjs` whenever a scanner rule changes. ADR-8's allowlist export of cleared excerpts and the passphrase-encrypted key are still open, as is redacting the graph export (G12) and plain `handoff`.
+## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
+
+PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 3: P3b's `reviews` plus `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 and 2 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
+
+- **Copies of a found value.** `redactSession` also replaces copies of each found value elsewhere in the session (pasted bare into a later message, in an agent heading). It runs one Aho-Corasick pass per field, with a 512-character budget per kind of entry. Eight Codex rounds and one Claude review shaped it; every finding after round 1 was in this layer. Round 8's fixes are not reviewed again.
+- **Owed before merge:** a human security review (signing and export, AGENTS.md section 4). The reviewer should decide whether the copy layer is worth its complexity, or whether a simpler rule plus the documented residuals is enough.
+- **Next owner:** change `scannerName` in `src/secrets.mjs` whenever a scanner rule changes. ADR-8's allowlist export of cleared excerpts and the passphrase-encrypted key are still open, as is redacting the graph export (G12) and plain `handoff`.

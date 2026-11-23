@@ -1,8 +1,9 @@
 // Signed hand-off bundles (card P4a, design ADR-9): raw Ed25519 over an RFC 8785
 // (JCS) manifest of file names, sizes and SHA-256 hashes. The key fingerprint is
 // SHA-256 of the public key's SubjectPublicKeyInfo DER bytes, checked out of band.
-// Version 2 (card P4d) adds `redaction`: the hand-off was redacted by the secret scanner
-// before signing, and how many replacements it made.
+// Version 2 (card P3b) adds `reviews`, the review chain's head; version 3 (card P4d) adds
+// `redaction`: the hand-off was redacted by the secret scanner before signing, and how
+// many replacements it made.
 import {
   createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify,
 } from 'node:crypto';
@@ -21,9 +22,12 @@ export const signatureFile = 'manifest.sig';
 export const publicKeyFile = 'public-key.pem';
 const envelopeFiles = [manifestFile, signatureFile, publicKeyFile];
 const manifestKeys = ['algorithm', 'created_at', 'files', 'format', 'public_key', 'session', 'version'];
-const manifestKeysV2 = [...manifestKeys, 'redaction'].sort();
-/** The manifest version this build writes. Version 1 (P4a, unredacted) still verifies. */
-export const bundleVersion = 2;
+// Card P3b: version 2 adds reviews, the ledger's review chain when the bundle was signed.
+const manifestKeysV2 = [...manifestKeys, 'reviews'].sort();
+// Card P4d: version 3 adds redaction, what the secret scanner replaced before signing.
+const manifestKeysV3 = [...manifestKeysV2, 'redaction'].sort();
+const keysByVersion = new Map([[1, manifestKeys], [2, manifestKeysV2], [3, manifestKeysV3]]);
+const emptyChainHead = '0'.repeat(64);
 const fileNamePattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const createdAtPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const maxManifestBytes = 64 * 1024;
@@ -380,23 +384,30 @@ async function checkCurrentAccountOnly(path, ino, hooks) {
 
 /**
  * Build the bundle in memory: file bytes by name, manifest bytes and signature. markdown
- * must already be redacted; findings is how many replacements the scanner made in it.
+ * must already be redacted when findings (how many replacements the scanner made in it)
+ * is given.
  */
-export function buildBundle({ sessionId, markdown, findings, privateKey, now = new Date() }) {
+export function buildBundle({ sessionId, markdown, findings, privateKey, reviews, now = new Date() }) {
   if (!/^[a-f0-9]{64}$/.test(sessionId)) throw new Error('Invalid session ID.');
-  if (!Number.isSafeInteger(findings) || findings < 0) throw new Error('Invalid redaction count.');
+  // Card P3b: with the review chain's count and head the manifest is version 2; without, version 1.
+  if (reviews !== undefined && !isReviewHead(reviews)) throw new Error('Invalid review chain head.');
+  // Card P4d: with a redaction count as well it is version 3, which the CLI always writes.
+  if (findings !== undefined && (reviews === undefined || !Number.isSafeInteger(findings) || findings < 0)) {
+    throw new Error('Invalid redaction count.');
+  }
   const publicKey = createPublicKey(privateKey);
   const content = [{ name: handoffFile, data: Buffer.from(markdown, 'utf8') }];
   const manifest = {
     format: bundleFormat,
-    version: bundleVersion,
+    version: findings !== undefined ? 3 : reviews === undefined ? 1 : 2,
     algorithm: 'Ed25519',
     created_at: now.toISOString(),
     session: sessionId,
     public_key: publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
     files: content.map(({ name, data }) => ({ name, bytes: data.length, sha256: sha256Hex(data) })),
-    redaction: { scanner: scannerName, findings },
   };
+  if (reviews !== undefined) manifest.reviews = { events: reviews.events, head: reviews.head };
+  if (findings !== undefined) manifest.redaction = { scanner: scannerName, findings };
   const manifestBytes = Buffer.from(canonicalJson(manifest), 'utf8');
   const signature = sign(null, manifestBytes, privateKey);
   if (!verify(null, manifestBytes, publicKey, signature)) throw new Error('The new signature did not verify.');
@@ -479,28 +490,35 @@ function sameKeys(value, keys) {
   return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
 }
 
+/** A review chain's count and head: the genesis hash exactly when there are no events. */
+function isReviewHead(reviews) {
+  return isPlainObject(reviews) && sameKeys(reviews, ['events', 'head'])
+    && Number.isSafeInteger(reviews.events) && reviews.events >= 0
+    && typeof reviews.head === 'string' && /^[0-9a-f]{64}$/.test(reviews.head)
+    && (reviews.events === 0) === (reviews.head === emptyChainHead);
+}
+
 // Returns the manifest's public key, or undefined when the manifest is malformed.
 function checkManifest(manifest) {
   if (!isPlainObject(manifest)) return;
-  // Version 1 (P4a) has no redaction record; version 2 (P4d) must have exactly one.
-  if (manifest.version === 1) {
-    if (!sameKeys(manifest, manifestKeys)) return;
-  } else if (manifest.version === 2) {
-    if (!sameKeys(manifest, manifestKeysV2)) return;
+  // Version 1 (P4a) has neither record; version 2 (P3b) has the review chain; version 3
+  // (P4d) has the review chain and exactly one redaction record.
+  const keys = keysByVersion.get(manifest.version);
+  if (!keys || !sameKeys(manifest, keys)) return;
+  if (manifest.version >= 2 && !isReviewHead(manifest.reviews)) return;
+  if (manifest.version === 3) {
     const { redaction } = manifest;
     if (!isPlainObject(redaction) || !sameKeys(redaction, ['findings', 'scanner'])) return;
     // Only this build's scanner is known; a later rule version is a later build's bundle.
     if (redaction.scanner !== scannerName) return;
     if (!Number.isSafeInteger(redaction.findings) || redaction.findings < 0) return;
-  } else {
-    return;
   }
   if (manifest.format !== bundleFormat || manifest.algorithm !== 'Ed25519') return;
   if (typeof manifest.session !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.session)) return;
   if (typeof manifest.created_at !== 'string' || !createdAtPattern.test(manifest.created_at)) return;
   const created = new Date(manifest.created_at);
   if (Number.isNaN(created.getTime()) || created.toISOString() !== manifest.created_at) return;
-  // Versions 1 and 2 have exactly one content file, handoff.md. A later version that adds
+  // Versions 1 to 3 have exactly one content file, handoff.md. A later version that adds
   // files changes the version number.
   if (!Array.isArray(manifest.files) || manifest.files.length !== 1) return;
   for (const entry of manifest.files) {
@@ -628,9 +646,11 @@ export async function verifyBundle(folder, { fingerprint } = {}, hooks = {}) {
   result.fingerprint = keyFingerprint(publicKey);
   result.createdAt = manifest.created_at;
   result.session = manifest.session;
-  result.files = manifest.files.map(({ name, bytes }) => ({ name, bytes }));
   result.version = manifest.version;
-  result.redaction = manifest.version === 2 ? { ...manifest.redaction } : null;
+  // Card P3b: the review chain when it was signed, or null for a version 1 bundle.
+  result.reviews = manifest.version >= 2 ? { events: manifest.reviews.events, head: manifest.reviews.head } : null;
+  result.files = manifest.files.map(({ name, bytes }) => ({ name, bytes }));
+  result.redaction = manifest.version === 3 ? { ...manifest.redaction } : null;
   if (expected !== undefined && result.fingerprint.replace(/ /g, '') !== expected) {
     problems.push('The bundle was signed by a different key than the fingerprint names.');
   }
