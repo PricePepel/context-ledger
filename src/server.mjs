@@ -6,27 +6,12 @@ import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
 import { createSwarm } from './swarm.mjs';
+import { staticFiles, staticFileUrl } from './static-files.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { printWelcome } from './welcome.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
-const staticFiles = new Map([
-  ['/', ['index.html', 'text/html']],
-  ['/app.js', ['app.js', 'text/javascript']],
-  ['/styles.css', ['styles.css', 'text/css']],
-  // The console (card U1): a fixed list, so no other path under /console/ is served.
-  ['/console', ['console/index.html', 'text/html']],
-  ['/console/', ['console/index.html', 'text/html']],
-  ...['console.css', 'office.css'].map(name => [`/console/${name}`, [`console/${name}`, 'text/css']]),
-  ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
-    .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
-  ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
-  // The swarm demo (card S1), also a fixed list.
-  ['/swarm', ['swarm/index.html', 'text/html']],
-  ['/swarm/', ['swarm/index.html', 'text/html']],
-  ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
-  ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
-]);
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -180,8 +165,8 @@ function scopeParameters(url) {
 const routes = [
   ...[...staticFiles].map(([path, [file, contentType]]) => ({
     method: 'GET', path, handler: async ({ response }) => {
-      const bytes = await readFile(new URL(`../public/${file}`, import.meta.url));
-      response.writeHead(200, { 'Content-Type': `${contentType}; charset=utf-8` });
+      const bytes = await readFile(staticFileUrl(file));
+      response.writeHead(200, { 'Content-Type': contentType.startsWith('font/') ? contentType : `${contentType}; charset=utf-8` });
       response.end(bytes);
       return sent;
     },
@@ -316,6 +301,7 @@ const routes = [
     return latentTeam(input, { latentUrl: latentUrl() });
   } },
   { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'GET', path: '/api/swarm/task', handler: () => swarm.task() },
   { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Starting a swarm run');
     return { run: swarm.start(input) };
@@ -353,7 +339,7 @@ function matchRoute(route, pathname) {
 
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');
 
@@ -422,6 +408,16 @@ server.listen(port, '127.0.0.1', () => {
       process.exit(0);
     });
   }
-  console.log(`Context Ledger listening at http://127.0.0.1:${localPort}`);
-  console.log(`Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`);
+  // Card U9: at a terminal these two lines arrive inside the welcome; piped, they are the
+  // same two plain lines as before. The server is already listening when this runs.
+  printWelcome({
+    title: 'local, on this machine',
+    lines: [
+      // The store opened before the server could listen; a terminal is told so, a pipe is not.
+      { text: 'Database opened', terminalOnly: true },
+      { text: `Context Ledger listening at http://127.0.0.1:${localPort}` },
+      { text: `Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`, state: 'note' },
+    ],
+    footer: 'Keep this window open while you or your agents use the ledger. Ctrl-C stops it.',
+  }).catch(() => { /* the terminal went away; the server keeps running */ });
 });

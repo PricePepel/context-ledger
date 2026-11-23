@@ -12,11 +12,15 @@ function el(tag, className, text) {
   return element;
 }
 
-function nodeMeta(node) {
+function graphMeta(node) {
   if (node.superseded) return 'superseded';
   if (node.kind === 'question') return `${node.answered ? 'answered' : node.status} · to ${node.to}`;
   return node.status ?? '';
 }
+
+// Card P3: a reviewer's decision (demo only) follows the graph's own state.
+const nodeMeta = node => [graphMeta(node), node.review?.decision ?? ''].filter(Boolean).join(' · ');
+const shownLabel = node => (node.review?.decision === 'edited' ? node.review.label : node.label);
 
 export function createBrain(container, { onSelect }) {
   const edgesSvg = document.createElementNS(svgNs, 'svg');
@@ -36,25 +40,29 @@ export function createBrain(container, { onSelect }) {
       button = el('button', 'node');
       button.type = 'button';
       button.dataset.key = node.key;
-      button.append(el('span', 'node-kind'), el('span', 'node-label'), el('span', 'node-meta'));
+      const head = el('span', 'node-kind');
+      head.append(el('span', 'node-kind-name'), el('span', 'node-mark'));
+      button.append(head, el('span', 'node-label'), el('span', 'node-meta'));
       button.addEventListener('click', () => onSelect(node.key));
       // Drop the animation class when it ends, so a later redraw does not replay it.
       button.addEventListener('animationend', () => button.classList.remove('pop', 'pulse'));
       buttons.set(node.key, button);
     }
     const [kind, label, meta] = button.children;
-    kind.textContent = node.kind;
-    label.textContent = clip(node.label, 90);
+    // Card G7 mark, as a word beside the kind, so it never relies on colour alone.
+    kind.children[0].textContent = node.kind;
+    kind.children[1].textContent = node.mark ? ` · ${node.mark}` : '';
+    label.textContent = clip(shownLabel(node), 90);
     meta.textContent = nodeMeta(node);
     // An animation still running (pop or pulse) survives a redraw; animationend drops it.
     const running = ['pop', 'pulse'].filter(name => button.classList.contains(name));
     button.className = ['node', `kind-${node.kind}`, `mark-${node.mark ?? 'none'}`,
       node.superseded ? 'is-superseded' : '', node.answered ? 'is-answered' : '',
-      node.key === selected ? 'is-selected' : '', ...running].filter(Boolean).join(' ');
+      node.review ? `review-${node.review.decision}` : '', node.key === selected ? 'is-selected' : '', ...running].filter(Boolean).join(' ');
     button.dataset.mark = node.mark ?? 'none';
     button.setAttribute('aria-pressed', String(node.key === selected));
     const state = nodeMeta(node);
-    button.setAttribute('aria-label', `${node.kind}: ${clip(node.label, 200)}${state ? ` (${state})` : ''}. Show evidence.`);
+    button.setAttribute('aria-label', `${node.kind}${node.mark ? `, ${node.mark}` : ''}: ${clip(shownLabel(node), 200)}${state ? ` (${state})` : ''}. Show evidence.`);
     return button;
   }
 

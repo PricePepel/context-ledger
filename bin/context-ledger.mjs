@@ -10,8 +10,13 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homeOf } from '../src/install.mjs';
+import { hideSqliteNotice } from '../src/quiet.mjs';
 
 if (!process.env.CONTEXT_LEDGER_DB) process.env.CONTEXT_LEDGER_DB = join(homeOf(), '.context-ledger', 'ledger.sqlite');
+
+// Card U9: Node prints its node:sqlite notice above every command. Under the installed
+// command that exact notice is not shown; every other warning still is (src/quiet.mjs).
+hideSqliteNotice();
 
 const [command, ...rest] = process.argv.slice(2);
 if (command === 'start' && rest.length === 0) {
