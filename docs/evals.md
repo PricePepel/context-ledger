@@ -4850,3 +4850,26 @@ A graph lives in one ledger, tied to the session it cites, so today nothing move
 - The four suites pass, with the cases above in `tests/parcel.test.mjs` and a browser eval for the label.
 - No new dependency. `docs/parcels.md` describes the format, and README names the two commands.
 - Stated limits, in `docs/parcels.md`: a parcel is not signed, so `receive` trusts the file as `import` trusts a transcript; B cannot check that the excerpts are what A's transcript says; review decisions and room choices do not travel (R3).
+
+## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
+
+R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a one-time code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
+
+### What is tested and the expected result
+
+- **End to end.** `ledger relay serve` prints its address. On ledger A, `ledger share <graph-id> --relay <url>` prints one code. On ledger B, `ledger receive --from <code>` stores the graph with the same ID, as R1's `receive <file>` does, and the relay then holds nothing.
+- **The relay sees only ciphertext.** What the relay holds contains no text of the parcel (a label, a transcript line, the session ID, the graph ID). The parcel is sealed with AES-256-GCM under a key derived from the code's secret, which never reaches the relay.
+- **The code is the key.** A different secret, or a parcel changed by one byte, fails to open, in fixed words, and the ledger is unchanged. A sealed parcel opens only as the version it was sealed as.
+- **One parcel per code, fetched once.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
+- **A failed receive keeps the parcel.** If B refuses the parcel (for example its graph links to a graph B lacks), the relay still holds it, so B can receive the missing graph and try again.
+- **The relay's own limits.** A request without a bearer token of the right shape is refused (401). A body over the limit is refused (413) without being held. The relay holds at most a fixed number of parcels and bytes and refuses more (507). A parcel expires after 24 hours. Unknown paths give 404 and other methods 405. Responses never echo a token or a body.
+- **The relay cannot reach a ledger.** `src/relay.mjs` imports only Node built-ins. It opens no database and reads no file.
+- **Loopback by default.** `relay serve` listens on 127.0.0.1 unless `--host` names another address, and then says the address must be reachable only by people you trust. `share` warns when the relay address in a code is loopback, since the other machine cannot reach it.
+- **Fixed words on failure.** An unreachable relay, a relay that is not one (wrong health reply), a malformed code, and a missing parcel each give one fixed sentence. Nothing from the network reaches the terminal unescaped, and the code's secret is never printed by `receive`.
+- **R1 is unchanged.** `share --out` and `receive <file>` work as before; `--out` and `--relay` cannot be combined, and neither can a file and `--from`.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/relay.test.mjs`.
+- No new dependency: `node:crypto` (HKDF-SHA-256, AES-256-GCM) and `node:http`.
+- `docs/parcels.md` describes the relay, the code, and what an attacker on the network can and cannot do.
