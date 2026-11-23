@@ -4575,6 +4575,58 @@ For the investor demo: many small agents work one task at once on the laptop GPU
 
 **Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
 
+### Live run on vLLM (2026-11-22)
+
+Laptop RTX 4090 (16 GB), WSL, vLLM serving `Qwen/Qwen2.5-7B-Instruct-AWQ` (max model length 4096, 64 sequences at once, prefix caching on), ledger at commit 7b3db03 with `SWARM_CONCURRENCY=64`. Synthetic incident reports (seed 7). Measured through the API with a script that keeps aggregates only. The GPU had no other job during these runs.
+
+| Agents | Wall time | Correct | Verified | Failed | Output tokens/s | Prefix-cache hits |
+| --- | --- | --- | --- | --- | --- | --- |
+| 25 | 2.1 s | 25 | 25 | 0 | 629 | 77% |
+| 50 | 2.3 s | 50 | 50 | 0 | 1,133 | 89% |
+| 100 (3 runs) | 4.6 s, 3.9 s, 3.5 s | 100 each | 100 each | 0 | 1,140–1,485 | 89%, 98%, 98% |
+
+The combined answer (services hit by a configuration change and their total downtime) matched the generator's truth on every run.
+
+**Speed-up, measured honestly.** One agent alone took 0.86–1.29 s (5 runs, mean 1.05 s), so 100 agents one after another would take about 105 s, against 3.5–4.6 s together: **about 23–30× faster**. The page's "one after another" figure is the sum of each agent's own time *while sharing the GPU* (244 s for the first 100-agent run, a 53× ratio). It is labelled as that sum, but the ratio overstates the gain because each request is slower under load. Quote the measured single-agent baseline, not the page's ratio, until the page measures it (Backlog card S1b).
+
+**KV cache in use** read 0% in every run, because the last sample is taken after the agents finish. The peak during the run is not captured yet (S1b).
+
+**Two models on one GPU** (7B AWQ plus `Qwen/Qwen2.5-1.5B-Instruct`). They fit only with both servers in eager mode (`--enforce-eager --max-num-batched-tokens 2048`), the 1.5B at `VLLM_GPU_UTIL=0.40` started first, then the 7B at `0.90`. On this vLLM, the second server's setting is a cap on the whole GPU, including the first server's memory, so `0.55` plus `0.3` does not start. 100 agents split 50/50: the 7B was 50 of 50 correct and the 1.5B 45–46 of 50 correct with 48 verified, so two or three of its answers quote real text but get a fact wrong, and the combined answer no longer matched the truth. Timings from these runs are **not usable**: another session's GPU evaluation started at the same minute, so three jobs shared the GPU (100 agents took 32–45 s, median agent 13 s on the 7B and 7 s on the 1.5B). The first 25-agent run after the 7B started had 13 of its 13 7B agents time out; warm the servers before a demo.
+
+What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
+
+## S1b — Honest speed-up and peak KV on the swarm page (defined 2026-11-22, before the code)
+
+The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divided the sum of each agent's own time *while sharing the GPU* by the wall time (53× for 100 agents), but each request is slower under load, so the honest figure against one agent run alone was about 23–30×. "KV cache in use" read 0% because the last sample is taken after the agents finish.
+
+| What | Pass when |
+| --- | --- |
+| Solo baseline | Before the agents start, a live run sends one warm-up request (not timed) and then `SWARM_BASELINE_RUNS` timed requests (default 3, 1 to 5) to each server alone, one at a time, and keeps the median per server. The baseline uses the same prompt shape as an agent (report 1) and its tokens are not added to the run's totals. It is measured once per ledger process for the same set of servers and models and reused by later runs, with the time it was measured. |
+| Speed-up | `speed-up = estimated one-after-another ÷ wall time`, where the estimate adds each finished agent's server baseline. A test with a server that answers slower under load than alone shows the speed-up uses the solo baseline (and is below the old sum ÷ wall ratio). If the baseline fails, the run still goes on and the speed-up says "not measured". |
+| Old figure | The sum of agents' own times is no longer shown as a speed-up or as "one after another". It stays in the API as `agentMsSum` only. |
+| KV peak | The KV-cache tile shows the highest value sampled during the run (across servers and samples), labelled as the peak, not the last sample. A test with a server whose KV gauge is high during the run and 0 afterwards shows the peak, not 0. |
+| Simulated | A simulated run shows "not measured" for the speed-up, the one-after-another estimate and the KV peak; no baseline is taken. |
+| Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
+| Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
+
+**Codex review, round 1** (of ed890ea), each finding fixed with a regression test:
+
+- (medium) Failed agents were credited with a full solo run, so fast errors could raise the speed-up and an all-failed run could still show one. Only agents that answered count now (`answeredForSpeedup` in the API, "N answers ×" on the page).
+- (medium) The baseline timed any HTTP 200, even a reply with no usable answer. Each baseline reply must now pass `parseAnswer`, the check an agent's reply passes; otherwise there is no baseline and no speed-up.
+- (medium) The timed requests read the same report as the warm-up, so they reused more of the prefix cache than agents do, and the page did not say the figure was a warm, possibly reused baseline. Timed requests now read reports 2 to N+1 after a warm-up on report 1, and the page says "per agent alone, warm (median of 3, measured at / reused from HH:MM)".
+- (low) The median of an even count took the lower middle value: it is now the mean of the two middle values.
+- (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
+- (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
+
+**Codex review, round 2** (of 497612e): the round 1 fixes are correct. Fixed with tests:
+
+- (medium) The baseline used the run's seed, so it sent the first agents' exact prompts before the run and a prefix cache could serve them faster, inflating the speed-up. The baseline now reads reports from its own seed (`baselineSeed`), and a test checks no baseline prompt is a run prompt.
+- (low) With several servers the note multiplied the total answer count by every server's time. Each server now shows its own answers × solo time (`perServer[].answered` in the API).
+- (low) The warm-up test could pass with the warm-up included: it now uses distinct timings and two timed runs, so only the right samples give the expected median.
+- (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
+
+Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
@@ -4743,3 +4795,32 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 - **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
 - **Codex review, round 3:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+### P3c eval: signing reads the ledger read-only (2026-11-22)
+
+What is tested: `ledger handoff --sign` and `ledger reviews verify` open the ledger once, read-only, and never create, migrate or write it. Synthetic data only: one synthetic Claude transcript imported into a temporary ledger.
+
+- `openStore(path, { readOnly: true })` opens a current-schema ledger and reads sessions and the review chain; a write through it fails and leaves the file unchanged.
+- It refuses an older or a newer schema with the version, and the file's `user_version` and bytes are unchanged afterwards.
+- It refuses a missing file without creating it or its folder.
+- Signing an older-schema ledger fails with "older schema … then sign again", writes no bundle and leaves the file at its old version.
+- Signing a current ledger still produces a bundle that verifies, with the review head.
+- No code path in signing or `reviews verify` opens the ledger read-write: the CLI has one helper for both, and it passes `readOnly: true`.
+
+### P3c results (2026-11-22)
+
+- `tests/readonly-store.test.mjs` covers the eval: a read-only store reads a current ledger and a write through it fails with the file unchanged; an older or newer schema refused with `LEDGER_SCHEMA` and its version, the file unchanged; a missing file and folder never created; signing an older-schema ledger writes no bundle; signing a current ledger still verifies with its head; and a static check that signing and `reviews verify` open the ledger only through the one read-only helper, exactly once.
+- **Codex review, round 1:** no high; one medium and two low:
+  - (medium) Statements prepared after the open sat outside the cleanup, so a damaged file (current `user_version`, missing tables) left the connection open, which on Windows keeps the file from being replaced or deleted. The store's methods are now built in `storeOn`, and any failure there closes the connection, in both modes. Test: such a file is refused and can be removed at once. A side effect Codex noted: `reviews verify` on that damaged file now says "Cannot open the ledger database." rather than checking the chain alone; such a file is not a ledger this build wrote, so that is accepted.
+  - (low) The static test would have passed with a second, writable open in the helper. It now counts the opens and needs exactly one.
+  - (low, accepted) A read-only open of a ledger in WAL mode can need `-wal` and `-shm` files, so it fails in a read-only folder without them. The ledger uses the default rollback journal, which needs no sidecar to read; P3b's read-only check behaved the same. Left as it is.
+- **Codex review, round 2:** two low:
+  - (low) When the final newer-schema check in the store setup threw, the setup closed the connection and `openStore` closed it again; on Node 22 the second close throws `ERR_INVALID_STATE`, which hid the real error. `openStore` alone closes it now. The two concurrent-upgrade tests in tests/projects.test.mjs ("a file that a newer build upgrades while this one opens it gets no DDL" and "an upgrade that keeps every table, committed after the last statement is prepared, is refused") failed with ERR_INVALID_STATE under round 1 and pass now; a static test also checks the setup has no close of its own.
+  - (low, accepted) The static check cannot see a second connection opened inside `openStore` itself. Counting opens at run time would mean patching `node:sqlite` in a child process, which ES modules do not allow without a loader. `openStore` opens exactly one `DatabaseSync`, and the read-only behaviour tests cover what that connection can do.
+- **Codex review, round 3:** two low, both fixed with tests:
+  - (low) If a newer build upgraded the file between the read-only check and the store's final recheck, the recheck's error had no code, and the CLI said "Cannot open the ledger database." instead of naming the newer schema. `refuseNewer` now throws with `code: 'LEDGER_SCHEMA'` and the version, like the read-only refusal. Test: the recheck on a newer file throws that code and version.
+  - (low) Round 2's accepted gap, closed: Codex showed a CommonJS preload can replace `DatabaseSync` and pass it to ES modules with `syncBuiltinESMExports()`. `tests/fixtures/count-opens.cjs` logs every connection, and a test runs `handoff --sign`, `reviews verify` and `reviews verify --bundle` under it: each opens exactly one connection, read-only, on the ledger.
+- **Codex review, round 4:** two low, both accepted; no medium or high, so the review stops here:
+  - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
+  - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.

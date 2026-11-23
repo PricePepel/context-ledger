@@ -11,7 +11,7 @@ import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
-import { defaultProject, migrate, refuseNewerSchema } from './migrate.mjs';
+import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
 
 export { ConflictError, InputError };
@@ -366,9 +366,14 @@ function serializeGraphPacket(packet) {
   });
 }
 
-export function openStore(path) {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const database = new DatabaseSync(path);
+/**
+ * Opens the ledger. With readOnly (card P3c), the file must already exist at this build's
+ * schema: the connection cannot create, migrate or write it, and an older or newer file is
+ * refused with an error whose code is LEDGER_SCHEMA and whose version is the file's.
+ */
+export function openStore(path, { readOnly = false } = {}) {
+  if (!readOnly && path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const database = readOnly ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
   database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
   // The version 0 tables, created under the migration's lock after its version check,
   // so a newer file is refused before any DDL. The migration then upgrades them.
@@ -390,12 +395,30 @@ export function openStore(path) {
     ${roomsSchema}
   `);
   try {
-    migrate(database, bootstrap);
+    if (readOnly) {
+      const version = database.prepare('PRAGMA user_version').get().user_version;
+      if (version !== schemaVersion) {
+        throw Object.assign(new Error(`Ledger schema ${version}, not ${schemaVersion}.`), { code: 'LEDGER_SCHEMA', version });
+      }
+    } else {
+      migrate(database, bootstrap);
+    }
   } catch (error) {
     database.close();
     throw error;
   }
+  // Card P3c review: a statement that fails to prepare (a damaged file, say) must not
+  // leave the connection open, which on Windows keeps the file from being replaced.
+  try {
+    return storeOn(database);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
 
+/** The store's methods over an open, current-schema connection. */
+function storeOn(database) {
   // A graph stored before G7 has no quoted or inferred marks, and a version 3 graph
   // stored before P2c no node hashes; publishing the same packet again adds them. The ID,
   // row and created_at stay as they were.
@@ -507,13 +530,10 @@ export function openStore(path) {
   `);
   // A current file opens without the lock, so a newer build may have upgraded it while
   // the statements above were prepared. Refuse it now rather than hand out the store.
-  // (An upgrade after this point, while the store is open, is not detected.)
-  try {
-    refuseNewerSchema(database);
-  } catch (error) {
-    database.close();
-    throw error;
-  }
+  // (An upgrade after this point, while the store is open, is not detected.) openStore
+  // closes the connection when this throws (card P3c review: closing here too threw
+  // ERR_INVALID_STATE and hid this error).
+  refuseNewerSchema(database);
 
   /**
    * Card I3: a Codex file imported before agent messages were read gains them when it is
