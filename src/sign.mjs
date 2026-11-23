@@ -562,7 +562,8 @@ async function hashFile(path, opened, signedBytes) {
 
 /**
  * Check a bundle folder. Returns { problems, files, fingerprint, createdAt, session,
- * version, redaction } (redaction is null for a version 1 bundle);
+ * version, reviews, redaction } (reviews is null for version 1, redaction for versions 1
+ * and 2);
  * the bundle is good only when problems is empty. Every problem is a fixed message,
  * plus an escaped file name where one is named. `hooks` (afterList, afterRead) exist
  * only so tests can change the folder at fixed points.
