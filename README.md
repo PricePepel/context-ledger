@@ -182,7 +182,7 @@ Agents can open and read rooms (`POST /api/rooms` with `{"graphIds": [A, B]}`, a
 
 ## Share a graph with another machine
 
-`npm run --silent ledger -- share GRAPH_ID --out FILE` writes a parcel: the graph, the transcript lines it cites with possible secrets replaced by markers, and its artifacts. Nothing else of the session is in the file. Move the file to the other machine and run `npm run --silent ledger -- receive FILE` there. The graph gets the same ID, so the other person's agent can read it, link its own graph to it and open a room. The received session is labelled as excerpts. A parcel is not signed, and room choices do not travel yet. See [parcels](docs/parcels.md).
+`npm run --silent ledger -- share GRAPH_ID --out FILE` writes a parcel: the graph, the transcript lines it cites with possible secrets replaced by markers, and its artifacts. No other line of the session is copied into the file; the transcript's file name is, and the graph's own labels travel as published. Move the file to the other machine and run `npm run --silent ledger -- receive FILE` there. The graph gets the same ID, so the other person's agent can read it, link its own graph to it and open a room. The received session is labelled as excerpts. A parcel is not signed, and room choices do not travel yet. See [parcels](docs/parcels.md).
 
 ## Connect an agent over MCP
 

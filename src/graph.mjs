@@ -258,9 +258,10 @@ function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
  * are checked with `lookupGraph(id)`, which returns a stored graph or undefined, and
  * `sameProject(id)`, true when that graph is in this packet's project (P2a). Version 3
  * citations are checked against `messageKeys` (the session's keys) and `hasArtifact(id)`,
- * true for an artifact registered in this packet's project (P2b).
+ * true for an artifact registered in this packet's project (P2b). `withoutLinks` leaves the
+ * links to other graphs unchecked, for a caller with no ledger to look them up in.
  */
-export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, messageKeys, hasArtifact } = {}) {
+export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, messageKeys, hasArtifact, withoutLinks = false } = {}) {
   const version = packet?.version;
   const validate = validateShape.get(version);
   if (!validate?.(packet)) {
@@ -281,7 +282,8 @@ export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, m
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
     }
-    assertLinks(packet, nodes, superseded, lookupGraph, sameProject);
+    // Card R1: a parcel is checked before a ledger is opened; its links wait for the store.
+    if (!withoutLinks) assertLinks(packet, nodes, superseded, lookupGraph, sameProject);
   }
 
   const waiting = new Set();

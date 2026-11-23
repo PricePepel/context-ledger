@@ -1,3 +1,16 @@
+import { basename, win32 } from 'node:path';
+import { InputError } from './errors.mjs';
+
+/** The file name a ledger stores for a transcript: the last part of a path, or an InputError. */
+export function sourceName(source) {
+  if (typeof source !== 'string') throw new InputError('Choose a transcript file.');
+  const name = basename(win32.basename(source)).trim();
+  if (!name || name === '.' || name === '..' || name.length > 255 || /\p{Cc}/u.test(name)) {
+    throw new InputError('Invalid transcript file name.');
+  }
+  return name;
+}
+
 const escapeCodeUnits = character => [...Array(character.length).keys()]
   .map(index => '\\u' + character.charCodeAt(index).toString(16).padStart(4, '0'))
   .join('');
