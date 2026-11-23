@@ -5147,3 +5147,21 @@ A read-only Codex review found no high or medium issue and two low ones, both in
 
 1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
 2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
+
+## U11 — First start: sign-in steps and the live GPU (defined 2026-11-23, before the code)
+
+Ruslan's first run of the installed command (2026-11-23) raised two questions. The sign-in line gave a link and a time limit, but not what to do with it, and in a terminal 80 columns wide the link broke over two lines. And the swarm room offered only a simulated run while a model server was running on the GPU: the ledger looks for one only when `SWARM_URLS` names it, and the room said "No model server is running" whatever the reason.
+
+### What is tested and the expected result
+
+1. **Sign-in at a terminal:** after "listening at", the welcome shows the steps: open the link in a browser within 60 seconds; the link on a line of its own that fits in 80 columns for any port; Ctrl+click it or copy it into the address bar; where the console is; that the link works once and which command prints a new one (`context-ledger login` under the installed command, `npm run ledger -- login` in a checkout).
+2. **Piped output unchanged:** when output is not a terminal, `start` prints exactly the two plain lines it prints today ("listening at" and the sign-in line), so scripts and tests that read them keep working. Each mode mints one sign-in code.
+3. **The GPU is found on its own:** with `SWARM_URLS` unset or empty, the swarm asks the usual local vLLM address, `http://127.0.0.1:8000/v1`, when a page asks whether live runs are offered. If a model server answers there, the room and the swarm page offer live runs without a restart; if not, a run is simulated. `SWARM_URLS=off` turns live runs off and makes no request at all. A `SWARM_URLS` that names servers works as before, loopback only.
+4. **The reason is shown:** when a run would be simulated, the console's swarm room shows the server's reason, which names the address it tried and how to make runs live, as the swarm page already does. The reason is set as text.
+5. **Tests stay deterministic:** tests that expect a simulated run set `SWARM_URLS=off`, so a model server running on the developer's machine cannot change their result.
+
+### Acceptance for the code
+
+- `node:test` for the start lines in both modes (exact piped lines, terminal lines, the link's width, the login command) and for the swarm setting (unset, empty and `off`, the address asked, the reasons, no request when off).
+- Playwright: the room shows the server's reason for a simulated run.
+- The full suites pass, and Codex reviews the change.
