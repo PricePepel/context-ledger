@@ -4824,3 +4824,29 @@ What is tested: `ledger handoff --sign` and `ledger reviews verify` open the led
   - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
   - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.
+
+## R1 — Parcels: share a graph with another machine as a file (defined 2026-11-23, before the code)
+
+A graph lives in one ledger, tied to the session it cites, so today nothing moves it to a second machine. R1 is the first step of stage 2 (`docs/architecture.md` §7 and §17): a parcel file that carries one graph with the lines it cites. R2 sends the same parcel through a relay. Synthetic transcripts, names and secrets only.
+
+### What is tested and the expected result
+
+- **Round trip.** `ledger share <graph-id> --out <new-file>` on ledger A writes a parcel. `ledger receive <file>` on ledger B (another database) stores it. The graph has the same ID on both, `graph read` gives the same packet, and B's session holds the cited lines with A's keys, line numbers, roles, and agent authors and recipients.
+- **Only cited lines leave.** The parcel holds the messages whose lines the graph cites and no other. A marker sentence in an uncited line is nowhere in the file, and neither is the session's title (B derives one from the excerpts).
+- **Secrets are replaced.** The cited lines pass through the P4b scanner (`redactSession`), so a synthetic credential in a cited line is a `[REDACTED <kind>]` marker in the parcel, and `share` says how many were replaced without showing one.
+- **All graph versions.** Version 1 and 2 graphs (line citations) and version 3 graphs (message keys and artifacts) travel. A version 3 graph's artifacts are registered in the same project slug on B, so its artifact IDs resolve.
+- **Marked as received.** B's session summary has `excerpts: true` in the HTTP list and detail and the CLI search. The hand-off Markdown, which `session_read` also returns, says the session holds only excerpts received from another machine, and the browser library labels it. A session imported from a file has no such field.
+- **All or nothing.** A parcel is refused, and B's database is unchanged, when: the graph ID does not match the packet; a node cites a line or key the parcel does not carry; the graph links to a graph B does not have; the file is not a version 1 parcel, has an unknown field, or is over 8 MiB; a message key, line or role is not of the shape the ledger writes.
+- **A second parcel from the same session** adds its new lines to the excerpts in line order; lines both carry are stored once. Receiving the same parcel twice changes nothing and reports the same graph.
+- **B already has the transcript.** When B imported the same file itself, `receive` leaves its session as it is and publishes the graph against it. It refuses a parcel whose lines are not in that session (by key, line and role), or whose project differs from the session's.
+- **The full file arrives later.** Importing the full transcript on B, where only excerpts are stored, replaces the excerpts with the whole session in one transaction, keeps the keys the excerpts had, removes the mark, and keeps the graph valid. If the file's lines do not match the excerpts (line and role), the import is refused with a conflict and nothing changes.
+- **Links and rooms.** After B receives A's party graph, B publishes its own graph with a link to it and opens a room with both. The same works back on A when B shares that graph.
+- **Sharing a received graph onward** works from its excerpts.
+- **Files.** `share` refuses to overwrite an existing file and writes the parcel for its owner only (mode 0600 where the system has modes). Paths and names printed to the terminal pass through `terminalLabel`.
+- **Schema version 8** adds the `session_excerpts` table and changes nothing else. A version 7 file is upgraded when a store opens it; `share` reads read-only and tells the person to start the ledger once when the file is older.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/parcel.test.mjs` and a browser eval for the label.
+- No new dependency. `docs/parcels.md` describes the format, and README names the two commands.
+- Stated limits, in `docs/parcels.md`: a parcel is not signed, so `receive` trusts the file as `import` trusts a transcript; B cannot check that the excerpts are what A's transcript says; review decisions and room choices do not travel (R3).
