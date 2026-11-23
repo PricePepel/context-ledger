@@ -5086,3 +5086,35 @@ A read-only Codex review found no high-severity issue, four medium and four low.
 6. *(low, U8)* "What it runs on" moved to its own section after the check and before the answer, and a test asserts the order of the seven sections.
 7. *(low, U8)* The pale swatches of the colour key (queued, working) now have an ink outline.
 8. *(low, U8)* The library's page links are direct children of the masthead again; the extra `nav` landmark is gone.
+
+## U10 — An installed copy has the pixel look (defined 2026-11-23, before the code)
+
+Found while installing the stacked branch as the `context-ledger` command. The terminal welcome appeared, but the console in the browser had no colours, no fonts and no logo. The server reads five files from `docs/brand/` (the colour tokens, the logo and three fonts; cards U4, U4b and U6), and the package list from card P5c ships nothing from `docs/`. A checkout has the folder, so every test passed. The two met when `main` was merged into the U6 console, and the install path in the README (`npm install --global github:PricePepel/context-ledger`) would have shown this to every new user once the console reached `main`.
+
+Seen on the installed copy (a synthetic ledger): the pages loaded, the requests for the logo and the fonts answered 500, the tokens never arrived, and the text fell back to the browser's default font.
+
+### What is tested and the expected result
+
+1. **Everything served ships:** every file on the server's fixed list is in the tarball `npm pack` makes. A file added to the list later without being packaged fails this test.
+2. **Installed copy, real requests:** from a packed tarball in an empty folder, started through npx, every path on the fixed list answers 200 with its content type and a body that is not empty. That includes `/console/tokens.css`, `/console/logo.svg` and the three fonts.
+3. **Nothing else from `docs/` ships:** the tarball gains exactly `docs/brand/tokens.css`, `docs/brand/ctm-logo.svg` and `docs/brand/fonts/` (three fonts and their three Open Font License texts, which must travel with the fonts). No other document, test, fixture or runtime file is added.
+4. **The fixed list stays fixed:** the list moves to a module of its own so a test can read it. Its paths, files and content types do not change, every file on it is inside `public/` or is one of the five brand files, and no other path is served.
+
+### Acceptance for the code
+
+- `node:test` for 1, 3 and 4, and the existing packed-tarball test extended for 2.
+- The full suites pass, Codex reviews the change, and the installed command is checked by eye in a browser.
+
+### U10 results (2026-11-23)
+
+- **Installed copy, by eye:** the build was packed, installed with `npm install --global` from the tarball and started with `context-ledger start` on a synthetic ledger. Before the fix the console's logo and font requests answered 500, the tokens never arrived and the text was the browser's default font. After it, every request answers 200, the three fonts (Jersey 15, Inter Tight, Silkscreen) load and the console, its swarm room and the demo replay look as they do from a checkout.
+- **The tests catch it:** with the package change removed, the new manifest test fails (`docs/brand/tokens.css is served but not packaged`) and the packed-tarball test fails on the first brand file (500 instead of 200). With it, both pass.
+- `node:test`: 3 tests in `tests/package-files.test.mjs`, and the P5c packed-tarball test now requests all 32 paths on the list from the installed copy.
+- Suites on this branch: `node --test tests/*.test.mjs` 644 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After the review fixes below, the two changed test files were run again: 8 pass. Nothing in `runtime/` changed, so the Python checks were not run.
+
+### Codex review of U10 (2026-11-23)
+
+A read-only Codex review found no high or medium issue and two low ones, both in the tests and both fixed. It confirmed with npm's own file list that all 32 paths on the list are packaged and that exactly eight files from `docs/` ship (the five brand files and the three font licences), and that the move keeps exact-path matching, the loopback bind, the Host and Origin checks and the token check, with no new prefix or traversal path.
+
+1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
+2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
