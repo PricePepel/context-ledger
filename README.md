@@ -49,7 +49,7 @@ Leo works in Claude Code and Ali works in Codex. Their agents never see each oth
 
 ## Swarm demo
 
-`/swarm/` runs up to 200 agents at once on local open models (any OpenAI-compatible server such as vLLM, named in `SWARM_URLS`, loopback only), shows each agent working, checks each agent's quote against its source and combines the answers. Without a model server it offers a labelled simulation. See [docs/swarm-demo.md](docs/swarm-demo.md).
+`/swarm/` runs up to 200 agents at once on local open models (any OpenAI-compatible server such as vLLM, loopback only: with `SWARM_URLS` unset it asks `http://127.0.0.1:8000/v1`, where a local vLLM listens by default, so starting one and reloading the page is enough; `SWARM_URLS` names other servers and `SWARM_URLS=off` turns live runs off), shows each agent working, checks each agent's quote against its source and combines the answers. Without a model server it offers a labelled simulation. See [docs/swarm-demo.md](docs/swarm-demo.md).
 
 ## Run locally
 

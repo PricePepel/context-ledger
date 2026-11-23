@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { baselineSeed, createSwarm, median, metricsView, parseMetrics, swarmSeed, swarmUrls } from '../src/swarm.mjs';
+import { baselineSeed, createSwarm, defaultSwarmUrl, median, metricsView, parseMetrics, swarmSeed, swarmSetting, swarmUrls } from '../src/swarm.mjs';
 import { causes, combine, incidents, isCorrect, isVerified, parseAnswer, systemPrompt } from '../src/swarm-task.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -97,12 +97,13 @@ test('metrics sum vLLM series across labels and ignore everything else', () => {
 });
 
 test('start checks its input, runs one swarm at a time and keeps at most five finished runs', async () => {
-  const swarm = createSwarm({ env: {}, simScale: 0.001 });
+  // Card U11: unset now means the usual vLLM address, so "off" is what has no server.
+  const swarm = createSwarm({ env: { SWARM_URLS: 'off' }, simScale: 0.001 });
   for (const bad of [{}, { agents: 0, mode: 'simulated' }, { agents: 201, mode: 'simulated' }, { agents: 1.5, mode: 'simulated' },
     { agents: '10', mode: 'simulated' }, { agents: 10, mode: 'fast' }]) {
     assert.throws(() => swarm.start(bad), /agents must|mode must/u, JSON.stringify(bad));
   }
-  assert.throws(() => swarm.start({ agents: 3, mode: 'live' }), /No model server configured/u);
+  assert.throws(() => swarm.start({ agents: 3, mode: 'live' }), /Live runs are turned off \(SWARM_URLS=off\)/u);
   const ids = [];
   for (let i = 0; i < 6; i += 1) {
     const { id } = swarm.start({ agents: 1, mode: 'simulated' });
@@ -118,7 +119,7 @@ test('start checks its input, runs one swarm at a time and keeps at most five fi
 });
 
 test('a simulated run finishes, says it is simulated and reports no GPU numbers', async () => {
-  const swarm = createSwarm({ env: { SWARM_CONCURRENCY: '16' }, simScale: 0.002 });
+  const swarm = createSwarm({ env: { SWARM_URLS: 'off', SWARM_CONCURRENCY: '16' }, simScale: 0.002 });
   const { id } = swarm.start({ agents: 100, mode: 'simulated' });
   const run = await until(() => (swarm.snapshot(id).state === 'done' ? swarm.snapshot(id) : null));
   assert.equal(run.simulated, true);
@@ -389,6 +390,8 @@ test('S1b: if the solo baseline fails the run still goes on, with no speed-up', 
   assert.equal(run.tokensOut, 2 * 40, 'baseline requests add no tokens');
 });
 
+// Card U11: live runs off unless a test names a server, so a model server on this machine
+// (the unset default asks 127.0.0.1:8000) cannot change what these tests see.
 async function startServer(t, env = {}) {
   const { spawn } = await import('node:child_process');
   const { mkdtemp, rm } = await import('node:fs/promises');
@@ -396,7 +399,7 @@ async function startServer(t, env = {}) {
   const { join } = await import('node:path');
   const dir = await mkdtemp(join(tmpdir(), 'ledger-s1-'));
   const child = spawn(process.execPath, ['src/server.mjs'], {
-    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite'), SWARM_SIM_SCALE: '0.002', ...env }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite'), SWARM_SIM_SCALE: '0.002', SWARM_URLS: 'off', ...env }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(async () => {
     child.kill();
@@ -478,4 +481,73 @@ test('U8: the task holds the first reports as text and the shared instructions, 
   // No truth object and no cause label: the cause is the task, so the page must not hand it over.
   assert.ok(task.sample.every(report => Object.keys(report).join() === 'id,text'));
   assert.doesNotMatch(JSON.stringify(task.sample), /"truth"|"cause"/u);
+});
+
+// Card U11: with SWARM_URLS unset the swarm asks the usual local vLLM address, only when a
+// page asks whether live runs are offered; "off" makes no request at all.
+test('U11: the swarm setting: unset or empty is the usual vLLM address, off is none', () => {
+  assert.equal(defaultSwarmUrl, 'http://127.0.0.1:8000/v1');
+  for (const unset of [undefined, '', '   ']) assert.deepEqual(swarmSetting(unset), { urls: [defaultSwarmUrl], source: 'default' }, String(unset));
+  for (const off of ['off', 'OFF', ' Off ']) assert.deepEqual(swarmSetting(off), { urls: [], source: 'off' }, off);
+  assert.deepEqual(swarmSetting('http://localhost:9000/v1/'), { urls: ['http://localhost:9000/v1'], source: 'set' });
+  assert.throws(() => swarmSetting('http://example.com/v1'), /SWARM_URLS must hold/u, 'still loopback only');
+});
+
+test('U11: unset, the swarm finds a model server at the usual address and offers live runs', async () => {
+  const asked = [];
+  const fetchImpl = async (url, init) => {
+    asked.push(url);
+    assert.equal(init.redirect, 'error');
+    return new Response(JSON.stringify({ data: [{ id: 'synthetic-model' }] }), { status: 200 });
+  };
+  const swarm = createSwarm({ env: {}, fetchImpl });
+  assert.deepEqual(asked, [], 'nothing is asked before a page asks');
+  assert.deepEqual(await swarm.config(), { live: true, models: ['synthetic-model'], concurrency: 32 });
+  assert.deepEqual(asked, ['http://127.0.0.1:8000/v1/models']);
+});
+
+test('U11: unset with nothing there, the reason names the address and how to go live', async () => {
+  const fetchImpl = async () => { throw new TypeError('fetch failed'); };
+  const config = await createSwarm({ env: { SWARM_URLS: '' }, fetchImpl }).config();
+  assert.equal(config.live, false);
+  assert.equal(config.reason, 'No model server is answering at http://127.0.0.1:8000/v1, where a local vLLM listens by default. Start one there and reload this page, or name yours in SWARM_URLS.');
+  // A server named in SWARM_URLS keeps its own reason.
+  const named = await createSwarm({ env: { SWARM_URLS: 'http://127.0.0.1:9/v1' }, fetchImpl }).config();
+  assert.equal(named.reason, 'The configured model server is not answering.');
+});
+
+test('U11 review: pages asking at once share one probe, and its answer is reused for a few seconds', async () => {
+  let asked = 0;
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let clock = 0;
+  const fetchImpl = async () => {
+    asked += 1;
+    await held;
+    return new Response(JSON.stringify({ data: [{ id: 'synthetic-model' }] }), { status: 200 });
+  };
+  const swarm = createSwarm({ env: {}, fetchImpl, now: () => clock });
+  // Three tabs while the listener has not answered: one request.
+  const waiting = [swarm.config(), swarm.config(), swarm.config()];
+  await new Promise(resolve => { setImmediate(resolve); });
+  assert.equal(asked, 1);
+  release();
+  for (const config of await Promise.all(waiting)) assert.equal(config.live, true);
+  // Within five seconds the answer is reused; after them the server is asked again.
+  clock += 4000;
+  assert.equal((await swarm.config()).live, true);
+  assert.equal(asked, 1);
+  clock += 2000;
+  assert.equal((await swarm.config()).live, true);
+  assert.equal(asked, 2);
+});
+
+test('U11: off makes no request and says live runs are turned off', async () => {
+  let asked = 0;
+  const swarm = createSwarm({ env: { SWARM_URLS: 'off' }, fetchImpl: async () => { asked += 1; throw new Error('no request expected'); } });
+  assert.deepEqual(await swarm.config(), { live: false, reason: 'Live runs are turned off (SWARM_URLS=off).', concurrency: 32 });
+  assert.throws(() => swarm.start({ agents: 2, mode: 'live' }), /turned off/u);
+  const { id } = swarm.start({ agents: 2, mode: 'simulated' });
+  assert.match(id, /^[a-f0-9]{64}$/u);
+  assert.equal(asked, 0);
 });
