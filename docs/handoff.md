@@ -16,6 +16,8 @@ The pixel console line is in `ruslan/console-v0` and goes to `main` with the rel
 
 Next owner: Ali reports node test failures on his machine that come from its setup (where npm is installed, and OpenSSL), while CI is green. The tests look for npm's CLI next to `node`; the U10 test also checks `npm_execpath` and the distribution paths, but the P5c helper in `tests/npx-entry.test.mjs` does not (Codex noted it in the U10 review). Not done: `npm publish`, and team mode (one ledger joined from a second computer).
 
+U11 (`claude/u11-first-start`, In review): at a terminal `start` explains how to sign in, with the link on a line of its own; piped output is unchanged. The swarm asks `http://127.0.0.1:8000/v1` when `SWARM_URLS` is unset, so a running vLLM is found without a setting, and `SWARM_URLS=off` turns live runs off. Tests that expect a simulated swarm must set `SWARM_URLS=off`.
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.

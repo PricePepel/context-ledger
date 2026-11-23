@@ -27,6 +27,8 @@ SWARM_URLS=http://127.0.0.1:8000/v1 SWARM_CONCURRENCY=64 npm start
 
 `SWARM_URLS` accepts only `http://127.0.0.1` and `http://localhost`; anything else stops the ledger at start. The page and its requests cannot choose a URL or a model.
 
+Since card U11, `SWARM_URLS` can be left unset: the ledger then asks `http://127.0.0.1:8000/v1`, where `runtime/serve-vllm.sh` and vLLM listen by default, each time a page asks whether live runs are offered (one probe at a time, its answer reused for five seconds). So the plain `context-ledger start` or `npm start` runs live as soon as a model server is up there; no restart is needed. `SWARM_URLS=off` turns live runs off and makes no request. `SWARM_CONCURRENCY` still defaults to 32; the measured runs used 64 with `--max-num-seqs 64`.
+
 ## Without a GPU
 
 When no model server is configured or it does not answer, the page offers only the simulation. Its timings and its few wrong answers are seeded and made up, and the page says **Simulated** in the header and on every timing. Use it to rehearse the flow, never as a result.

@@ -5147,3 +5147,37 @@ A read-only Codex review found no high or medium issue and two low ones, both in
 
 1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
 2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
+
+## U11 — First start: sign-in steps and the live GPU (defined 2026-11-23, before the code)
+
+Ruslan's first run of the installed command (2026-11-23) raised two questions. The sign-in line gave a link and a time limit, but not what to do with it, and in a terminal 80 columns wide the link broke over two lines. And the swarm room offered only a simulated run while a model server was running on the GPU: the ledger looks for one only when `SWARM_URLS` names it, and the room said "No model server is running" whatever the reason.
+
+### What is tested and the expected result
+
+1. **Sign-in at a terminal:** after "listening at", the welcome shows the steps: open the link in a browser within 60 seconds; the link on a line of its own that fits in 80 columns for any port; Ctrl+click it or copy it into the address bar; where the console is; that the link works once and which command prints a new one (`context-ledger login` under the installed command, `npm run ledger -- login` in a checkout).
+2. **Piped output unchanged:** when output is not a terminal, `start` prints exactly the two plain lines it prints today ("listening at" and the sign-in line), so scripts and tests that read them keep working. Each mode mints one sign-in code.
+3. **The GPU is found on its own:** with `SWARM_URLS` unset or empty, the swarm asks the usual local vLLM address, `http://127.0.0.1:8000/v1`, when a page asks whether live runs are offered. If a model server answers there, the room and the swarm page offer live runs without a restart; if not, a run is simulated. `SWARM_URLS=off` turns live runs off and makes no request at all. A `SWARM_URLS` that names servers works as before, loopback only.
+4. **The reason is shown:** when a run would be simulated, the console's swarm room shows the server's reason, which names the address it tried and how to make runs live, as the swarm page already does. The reason is set as text.
+5. **Tests stay deterministic:** tests that expect a simulated run set `SWARM_URLS=off`, so a model server running on the developer's machine cannot change their result.
+
+### Acceptance for the code
+
+- `node:test` for the start lines in both modes (exact piped lines, terminal lines, the link's width, the login command) and for the swarm setting (unset, empty and `off`, the address asked, the reasons, no request when off).
+- Playwright: the room shows the server's reason for a simulated run.
+- The full suites pass, and Codex reviews the change.
+
+### U11 results (2026-11-23)
+
+- **At a terminal**, `context-ledger start` now shows the steps after "listening at": open the link within 60 seconds, the link on a line of its own two spaces in, Ctrl+click it or copy it, it opens the library, where the console is, and the command for a new link. Checked by eye in Windows Terminal; the link fits in 80 columns for every port (79 at most). The installed command names `context-ledger login`, a checkout `npm run ledger -- login`.
+- **Piped**, the output is the same two plain lines as before, byte for byte; the existing start-up tests in `tests/routes.test.mjs` and `tests/token.test.mjs` pass unchanged, and a new test checks both lines.
+- **Live GPU found on its own:** a ledger started from this branch with `SWARM_URLS` unset, while vLLM ran on the laptop, answered `/api/swarm` with `{"live":true,"models":["Qwen/Qwen2.5-7B-Instruct-AWQ"],"concurrency":32}`. With `SWARM_URLS=off` the room shows "Live runs are turned off (SWARM_URLS=off)." and no request is made.
+- **Deterministic tests:** before the swarm test helper was pinned to `SWARM_URLS=off`, one route test saw live runs on this laptop (vLLM on port 8000). The helper and the browser evals now set it.
+- `node:test`: 5 tests in `tests/welcome.test.mjs` and 5 in `tests/swarm.test.mjs`; the swarm room and page evals in `tests/e2e/swarm.spec.mjs` check the shown reason.
+- Suites before the review fixes: `node --test tests/*.test.mjs` 663 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After them: see below.
+
+### Codex review of U11 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, one medium and one low, both fixed with tests that fail without the fix. It confirmed that the probe is a bodyless GET to loopback, that live runs send only the generated synthetic prompts, that redirects are refused, that the room sets the reason as text, that piped output is unchanged, that one code is minted per start and that every test reading the swarm setting now disables live runs, names a server or injects a fake fetch. It noted that any local program on port 8000 can pose as a model server and see the synthetic prompts; that was already true of a server named in `SWARM_URLS`, and nothing else is sent.
+
+1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
+2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.

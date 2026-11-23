@@ -24,6 +24,8 @@ export default defineConfig({
     env: {
       PORT: String(port),
       CONTEXT_LEDGER_DB: database,
+      // Card U11: an unset SWARM_URLS asks 127.0.0.1:8000; the evals expect a simulated swarm.
+      SWARM_URLS: 'off',
     },
   },
 });

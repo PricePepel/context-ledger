@@ -180,7 +180,9 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
       } else {
         mode.textContent = 'Simulated';
         mode.dataset.mode = 'simulated';
-        setStatus('No model server is running, so a run is simulated: it shows the flow, and its timings are made up.');
+        // Card U11: the server's own reason names the address it tried and how to go live.
+        const reason = typeof config.reason === 'string' && config.reason.length <= 300 ? config.reason : 'No model server is running.';
+        setStatus(`${reason} Until then a run is simulated: it shows the flow, and its timings are made up.`);
       }
     } catch (error) {
       mode.textContent = 'Simulated';
