@@ -6,6 +6,8 @@ import { ConflictError, InputError } from './errors.mjs';
 import { combine, incidents, isCorrect, isVerified, parseAnswer, seeded, systemPrompt, userPrompt } from './swarm-task.mjs';
 
 export const maxAgents = 200;
+// The reports every run reads: one fixed seed, so the page can show them before a run.
+export const swarmSeed = 7;
 export const maxRuns = 5;
 export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
@@ -298,7 +300,7 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     // One run at a time, so SWARM_CONCURRENCY bounds the requests the GPU sees.
     if (active) throw new ConflictError('A swarm run is already running. Wait for it to finish.', { runId: active.id });
     const id = randomBytes(32).toString('hex');
-    const seed = 7;
+    const seed = swarmSeed;
     const reports = incidents(agents, seed);
     const run = {
       id, mode, seed, reports, state: 'starting', phase: null, agentsDone: false, started: now(), wallMs: null, metrics: null, baseline: null, kvPeak: null,
@@ -356,5 +358,18 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     };
   }
 
-  return { config, start, snapshot, urls, concurrency };
+  /**
+   * Card U8: what the swarm page shows before a run. The first reports as text and the
+   * instructions every agent shares. Never the generator's truth for a report.
+   */
+  function task() {
+    return {
+      seed: swarmSeed, maxAgents, synthetic: true,
+      sample: incidents(3, swarmSeed).map(({ id, text }) => ({ id, text })),
+      instructions: systemPrompt,
+      facts: ['service', 'cause', 'downtimeMinutes', 'quote'],
+    };
+  }
+
+  return { config, start, snapshot, task, urls, concurrency };
 }

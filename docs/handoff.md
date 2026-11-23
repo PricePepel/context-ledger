@@ -24,6 +24,14 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 - **Needs a human security review** before merge: it adds an export path and a schema step.
 - **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a code that opens the parcel). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
 
+## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
+
+The pixel console line is in `ruslan/console-v0` and goes to `main` with the release PR #88. Ali's U4, U4b and U6 (#51, #55, #56) and U7 to U10 (#82 to #85, #87) were merged on 2026-11-23, with Ali's approval in #56 (he also reviewed the console changes in #83 and #84) and Ruslan's for the release. Once #88 is merged, a fresh install from GitHub gets the pixel console with its swarm room, the library and the swarm page in the same pixel look, the terminal welcome on `start` and `install`, and the brand files in the package (U10: an installed copy used to come up without its colours, fonts and logo).
+
+#88 also merged `main`'s P3c into the line (only `docs/evals.md` conflicted; both sides kept) and removed 22 stale board rows that the U6 merge of `main` (#82) had left beside `main`'s current ones. Suites on the release branch: node 654 pass, 10 skipped; Playwright 61 pass, 1 skipped. The live swarm from the console room on vLLM: 100 agents in 3.6–4.1 s on a warm server, about 20–22× faster than one after another, 100 of 100 verified and correct each time (evals, U7).
+
+Next owner: Ali reports node test failures on his machine that come from its setup (where npm is installed, and OpenSSL), while CI is green. The tests look for npm's CLI next to `node`; the U10 test also checks `npm_execpath` and the distribution paths, but the P5c helper in `tests/npx-entry.test.mjs` does not (Codex noted it in the U10 review). Not done: `npm publish`, and team mode (one ledger joined from a second computer).
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.
@@ -452,6 +460,62 @@ Next steps:
 
 1. The console (U1, PR #22) reads a `grounding` field on nodes. Once both are merged, point its `nodeMark` at the graph's `quotedNodeIds` and `inferredNodeIds`.
 2. The mark is a floor, like the latent check: a label that only shares one content word with its line is quoted. A stricter check (all content words, or an exact quote field on the node) would be a new card with its own eval.
+## Current checkpoint — U4 console polish (2026-11-18)
+
+Branch `ali/u4-console-polish`, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34); the PR's base is `ruslan/console-v0`.
+
+- **Brand:** the console loads `docs/brand/tokens.css`, served at `/console/tokens.css` from its one source, and `console.css` and `office.css` use only `--ctm-*` variables (a node test checks each is defined).
+- **Office:** agents are 16 × 20 pixel sprites (`public/console/sprites.mjs`): Clawd for Claude Code, the purple Codex pet, and a neutral bot for anything else. They are vendor trademarks, drawn for the local console only: swap them for the bot before a public video or deploy.
+- **Marks:** `nodeMark(graph, id)` reads the graph's `quotedNodeIds` and `inferredNodeIds` (G7 next step 1, done). The word shows beside each node's kind. The rebuilt demo recording has 11 quoted nodes; the live e2e test covers inferred.
+- **Agent turns:** the evidence pane labels I3 turns "Agent /root/worker to /root" (`turnSpeaker`).
+
+Next steps:
+
+1. Merge order: U1, G7, U2 and I3 first; then rebase this branch on `main` and rebuild the recording (`node demo/console-recording.mjs`).
+2. `malformed transport input is answered without stopping the server` in `tests/mcp.test.mjs` fails on macOS with Node 26, on this branch and on `ruslan/console-v0` alike. Not checked on Node 22.
+3. P3 (reviewer prototype) is next, stacked on this branch: approve, edit or reject beside the evidence, with the decisions kept in the browser only.
+
+## Current checkpoint — U6 pixel console and agent crew (2026-11-20)
+
+Branch `ali/u6-pixel-console`, stacked on U4b (#55). The console is now the light pixel look Ali approved:
+
+- Local fonts (Jersey 15, Inter Tight, Silkscreen) under `docs/brand/fonts` with OFL licences; the server serves them from its fixed list and the CSP adds only `font-src 'self'`.
+- `console.css` is rewritten with pixel frames and buttons and new `--ctm-pixel-*` tokens in `docs/brand/tokens.css`. The number tiles are gone: their counters (same IDs) sit on the activity heading.
+- `agent-marks.mjs` holds 14 official vendor marks (Simple Icons 16.38.0). `sprites.mjs` builds a Mark bot for each: a robot in the brand colour with the mark on its screen. The office draws the mark for any agent whose provider has one; Claude Code and Codex are unchanged.
+- The activity feed sits under the evidence in the right column, more compact. `panels.mjs` adds header switches for Evidence and Activity (remembered in `localStorage` when allowed); with both off the left column takes the full width, and selecting a fact turns Evidence back on.
+- `ctm-band.mjs` draws the CTM band at the bottom with the crew; click or Enter shows a name bubble.
+
+Checks: node tests 415 pass with the 3 known local failures (also failing on the base); Playwright 31 pass, 1 skipped (the I3 agent-turn `fixme`); runtime Python has 2 timing failures that also fail on the untouched base. Screenshots are regenerated in `docs/console`, with `08-ctm-band.png` new.
+
+Next owner: get a human review of the CSP change and the trademark note (ADR 15), then merge after U4b.
+
+## Current checkpoint — U4b furnished pixel office (2026-11-19)
+
+Branch `ali/u4b-pixel-office`, stacked on U4 (#51). Ali approved the preview on 2026-11-19 (`docs/console/preview/approved-*.png`).
+
+- `public/console/office-furniture.mjs` draws one top-down room (desks, shelves, plants, windows and daylight, lamps, whiteboard, kitchen, lounge) and exports the agent spots: `seatAt`, `besideDesk`, `loungeSpot`.
+- `public/console/office.mjs` keeps `createOffice(svg)` → `{update, anchor, pulse}`, 6 per room and the `RANK` order. Each agent keeps its desk while shown; working agents sit behind it (monitor lit), waiting ones stand beside it, idle ones go to the lounge.
+- `public/console/sprites.mjs`: Ali's blue cloud Codex character, and `roleOf` plus `accessoryPixels` for six role props.
+- Office colours are `--ctm-office-*` tokens in `docs/brand/tokens.css`.
+- Logo: `/console/logo.svg` serves the CTM mark, `docs/brand/ctm-logo.svg`, also used as the favicon. The CSP gained `img-src 'self'` for it; a human should check that change.
+
+Next: swap the vendor sprites for the neutral bot before anything public.
+
+## Current checkpoint — P3 reviewer prototype (2026-11-18)
+
+Branch `ali/p3-reviewer`, stacked on U4 (`ali/u4-console-polish`, #51).
+
+- **What:** in `/console/?demo`, the evidence panel has a Review block: Approve, Edit (a new label, 1 to 300 visible characters) or Reject, with Undo. The node shows the decision in its meta and `aria-label`; an edit shows the new label, and the proof keeps the original as its heading.
+- **Where it lives:** `public/console/review.mjs` (the store, `withReviews`, and the panel). Reviews are in `localStorage` under `ctm-console-reviews-v0`, keyed by graph ID and node ID. Nothing is sent to the ledger, and live mode has no Review block.
+
+Decisions left to Ruslan (the prototype makes no claim on them):
+
+1. Who may approve. Today, anyone with the browser can.
+2. Whether an edit makes a new graph version, a reviewer note, or a correction the next `context_for` reads.
+3. What a reject keeps: hide the node from hand-offs, keep it with a flag, or ask the agent to republish.
+4. Whether a review carries over to the party's next publish. Today it does not, because a new publish has a new graph ID.
+
+Once those are decided and P1c lands, reviews need a server route and a table, and this store becomes a cache or goes away.
 
 ## Current checkpoint — G9 scoped context with a budget (2026-11-17)
 

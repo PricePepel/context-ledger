@@ -542,8 +542,8 @@ function setupOne(target, mode, dryRun, run) {
 }
 
 /**
- * Install or uninstall for the chosen agents. Returns { ok, lines }: the printed
- * report, one section per agent. `run` replaces runAgent in tests.
+ * Install or uninstall for the chosen agents. Returns { ok, lines, sections }: the printed
+ * report, and the same lines grouped per agent with that agent's own ok. `run` replaces runAgent in tests.
  */
 export function setupAgents({ mode, agents = ['claude', 'codex'], dryRun = false, env = process.env, run }) {
   const targets = agentTargets(env, mode);
@@ -551,11 +551,14 @@ export function setupAgents({ mode, agents = ['claude', 'codex'], dryRun = false
   const childEnv = env.CODEX_HOME ? { ...env, CODEX_HOME: resolve(env.CODEX_HOME) } : env;
   const runner = run ?? ((bin, args) => runAgent(bin, args, { env: childEnv }));
   const lines = [];
+  // Card U9: one entry per agent, { ok, lines }, so a terminal can mark each agent's result.
+  const sections = [];
   let ok = true;
   for (const key of agents) {
     const result = setupOne(targets[key], mode, dryRun, runner);
     ok &&= result.ok;
     lines.push(...result.lines);
+    sections.push({ ok: result.ok, lines: result.lines });
   }
-  return { ok, lines };
+  return { ok, lines, sections };
 }

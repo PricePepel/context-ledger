@@ -1,0 +1,135 @@
+/* Card U8: the console's pixel look (card U6), for the library and the swarm page. The
+   console keeps its own console.css; this file carries the same tokens, local fonts,
+   stepped frames, buttons and tags, so every page reads as one product. Colours come
+   from docs/brand/tokens.css, served at /console/tokens.css. */
+@font-face { font-family: "Jersey 15"; src: url("/console/fonts/jersey-15.woff2") format("woff2"); font-display: swap; }
+@font-face { font-family: "Inter Tight"; src: url("/console/fonts/inter-tight.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Silkscreen"; src: url("/console/fonts/silkscreen.woff2") format("woff2"); font-display: swap; }
+
+:root {
+  --page: var(--ctm-pixel-page);
+  --paper: var(--ctm-pixel-paper);
+  --ink: var(--ctm-pixel-ink);
+  --soft: var(--ctm-pixel-soft);
+  --line: var(--ctm-pixel-line);
+  --dots: var(--ctm-pixel-dots);
+  --violet: var(--ctm-violet);
+  --violet-deep: var(--ctm-pixel-violet-deep);
+  --lime: var(--ctm-pixel-lime);
+  --lime-deep: var(--ctm-lime);
+  --peach: var(--ctm-pixel-peach);
+  --lilac: var(--ctm-pixel-lilac);
+  --grey-tag: var(--ctm-pixel-grey);
+  --press: var(--ctm-pixel-press);
+  --good: var(--ctm-quoted);
+  --good-fill: var(--ctm-quoted-fill);
+  --warn: var(--ctm-inferred);
+  --warn-fill: var(--ctm-inferred-fill);
+  --ui: var(--ctm-font-pixel);
+  --text: var(--ctm-font-sans);
+  --tiny: var(--ctm-font-tag);
+  --mono: var(--ctm-font-mono);
+  --frame: 0 -3px 0 0 var(--ink), 0 3px 0 0 var(--ink), -3px 0 0 0 var(--ink), 3px 0 0 0 var(--ink);
+  --frame-sm: 0 -2px 0 0 var(--ink), 0 2px 0 0 var(--ink), -2px 0 0 0 var(--ink), 2px 0 0 0 var(--ink);
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page) radial-gradient(var(--dots) 1.5px, transparent 1.5px) 0 0 / 16px 16px;
+  color: var(--ink);
+  font: 16px/1.5 var(--text);
+}
+
+h1, h2, h3, p, dl, dd { margin: 0; }
+button, input, select { font: inherit; }
+
+/* The framed sheet every page sits in. */
+.sheet {
+  container-type: inline-size;
+  max-width: 1400px;
+  margin: 18px auto 26px;
+  margin-inline: max(19px, calc((100% - 1400px) / 2));
+  background: var(--paper);
+  box-shadow: var(--frame), 6px 9px 0 0 var(--ink);
+}
+
+/* Header bar */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 20px;
+  border-bottom: 3px dotted var(--line);
+}
+.brand { display: block; width: 32px; height: 32px; flex: none; }
+.bar-title { font: 400 26px/1 var(--ui); }
+.bar-links { display: flex; flex-wrap: wrap; margin-left: auto; }
+
+/* One-word tags, always with their word. */
+.tag {
+  display: inline-block;
+  font: 10px/1.6 var(--tiny);
+  padding: 0 6px;
+  margin: 2px;
+  background: var(--lime);
+  box-shadow: var(--frame-sm);
+  text-transform: uppercase;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.tag.lilac { background: var(--lilac); }
+.tag.peach { background: var(--peach); }
+.tag.grey { background: var(--grey-tag); }
+
+/* Buttons and links that look like buttons. */
+.btn {
+  font: 400 19px/1 var(--ui);
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 14px;
+  margin: 3px;
+  border: 0;
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: var(--frame), inset -3px -3px 0 0 var(--press);
+}
+.btn.solid { background: var(--violet); color: var(--paper); box-shadow: var(--frame), inset -3px -3px 0 0 var(--violet-deep); }
+.btn.small { font-size: 16px; min-height: 26px; padding: 0 10px; box-shadow: var(--frame-sm), inset -2px -2px 0 0 var(--press); }
+.btn[hidden] { display: none; }
+.btn:hover:not(:disabled) { transform: translateY(-2px); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: var(--frame); }
+
+:focus-visible { outline: 3px dashed var(--violet); outline-offset: 4px; }
+
+/* Small uppercase labels and helper text. */
+.lab { font: 12px/1.6 var(--tiny); letter-spacing: .04em; text-transform: uppercase; }
+.hint { color: var(--soft); font-size: 14px; }
+
+/* Text fields and selects: a flat field inside a stepped frame. */
+.field {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 6px 10px;
+  margin: 2px;
+  border: 0;
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--frame-sm);
+  max-width: calc(100% - 4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:hover:not(:disabled), .btn:active:not(:disabled) { transform: none; }
+}
