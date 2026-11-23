@@ -5104,3 +5104,17 @@ Seen on the installed copy (a synthetic ledger): the pages loaded, the requests 
 
 - `node:test` for 1, 3 and 4, and the existing packed-tarball test extended for 2.
 - The full suites pass, Codex reviews the change, and the installed command is checked by eye in a browser.
+
+### U10 results (2026-11-23)
+
+- **Installed copy, by eye:** the build was packed, installed with `npm install --global` from the tarball and started with `context-ledger start` on a synthetic ledger. Before the fix the console's logo and font requests answered 500, the tokens never arrived and the text was the browser's default font. After it, every request answers 200, the three fonts (Jersey 15, Inter Tight, Silkscreen) load and the console, its swarm room and the demo replay look as they do from a checkout.
+- **The tests catch it:** with the package change removed, the new manifest test fails (`docs/brand/tokens.css is served but not packaged`) and the packed-tarball test fails on the first brand file (500 instead of 200). With it, both pass.
+- `node:test`: 3 tests in `tests/package-files.test.mjs`, and the P5c packed-tarball test now requests all 32 paths on the list from the installed copy.
+- Suites on this branch: `node --test tests/*.test.mjs` 644 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After the review fixes below, the two changed test files were run again: 8 pass. Nothing in `runtime/` changed, so the Python checks were not run.
+
+### Codex review of U10 (2026-11-23)
+
+A read-only Codex review found no high or medium issue and two low ones, both in the tests and both fixed. It confirmed with npm's own file list that all 32 paths on the list are packaged and that exactly eight files from `docs/` ship (the five brand files and the three font licences), and that the move keeps exact-path matching, the loopback bind, the Host and Origin checks and the token check, with no new prefix or traversal path.
+
+1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
+2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
