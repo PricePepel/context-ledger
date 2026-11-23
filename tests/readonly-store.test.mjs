@@ -5,18 +5,19 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { schemaVersion } from '../src/migrate.mjs';
+import { refuseNewerSchema, schemaVersion } from '../src/migrate.mjs';
 import { openStore } from '../src/store.mjs';
 
 const uuid = n => `0000000${n}-aaaa-4bbb-8ccc-00000000000${n}`;
 const transcript = [['user', 'Ines: the cache lives for ten minutes.'], ['assistant', 'Noted: ten minutes.']]
   .map(([role, text], index) => JSON.stringify({ type: role, uuid: uuid(index + 1), message: { role, content: text } })).join('\n');
 
-function run(args, env) {
+function run(args, env, preload = []) {
   return new Promise(resolve => {
-    execFile(process.execPath, ['src/cli.mjs', ...args], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
+    execFile(process.execPath, [...preload, 'src/cli.mjs', ...args], { env: { ...process.env, ...env } }, (error, stdout, stderr) => {
       resolve({ code: error ? error.code : 0, stdout, stderr });
     });
   });
@@ -144,4 +145,35 @@ test('P3c review: storeOn leaves closing to openStore, so its errors are not mas
   assert.ok(start >= 0);
   const setup = source.slice(start, source.indexOf('\n  return {', start));
   assert.doesNotMatch(setup, /database\.close\(\)/u);
+});
+
+test('P3c review: the final newer-schema check is coded like the read-only refusal', t => {
+  const context = ledger(t);
+  setVersion(context.database, schemaVersion + 1);
+  const raw = new DatabaseSync(context.database, { readOnly: true });
+  try {
+    assert.throws(() => refuseNewerSchema(raw),
+      error => error.code === 'LEDGER_SCHEMA' && error.version === schemaVersion + 1 && /newer Context Ledger/u.test(error.message));
+  } finally {
+    raw.close();
+  }
+});
+
+test('P3c review: signing and reviews verify each open exactly one read-only connection, at run time', async t => {
+  const context = ledger(t);
+  const keygen = await run(['keygen'], context.env);
+  assert.equal(keygen.code, 0, keygen.stderr);
+  const log = join(context.folder, 'opens.jsonl');
+  const preload = ['--require', fileURLToPath(new URL('./fixtures/count-opens.cjs', import.meta.url))];
+  const counted = async args => {
+    rmSync(log, { force: true });
+    const result = await run(args, { ...context.env, P3C_OPEN_LOG: log }, preload);
+    assert.equal(result.code, 0, result.stderr);
+    return readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  };
+  const bundle = join(context.folder, 'bundle');
+  const expected = [{ path: context.database, readOnly: true }];
+  assert.deepEqual(await counted(['handoff', context.sessionId, '--sign', bundle]), expected);
+  assert.deepEqual(await counted(['reviews', 'verify']), expected);
+  assert.deepEqual(await counted(['reviews', 'verify', '--bundle', bundle, '--fingerprint', keygen.stdout.trim()]), expected);
 });
