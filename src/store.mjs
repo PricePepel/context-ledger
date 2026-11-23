@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, mkdirSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
-import { basename, dirname, win32 } from 'node:path';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
 import { ConflictError, InputError } from './errors.mjs';
@@ -12,8 +12,9 @@ import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, serializeGraphPacket, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
-import { byLine, checkParcel, sameTurn } from './parcel.mjs';
+import { byLine, checkParcel, compatibleTurns, sameTurn } from './parcel.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
+import { sourceName } from './text.mjs';
 
 export { ConflictError, InputError };
 
@@ -318,15 +319,6 @@ async function parseTranscriptFile(path, provider, { lineLimit = maxLineBytes } 
 function withSkipped(summary, skipped) {
   if (!skipped.count) return summary;
   return { ...summary, skipped: { count: skipped.count, lines: skipped.lines } };
-}
-
-function sourceName(source) {
-  if (typeof source !== 'string') throw new InputError('Choose a transcript file.');
-  const name = basename(win32.basename(source)).trim();
-  if (!name || name === '.' || name === '..' || name.length > 255 || /\p{Cc}/u.test(name)) {
-    throw new InputError('Invalid transcript file name.');
-  }
-  return name;
 }
 
 function sessionFilter(query, provider, project) {
@@ -823,8 +815,8 @@ function storeOn(database) {
           for (const message of incoming) {
             const have = byKey.get(message.key);
             // Against a transcript imported here, the parcel shows the turn or a redaction
-            // of it. Two sets of excerpts may each be the more redacted one.
-            const same = have && (sameTurn(message, have) || (stored.excerpts && sameTurn(have, message)));
+            // of it. Of two sets of excerpts, either may be the more redacted one.
+            const same = have && (stored.excerpts ? compatibleTurns(message, have) : sameTurn(message, have));
             if (have ? !same : lines.has(message.line) || !stored.excerpts) {
               throw new ConflictError('The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.');
             }

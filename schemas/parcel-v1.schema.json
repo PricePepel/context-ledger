@@ -125,7 +125,8 @@
     "agentPath": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 400
+      "maxLength": 8192,
+      "description": "An agent turn's author or recipient, after the secret scanner. A stored path is at most 200 characters; markers can make it longer."
     },
     "message": {
       "type": "object",

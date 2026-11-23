@@ -212,7 +212,9 @@ function assertAcyclic(edges, relationship) {
   for (const id of targets.keys()) visit(id);
 }
 
-function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
+// With localOnly, only what the packet itself decides is checked: where a link starts,
+// and that no pair of nodes is linked twice. The other graph is not looked up.
+function assertLinks(packet, nodes, superseded, lookupGraph, sameProject, localOnly = false) {
   const seen = new Set();
   const remoteGraphs = new Map();
   for (const [index, { from, graph, to, type }] of (packet.links ?? []).entries()) {
@@ -223,6 +225,12 @@ function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
       throw new GraphInputError(`${where}: must start at a local node of kind ${kindsText(fromKinds)}, got ${fromKind ?? 'unknown node'}.`);
     }
     if (superseded.has(from)) throw new GraphInputError('A link cannot start at a superseded decision.');
+    if (localOnly) {
+      const pair = `${graph}|${from}|${to}`;
+      if (seen.has(pair)) throw new GraphInputError('Links must be unique per node pair.');
+      seen.add(pair);
+      continue;
+    }
     if (!remoteGraphs.has(graph)) remoteGraphs.set(graph, lookupGraph?.(graph));
     const remote = remoteGraphs.get(graph)?.packet;
     if (!isPartyGraph(remote)) throw new GraphInputError('A link must point at a stored version 2 or 3 graph.');
@@ -258,9 +266,11 @@ function assertLinks(packet, nodes, superseded, lookupGraph, sameProject) {
  * are checked with `lookupGraph(id)`, which returns a stored graph or undefined, and
  * `sameProject(id)`, true when that graph is in this packet's project (P2a). Version 3
  * citations are checked against `messageKeys` (the session's keys) and `hasArtifact(id)`,
- * true for an artifact registered in this packet's project (P2b).
+ * true for an artifact registered in this packet's project (P2b). `withoutLinks` checks only
+ * what a link says about this packet and leaves the other graph unread, for a caller with
+ * no ledger to look it up in.
  */
-export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, messageKeys, hasArtifact } = {}) {
+export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, messageKeys, hasArtifact, withoutLinks = false } = {}) {
   const version = packet?.version;
   const validate = validateShape.get(version);
   if (!validate?.(packet)) {
@@ -281,7 +291,8 @@ export function validateGraph(packet, sourceLines, { lookupGraph, sameProject, m
     if (packet.nodes.some(node => node.kind === 'question' && node.to === packet.party)) {
       throw new GraphInputError('A question must be addressed to another party.');
     }
-    assertLinks(packet, nodes, superseded, lookupGraph, sameProject);
+    // Card R1: a parcel is checked before a ledger is opened; its links wait for the store.
+    assertLinks(packet, nodes, superseded, lookupGraph, sameProject, withoutLinks);
   }
 
   const waiting = new Set();

@@ -12,7 +12,9 @@ import { test } from 'node:test';
 import { GraphInputError, packetId } from '../src/graph.mjs';
 import { handoffMarkdown } from '../src/handoff.mjs';
 import { schemaVersion } from '../src/migrate.mjs';
-import { buildParcel, checkParcel, matchesRedacted, maxParcelBytes, parseParcel, serializeParcel } from '../src/parcel.mjs';
+import {
+  buildParcel, checkParcel, compatibleTurns, matchesRedacted, maxParcelBytes, parseParcel, sameTurn, serializeParcel,
+} from '../src/parcel.mjs';
 import { ConflictError, InputError, openStore } from '../src/store.mjs';
 import { startMcp } from './mcp-client.mjs';
 
@@ -456,7 +458,7 @@ test('R1: share writes a new private file and receive stores it, from the comman
   assert.equal(shared.code, 0, shared.stderr);
   assert.equal(shared.stdout, `Parcel written to ${file}\nGraph: ${a.graph.id}\n`
     + 'It carries the 2 lines the graph cites, of 5 in the session.\n'
-    + '1 possible secret in those lines was replaced by [REDACTED] markers.\n'
+    + '1 possible secret in what it carries was replaced by [REDACTED] markers.\n'
     + 'On the other machine, run: ledger receive <this file>\n');
   assert.equal(shared.stdout.includes('Ab3D'), false);
   if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600);
@@ -542,7 +544,7 @@ const refusedShare = (store, graphId, message) => assert.throws(() => parcelOf(s
 
 test('R1 review: a graph whose own text holds a credential is not shared', t => {
   const a = vera(t, [2, 4]);
-  const leaky = 'This graph\'s own text (a label, a name or an artifact) holds what looks like a credential, so it was not shared.';
+  const leaky = 'This graph\'s own text (a label, a name, an artifact or its project) holds what looks like a credential, so it was not shared.';
   // The label repeats the token of the line it cites: the line is redacted, the label cannot be.
   const inLabel = a.store.publishGraph({ version: 2, sessionId: a.session.id, party: 'vera', edges: [],
     nodes: [{ id: 'token', kind: 'decision', label: `Staging token ${fakeToken}`, evidenceLines: [4] }] });
@@ -724,7 +726,7 @@ test('R1 review: an import that waits on a receive completes the excerpts it the
   const raw = new DatabaseSync(b.path);
   let child;
   try {
-    raw.exec(`ATTACH '${source.path.replaceAll('\'', '\'\'')}' AS other; PRAGMA foreign_keys = ON; BEGIN IMMEDIATE;`);
+    raw.exec(`ATTACH '${source.path.replaceAll('\'', '\'\'')}' AS other; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;`);
     child = run(['import', '--provider', 'claude', file], b.env);
     // The import parses the file, then waits for the lock (busy_timeout is 5 s).
     await new Promise(resolve => setTimeout(resolve, 1500));
@@ -892,4 +894,223 @@ test('R1 review: the CLI search and hand-off and the MCP session tools show the 
       if (server.exitCode === null && server.signalCode === null) await once(server, 'exit');
     }
   }
+});
+
+// ---- Codex review, round 2 ----
+
+test('R1 review 2: a credential in the project slug stops the share', t => {
+  const a = ledger(t, 'a');
+  // A slug of the shape of a Slack token, put together from fragments.
+  const project = ['xo', 'xb-', '1234567890-', 'synthetic'].join('');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns), project });
+  const graph = a.store.publishGraph(veraGraph(session.id));
+  refusedShare(a.store, graph.id, 'This graph\'s own text (a label, a name, an artifact or its project) holds what looks like a credential, so it was not shared.');
+});
+
+test('R1 review 2: the label guard reads a title as the ledger makes it, and each line of a turn', t => {
+  const repeats = 'A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.';
+  const a = ledger(t, 'a');
+  // The title is made after leading white space is dropped, however much there is.
+  const first = `${' '.repeat(5000)}Cancel the confidential Orion acquisition.`;
+  const multiline = 'Notes for the week.\nThe Vega contract is void from Monday.\nNothing else.';
+  const session = a.store.importTranscript({ provider: 'claude', source: 'orion.jsonl',
+    transcript: claude([['user', first], ['assistant', 'Understood, port 6100 stays.'], ['user', multiline]]) });
+  assert.equal(session.title, 'Cancel the confidential Orion acquisition.');
+  const labelled = label => a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'note', kind: 'decision', label, evidenceLines: [2] }] });
+  refusedShare(a.store, labelled(session.title).id, repeats);
+  refusedShare(a.store, labelled('Agreed: the Vega contract is void from Monday.').id, repeats);
+  assert.equal(parcelOf(a.store, labelled('Port 6100 stays').id).parcel.session.messages.length, 1);
+
+  // Words the parcel carries anyway are not a leak, wherever else the session says them.
+  const b = ledger(t, 'b');
+  const twice = b.store.importTranscript({ provider: 'claude', source: 'twice.jsonl',
+    transcript: claude([['user', 'Approved for the Friday release.'], ['assistant', 'Approved for the Friday release.']]) });
+  const quoted = b.store.publishGraph({ version: 2, sessionId: twice.id, party: 'vera', edges: [],
+    nodes: [{ id: 'ok', kind: 'decision', label: 'Approved for the Friday release.', evidenceLines: [2] }] });
+  assert.deepEqual(parcelOf(b.store, quoted.id).parcel.session.messages.map(message => message.line), [2]);
+});
+
+test('R1 review 2: matchesRedacted works on whole characters and in linear time', () => {
+  const m = '[REDACTED assigned-secret]';
+  const face = String.fromCodePoint(0x1f600);
+  // One character is one marker's worth, though it is two code units.
+  assert.equal(matchesRedacted(m + m, face), false);
+  assert.equal(matchesRedacted(m + m, face + face), true);
+  assert.equal(matchesRedacted(m, face), true);
+  assert.equal(matchesRedacted(face.slice(0, 1) + m, face), false);
+  assert.equal(matchesRedacted(m + face.slice(1), face), false);
+  assert.equal(matchesRedacted(`a${m}${face}`, `a${face}${face}`), true);
+  assert.equal(matchesRedacted(`${m}b${m}`, `${face}b${face}`), true);
+  // A long near-match, repeated, was quadratic with a plain search.
+  const time = n => {
+    const shown = `${m}${'a'.repeat(n / 8)}b${'a'.repeat(n / 8)}${m}`;
+    const original = `x${'a'.repeat(n)}y`;
+    const started = performance.now();
+    assert.equal(matchesRedacted(shown, original), false);
+    return performance.now() - started;
+  };
+  time(1 << 14);
+  const small = Math.max(time(1 << 17), 1);
+  const large = time(1 << 20);
+  assert.ok(large < small * 40, `8 times the text took ${Math.round(large / small)} times as long`);
+  assert.ok(large < 3000, `${Math.round(large)} ms`);
+});
+
+test('R1 review 2: two sets of excerpts agree when each field is equal or one is the more redacted', () => {
+  const m = '[REDACTED assigned-secret]';
+  const turn = (text, author = '/root', recipient = '/root/worker') => ({ line: 2, role: 'agent', text, author, recipient });
+  // The text is more redacted on one side and the author on the other.
+  assert.equal(compatibleTurns(turn(`token ${m}`, '/root/abc'), turn('token B', `/root/${m}`)), true);
+  assert.equal(compatibleTurns(turn('token A'), turn('token B')), false);
+  assert.equal(compatibleTurns(turn('token A'), { ...turn('token A'), line: 3 }), false);
+  // Redacted in different places: not recognised, and docs/parcels.md says so.
+  assert.equal(compatibleTurns(turn(`password=${m}; token=B`), turn(`password=A; token=${m}`)), false);
+  // Against the transcript every field goes one way.
+  assert.equal(sameTurn(turn(`token ${m}`, `/root/${m}`), turn('token B', '/root/abc')), true);
+  assert.equal(sameTurn(turn(`token ${m}`, '/root/abc'), turn('token B', `/root/${m}`)), false);
+});
+
+test('R1 review 2: what a parcel decides by itself is refused before a ledger is opened', async t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const b = ledger(t, 'b');
+  const before = b.dump();
+  const changed = change => {
+    const copy = clone(parcel);
+    change(copy);
+    return copy;
+  };
+  // A packet that is not a valid graph, with the ID such a packet would have.
+  const twoNodes = changed(p => {
+    p.graph.packet.nodes.push({ ...p.graph.packet.nodes[0] });
+    p.graph.id = packetId(p.graph.packet);
+  });
+  assert.throws(() => checkParcel(twoNodes), error => error instanceof GraphInputError && error.message === 'Node IDs must be unique.');
+  const cycle = changed(p => {
+    p.graph.packet.nodes = [
+      { id: 'one', kind: 'action', status: 'pending', label: 'One', evidenceLines: [2] },
+      { id: 'two', kind: 'action', status: 'pending', label: 'Two', evidenceLines: [3] },
+    ];
+    p.graph.packet.edges = [{ from: 'one', to: 'two', type: 'depends_on' }, { from: 'two', to: 'one', type: 'depends_on' }];
+    p.graph.id = packetId(p.graph.packet);
+  });
+  assert.throws(() => checkParcel(cycle), GraphInputError);
+  const notParcel = error => error instanceof InputError && error.message === 'This is not a version 1 Context Ledger parcel.';
+  for (const source of ['..', '.', ' padded.jsonl', 'folder/vera.jsonl', 'folder\\vera.jsonl', String.fromCodePoint(0x1f600).repeat(128)]) {
+    assert.throws(() => checkParcel(changed(p => { p.session.source = source; })), notParcel, source);
+  }
+  // The store checks a parcel itself, whoever calls it.
+  assert.throws(() => b.store.receiveParcel(twoNodes), GraphInputError);
+  assert.throws(() => b.store.receiveParcel(changed(p => { p.session.messages.pop(); })),
+    error => error instanceof InputError && error.message === 'A parcel must carry exactly the lines and artifacts its graph cites.');
+  assert.equal(b.dump(), before);
+
+  // And the command creates no database for such a file.
+  b.store.close();
+  const file = join(b.folder, 'two-nodes.json');
+  writeFileSync(file, serializeParcel(twoNodes));
+  const absent = join(b.folder, 'none', 'ledger.sqlite');
+  const result = await run(['receive', file], { CONTEXT_LEDGER_DB: absent });
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, 'Node IDs must be unique.\n');
+  assert.equal(existsSync(join(b.folder, 'none')), false);
+});
+
+test('R1 review 2: a source name that redaction makes too long travels under a fixed name', t => {
+  const a = ledger(t, 'a');
+  const source = `${'a'.repeat(238)}-password=q`;
+  const session = a.store.importTranscript({ provider: 'claude', source, transcript: claude(veraTurns) });
+  assert.equal(session.source, source);
+  const graph = a.store.publishGraph(veraGraph(session.id));
+  const { parcel, redacted } = parcelOf(a.store, graph.id);
+  assert.equal(parcel.session.source, 'source name redacted');
+  assert.equal(redacted, 1);
+  const b = ledger(t, 'b');
+  assert.equal(receive(b.store, parcel).session.source, 'source name redacted');
+  // A shorter name keeps its redacted form.
+  const c = ledger(t, 'c');
+  const short = c.store.importTranscript({ provider: 'claude', source: 'notes-password=q', transcript: claude(veraTurns) });
+  const named = parcelOf(c.store, c.store.publishGraph(veraGraph(short.id)).id).parcel.session.source;
+  assert.match(named, /^notes-password=\[REDACTED [a-z-]+\]$/u);
+});
+
+// ---- Codex review, round 3 ----
+
+test('R1 review 3: the label guard sees every kind of line break and folds case one character at a time', t => {
+  const repeats = 'A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.';
+  const sentence = 'Uncited synthetic budget sentence';
+  for (const code of [0x2028, 0x2029, 0x85, 0x0b, 0x0c]) {
+    const a = ledger(t, `break-${code}`);
+    const session = a.store.importTranscript({ provider: 'claude', source: 'breaks.jsonl',
+      transcript: claude([['user', `Prelude${String.fromCodePoint(code)}${sentence}`], ['assistant', 'Port 6100 stays.']]) });
+    const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+      nodes: [{ id: 'note', kind: 'decision', label: sentence, evidenceLines: [2] }] });
+    refusedShare(a.store, graph.id, repeats);
+  }
+  // A capital sigma lower-cases differently at the end of a word; the lead ends on one.
+  const sigma = String.fromCodePoint(0x03a3);
+  const line = `${'A'.repeat(119)}${sigma}B`;
+  const b = ledger(t, 'sigma');
+  const session = b.store.importTranscript({ provider: 'claude', source: 'sigma.jsonl', transcript: claude([['user', line], ['assistant', 'Port 6100 stays.']]) });
+  const graph = b.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'note', kind: 'decision', label: line, evidenceLines: [2] }] });
+  refusedShare(b.store, graph.id, repeats);
+});
+
+test('R1 review 3: the label guard\'s work does not grow with the number of uncited lines', t => {
+  const a = ledger(t, 'a');
+  const turns = [['user', 'Port 6100 stays.']];
+  for (let index = 0; index < 3000; index += 1) turns.push([index % 2 ? 'user' : 'assistant', `${'a'.repeat(20)}${index}`]);
+  const transcript = turns.map(([role, text]) => JSON.stringify({ type: role, message: { role, content: text } })).join('\n');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'many.jsonl', transcript });
+  const nodes = Array.from({ length: 100 }, (_, index) => ({ id: `n${index}`, kind: 'decision', label: `${'a'.repeat(480)} ${index}`, evidenceLines: [1] }));
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [], nodes });
+  const started = performance.now();
+  assert.equal(parcelOf(a.store, graph.id).parcel.session.messages.length, 1);
+  assert.ok(performance.now() - started < 3000, `${Math.round(performance.now() - started)} ms`);
+});
+
+test('R1 review 3: an agent path that redaction makes long still travels', t => {
+  const a = ledger(t, 'a');
+  const author = 'pwd=q\n'.repeat(33);
+  const transcript = [
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the Orion build.' }] } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', author, recipient: '/root', content: [{ type: 'input_text', text: 'The smoke test passed.' }] } }),
+  ].join('\n');
+  const session = a.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript });
+  assert.equal(a.store.get(session.id).messages[1].author, author);
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'orion', edges: [],
+    nodes: [{ id: 'smoke', kind: 'action', status: 'completed', label: 'Smoke test passed', evidenceLines: [2] }] });
+  const { parcel, redacted } = parcelOf(a.store, graph.id);
+  assert.ok(parcel.session.messages[0].author.length > 400);
+  assert.equal(redacted, 33);
+  const b = ledger(t, 'b');
+  assert.equal(receive(b.store, parcel).graph.id, graph.id);
+  // The real file completes those excerpts: each marker stands for its value.
+  assert.equal(b.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript }).excerpts, undefined);
+  assert.equal(b.store.get(session.id).messages[1].author, author);
+});
+
+test('R1 review 3: what a link says about its own packet is checked before a ledger is opened', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const linked = links => {
+    const copy = clone(parcel);
+    copy.graph.packet.links = links;
+    copy.graph.id = packetId(copy.graph.packet);
+    return copy;
+  };
+  const other = 'b'.repeat(64);
+  assert.throws(() => checkParcel(linked([{ from: 'missing', graph: other, to: 'remote', type: 'matches' }])), GraphInputError);
+  assert.throws(() => checkParcel(linked([{ from: 'no-sunday', graph: other, to: 'remote', type: 'matches' }])), GraphInputError, 'a constraint cannot match');
+  assert.throws(() => checkParcel(linked([
+    { from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' }, { from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' },
+  ])), GraphInputError);
+  // A link that is right in itself waits for the ledger, which says what is missing.
+  const fine = linked([{ from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' }]);
+  assert.equal(checkParcel(fine), fine);
+  const b = ledger(t, 'b');
+  assert.throws(() => b.store.receiveParcel(fine), error => error instanceof InputError
+    && error.message === 'This graph links to a graph that is not in this ledger. Receive that graph first.');
 });

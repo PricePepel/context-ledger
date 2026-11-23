@@ -568,7 +568,7 @@ async function shareCommand(graphId, out, relay) {
   console.log(`${origin === undefined ? `Parcel written to ${terminalLabel(out)}` : `Parcel sent to the relay at ${terminalLabel(origin)}`}\nGraph: ${graphId}\n` +
     `It carries the ${plural(lines, 'line')} the graph cites, of ${total} in the session.`);
   if (built.redacted > 0) {
-    console.log(`${plural(built.redacted, 'possible secret')} in those lines ${built.redacted === 1 ? 'was' : 'were'} replaced by [REDACTED] markers.`);
+    console.log(`${plural(built.redacted, 'possible secret')} in what it carries ${built.redacted === 1 ? 'was' : 'were'} replaced by [REDACTED] markers.`);
   }
   if (built.links > 0) {
     console.log(`This graph links to ${plural(built.links, 'other graph')}. The receiving ledger needs ${built.links === 1 ? 'it' : 'them'} first.`);
