@@ -4951,3 +4951,23 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 - **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
 - **Codex review, round 3:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+## U7 — Swarm room in the console (defined 2026-11-23, before the code)
+
+The investor demo shows the swarm on its own page and the Claude Code and Codex agents on the console. U7 puts the swarm on the console too, so one screen shows the offices, the swarm and the ledger facts. It reads the same `/api/swarm` endpoints as `/swarm/` and adds no server behaviour beyond serving one more fixed console file.
+
+### What is tested and the expected result
+
+1. **The room is there.** `/console/` shows a "Local swarm" room with a Run button, a mode badge and a link to `/swarm/`. Without `SWARM_URLS` the badge says Simulated and the room explains that a simulated run's timings are made up.
+2. **A run fills the room.** Pressing Run starts 100 agents (POST `/api/swarm/runs`, the mode the server offers) and the room shows 100 pixel agents. Each takes the state the server reports: queued, running, done and verified, done but its quote not found (dropped), or failed. When the run ends the room shows agents finished, quotes verified and answers correct.
+3. **Honest numbers.** The room shows the speed-up only for a live run that has one, as "about N×" from the server's `speedup` (one agent alone, then all together); a simulated run shows "not measured" for speed-up and marks its wall time simulated. The room never computes a speed-up of its own.
+4. **Safe rendering.** Every model or report string reaches the page through `textContent`; the room builds no HTML from data. A failed or lost run re-enables Run and says why.
+5. **Nothing else changes.** The console's graph, evidence, activity and band keep working, in live and demo mode. The room makes no requests until Run is pressed except `GET /api/swarm`.
+
+Synthetic data only: the swarm's generated incident reports.
+
+### Acceptance for the code
+
+- `node:test` for the room's pure summary (state buckets, dropped versus verified, the speed-up text for live and simulated runs, unknown states).
+- Playwright: open `/console/`, run the simulated swarm from the room, wait for it to finish, check 100 agents, the Simulated badge, "not measured" for the speed-up, the counts, the `/swarm/` link and that the graph still renders.
+- The full suites pass, and Codex reviews the change.
