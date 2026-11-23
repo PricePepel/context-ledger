@@ -127,35 +127,46 @@ function leadOf(text) {
     lead.push(character);
     if (lead.length >= leadCharacters) break;
   }
-  return lead.join('').toLowerCase();
+  return folded(lead.join(''));
 }
-const squeezed = text => text.trim().split(/\s+/u).join(' ').toLowerCase();
+// Lower case one character at a time. Lower-casing a whole text depends on what follows
+// a letter (a Greek capital sigma becomes one of two letters), so a lead cut from a text
+// and the same words inside a label could come out different.
+const folded = text => Array.from(text, character => character.toLowerCase()).join('');
+const squeezed = text => folded(text.trim().split(/\s+/u).join(' '));
+// Every character that ends a line, as the secret scanner and editors see lines.
+const lineBreak = /\r\n|[\n\v\f\r\x85\p{Zl}\p{Zp}]/u;
 
 /**
  * True when a label holds the lead of a turn the graph does not cite, or of one physical
  * line of such a turn, unless the text that is carried holds the same words anyway.
- * Leads are found through their first 20 code units, so the work does not grow with
- * labels times lines.
+ * Leads are kept in sets by length, and each place in a label is looked up once per
+ * length. A lead is at most 120 characters, so the work is bounded by the labels and
+ * does not grow with the number of uncited lines.
  */
 function repeatsUncited(labels, uncited, carried) {
-  const leads = new Map();
+  const byLength = new Map();
   for (const message of uncited) {
-    for (const text of [message.text, ...message.text.split(/\r\n|\r|\n/u)]) {
+    for (const text of [message.text, ...message.text.split(lineBreak)]) {
       const lead = leadOf(text);
       if ([...lead].length < shortestLead) continue;
-      const start = lead.slice(0, shortestLead);
-      if (!leads.has(start)) leads.set(start, new Set());
-      leads.get(start).add(lead);
+      if (!byLength.has(lead.length)) byLength.set(lead.length, new Set());
+      byLength.get(lead.length).add(lead);
     }
   }
-  if (leads.size === 0) return false;
+  if (byLength.size === 0) return false;
   let carriedText;
+  const isCarried = new Map();
   for (const label of labels.map(squeezed)) {
-    for (let index = 0; index + shortestLead <= label.length; index += 1) {
-      for (const lead of leads.get(label.slice(index, index + shortestLead)) ?? []) {
-        if (!label.startsWith(lead, index)) continue;
-        carriedText ??= carried.map(message => squeezed(message.text)).join('\n');
-        if (!carriedText.includes(lead)) return true;
+    for (const [length, leads] of byLength) {
+      for (let index = 0; index + length <= label.length; index += 1) {
+        const lead = label.slice(index, index + length);
+        if (!leads.has(lead)) continue;
+        if (!isCarried.has(lead)) {
+          carriedText ??= carried.map(message => squeezed(message.text)).join('\n');
+          isCarried.set(lead, carriedText.includes(lead));
+        }
+        if (!isCarried.get(lead)) return true;
       }
     }
   }

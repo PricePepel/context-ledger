@@ -18,7 +18,7 @@ Move the file to the other machine any way you like. There:
 npm run --silent ledger -- receive vera.parcel.json
 ```
 
-`receive` checks the file and stores the graph and its lines in one transaction. If any check fails, nothing of the parcel is stored. A file that is wrong in itself (not a parcel, not a valid graph, a graph ID that does not match, lines that are not exactly the cited ones) is refused before the database is opened. Other checks need the ledger, and opening it creates the database or upgrades its schema first, as `import` does. Neither command needs the ledger server to be running.
+`receive` checks the file and stores the graph and its lines in one transaction. If any check fails, nothing of the parcel is stored. A file that is wrong in itself (not a parcel, not a valid graph apart from the graphs it links to, a graph ID that does not match, lines that are not exactly the cited ones) is refused before the database is opened. Other checks need the ledger, and opening it creates the database or upgrades its schema first, as `import` does. Neither command needs the ledger server to be running.
 
 The graph has the same ID on both machines. So the receiver's agent can read it over MCP, publish its own graph with links to it, and open a negotiation room with both. Sharing that second graph back gives the first machine the same room.
 
@@ -35,7 +35,7 @@ One line of JSON, at most 8 MiB, described by [`schemas/parcel-v1.schema.json`](
 | `session.messages` | Only the messages on lines the graph cites: `key`, `line`, `role`, `text`, and `author` and `recipient` on an agent turn |
 | `artifacts` | The commits, pull requests and files a version 3 graph cites |
 | `graph.id`, `graph.packet` | The graph's ID and its packet, as published |
-| `redacted` | How many possible secrets the scanner replaced, in the file name and the carried lines |
+| `redacted` | How many possible secrets the scanner replaced, in the file name and in the text, authors and recipients of the carried lines |
 
 `share` copies no line the graph does not cite, and not the session's title or any review decision. A parcel carries exactly the lines and artifacts its graph cites: `receive` refuses a file with one more or one fewer.
 
@@ -44,7 +44,7 @@ The text of every carried line passes through the secret scanner (`ledger redact
 **The graph's own text travels as it was published.** Labels, node and party names, artifact paths and the project slug cannot be changed, because the graph's ID and the artifact IDs cover them. So `share` refuses a graph when:
 
 - one of those holds what the scanner takes for a credential, or
-- a label repeats a turn the graph does not cite, or one line of such a turn. The guard looks for the first 120 characters with white space squeezed (which is also how a session's title is made), when that is 20 characters or more, and ignores case. Words that a carried line also holds are not counted.
+- a label repeats a turn the graph does not cite, or one line of such a turn (a line ends at any line-break character). The guard looks for the first 120 characters with white space squeezed (which is also how a session's title is made), when that is 20 characters or more, and ignores case. Words that a carried line also holds are not counted.
 
 A label can still say in other words what an uncited line says, or quote a part from the middle of a line. Read the labels before you share a graph.
 

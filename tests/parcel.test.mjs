@@ -1034,3 +1034,83 @@ test('R1 review 2: a source name that redaction makes too long travels under a f
   const named = parcelOf(c.store, c.store.publishGraph(veraGraph(short.id)).id).parcel.session.source;
   assert.match(named, /^notes-password=\[REDACTED [a-z-]+\]$/u);
 });
+
+// ---- Codex review, round 3 ----
+
+test('R1 review 3: the label guard sees every kind of line break and folds case one character at a time', t => {
+  const repeats = 'A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.';
+  const sentence = 'Uncited synthetic budget sentence';
+  for (const code of [0x2028, 0x2029, 0x85, 0x0b, 0x0c]) {
+    const a = ledger(t, `break-${code}`);
+    const session = a.store.importTranscript({ provider: 'claude', source: 'breaks.jsonl',
+      transcript: claude([['user', `Prelude${String.fromCodePoint(code)}${sentence}`], ['assistant', 'Port 6100 stays.']]) });
+    const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+      nodes: [{ id: 'note', kind: 'decision', label: sentence, evidenceLines: [2] }] });
+    refusedShare(a.store, graph.id, repeats);
+  }
+  // A capital sigma lower-cases differently at the end of a word; the lead ends on one.
+  const sigma = String.fromCodePoint(0x03a3);
+  const line = `${'A'.repeat(119)}${sigma}B`;
+  const b = ledger(t, 'sigma');
+  const session = b.store.importTranscript({ provider: 'claude', source: 'sigma.jsonl', transcript: claude([['user', line], ['assistant', 'Port 6100 stays.']]) });
+  const graph = b.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'note', kind: 'decision', label: line, evidenceLines: [2] }] });
+  refusedShare(b.store, graph.id, repeats);
+});
+
+test('R1 review 3: the label guard\'s work does not grow with the number of uncited lines', t => {
+  const a = ledger(t, 'a');
+  const turns = [['user', 'Port 6100 stays.']];
+  for (let index = 0; index < 3000; index += 1) turns.push([index % 2 ? 'user' : 'assistant', `${'a'.repeat(20)}${index}`]);
+  const transcript = turns.map(([role, text]) => JSON.stringify({ type: role, message: { role, content: text } })).join('\n');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'many.jsonl', transcript });
+  const nodes = Array.from({ length: 100 }, (_, index) => ({ id: `n${index}`, kind: 'decision', label: `${'a'.repeat(480)} ${index}`, evidenceLines: [1] }));
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [], nodes });
+  const started = performance.now();
+  assert.equal(parcelOf(a.store, graph.id).parcel.session.messages.length, 1);
+  assert.ok(performance.now() - started < 3000, `${Math.round(performance.now() - started)} ms`);
+});
+
+test('R1 review 3: an agent path that redaction makes long still travels', t => {
+  const a = ledger(t, 'a');
+  const author = 'pwd=q\n'.repeat(33);
+  const transcript = [
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the Orion build.' }] } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', author, recipient: '/root', content: [{ type: 'input_text', text: 'The smoke test passed.' }] } }),
+  ].join('\n');
+  const session = a.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript });
+  assert.equal(a.store.get(session.id).messages[1].author, author);
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'orion', edges: [],
+    nodes: [{ id: 'smoke', kind: 'action', status: 'completed', label: 'Smoke test passed', evidenceLines: [2] }] });
+  const { parcel, redacted } = parcelOf(a.store, graph.id);
+  assert.ok(parcel.session.messages[0].author.length > 400);
+  assert.equal(redacted, 33);
+  const b = ledger(t, 'b');
+  assert.equal(receive(b.store, parcel).graph.id, graph.id);
+  // The real file completes those excerpts: each marker stands for its value.
+  assert.equal(b.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript }).excerpts, undefined);
+  assert.equal(b.store.get(session.id).messages[1].author, author);
+});
+
+test('R1 review 3: what a link says about its own packet is checked before a ledger is opened', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const linked = links => {
+    const copy = clone(parcel);
+    copy.graph.packet.links = links;
+    copy.graph.id = packetId(copy.graph.packet);
+    return copy;
+  };
+  const other = 'b'.repeat(64);
+  assert.throws(() => checkParcel(linked([{ from: 'missing', graph: other, to: 'remote', type: 'matches' }])), GraphInputError);
+  assert.throws(() => checkParcel(linked([{ from: 'no-sunday', graph: other, to: 'remote', type: 'matches' }])), GraphInputError, 'a constraint cannot match');
+  assert.throws(() => checkParcel(linked([
+    { from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' }, { from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' },
+  ])), GraphInputError);
+  // A link that is right in itself waits for the ledger, which says what is missing.
+  const fine = linked([{ from: 'no-sunday', graph: other, to: 'remote', type: 'conflicts' }]);
+  assert.equal(checkParcel(fine), fine);
+  const b = ledger(t, 'b');
+  assert.throws(() => b.store.receiveParcel(fine), error => error instanceof InputError
+    && error.message === 'This graph links to a graph that is not in this ledger. Receive that graph first.');
+});
