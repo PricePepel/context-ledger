@@ -177,10 +177,11 @@ const leftovers = `
   SELECT count(*) AS n FROM sqlite_master
   WHERE lower(name) IN ('messages', 'sessions_messages') OR lower(tbl_name) = 'messages'`;
 
+// Card P3c review: coded like openStore's read-only refusal, so the CLI words both alike.
 const refuseNewer = version => {
   if (version > schemaVersion) {
-    throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
-      'Use that version or another CONTEXT_LEDGER_DB.');
+    throw Object.assign(new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+      'Use that version or another CONTEXT_LEDGER_DB.'), { code: 'LEDGER_SCHEMA', version });
   }
 };
 

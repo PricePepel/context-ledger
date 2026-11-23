@@ -4795,3 +4795,32 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 - **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
 - **Codex review, round 3:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+### P3c eval: signing reads the ledger read-only (2026-11-22)
+
+What is tested: `ledger handoff --sign` and `ledger reviews verify` open the ledger once, read-only, and never create, migrate or write it. Synthetic data only: one synthetic Claude transcript imported into a temporary ledger.
+
+- `openStore(path, { readOnly: true })` opens a current-schema ledger and reads sessions and the review chain; a write through it fails and leaves the file unchanged.
+- It refuses an older or a newer schema with the version, and the file's `user_version` and bytes are unchanged afterwards.
+- It refuses a missing file without creating it or its folder.
+- Signing an older-schema ledger fails with "older schema … then sign again", writes no bundle and leaves the file at its old version.
+- Signing a current ledger still produces a bundle that verifies, with the review head.
+- No code path in signing or `reviews verify` opens the ledger read-write: the CLI has one helper for both, and it passes `readOnly: true`.
+
+### P3c results (2026-11-22)
+
+- `tests/readonly-store.test.mjs` covers the eval: a read-only store reads a current ledger and a write through it fails with the file unchanged; an older or newer schema refused with `LEDGER_SCHEMA` and its version, the file unchanged; a missing file and folder never created; signing an older-schema ledger writes no bundle; signing a current ledger still verifies with its head; and a static check that signing and `reviews verify` open the ledger only through the one read-only helper, exactly once.
+- **Codex review, round 1:** no high; one medium and two low:
+  - (medium) Statements prepared after the open sat outside the cleanup, so a damaged file (current `user_version`, missing tables) left the connection open, which on Windows keeps the file from being replaced or deleted. The store's methods are now built in `storeOn`, and any failure there closes the connection, in both modes. Test: such a file is refused and can be removed at once. A side effect Codex noted: `reviews verify` on that damaged file now says "Cannot open the ledger database." rather than checking the chain alone; such a file is not a ledger this build wrote, so that is accepted.
+  - (low) The static test would have passed with a second, writable open in the helper. It now counts the opens and needs exactly one.
+  - (low, accepted) A read-only open of a ledger in WAL mode can need `-wal` and `-shm` files, so it fails in a read-only folder without them. The ledger uses the default rollback journal, which needs no sidecar to read; P3b's read-only check behaved the same. Left as it is.
+- **Codex review, round 2:** two low:
+  - (low) When the final newer-schema check in the store setup threw, the setup closed the connection and `openStore` closed it again; on Node 22 the second close throws `ERR_INVALID_STATE`, which hid the real error. `openStore` alone closes it now. The two concurrent-upgrade tests in tests/projects.test.mjs ("a file that a newer build upgrades while this one opens it gets no DDL" and "an upgrade that keeps every table, committed after the last statement is prepared, is refused") failed with ERR_INVALID_STATE under round 1 and pass now; a static test also checks the setup has no close of its own.
+  - (low, accepted) The static check cannot see a second connection opened inside `openStore` itself. Counting opens at run time would mean patching `node:sqlite` in a child process, which ES modules do not allow without a loader. `openStore` opens exactly one `DatabaseSync`, and the read-only behaviour tests cover what that connection can do.
+- **Codex review, round 3:** two low, both fixed with tests:
+  - (low) If a newer build upgraded the file between the read-only check and the store's final recheck, the recheck's error had no code, and the CLI said "Cannot open the ledger database." instead of naming the newer schema. `refuseNewer` now throws with `code: 'LEDGER_SCHEMA'` and the version, like the read-only refusal. Test: the recheck on a newer file throws that code and version.
+  - (low) Round 2's accepted gap, closed: Codex showed a CommonJS preload can replace `DatabaseSync` and pass it to ES modules with `syncBuiltinESMExports()`. `tests/fixtures/count-opens.cjs` logs every connection, and a test runs `handoff --sign`, `reviews verify` and `reviews verify --bundle` under it: each opens exactly one connection, read-only, on the ledger.
+- **Codex review, round 4:** two low, both accepted; no medium or high, so the review stops here:
+  - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
+  - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.
