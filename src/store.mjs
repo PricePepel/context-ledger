@@ -9,10 +9,10 @@ import { diffGraphs } from './diff.mjs';
 import { graphPrefixLength, nodeLinkBundle } from './export.mjs';
 import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
-import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
+import { canonicalPacket, isPartyGraph, resolveCitations, serializeGraphPacket, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
-import { byLine } from './parcel.mjs';
+import { byLine, checkParcel, sameTurn } from './parcel.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
 
 export { ConflictError, InputError };
@@ -368,16 +368,6 @@ function titleFor(messages) {
   return title.join('');
 }
 
-function serializeGraphPacket(packet) {
-  // JSON object key order is insignificant. Array order remains part of the packet.
-  return JSON.stringify(packet, (_key, value) => {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
-    }
-    return value;
-  });
-}
-
 /**
  * Opens the ledger. With readOnly (card P3c), the file must already exist at this build's
  * schema: the connection cannot create, migrate or write it, and an older or newer file is
@@ -562,34 +552,22 @@ function storeOn(database) {
    * imported again. Its ID stays, and every turn it had is matched by line, role and text
    * and keeps its key, an l:<line> key from the version 3 copy included, so graphs that
    * cite it hold. A session whose turns would change in any other way is left as it is.
-   * Returns the session's summary, read under the write lock, or undefined when the
-   * session is gone.
+   * Runs inside save's transaction.
    */
   function addAgentTurns(id, messages, searchText) {
-    database.exec('BEGIN IMMEDIATE');
-    let pending = true;
-    try {
-      if (!getSummary.get(id)) return undefined;
-      const old = readMessages(id);
-      const atLine = new Map(messages.map(message => [message.line, message]));
-      const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
-      if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
-          && old.length < messages.length && old.every(same)) {
-        const keyAt = new Map(old.map(message => [message.line, message.key]));
-        const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
-        // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
-        if (new Set(merged.map(message => message.key)).size === merged.length) {
-          deleteRows.run(id);
-          writeRows(id, merged);
-          refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
-        }
+    const old = readMessages(id);
+    const atLine = new Map(messages.map(message => [message.line, message]));
+    const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
+    if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
+        && old.length < messages.length && old.every(same)) {
+      const keyAt = new Map(old.map(message => [message.line, message.key]));
+      const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+      // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
+      if (new Set(merged.map(message => message.key)).size === merged.length) {
+        deleteRows.run(id);
+        writeRows(id, merged);
+        refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
       }
-      const summary = getSummary.get(id);
-      database.exec('COMMIT');
-      pending = false;
-      return summary;
-    } finally {
-      if (pending) database.exec('ROLLBACK');
     }
   }
 
@@ -598,62 +576,57 @@ function storeOn(database) {
 
   /**
    * Card R1 (ADR-19): the full transcript of a session that so far held only excerpts
-   * received in a parcel. The whole session replaces them in one transaction; a line the
-   * excerpts had keeps its key, so the graphs that cite it hold, and the mark is removed.
-   * A file whose lines do not match the excerpts (line and role) is refused. Returns the
-   * session's summary, or undefined when it is no longer an excerpt session.
+   * received in a parcel. The whole session replaces them; a line the excerpts had keeps
+   * its key, so the graphs that cite it hold, and the mark is removed. Every excerpt must
+   * be a turn of the file: the same line and role, and the same text or that text with
+   * values replaced by redaction markers (sameTurn). Any other file is refused, so text
+   * someone else sent is never swapped for different text without a word. Runs inside
+   * save's transaction.
    */
   function completeExcerpts(id, provider, name, messages, title, searchText) {
-    database.exec('BEGIN IMMEDIATE');
-    let pending = true;
-    try {
-      if (!getSummary.get(id)?.excerpts) return undefined;
-      const old = readMessages(id);
-      const atLine = new Map(messages.map(message => [message.line, message]));
-      if (!old.every(message => atLine.get(message.line)?.role === message.role)) throw new ConflictError(excerptsMismatch);
-      const keyAt = new Map(old.map(message => [message.line, message.key]));
-      const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
-      if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
-      deleteRows.run(id);
-      writeRows(id, merged);
-      completeSession.run(provider, name, title, merged.length, legacyCopy(merged), searchText, id);
-      unmarkExcerpts.run(id);
-      const summary = getSummary.get(id);
-      database.exec('COMMIT');
-      pending = false;
-      return summary;
-    } finally {
-      if (pending) database.exec('ROLLBACK');
-    }
+    const old = readMessages(id);
+    const atLine = new Map(messages.map(message => [message.line, message]));
+    if (!old.every(message => atLine.has(message.line) && sameTurn(message, atLine.get(message.line)))) throw new ConflictError(excerptsMismatch);
+    const keyAt = new Map(old.map(message => [message.line, message.key]));
+    const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+    if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
+    deleteRows.run(id);
+    writeRows(id, merged);
+    completeSession.run(provider, name, title, merged.length, legacyCopy(merged), searchText, id);
+    unmarkExcerpts.run(id);
   }
 
+  /**
+   * Stores a parsed transcript, or returns the session these bytes already are. The whole
+   * decision runs under one write lock (card R1 review), so a parcel another process
+   * receives cannot arrive between the look and the write: a new session is inserted,
+   * received excerpts are completed, and a session imported before gains agent turns.
+   */
   function save(id, provider, name, project, { messages, skipped }) {
     const title = titleFor(messages);
     const searchText = searchTextFor(title, messages);
-    if (getSummary.get(id)?.excerpts) {
-      const completed = completeExcerpts(id, provider, name, messages, title, searchText);
-      if (completed) return withSkipped(completed, skipped);
-    }
-    const stored = getSummary.get(id) && addAgentTurns(id, messages, searchText);
-    if (stored) return withSkipped(stored, skipped);
-
     database.exec('BEGIN IMMEDIATE');
     let pending = true;
     try {
-      // Another process may have stored the same bytes since the check above.
       const stored = getSummary.get(id);
-      if (stored) return withSkipped(stored, skipped);
-      insertProject.run(randomBytes(16).toString('hex'), project, project);
-      // Rows first: the foreign key is deferred, and a session inserted with rows
-      // already in place is left alone by the trigger for older builds.
-      writeRows(id, messages);
-      insert.run(id, provider, name, title, messages.length, legacyCopy(messages), searchText, projectId.get(project).id);
+      if (!stored) {
+        insertProject.run(randomBytes(16).toString('hex'), project, project);
+        // Rows first: the foreign key is deferred, and a session inserted with rows
+        // already in place is left alone by the trigger for older builds.
+        writeRows(id, messages);
+        insert.run(id, provider, name, title, messages.length, legacyCopy(messages), searchText, projectId.get(project).id);
+      } else if (stored.excerpts) {
+        completeExcerpts(id, provider, name, messages, title, searchText);
+      } else {
+        addAgentTurns(id, messages, searchText);
+      }
+      const summary = getSummary.get(id);
       database.exec('COMMIT');
       pending = false;
+      return withSkipped(summary, skipped);
     } finally {
       if (pending) database.exec('ROLLBACK');
     }
-    return withSkipped(getSummary.get(id), skipped);
   }
 
   const store = {
@@ -814,13 +787,15 @@ function storeOn(database) {
      * parcel that fails any check changes nothing. The session keeps the sender's ID.
      * A new session holds the parcel's lines and is marked as excerpts. Excerpts already
      * here gain the lines they lack. A session imported here from its file stays as it is,
-     * and the parcel's lines must be in it. Then the artifacts are registered in the
-     * parcel's project and the graph is published as any graph is; its ID must be the one
-     * the parcel names. Returns the stored graph, the session's summary and how many
-     * lines were added.
+     * and the parcel's lines must be in it. A line both have must be the same turn: the
+     * same key, line and role, and the same text or one a redaction of the other
+     * (sameTurn). Then the artifacts are registered in the parcel's project and the graph
+     * is published as any graph is; its ID must be the one the parcel names. Returns the
+     * stored graph, the session's summary and how many lines were added.
      */
     receiveParcel(parcel) {
-      const { project, session, graph } = parcel;
+      // Checked here too, so no caller can store a parcel that was not checked.
+      const { project, session, graph } = checkParcel(parcel);
       const name = sourceName(session.source);
       const incoming = [...session.messages].sort(byLine);
       database.exec('BEGIN IMMEDIATE');
@@ -847,7 +822,10 @@ function storeOn(database) {
           const fresh = [];
           for (const message of incoming) {
             const have = byKey.get(message.key);
-            if (have ? have.line !== message.line || have.role !== message.role : lines.has(message.line) || !stored.excerpts) {
+            // Against a transcript imported here, the parcel shows the turn or a redaction
+            // of it. Two sets of excerpts may each be the more redacted one.
+            const same = have && (sameTurn(message, have) || (stored.excerpts && sameTurn(have, message)));
+            if (have ? !same : lines.has(message.line) || !stored.excerpts) {
               throw new ConflictError('The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.');
             }
             if (!have) fresh.push(message);

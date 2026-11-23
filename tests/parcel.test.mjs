@@ -2,17 +2,19 @@
 // ledger to another. Synthetic transcripts, names and credentials only; the fake token is
 // put together from fragments so no committed file holds one whole.
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { GraphInputError } from '../src/graph.mjs';
+import { GraphInputError, packetId } from '../src/graph.mjs';
 import { handoffMarkdown } from '../src/handoff.mjs';
 import { schemaVersion } from '../src/migrate.mjs';
-import { buildParcel, checkParcel, maxParcelBytes, parseParcel, serializeParcel } from '../src/parcel.mjs';
+import { buildParcel, checkParcel, matchesRedacted, maxParcelBytes, parseParcel, serializeParcel } from '../src/parcel.mjs';
 import { ConflictError, InputError, openStore } from '../src/store.mjs';
+import { startMcp } from './mcp-client.mjs';
 
 const uuid = n => `0000000${n}-aaaa-4bbb-8ccc-00000000000${n}`;
 const key = n => `u:${uuid(n)}`;
@@ -215,9 +217,11 @@ test('R1: a parcel that fails any check is refused and changes nothing', t => {
   const notParcel = 'This is not a version 1 Context Ledger parcel.';
   refused(changed(p => { p.graph.id = 'f'.repeat(64); }), InputError, 'The parcel\'s graph ID does not match its packet.');
   refused(changed(p => { p.graph.packet.nodes[0].label = 'Port 6200'; }), InputError, 'The parcel\'s graph ID does not match its packet.');
-  refused(changed(p => { p.session.messages.pop(); }), GraphInputError, 'Evidence must refer to stored lines in the source session.');
-  refused(changed(p => { p.graph.packet.links = [{ from: 'port', graph: 'e'.repeat(64), to: 'x', type: 'conflicts' }]; }), InputError,
-    'This graph links to a graph that is not in this ledger. Receive that graph first.');
+  refused(changed(p => { p.session.messages.pop(); }), InputError, 'A parcel must carry exactly the lines and artifacts its graph cites.');
+  refused(changed(p => {
+    p.graph.packet.links = [{ from: 'port', graph: 'e'.repeat(64), to: 'x', type: 'conflicts' }];
+    p.graph.id = packetId(p.graph.packet);
+  }), InputError, 'This graph links to a graph that is not in this ledger. Receive that graph first.');
   refused(changed(p => { p.graph.packet.sessionId = 'e'.repeat(64); }), InputError, 'The parcel\'s graph cites another session than the one it carries.');
   refused(changed(p => { p.graph.packet.nodes = 'none'; }), GraphInputError);
   for (const change of [
@@ -295,7 +299,6 @@ test('R1: where the transcript was imported, the session stays as it is and the 
   for (const change of [
     p => { p.session.messages[0].role = 'user'; },
     p => { p.session.messages[0].key = 'h:' + 'a'.repeat(32); },
-    p => { p.session.messages.push({ key: 'h:' + 'b'.repeat(32), line: 9, role: 'user', text: 'A line the session never had.' }); },
   ]) {
     const copy = clone(parcel);
     change(copy);
@@ -319,7 +322,8 @@ test('R1: importing the full transcript later replaces the excerpts and keeps th
     title: 'Vera: an aside that no graph cites, about the Lyra budget.', messageCount: 5, project: 'default' });
   assert.deepEqual(b.store.get(a.session.id).messages, a.store.get(a.session.id).messages);
   assert.equal(b.store.list('lyra budget', null, null).length, 1);
-  assert.equal(b.store.getGraphContext(a.graph.id).graphId ?? a.graph.id, a.graph.id);
+  assert.equal(b.store.getGraphContext(a.graph.id).graphId, a.graph.id);
+  assert.equal('baseline' in b.store.getGraphContext(a.graph.id).meter, false);
   // Nothing marks it any more: the next import is the plain duplicate it always was.
   const raw = new DatabaseSync(b.path, { readOnly: true });
   assert.equal(raw.prepare('SELECT count(*) AS n FROM session_excerpts').get().n, 0);
@@ -529,4 +533,363 @@ test('R1: share reads read-only and asks for an upgrade of an older file', async
   assert.equal(check.prepare('PRAGMA user_version').get().user_version, 7, 'not migrated by a read');
   check.close();
   assert.equal(existsSync(join(a.folder, 'x.json')), false);
+});
+
+// ---- Codex review, round 1 ----
+
+const refusedShare = (store, graphId, message) => assert.throws(() => parcelOf(store, graphId),
+  error => error instanceof InputError && error.message === message);
+
+test('R1 review: a graph whose own text holds a credential is not shared', t => {
+  const a = vera(t, [2, 4]);
+  const leaky = 'This graph\'s own text (a label, a name or an artifact) holds what looks like a credential, so it was not shared.';
+  // The label repeats the token of the line it cites: the line is redacted, the label cannot be.
+  const inLabel = a.store.publishGraph({ version: 2, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'token', kind: 'decision', label: `Staging token ${fakeToken}`, evidenceLines: [4] }] });
+  refusedShare(a.store, inLabel.id, leaky);
+  const inOldLabel = a.store.publishGraph({ version: 1, sessionId: a.session.id, edges: [],
+    nodes: [{ id: 'token', kind: 'decision', label: `Use ${fakeToken}`, evidenceLines: [4] }] });
+  refusedShare(a.store, inOldLabel.id, leaky);
+  // An artifact's file path is free text too.
+  const file = a.store.registerArtifact({ kind: 'file', repo: 'orbit-labs/adapter', ref: `config/${fakeToken}.env` });
+  const inArtifact = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { artifact: file.id }] }] });
+  refusedShare(a.store, inArtifact.id, leaky);
+  // Hashes, keys and repository names are not taken for credentials.
+  const commit = a.store.registerArtifact({ kind: 'commit', repo: 'orbit-labs/adapter', ref: 'a1b2c3d4e5f60718'.repeat(4).slice(0, 40) });
+  const plain = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { artifact: commit.id }] }] });
+  assert.equal(parcelOf(a.store, plain.id).parcel.artifacts.length, 1);
+});
+
+test('R1 review: a label that repeats a line the graph does not cite is not shared', t => {
+  const a = vera(t);
+  const repeats = 'A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.';
+  const titled = lines => a.store.publishGraph({ version: 2, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'aside', kind: 'decision', label: 'Noted:  vera: an aside that no graph cites, about the LYRA budget.', evidenceLines: lines }] });
+  // Line 1 is also the session's title; white space and case do not hide it.
+  refusedShare(a.store, titled([2]).id, repeats);
+  // Citing the line makes it part of what is shared.
+  const { parcel } = parcelOf(a.store, titled([1, 2]).id);
+  assert.deepEqual(parcel.session.messages.map(message => message.line), [1, 2]);
+  // A short line is ordinary words, not a quotation.
+  const b = ledger(t, 'short');
+  const session = b.store.importTranscript({ provider: 'claude', source: 'short.jsonl',
+    transcript: claude([['user', 'Port 6100'], ['assistant', 'The relay ships on port 6100 from Friday.']]) });
+  const graph = b.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidenceLines: [2] }] });
+  assert.equal(serializeParcel(parcelOf(b.store, graph.id).parcel).includes('"line":1'), false);
+  // A long uncited line is found by its first 120 characters, as a title is.
+  const long = 'The Orion rollout waits for the adapter review, then the smoke test, then the sign-off from the Vega team, and only after that the Friday demo recording.';
+  const c = ledger(t, 'long');
+  const longSession = c.store.importTranscript({ provider: 'claude', source: 'long.jsonl', transcript: claude([['user', long], ['assistant', 'Understood.']]) });
+  const quoted = c.store.publishGraph({ version: 2, sessionId: longSession.id, party: 'vera', edges: [],
+    nodes: [{ id: 'plan', kind: 'decision', label: [...long].slice(0, 130).join(''), evidenceLines: [2] }] });
+  refusedShare(c.store, quoted.id, repeats);
+});
+
+test('R1 review: a parcel carries exactly what its graph cites, whatever the receiver already has', t => {
+  const a = ledger(t, 'a');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns), project: 'lyra' });
+  const commit = a.store.registerArtifact({ project: 'lyra', kind: 'commit', repo: 'orbit-labs/adapter', ref: '6100abcdef0' });
+  const other = a.store.registerArtifact({ project: 'lyra', kind: 'pr', repo: 'orbit-labs/adapter', ref: '61' });
+  const graph = a.store.publishGraph({ version: 3, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { message: key(3) }, { artifact: commit.id }] }] });
+  const { parcel } = parcelOf(a.store, graph.id);
+  const older = a.store.publishGraph(veraGraph(session.id));
+  const notExact = 'A parcel must carry exactly the lines and artifacts its graph cites.';
+
+  // B already has everything: the whole transcript and both artifacts. The parcel must still be complete.
+  const b = ledger(t, 'b');
+  b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns), project: 'lyra' });
+  b.store.registerArtifact({ project: 'lyra', kind: 'commit', repo: 'orbit-labs/adapter', ref: '6100abcdef0' });
+  // C has the same lines as excerpts from an earlier parcel.
+  const c = ledger(t, 'c');
+  carry(a.store, c.store, older.id);
+  for (const target of [b, c]) {
+    const before = target.dump();
+    for (const change of [
+      p => { p.session.messages.pop(); },
+      p => { p.session.messages.push({ key: key(5), line: 5, role: 'user', text: 'Record the demo on Friday.' }); },
+      p => { p.artifacts = []; },
+      p => { p.artifacts.push({ kind: other.kind, repo: other.repo, ref: other.ref }); },
+      p => { p.artifacts.push(p.artifacts[0]); },
+      p => { p.artifacts[0].ref = '6100abcdef1'; },
+      // An artifact's ID covers its project, so another project's slug gives other IDs.
+      p => { p.project = 'vela'; },
+    ]) {
+      const copy = clone(parcel);
+      change(copy);
+      assert.throws(() => target.store.receiveParcel(checkParcel(copy)), error => error instanceof InputError && error.message === notExact);
+      assert.equal(target.dump(), before);
+    }
+    assert.equal(receive(target.store, parcel).graph.id, graph.id);
+  }
+  // The same for line citations.
+  const lines = parcelOf(a.store, older.id).parcel;
+  for (const change of [p => { p.session.messages.shift(); }, p => { p.session.messages.push({ key: key(5), line: 5, role: 'user', text: 'Record the demo on Friday.' }); }]) {
+    const copy = clone(lines);
+    change(copy);
+    assert.throws(() => checkParcel(copy), error => error instanceof InputError && error.message === notExact);
+  }
+});
+
+test('R1 review: text that is not the transcript\'s, or a redaction of it, is a conflict', t => {
+  const a = vera(t, [2, 4]);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const mismatch = 'The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.';
+  const altered = clone(parcel);
+  altered.session.messages[0].text = 'The relay ships on port 6200.';
+
+  // Where the transcript is imported: the parcel's text must be its text, or a redaction of it.
+  const b = ledger(t, 'b');
+  b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  const before = b.dump();
+  assert.throws(() => b.store.receiveParcel(checkParcel(altered)), error => error instanceof ConflictError && error.message === mismatch);
+  assert.equal(b.dump(), before);
+  assert.equal(receive(b.store, parcel).added, 0, 'the redacted line 4 matches its original');
+
+  // Excerpts first, then the real file: altered text is not swapped for the file's without a word.
+  const c = ledger(t, 'c');
+  c.store.receiveParcel(checkParcel(altered));
+  const held = c.dump();
+  assert.throws(() => c.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) }),
+    error => error instanceof ConflictError && error.message.startsWith('This ledger holds excerpts received from another machine'));
+  assert.equal(c.dump(), held);
+  // A second parcel that shows another text for a line the excerpts have.
+  assert.throws(() => c.store.receiveParcel(checkParcel(parcel)), error => error instanceof ConflictError && error.message === mismatch);
+  assert.equal(c.dump(), held);
+
+  // Two parcels may redact the same line differently; the stored one stays.
+  const d = ledger(t, 'd');
+  const unredacted = clone(parcel);
+  unredacted.session.messages[1].text = 'The staging token is [REDACTED assigned-secret] for [REDACTED bearer-token].';
+  receive(d.store, parcel);
+  const stored = d.store.get(a.session.id).messages[1].text;
+  assert.equal(d.store.receiveParcel(checkParcel(unredacted)).added, 0);
+  assert.equal(d.store.get(a.session.id).messages[1].text, stored);
+});
+
+test('R1 review: an agent turn\'s author and recipient are compared as its text is', t => {
+  const a = ledger(t, 'a');
+  const codex = (role, text) => JSON.stringify({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } });
+  const agent = (author, recipient, text) => JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', author, recipient, content: [{ type: 'input_text', text }] } });
+  const transcript = [codex('user', 'Check the Orion build before the demo.'), agent('/root', '/root/worker', 'Run the Orion smoke test on port 6100.')].join('\n');
+  const session = a.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript });
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'orion', edges: [],
+    nodes: [{ id: 'smoke', kind: 'action', status: 'pending', label: 'Smoke test', evidenceLines: [2] }] });
+  const { parcel } = parcelOf(a.store, graph.id);
+  const b = ledger(t, 'b');
+  b.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript });
+  const forged = clone(parcel);
+  forged.session.messages[0].author = '/root/other';
+  assert.throws(() => b.store.receiveParcel(checkParcel(forged)), ConflictError);
+  const c = ledger(t, 'c');
+  c.store.receiveParcel(checkParcel(forged));
+  assert.throws(() => c.store.importTranscript({ provider: 'codex', source: 'orion.jsonl', transcript }), ConflictError);
+  assert.equal(c.store.get(session.id).excerpts, true);
+});
+
+test('R1 review: matchesRedacted accepts a text or a redaction of it and nothing else', () => {
+  const m = '[REDACTED github-token]';
+  const yes = [
+    ['same', 'same'], [`a ${m} b`, 'a SECRET b'], [m, 'x'], [`${m} tail`, 'S tail'], [`head ${m}`, 'head S'],
+    [`a ${m} b ${m} c`, 'a 1 b 2 c'], [`${m}${m}`, 'ab'], [`a ${m} b`, `a ${m} b`], [`x ${m} b b`, 'x b b b b'],
+    [`a [REDACTED jwt] b`, `a ${m} b`],
+  ];
+  const no = [
+    ['same', 'other'], [`a ${m} b`, 'a b'], [m, ''], [`a ${m} b`, 'a SECRET c'], [`a ${m} b`, 'x SECRET b'],
+    [`a ${m} b ${m} c`, 'a 1 c'], [`${m}${m}`, 'a'], ['a [REDACTED Not A Kind] b', 'a SECRET b'], [`a ${m} b`, 'a b'],
+    ['port 6200', 'port 6100'], [`${m} b`, 'b'],
+  ];
+  for (const [shown, original] of yes) assert.equal(matchesRedacted(shown, original), true, `${shown} | ${original}`);
+  for (const [shown, original] of no) assert.equal(matchesRedacted(shown, original), false, `${shown} | ${original}`);
+  // Many markers against a long text stay fast: no backtracking.
+  const started = performance.now();
+  assert.equal(matchesRedacted(`${`${m}aab`.repeat(2000)}${m}`, `${'a'.repeat(200_000)}x`), false);
+  assert.ok(performance.now() - started < 2000);
+});
+
+test('R1 review: an import that waits on a receive completes the excerpts it then finds', async t => {
+  const a = vera(t);
+  const b = ledger(t, 'b');
+  const source = ledger(t, 'c');
+  carry(a.store, source.store, a.graph.id);
+  source.store.close();
+  b.store.close();
+  const file = join(b.folder, 'vera.jsonl');
+  writeFileSync(file, claude(veraTurns));
+
+  // Another process holds the write lock while it receives a parcel of this very session.
+  const raw = new DatabaseSync(b.path);
+  let child;
+  try {
+    raw.exec(`ATTACH '${source.path.replaceAll('\'', '\'\'')}' AS other; PRAGMA foreign_keys = ON; BEGIN IMMEDIATE;`);
+    child = run(['import', '--provider', 'claude', file], b.env);
+    // The import parses the file, then waits for the lock (busy_timeout is 5 s).
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    raw.exec(`
+      INSERT INTO messages (session_id, seq, line, role, text_json, key, author_json, recipient_json)
+        SELECT session_id, seq, line, role, text_json, key, author_json, recipient_json FROM other.messages;
+      INSERT INTO sessions (id, provider, source, title, message_count, messages, search_text, project_id)
+        SELECT id, provider, source, title, message_count, messages, search_text, (SELECT id FROM projects WHERE slug = 'default') FROM other.sessions;
+      INSERT INTO session_excerpts SELECT * FROM other.session_excerpts;
+      COMMIT;
+    `);
+  } finally {
+    raw.close();
+  }
+  const result = await child;
+  assert.equal(result.code, 0, result.stderr);
+  const { session } = JSON.parse(result.stdout);
+  assert.deepEqual(session, { id: a.session.id, provider: 'claude', source: 'vera.jsonl',
+    title: 'Vera: an aside that no graph cites, about the Lyra budget.', messageCount: 5, project: 'default' });
+  const check = new DatabaseSync(b.path, { readOnly: true });
+  try {
+    assert.equal(check.prepare('SELECT count(*) AS n FROM session_excerpts').get().n, 0);
+    assert.equal(check.prepare('SELECT count(*) AS n FROM messages').get().n, 5);
+  } finally {
+    check.close();
+  }
+});
+
+test('R1 review: a graph that cites more text than a parcel holds is refused by share, not by receive', t => {
+  const a = ledger(t, 'a');
+  const big = 'Orion log line. '.repeat(Math.ceil((maxParcelBytes + 1024) / 16));
+  const session = a.store.importTranscript({ provider: 'claude', source: 'big.jsonl', transcript: claude([['user', 'Keep the Orion log.'], ['assistant', big]]) });
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'log', kind: 'decision', label: 'Keep the Orion log', evidenceLines: [2] }] });
+  refusedShare(a.store, graph.id, 'This graph cites more text than a parcel can carry (8 MiB), so it was not shared.');
+});
+
+test('R1 review: a stored graph whose citation snapshot does not match its packet is not shared', t => {
+  const a = ledger(t, 'a');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  const commit = a.store.registerArtifact({ kind: 'commit', repo: 'orbit-labs/adapter', ref: '6100abcdef0' });
+  const graph = a.store.publishGraph({ version: 3, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { artifact: commit.id }] }] });
+  // An odd payload: the snapshot names line 5 and no artifact; the packet still cites key 2 and the commit.
+  const raw = new DatabaseSync(a.path);
+  raw.prepare('UPDATE graphs SET payload = json_set(payload, \'$.citations\', json(?)) WHERE id = ?')
+    .run(JSON.stringify([{ id: 'port', lines: [5], artifacts: [] }]), graph.id);
+  raw.close();
+  refusedShare(a.store, graph.id, 'This graph\'s stored citations do not match its packet, so it was not shared.');
+  // With the snapshot's artifacts intact, the lines come from the packet's keys, not from the snapshot.
+  const fixed = new DatabaseSync(a.path);
+  fixed.prepare('UPDATE graphs SET payload = json_set(payload, \'$.citations\', json(?)) WHERE id = ?')
+    .run(JSON.stringify([{ id: 'port', lines: [5], artifacts: [{ id: commit.id, kind: 'commit', repo: 'orbit-labs/adapter', ref: '6100abcdef0' }] }]), graph.id);
+  fixed.close();
+  assert.deepEqual(parcelOf(a.store, graph.id).parcel.session.messages.map(message => message.line), [2]);
+});
+
+test('R1 review: a parcel refused for what it holds creates and upgrades no database', async t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const b = ledger(t, 'b');
+  b.store.close();
+  const wrongId = clone(parcel);
+  wrongId.graph.id = 'f'.repeat(64);
+  const file = join(b.folder, 'wrong.json');
+  writeFileSync(file, serializeParcel(wrongId));
+
+  const absent = join(b.folder, 'none', 'ledger.sqlite');
+  const none = await run(['receive', file], { CONTEXT_LEDGER_DB: absent });
+  assert.equal(none.stderr, 'The parcel\'s graph ID does not match its packet.\n');
+  assert.equal(existsSync(absent), false);
+  assert.equal(existsSync(join(b.folder, 'none')), false);
+
+  const raw = new DatabaseSync(b.path);
+  raw.exec('DROP TABLE session_excerpts; PRAGMA user_version = 7;');
+  raw.close();
+  const old = await run(['receive', file], b.env);
+  assert.equal(old.stderr, 'The parcel\'s graph ID does not match its packet.\n');
+  const check = new DatabaseSync(b.path, { readOnly: true });
+  try {
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 7);
+  } finally {
+    check.close();
+  }
+});
+
+test('R1 review: invisible characters in a carried line are written as escapes and read back unchanged', t => {
+  const a = ledger(t, 'a');
+  const odd = ['Deploy on Friday', String.fromCodePoint(0x202e), 'yadnuS', String.fromCodePoint(0x85, 0x2028, 0xe0041, 0x200d), ' as agreed.'].join('');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'odd.jsonl', transcript: claude([['user', odd]]) });
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'when', kind: 'decision', label: 'Deploy on Friday', evidenceLines: [1] }] });
+  const { parcel, text } = parcelOf(a.store, graph.id);
+  assert.equal(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text.slice(0, -1)), false);
+  for (const escape of ['202e', '0085', '2028', 'db40', 'dc41', '200d']) assert.equal(text.includes('\\u' + escape), true, escape);
+  assert.equal(text, serializeParcel(parcel));
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(parseParcel(Buffer.from(text)));
+  assert.equal(b.store.get(session.id).messages[0].text, odd);
+});
+
+test('R1 review: the savings meter says when its baseline is excerpts', t => {
+  const a = vera(t);
+  const b = ledger(t, 'b');
+  carry(a.store, b.store, a.graph.id);
+  const there = b.store.getGraphContext(a.graph.id);
+  const here = a.store.getGraphContext(a.graph.id);
+  assert.equal(there.graphId, a.graph.id);
+  assert.equal(there.meter.baseline, 'excerpts');
+  assert.equal('baseline' in here.meter, false);
+  assert.ok(there.meter.handoffTokens < here.meter.handoffTokens);
+});
+
+test('R1 review: share escapes an odd output path on the terminal', { skip: process.platform === 'win32' && 'Windows file names cannot hold control characters' }, async t => {
+  const a = vera(t);
+  a.store.close();
+  const file = join(a.folder, `odd${escape}[31m.json`);
+  const shared = await run(['share', a.graph.id, '--out', file], a.env);
+  assert.equal(shared.code, 0, shared.stderr);
+  assert.equal(shared.stdout.includes(escape), false);
+  assert.equal(shared.stdout.split('\n')[0].endsWith('odd\\u001b[31m.json'), true);
+  assert.equal(existsSync(file), true);
+});
+
+test('R1 review: the CLI search and hand-off and the MCP session tools show the excerpts mark', async t => {
+  const a = vera(t);
+  const b = ledger(t, 'b');
+  carry(a.store, b.store, a.graph.id);
+  b.store.close();
+  const server = spawn(process.execPath, ['src/server.mjs'], { env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: b.path }, stdio: ['ignore', 'pipe', 'ignore'] });
+  let client;
+  // Closed here, not in a hook: the ledger's own hook removes the folder first, and the
+  // server must have let go of the database by then.
+  try {
+    let port;
+    let output = '';
+    for await (const chunk of server.stdout) {
+      output += chunk;
+      port = /listening at http:\/\/127\.0\.0\.1:(\d+)/u.exec(output)?.[1];
+      if (port) break;
+    }
+    assert.ok(port, 'the server listens');
+    const env = { ...b.env, PORT: port };
+    const mark = 'Excerpts: only the lines a shared graph cites, received from another machine.';
+
+    const found = await run(['search', 'sunday'], env);
+    assert.equal(found.code, 0, found.stderr);
+    assert.deepEqual(JSON.parse(found.stdout).map(({ id, excerpts }) => ({ id, excerpts })), [{ id: a.session.id, excerpts: true }]);
+    const handoff = await run(['handoff', a.session.id], env);
+    assert.equal(handoff.stdout.split('\n').includes(mark), true);
+
+    client = startMcp(Number(port), b.env);
+    await client.request(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+    client.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    const listed = await client.call(2, 'session_search', { query: 'sunday' });
+    assert.equal(JSON.parse(listed.content[0].text).sessions[0].excerpts, true);
+    const read = await client.call(3, 'session_read', { sessionId: a.session.id });
+    assert.equal(read.content[0].text.split('\n').includes(mark), true);
+    assert.equal(read.content[0].text.includes('aside'), false);
+  } finally {
+    try {
+      if (client && client.child.exitCode === null) await client.close();
+    } finally {
+      server.kill();
+      if (server.exitCode === null && server.signalCode === null) await once(server, 'exit');
+    }
+  }
 });

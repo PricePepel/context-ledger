@@ -493,7 +493,7 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
  */
 async function shareCommand(graphId, out) {
   const store = await openCurrentStore(ledgerDatabasePath(), 'share');
-  const { buildParcel, serializeParcel } = await import('./parcel.mjs');
+  const { buildParcel } = await import('./parcel.mjs');
   const { InputError } = await import('./errors.mjs');
   let built;
   let total;
@@ -527,7 +527,7 @@ async function shareCommand(graphId, out) {
     throw new Error('Cannot create the output file.');
   }
   try {
-    await file.writeFile(serializeParcel(built.parcel));
+    await file.writeFile(built.text);
     await file.sync();
   } catch {
     throw new Error('Cannot write the output file. Delete what was written and try again.');

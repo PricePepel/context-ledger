@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Ajv2020 from 'ajv/dist/2020.js';
 import graphSchemaV1 from '../schemas/semantic-graph.schema.json' with { type: 'json' };
 import graphSchemaV2 from '../schemas/semantic-graph-v2.schema.json' with { type: 'json' };
@@ -111,6 +112,39 @@ export function canonicalPacket(packet) {
   if (packet.links?.length) canonical.links = [...packet.links].sort(compareBy('type', 'graph', 'from', 'to'));
   else delete canonical.links;
   return canonical;
+}
+
+/** A packet as the text its ID is the SHA-256 of: object keys sorted, arrays in order. */
+export function serializeGraphPacket(packet) {
+  // JSON object key order is insignificant. Array order remains part of the packet.
+  return JSON.stringify(packet, (_key, value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
+    }
+    return value;
+  });
+}
+
+/** The ID a store gives a packet of a valid shape: SHA-256 of its canonical form. */
+export const packetId = packet => createHash('sha256').update(serializeGraphPacket(canonicalPacket(packet))).digest('hex');
+
+/**
+ * Card R1: what a packet cites, read from the packet alone: the transcript lines of a
+ * version 1 or 2 packet, and the message keys and artifact IDs of a version 3 packet.
+ * The shape is checked first, as validateGraph checks it.
+ */
+export function packetCitations(packet) {
+  const version = packet?.version;
+  const validate = validateShape.get(version);
+  if (!validate?.(packet)) {
+    throw new GraphInputError(validate ? `Invalid version ${version} graph packet.` : 'Unsupported graph packet version.');
+  }
+  const evidence = packet.nodes.flatMap(node => node.evidence ?? []);
+  return {
+    lines: new Set(packet.nodes.flatMap(node => node.evidenceLines ?? [])),
+    keys: new Set(evidence.filter(citation => citation.message !== undefined).map(citation => citation.message)),
+    artifacts: new Set(evidence.filter(citation => citation.artifact !== undefined).map(citation => citation.artifact)),
+  };
 }
 
 function indexNodes(nodes, sourceLines, { messageKeys, hasArtifact }) {
