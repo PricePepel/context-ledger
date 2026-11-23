@@ -101,3 +101,29 @@ test('start with piped output prints its two plain lines and no escape codes', a
   assert.match(output, /^Context Ledger listening at http:\/\/127\.0\.0\.1:\d+\r?\nSign in to the browser app \(one use, within 60 seconds\): http:\/\/127\.0\.0\.1:\d+\/login\?code=[\w-]+\r?\n$/u);
   assert.ok(!output.includes(ESC));
 });
+
+test('the installed command does not show Node\'s SQLite warning, and still shows other warnings', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ctm-u9-bin-'));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/context-ledger.mjs', import.meta.url)), 'start'], {
+    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite') }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(async () => {
+    child.kill();
+    await new Promise(resolve => { child.once('exit', resolve); if (child.exitCode !== null) resolve(); });
+    await rm(dir, { recursive: true, force: true });
+  });
+  let errors = '';
+  child.stderr.on('data', chunk => { errors += chunk; });
+  let output = '';
+  const timer = setTimeout(() => child.kill(), 15_000);
+  for await (const chunk of child.stdout) {
+    output += chunk;
+    if (output.split('\n').length > 2) break;
+  }
+  clearTimeout(timer);
+  assert.match(output, /^Context Ledger listening at http:\/\/127\.0\.0\.1:\d+\r?\n/u);
+  assert.doesNotMatch(errors, /ExperimentalWarning: SQLite/u);
+  // The filter is narrow: only an ExperimentalWarning that names SQLite.
+  const source = await (await import('node:fs/promises')).readFile(new URL('../bin/context-ledger.mjs', import.meta.url), 'utf8');
+  assert.match(source, /type === 'ExperimentalWarning' && \/SQLite\/u\.test/u);
+});

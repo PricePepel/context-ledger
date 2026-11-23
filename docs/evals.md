@@ -5029,6 +5029,7 @@ Installing and starting the ledger prints plain lines. U9 gives a person at a te
 2. **Not at a terminal:** when output is piped, or `NO_COLOR` is set, or `TERM` is `dumb`, the output is exactly the plain lines of today: no colour codes, no cursor movement, no delay. Scripts that wait for "listening at" keep working.
 3. **Safe:** the welcome prints only fixed text and values the ledger made (port, link). Anything else printed to the terminal still goes through the existing escaping. The animation never delays the server starting to listen.
 4. **Short:** the whole welcome takes under 1.5 seconds, and `CONTEXT_LEDGER_NO_BANNER=1` turns it off.
+5. **One warning less:** under the installed command (`context-ledger ...`), Node's "SQLite is an experimental feature" warning is not shown above every command. Only that warning is filtered; a checkout's `npm start` is unchanged.
 
 ### Acceptance for the code
 

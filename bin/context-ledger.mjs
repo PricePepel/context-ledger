@@ -13,6 +13,16 @@ import { homeOf } from '../src/install.mjs';
 
 if (!process.env.CONTEXT_LEDGER_DB) process.env.CONTEXT_LEDGER_DB = join(homeOf(), '.context-ledger', 'ledger.sqlite');
 
+// Card U9: Node prints "ExperimentalWarning: SQLite is an experimental feature" above every
+// command. Under the installed command that one warning is not shown (the ledger chose
+// node:sqlite on purpose); every other warning still is, and NODE_OPTIONS still applies.
+const emitWarning = process.emitWarning;
+process.emitWarning = function (warning, ...rest) {
+  const type = typeof rest[0] === 'string' ? rest[0] : rest[0]?.type;
+  if (type === 'ExperimentalWarning' && /SQLite/u.test(String(warning))) return undefined;
+  return emitWarning.call(this, warning, ...rest);
+};
+
 const [command, ...rest] = process.argv.slice(2);
 if (command === 'start' && rest.length === 0) {
   await import('../src/server.mjs');
