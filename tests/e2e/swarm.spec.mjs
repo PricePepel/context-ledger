@@ -18,6 +18,9 @@ test('a simulated 100-agent run finishes, shows the answer and one agent’s pro
   await expect(page.locator('#status')).toContainText('(simulated)');
   await expect(page.locator('#stats')).toContainText('100 / 100');
   await expect(page.locator('#stats')).toContainText('not measured');
+  // Card S1b: a simulated run shows no speed-up at all, not a made-up one.
+  await expect(page.locator('#stats .stat', { hasText: 'Speed-up' })).toContainText('not measured');
+  await expect(page.locator('#stats .stat', { hasText: 'KV cache peak' })).toContainText('not measured');
   await expect(page.locator('#answer')).toContainText('Truth from the generator');
 
   // An unverified agent: its quote is not in its report, and the page says so.

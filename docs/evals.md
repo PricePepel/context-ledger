@@ -4675,6 +4675,38 @@ The combined answer (services hit by a configuration change and their total down
 
 What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
 
+## S1b — Honest speed-up and peak KV on the swarm page (defined 2026-11-22, before the code)
+
+The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divided the sum of each agent's own time *while sharing the GPU* by the wall time (53× for 100 agents), but each request is slower under load, so the honest figure against one agent run alone was about 23–30×. "KV cache in use" read 0% because the last sample is taken after the agents finish.
+
+| What | Pass when |
+| --- | --- |
+| Solo baseline | Before the agents start, a live run sends one warm-up request (not timed) and then `SWARM_BASELINE_RUNS` timed requests (default 3, 1 to 5) to each server alone, one at a time, and keeps the median per server. The baseline uses the same prompt shape as an agent (report 1) and its tokens are not added to the run's totals. It is measured once per ledger process for the same set of servers and models and reused by later runs, with the time it was measured. |
+| Speed-up | `speed-up = estimated one-after-another ÷ wall time`, where the estimate adds each finished agent's server baseline. A test with a server that answers slower under load than alone shows the speed-up uses the solo baseline (and is below the old sum ÷ wall ratio). If the baseline fails, the run still goes on and the speed-up says "not measured". |
+| Old figure | The sum of agents' own times is no longer shown as a speed-up or as "one after another". It stays in the API as `agentMsSum` only. |
+| KV peak | The KV-cache tile shows the highest value sampled during the run (across servers and samples), labelled as the peak, not the last sample. A test with a server whose KV gauge is high during the run and 0 afterwards shows the peak, not 0. |
+| Simulated | A simulated run shows "not measured" for the speed-up, the one-after-another estimate and the KV peak; no baseline is taken. |
+| Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
+| Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
+
+**Codex review, round 1** (of ed890ea), each finding fixed with a regression test:
+
+- (medium) Failed agents were credited with a full solo run, so fast errors could raise the speed-up and an all-failed run could still show one. Only agents that answered count now (`answeredForSpeedup` in the API, "N answers ×" on the page).
+- (medium) The baseline timed any HTTP 200, even a reply with no usable answer. Each baseline reply must now pass `parseAnswer`, the check an agent's reply passes; otherwise there is no baseline and no speed-up.
+- (medium) The timed requests read the same report as the warm-up, so they reused more of the prefix cache than agents do, and the page did not say the figure was a warm, possibly reused baseline. Timed requests now read reports 2 to N+1 after a warm-up on report 1, and the page says "per agent alone, warm (median of 3, measured at / reused from HH:MM)".
+- (low) The median of an even count took the lower middle value: it is now the mean of the two middle values.
+- (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
+- (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
+
+**Codex review, round 2** (of 497612e): the round 1 fixes are correct. Fixed with tests:
+
+- (medium) The baseline used the run's seed, so it sent the first agents' exact prompts before the run and a prefix cache could serve them faster, inflating the speed-up. The baseline now reads reports from its own seed (`baselineSeed`), and a test checks no baseline prompt is a run prompt.
+- (low) With several servers the note multiplied the total answer count by every server's time. Each server now shows its own answers × solo time (`perServer[].answered` in the API).
+- (low) The warm-up test could pass with the warm-up included: it now uses distinct timings and two timed runs, so only the right samples give the expected median.
+- (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
+
+Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
