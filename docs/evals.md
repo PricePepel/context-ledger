@@ -4974,10 +4974,23 @@ Synthetic data only: the swarm's generated incident reports.
 
 ### U7 results (2026-11-23)
 
-Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path is not checked yet: the GPU was running another card's evaluation.
+Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path was checked afterwards, once the GPU was free (see the live check below).
 
 - `node:test`: 6 tests in `tests/console-swarm.test.mjs`, and the console's read-only check now pins the one POST to `/api/swarm/runs`.
 - Playwright: 4 U7 tests in `tests/e2e/swarm.spec.mjs` (run and counts, the lost run, the recorded demo, the mode race), 12 of 12 over two repeats in one worker.
+
+**Live check from the room** (2026-11-23, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, `SWARM_CONCURRENCY=64`, 100 agents, synthetic reports; aggregates only). The room's badge read "Live: Qwen/Qwen2.5-7B-Instruct-AWQ". Every run finished 100 of 100 agents, with 100/100 quotes verified and 100/100 answers correct.
+
+| Run | Started from | Wall time | Speed-up shown |
+| --- | --- | --- | --- |
+| 1 (first after the server start) | room | 5.29 s | about 15× |
+| 2 | room | 3.92 s | about 20× |
+| 3 | room | 3.63 s | about 22× |
+| 4 | room | 3.60 s | about 22× (22.2× on `/swarm/`) |
+| 5 | room, while a second browser took screenshots | 4.10 s | about 20× |
+| 6 | `/swarm/`, while a second browser took screenshots | 3.96 s | 20.2× |
+
+The room's "Open the swarm page" link opened run 4 on `/swarm/` with the same numbers: one after another 80.0 s (100 × 0.80 s alone, baseline reused), KV peak 5%, prefix-cache hits 98%, combined answer matching the truth. Together with the S1b check (20.8–22.4× on warm runs) the figure to quote is **about 20–22×** on a warm server; the first run after a server start shows about 15×.
 
 ### Codex review of U7 (2026-11-23)
 
@@ -5019,6 +5032,14 @@ Synthetic data only.
 - Playwright: the existing library, room, review and swarm journeys pass unchanged; new checks for the swarm page's dataset and task before a run and the robots after one, and for the library's fonts and frame.
 - The full suites pass, and Codex reviews the change.
 
+### U8 results (2026-11-23)
+
+- The library and the swarm page load `/console/tokens.css`, `/pixel.css` and the console's three fonts, and sit in the same framed sheet as the console. The library's structure, text and IDs are unchanged, and every existing library, room, review, delete, hand-off and auth journey passes.
+- The swarm page shows the dataset (three sample reports from `GET /api/swarm/task`, texts only) and the shared instructions before a run, then one pixel robot per agent, the states in words, the check's counts and what the run ran on. A simulated run still shows no measured speed-up.
+- The console's swarm room draws the same robots. A console test forbids literal colours in `console.css`, so the robot's colours are tokens.
+- `node:test`: the task endpoint (sample equals what agent 1 reads, no truth, needs the token), the robot's grid and its class-only drawing, and `/pixel.css` in the static routes.
+- Playwright: 3 new tests (swarm page story and look, the room's robots, the library's look and phone width).
+
 ## U9 — Terminal welcome (defined 2026-11-23, before the code)
 
 Installing and starting the ledger prints plain lines. U9 gives a person at a terminal a short welcome in the product's look, and changes nothing for scripts.
@@ -5029,8 +5050,39 @@ Installing and starting the ledger prints plain lines. U9 gives a person at a te
 2. **Not at a terminal:** when output is piped, or `NO_COLOR` is set, or `TERM` is `dumb`, the output is exactly the plain lines of today: no colour codes, no cursor movement, no delay. Scripts that wait for "listening at" keep working.
 3. **Safe:** the welcome prints only fixed text and values the ledger made (port, link). Anything else printed to the terminal still goes through the existing escaping. The animation never delays the server starting to listen.
 4. **Short:** the whole welcome takes under 1.5 seconds, and `CONTEXT_LEDGER_NO_BANNER=1` turns it off.
+5. **One warning less:** under the installed command (`context-ledger ...`), Node's "SQLite is an experimental feature" warning is not shown above every command. Only that warning is filtered; a checkout's `npm start` is unchanged.
 
 ### Acceptance for the code
 
 - `node:test` for the pure frame builder (plain mode has no escape codes; colour mode only uses SGR colour codes and its own fixed cursor moves; the mark is a fixed grid), and for `start` run with piped output giving today's exact lines.
 - The full suites pass, and Codex reviews the change.
+
+### U9 results (2026-11-23)
+
+- At a terminal, `context-ledger start` shows the CTM pixel letters in violet over a lime bar, then its two lines behind coloured pixels, in about 0.8 s; `install` shows its lines the same way. Checked by eye in Windows PowerShell.
+- Piped, with `NO_COLOR`, `TERM=dumb` or `CONTEXT_LEDGER_NO_BANNER=1`, the output is the same plain lines as before: every test that waits for "listening at" passes unchanged, and one new test checks the two lines exactly with no escape codes even under `FORCE_COLOR`.
+- The welcome writes colour codes only (no cursor movement), from fixed text and the caller's own lines. A test strips the colour codes and checks no control or format character is left.
+- Found by its own test: a line state named after an object property (`constructor`) crashed the frame builder; the state lookup now uses its own keys only.
+- Under the installed command Node's SQLite experimental warning is not shown; only that warning is filtered.
+- `node:test`: 6 tests in `tests/welcome.test.mjs`.
+
+### Suites on the stacked branch (U7, U8 and U9 on Ali's U6 with main merged in)
+
+`node --test tests/*.test.mjs`: 636 pass, 10 skipped, 0 fail. Playwright: 61 pass, 1 skipped, 0 fail (run on a second port because another checkout's run held 4318; `auth.spec`, which names the port in its cookie, was run on 4318).
+
+### Live rehearsal on the stacked branch (2026-11-23)
+
+`node demo/rehearse.mjs --runs 1` (Claude Code as Leo, Codex as Ali, one ledger): Leo's agent published 8 nodes in 68 s, Ali's Codex published 4 nodes with 2 links to Leo's in 33 s, the room held 2 proposals, and the hand-off answered 6 of 6 from the transcript (16.8 s) and 6 of 6 from the graph briefing (15.8 s; 323 against 1,814 estimated tokens). A first attempt, run while the whole node suite was also running on the laptop, failed: Ali's Codex reported that the ledger could not read its access token and published nothing. Two direct Codex probes and this rerun on an idle machine all worked, so the cause was load, not the code; the token is read through PowerShell on Windows, with a 30 s limit. For a live demo, run nothing heavy beside it.
+
+### Codex review of U8 and U9 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, four medium and four low. All are fixed with tests. It confirmed that the task endpoint needs the token and omits the truth, that pages and model requests stay on this machine, that report, model and error strings are set as text, that the library's markup, IDs and script are unchanged, and that the welcome writes only colour codes and never delays listening.
+
+1. *(medium, U9)* Install lines were printed as given, and the installer's own escaping keeps U+200C and U+200D. Every caller line now goes through `terminalLine` in both modes; a test sends a line with zero-width, bidi and escape characters through the pipe and the terminal paths.
+2. *(medium, U8)* Each robot on the swarm page was a button with a list-item role, which can hide that it is a button. Each is now a real button inside a list item, named "Agent N, working" (or checked, left out, failed), and a test opens a report from the keyboard.
+3. *(medium, U8)* "Runs on" claimed vLLM, this machine's GPU and that the instructions are stored once. It now says only what the ledger knows: the model names, an OpenAI-compatible server at a loopback address and how many agents run at once. Cache reuse is shown only when the server reported it for that run.
+4. *(medium, U9)* The warning filter matched any experimental warning that mentions SQLite. It now matches Node's exact notice and type, lives in `src/quiet.mjs`, and a subprocess test shows a different SQLite warning and a deprecation warning still print.
+5. *(low, U9)* The install welcome gave every line the same mark, and start had no database step. The installer now returns each agent's own result, so a terminal shows `ok` or `!!` (letters as well as colour) on each agent's line with its details under it; start shows "Database opened" at a terminal only.
+6. *(low, U8)* "What it runs on" moved to its own section after the check and before the answer, and a test asserts the order of the seven sections.
+7. *(low, U8)* The pale swatches of the colour key (queued, working) now have an ink outline.
+8. *(low, U8)* The library's page links are direct children of the masthead again; the extra `nav` landmark is gone.
