@@ -4471,6 +4471,17 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4e — Signing reads the ledger read-only (defined 2026-11-22, before the code)
+
+Card P4e on `ruslan/p4e-sign-read-only`, from `main` 8b7083c. The P3b review found the gap: `handoff --sign` read the schema version on a read-only connection, then reopened the file with `openStore`, which creates tables and migrates. A file swapped in between those two opens (an older one, say) would be upgraded and then signed. `reviews verify` already shares one read-only connection (P3b). Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| One read-only connection | `openStore(path, { readOnly: true })` opens the file without write access and never creates it. It checks the schema version on that connection, and serves reads from it. It runs no migration, creates no table, and makes no directory. |
+| Older and newer schemas refused | On a read-only open, an older schema throws `OlderSchemaError` and a newer one the usual "newer Context Ledger" error. In both cases the file's bytes and modification time are unchanged, and no `-journal` file is left behind. |
+| Reads work, writes fail | A read-only store returns a session and its review chain as the normal store does. A write method (import, delete) throws, and the file is unchanged. |
+| Signing uses it | `handoff --sign` opens the ledger only through the read-only store: `src/cli.mjs` has no writable `openStore` call on the signing path, and the separate schema probe is gone. The older-schema and newer-schema refusals keep their fixed messages, and a signed database is byte for byte unchanged. |
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
