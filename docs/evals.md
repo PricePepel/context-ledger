@@ -5165,3 +5165,19 @@ Ruslan's first run of the installed command (2026-11-23) raised two questions. T
 - `node:test` for the start lines in both modes (exact piped lines, terminal lines, the link's width, the login command) and for the swarm setting (unset, empty and `off`, the address asked, the reasons, no request when off).
 - Playwright: the room shows the server's reason for a simulated run.
 - The full suites pass, and Codex reviews the change.
+
+### U11 results (2026-11-23)
+
+- **At a terminal**, `context-ledger start` now shows the steps after "listening at": open the link within 60 seconds, the link on a line of its own two spaces in, Ctrl+click it or copy it, it opens the library, where the console is, and the command for a new link. Checked by eye in Windows Terminal; the link fits in 80 columns for every port (79 at most). The installed command names `context-ledger login`, a checkout `npm run ledger -- login`.
+- **Piped**, the output is the same two plain lines as before, byte for byte; the existing start-up tests in `tests/routes.test.mjs` and `tests/token.test.mjs` pass unchanged, and a new test checks both lines.
+- **Live GPU found on its own:** a ledger started from this branch with `SWARM_URLS` unset, while vLLM ran on the laptop, answered `/api/swarm` with `{"live":true,"models":["Qwen/Qwen2.5-7B-Instruct-AWQ"],"concurrency":32}`. With `SWARM_URLS=off` the room shows "Live runs are turned off (SWARM_URLS=off)." and no request is made.
+- **Deterministic tests:** before the swarm test helper was pinned to `SWARM_URLS=off`, one route test saw live runs on this laptop (vLLM on port 8000). The helper and the browser evals now set it.
+- `node:test`: 5 tests in `tests/welcome.test.mjs` and 5 in `tests/swarm.test.mjs`; the swarm room and page evals in `tests/e2e/swarm.spec.mjs` check the shown reason.
+- Suites before the review fixes: `node --test tests/*.test.mjs` 663 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After them: see below.
+
+### Codex review of U11 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, one medium and one low, both fixed with tests that fail without the fix. It confirmed that the probe is a bodyless GET to loopback, that live runs send only the generated synthetic prompts, that redirects are refused, that the room sets the reason as text, that piped output is unchanged, that one code is minted per start and that every test reading the swarm setting now disables live runs, names a server or injects a fake fetch. It noted that any local program on port 8000 can pose as a model server and see the synthetic prompts; that was already true of a server named in `SWARM_URLS`, and nothing else is sent.
+
+1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
+2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.

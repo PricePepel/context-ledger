@@ -20,6 +20,7 @@ test('a simulated 100-agent run finishes, shows the answer and one agent’s pro
   await expect(page.locator('#mode-live')).toBeDisabled();
   await expect(page.locator('#mode-simulated')).toBeChecked();
   await expect(page.locator('#live-reason')).toContainText('timings are made up');
+  await expect(page.locator('#live-reason')).toContainText('Live runs are turned off (SWARM_URLS=off).');
   await expect(page.locator('#stats')).toBeHidden();
 
   await page.getByRole('button', { name: 'Run' }).click();
@@ -91,6 +92,8 @@ test('U7: the console runs the simulated swarm in its own room and shows honest 
   await expect(room.getByRole('heading', { name: 'Local swarm' })).toBeVisible();
   await expect(room.locator('#swarm-mode')).toHaveText('Simulated');
   await expect(room.locator('#swarm-status')).toContainText('timings are made up');
+  // Card U11: the room gives the server's reason (the e2e ledger runs with SWARM_URLS=off).
+  await expect(room.locator('#swarm-status')).toContainText('Live runs are turned off (SWARM_URLS=off).');
   const runButton = room.getByRole('button', { name: 'Run 100 agents' });
   await expect(runButton).toBeEnabled();
   await expect(room.getByRole('link', { name: 'Open the swarm page' })).toHaveAttribute('href', '/swarm/');

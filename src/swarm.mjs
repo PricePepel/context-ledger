@@ -37,6 +37,24 @@ export function swarmUrls(text) {
   });
 }
 
+/** How long one answer to "are live runs offered?" is reused, in ms (U11 review). */
+const configReuseMs = 5000;
+
+/** Card U11: where a local vLLM listens unless told otherwise. */
+export const defaultSwarmUrl = 'http://127.0.0.1:8000/v1';
+
+/**
+ * Card U11: the model servers to ask, and where that came from. Unset or empty: the usual
+ * local vLLM address, asked only when a page asks whether live runs are offered. "off":
+ * none, and no request is made. Anything else: the loopback URLs it names, as before.
+ */
+export function swarmSetting(text) {
+  const value = typeof text === 'string' ? text.trim() : '';
+  if (!value) return { urls: [defaultSwarmUrl], source: 'default' };
+  if (value.toLowerCase() === 'off') return { urls: [], source: 'off' };
+  return { urls: swarmUrls(value), source: 'set' };
+}
+
 /** Prometheus text to { name: summed value } for the vLLM series the page shows. */
 export function parseMetrics(text) {
   const totals = {};
@@ -102,7 +120,12 @@ async function cappedText(response) {
 }
 
 export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => performance.now(), simScale } = {}) {
-  const urls = swarmUrls(env.SWARM_URLS);
+  const { urls, source } = swarmSetting(env.SWARM_URLS);
+  // Why live runs are not offered, in words a page can show as they are.
+  const noServer = source === 'off' ? 'Live runs are turned off (SWARM_URLS=off).' : 'No model server configured (set SWARM_URLS).';
+  const notAnswering = source === 'default'
+    ? `No model server is answering at ${defaultSwarmUrl}, where a local vLLM listens by default. Start one there and reload this page, or name yours in SWARM_URLS.`
+    : 'The configured model server is not answering.';
   const concurrency = Math.min(Math.max(Number.parseInt(env.SWARM_CONCURRENCY ?? '32', 10) || 32, 1), maxAgents);
   const scale = simScale ?? (Number(env.SWARM_SIM_SCALE) > 0 ? Number(env.SWARM_SIM_SCALE) : 1);
   // Card S1b: timed solo requests per server for the baseline, after one untimed warm-up.
@@ -133,13 +156,26 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     }));
   }
 
-  async function config() {
-    if (!urls.length) return { live: false, reason: 'No model server configured (set SWARM_URLS).', concurrency };
+  async function probe() {
+    if (!urls.length) return { live: false, reason: noServer, concurrency };
     try {
       return { live: true, models: (await models()).map(entry => entry.model), concurrency };
     } catch {
-      return { live: false, reason: 'The configured model server is not answering.', concurrency };
+      return { live: false, reason: notAnswering, concurrency };
     }
+  }
+
+  // U11 review: pages ask on every load, and with SWARM_URLS unset the ledger asks a port
+  // that something else may hold and stall on. Pages asking at once share one probe, and its
+  // answer is reused for a few seconds, so a stalled listener costs one wait, not one per tab.
+  let probing = null;
+  async function config() {
+    if (!probing || (probing.settledAt !== undefined && now() - probing.settledAt > configReuseMs)) {
+      const entry = { settledAt: undefined };
+      entry.promise = probe().finally(() => { entry.settledAt = now(); });
+      probing = entry;
+    }
+    return probing.promise;
   }
 
   async function liveAgent(run, agent, report, server) {
@@ -296,7 +332,7 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const mode = input?.mode;
     if (!Number.isInteger(agents) || agents < 1 || agents > maxAgents) throw new InputError(`agents must be a whole number from 1 to ${maxAgents}.`);
     if (mode !== 'live' && mode !== 'simulated') throw new InputError('mode must be live or simulated.');
-    if (mode === 'live' && !urls.length) throw new InputError('No model server configured (set SWARM_URLS).');
+    if (mode === 'live' && !urls.length) throw new InputError(noServer);
     // One run at a time, so SWARM_CONCURRENCY bounds the requests the GPU sees.
     if (active) throw new ConflictError('A swarm run is already running. Wait for it to finish.', { runId: active.id });
     const id = randomBytes(32).toString('hex');
