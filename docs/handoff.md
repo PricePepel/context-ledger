@@ -651,6 +651,14 @@ PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest
 
 Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.
 
+## Current checkpoint — P3c signing reads the ledger read-only (2026-11-22)
+
+Branch `ruslan/p3c-sign-readonly`. `openStore(path, { readOnly: true })` opens an existing, current-schema ledger on a connection that cannot write, and never creates or migrates it; an older or newer file is refused with `code: 'LEDGER_SCHEMA'` and its version. The CLI helper `openCurrentStore` uses it, so `ledger handoff --sign` and `ledger reviews verify` (with or without `--bundle`) check the schema and read on one connection. This closes the gap P3b's Codex round 1 left open for signing. The store's methods are now built in `storeOn`, and `openStore` closes the connection whenever setup fails.
+
+`tests/fixtures/count-opens.cjs` is a `--require` preload that logs every `DatabaseSync` a process opens; use it to count connections in other CLI tests.
+
+Known and accepted: a ledger someone switched to WAL mode cannot be read read-only from a read-only folder without its `-wal` and `-shm` files.
+
 ## Current checkpoint — watchdog design for the latent team (2026-11-21)
 
 Docs only, written on `ruslan/console-direction` (commit a467e6f) and brought onto `main` with W1. Cards W1 to W3 are on the board as Backlog; nobody has claimed them.
