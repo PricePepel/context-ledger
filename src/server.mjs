@@ -8,6 +8,7 @@ import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './s
 import { createSwarm } from './swarm.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { printWelcome } from './welcome.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
 const staticFiles = new Map([
@@ -432,6 +433,14 @@ server.listen(port, '127.0.0.1', () => {
       process.exit(0);
     });
   }
-  console.log(`Context Ledger listening at http://127.0.0.1:${localPort}`);
-  console.log(`Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`);
+  // Card U9: at a terminal these two lines arrive inside the welcome; piped, they are the
+  // same two plain lines as before. The server is already listening when this runs.
+  printWelcome({
+    title: 'local, on this machine',
+    lines: [
+      { text: `Context Ledger listening at http://127.0.0.1:${localPort}` },
+      { text: `Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`, state: 'note' },
+    ],
+    footer: 'Keep this window open while you or your agents use the ledger. Ctrl-C stops it.',
+  }).catch(() => { /* the terminal went away; the server keeps running */ });
 });
