@@ -1114,3 +1114,30 @@ test('R1 review 3: what a link says about its own packet is checked before a led
   assert.throws(() => b.store.receiveParcel(fine), error => error instanceof InputError
     && error.message === 'This graph links to a graph that is not in this ledger. Receive that graph first.');
 });
+
+// ---- Codex review, round 4 ----
+
+test('R1 review 4: the label guard compares leads and labels in one normal form', t => {
+  const repeats = 'A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.';
+  const guarded = (name, uncited, label) => {
+    const a = ledger(t, name);
+    const session = a.store.importTranscript({ provider: 'claude', source: 'form.jsonl', transcript: claude([['user', uncited], ['assistant', 'Port 6100 stays.']]) });
+    const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'vera', edges: [],
+      nodes: [{ id: 'note', kind: 'decision', label, evidenceLines: [2] }] });
+    return () => parcelOf(a.store, graph.id);
+  };
+  const refused = (name, uncited, label) => assert.throws(guarded(name, uncited, label), error => error instanceof InputError && error.message === repeats, name);
+  const point = code => String.fromCodePoint(code);
+  // Both lower-case forms of the Greek sigma are one letter.
+  const logos = [0x39b, 0x39f, 0x393, 0x39f, 0x3a3].map(point).join('');
+  const lower = [0x3bb, 0x3bf, 0x3b3, 0x3bf].map(point).join('');
+  refused('final-sigma', `THE PLAN SAYS ${logos} TODAY`, `the plan says ${lower}${point(0x3c2)} today`);
+  refused('plain-sigma', `the plan says ${lower}${point(0x3c2)} today`, `THE PLAN SAYS ${logos} TODAY`);
+  // NEL is white space in a lead, as it is a line break.
+  refused('nel', `Private planning${point(0x85)}budget forty two`, 'Private planning budget forty two');
+  // A lead cut on the space between two words, and a label that ends there.
+  refused('cut-on-space', `${'A'.repeat(119)} B and more`, 'A'.repeat(119));
+  refused('cut-after-space', `${'A'.repeat(118)} B and more words here`, `${'A'.repeat(118)} B`);
+  // The 20 characters are counted as written: a letter that lower-cases to two does not make 19 into 20.
+  assert.equal(guarded('expanding', `${'a'.repeat(18)}${point(0x130)}`, `${'a'.repeat(18)}${point(0x130)}`)().parcel.session.messages.length, 1);
+});

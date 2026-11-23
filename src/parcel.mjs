@@ -108,32 +108,50 @@ export const compatibleTurns = (a, b) => a.line === b.line && a.role === b.role
   && fieldsOf(a).every(field => matchesRedacted(a[field], b[field]) || matchesRedacted(b[field], a[field]));
 
 // A session's title is the first 120 characters of its first user turn with white space
-// squeezed (titleFor in store.mjs). The same form of a text is its lead.
+// squeezed (titleFor in store.mjs). The same form of a text is its lead. Leads and labels
+// are compared in one normal form: white space (every line-break character included) as
+// single spaces with none at the ends, and case folded one character at a time, with the
+// final form of the Greek sigma as the plain one. Folding a whole text at once depends on
+// what follows a letter, so a lead cut from a text could differ from the same words
+// inside a label.
 const leadCharacters = 120;
 const shortestLead = 20;
-function leadOf(text) {
-  const lead = [];
+const isSpace = character => /[\s\x85]/u.test(character);
+const finalSigma = String.fromCodePoint(0x3c2);
+const sigma = String.fromCodePoint(0x3c3);
+const folded = characters => characters.map(character => {
+  const lower = character.toLowerCase();
+  return lower === finalSigma ? sigma : lower;
+}).join('');
+
+/** The characters of a text with white space squeezed, up to `limit` of them. */
+function squeezedCharacters(text, limit = Infinity) {
+  const characters = [];
   let space = false;
   for (const character of text) {
-    if (/\s/u.test(character)) {
-      space = lead.length > 0;
+    if (isSpace(character)) {
+      space = characters.length > 0;
       continue;
     }
     if (space) {
-      lead.push(' ');
+      characters.push(' ');
       space = false;
-      if (lead.length >= leadCharacters) break;
+      if (characters.length >= limit) break;
     }
-    lead.push(character);
-    if (lead.length >= leadCharacters) break;
+    characters.push(character);
+    if (characters.length >= limit) break;
   }
-  return folded(lead.join(''));
+  // A cut can fall on the space between two words.
+  if (characters.at(-1) === ' ') characters.pop();
+  return characters;
 }
-// Lower case one character at a time. Lower-casing a whole text depends on what follows
-// a letter (a Greek capital sigma becomes one of two letters), so a lead cut from a text
-// and the same words inside a label could come out different.
-const folded = text => Array.from(text, character => character.toLowerCase()).join('');
-const squeezed = text => folded(text.trim().split(/\s+/u).join(' '));
+
+/** The lead of a text in normal form, or null when it is under 20 characters as written. */
+function leadOf(text) {
+  const characters = squeezedCharacters(text, leadCharacters);
+  return characters.length < shortestLead ? null : folded(characters);
+}
+const squeezed = text => folded(squeezedCharacters(text));
 // Every character that ends a line, as the secret scanner and editors see lines.
 const lineBreak = /\r\n|[\n\v\f\r\x85\p{Zl}\p{Zp}]/u;
 
@@ -149,7 +167,7 @@ function repeatsUncited(labels, uncited, carried) {
   for (const message of uncited) {
     for (const text of [message.text, ...message.text.split(lineBreak)]) {
       const lead = leadOf(text);
-      if ([...lead].length < shortestLead) continue;
+      if (lead === null) continue;
       if (!byLength.has(lead.length)) byLength.set(lead.length, new Set());
       byLength.get(lead.length).add(lead);
     }
