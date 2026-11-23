@@ -4971,3 +4971,24 @@ Synthetic data only: the swarm's generated incident reports.
 - `node:test` for the room's pure summary (state buckets, dropped versus verified, the speed-up text for live and simulated runs, unknown states).
 - Playwright: open `/console/`, run the simulated swarm from the room, wait for it to finish, check 100 agents, the Simulated badge, "not measured" for the speed-up, the counts, the `/swarm/` link and that the graph still renders.
 - The full suites pass, and Codex reviews the change.
+
+### U7 results (2026-11-23)
+
+Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path is not checked yet: the GPU was running another card's evaluation.
+
+- `node:test`: 6 tests in `tests/console-swarm.test.mjs`, and the console's read-only check now pins the one POST to `/api/swarm/runs`.
+- Playwright: 4 U7 tests in `tests/e2e/swarm.spec.mjs` (run and counts, the lost run, the recorded demo, the mode race), 12 of 12 over two repeats in one worker.
+
+### Codex review of U7 (2026-11-23)
+
+A read-only Codex review found four medium and three low issues, all fixed with tests:
+
+1. *(medium)* Run could be pressed before the server said which mode it offers, starting a simulated run on a live server. Run is now off until that answer arrives.
+2. *(medium)* A malformed poll answer counted as success, so Run could stay off for good. A snapshot must now be an object with an agents array and a known state; anything else goes through the bounded retry.
+3. *(medium)* The "open the swarm page" link opened an empty page. The link now carries the run (`/swarm/#run=<id>`) and the swarm page opens that run.
+4. *(medium)* The read-only exception checked the method and the path separately. The unit test now binds the POST to its path, and the browser test records every write the console makes: one, `POST /api/swarm/runs`.
+5. *(low)* The room no longer draws the POST acknowledgement as an empty run.
+6. *(low)* A speed-up below 10× keeps one decimal, so a slowdown such as 0.4× is not shown as 0×.
+7. *(low)* On a narrow screen the grid uses ten columns, the state counts are also written in words under the grid, and a long model name wraps.
+
+Test gaps it named are closed: the recorded demo asserts zero API requests and a hidden room; the run test seeds a real graph node and checks the counts against the run's snapshot; the console's own lost-run recovery has a test.

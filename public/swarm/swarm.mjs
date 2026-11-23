@@ -240,3 +240,11 @@ $('run-form').addEventListener('submit', async event => {
 });
 
 loadConfig();
+
+// Card U7: /swarm/#run=<id> opens a run started elsewhere (the console's swarm room).
+const linked = /^#run=([a-f0-9]{64})$/u.exec(location.hash);
+if (linked) {
+  $('run').disabled = true;
+  setStatus('Opening the run from the console…');
+  poll(linked[1]);
+}

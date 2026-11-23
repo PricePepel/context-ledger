@@ -256,6 +256,8 @@ test('console files stay light and never parse transcript text as HTML', async (
         // writes nothing to the ledger. No other write method and no other path.
         assert.doesNotMatch(text, /method:\s*['"](?:PUT|PATCH|DELETE)/iu, name);
         assert.equal([...text.matchAll(/method:\s*['"]POST['"]/giu)].length, 1, `${name} posts once`);
+        // The one POST is bound to its path: the method sits in the call to /api/swarm/runs.
+        assert.match(text, /api\('\/api\/swarm\/runs',\s*\{\s*method:\s*'POST'/u, `${name} posts only to /api/swarm/runs`);
         assert.deepEqual([...text.matchAll(/api\(\s*'([^']+)'/gu)].map(match => match[1]).sort(), ['/api/swarm', '/api/swarm/runs'], name);
       } else {
         assert.doesNotMatch(text, /method:\s*['"](?:POST|PUT|PATCH|DELETE)/iu, `${name} must only read`);

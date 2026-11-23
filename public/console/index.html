@@ -38,8 +38,8 @@
         <div class="swarm-head">
           <h2 id="swarm-heading" class="lab">Local swarm</h2>
           <span id="swarm-mode" class="swarm-mode">Checking…</span>
-          <button id="swarm-run" class="btn solid" type="button">Run 100 agents</button>
-          <a class="btn bar-link swarm-open" href="/swarm/">Open the swarm page</a>
+          <button id="swarm-run" class="btn solid" type="button" disabled>Run 100 agents</button>
+          <a id="swarm-open" class="btn bar-link swarm-open" href="/swarm/">Open the swarm page</a>
         </div>
         <p id="swarm-status" class="hint" role="status">Checking for a model server…</p>
         <ul class="swarm-legend" aria-hidden="true">
@@ -50,6 +50,7 @@
           <li><i data-state="failed"></i>failed</li>
         </ul>
         <ol id="swarm-grid" class="swarm-grid" aria-label="Swarm agents"></ol>
+        <p id="swarm-tally" class="swarm-tally"></p>
         <dl id="swarm-stats" class="swarm-stats"></dl>
       </section>
 

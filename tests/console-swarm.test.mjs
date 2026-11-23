@@ -1,7 +1,7 @@
 // Card U7: the console's swarm room, its pure summary of a run snapshot.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { agentBucket, swarmSummary } from '../public/console/swarm-room.mjs';
+import { agentBucket, isRunSnapshot, swarmSummary } from '../public/console/swarm-room.mjs';
 
 const agent = (state, verified = false) => ({ id: 1, state, verified });
 
@@ -47,4 +47,19 @@ test('U7: a missing or odd snapshot is treated as simulated and empty', () => {
   assert.equal(summary.wall, '— (simulated)');
   assert.equal(summary.state, 'unknown');
   assert.equal(swarmSummary({ simulated: false, models: [42, 'm'], agents: [] }).mode, 'Live: m');
+});
+
+test('U7 review: a slowdown keeps its decimal, and the tally names every bucket in words', () => {
+  assert.equal(swarmSummary({ simulated: false, speedup: 0.4, agents: [] }).speedup, 'about 0.4×');
+  assert.equal(swarmSummary({ simulated: false, speedup: 0.8, agents: [] }).speedup, 'about 0.8×');
+  assert.equal(swarmSummary({ simulated: false, speedup: 9.96, agents: [] }).speedup, 'about 10.0×');
+  const summary = swarmSummary({ agents: [agent('done', true), agent('running'), agent('odd')] });
+  assert.equal(summary.tally, '1 checked, 1 working, 0 queued, 0 left out, 0 failed, 1 unknown');
+});
+
+test('U7 review: only an object with agents and a known state is a run the room draws', () => {
+  assert.equal(isRunSnapshot({ state: 'running', agents: [] }), true);
+  for (const bad of [undefined, null, {}, { state: 'running' }, { state: 'paused', agents: [] }, { state: 'done', agents: 'x' }, 'run']) {
+    assert.equal(isRunSnapshot(bad), false, JSON.stringify(bad));
+  }
 });

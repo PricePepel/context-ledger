@@ -6,6 +6,8 @@
 export const pollMs = 250;
 const maxPollFailures = 20;
 export const defaultAgents = 100;
+const runStates = new Set(['starting', 'running', 'done', 'failed']);
+const runId = /^[a-f0-9]{64}$/u;
 
 /** The colour bucket of one swarm agent: done splits by whether its quote was found. */
 export function agentBucket(agent) {
@@ -17,6 +19,13 @@ export function agentBucket(agent) {
 
 const seconds = ms => (Number.isFinite(ms) && ms >= 0 ? `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s` : '—');
 const count = value => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
+// Below 10× one decimal, so a slowdown such as 0.4× is never shown as 0× or 1×.
+const ratio = value => (value < 10 ? value.toFixed(1) : String(Math.round(value)));
+
+/** A run snapshot the room can draw: an object with an agents array and a known state. */
+export function isRunSnapshot(run) {
+  return Boolean(run) && typeof run === 'object' && Array.isArray(run.agents) && runStates.has(run.state);
+}
 
 /** What the room shows for one run snapshot. Pure, so node:test can check it. */
 export function swarmSummary(run) {
@@ -25,8 +34,9 @@ export function swarmSummary(run) {
   for (const agent of agents) buckets[agentBucket(agent)] += 1;
   const simulated = run?.simulated !== false;
   const models = Array.isArray(run?.models) ? run.models.filter(model => typeof model === 'string') : [];
-  const speedup = !simulated && Number.isFinite(run?.speedup) && run.speedup > 0 ? `about ${Math.round(run.speedup)}×` : 'not measured';
+  const speedup = !simulated && Number.isFinite(run?.speedup) && run.speedup > 0 ? `about ${ratio(run.speedup)}×` : 'not measured';
   const counts = run?.counts ?? {};
+  const unknown = buckets.unknown ? `, ${buckets.unknown} unknown` : '';
   return {
     total: agents.length,
     buckets,
@@ -37,18 +47,22 @@ export function swarmSummary(run) {
     finished: `${count(counts.finished)} / ${count(counts.total) || agents.length}`,
     verified: `${count(counts.verified)} / ${count(counts.finished)}`,
     correct: `${count(counts.correct)} / ${count(counts.finished)}`,
+    // The same counts as the colours, in words, for touch, keyboard and screen readers.
+    tally: `${buckets.verified} checked, ${buckets.running} working, ${buckets.queued} queued, ${buckets.dropped} left out, ${buckets.failed} failed${unknown}`,
     state: typeof run?.state === 'string' ? run.state : 'unknown',
   };
 }
 
 async function defaultApi(path, init = {}) {
   const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
-  const body = await response.json().catch(() => ({}));
+  let body;
+  try { body = await response.json(); } catch { body = undefined; }
   if (!response.ok) {
-    const error = new Error(typeof body.error === 'string' ? body.error : `Request failed (${response.status}).`);
+    const error = new Error(typeof body?.error === 'string' ? body.error : `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
   }
+  if (!body || typeof body !== 'object') throw new Error('The ledger sent a response that is not JSON.');
   return body;
 }
 
@@ -58,14 +72,18 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
   const $ = id => root.querySelector(`#${id}`);
   const grid = $('swarm-grid');
   const status = $('swarm-status');
+  const tally = $('swarm-tally');
   const mode = $('swarm-mode');
   const run = $('swarm-run');
+  const open = $('swarm-open');
   const stats = $('swarm-stats');
   let liveOffered = false;
   let timer = null;
   let tiles = [];
 
   const setStatus = text => { status.textContent = text; };
+  // Run stays off until the server has said which mode it offers.
+  run.disabled = true;
 
   function stat(label, value) {
     const box = document.createElement('div');
@@ -82,7 +100,7 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
     mode.textContent = summary.mode;
     mode.dataset.mode = summary.simulated ? 'simulated' : 'live';
     root.dataset.runState = summary.state;
-    const list = Array.isArray(snapshot?.agents) ? snapshot.agents : [];
+    const list = snapshot.agents;
     if (tiles.length !== list.length) {
       tiles = list.map(() => document.createElement('li'));
       grid.replaceChildren(...tiles);
@@ -93,8 +111,8 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
       tile.dataset.state = bucket;
       tile.title = `Agent ${Number.isSafeInteger(agent?.id) ? agent.id : index + 1}: ${labels[bucket]}`;
     });
-    grid.setAttribute('aria-label', `Swarm agents: ${summary.buckets.verified} checked, ${summary.buckets.running} working, ` +
-      `${summary.buckets.queued} queued, ${summary.buckets.dropped} left out, ${summary.buckets.failed} failed`);
+    grid.setAttribute('aria-label', `Swarm agents: ${summary.tally}`);
+    tally.textContent = summary.tally;
     stats.replaceChildren(
       stat('Agents finished', summary.finished),
       stat('Wall time', summary.wall),
@@ -105,26 +123,25 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
     return summary;
   }
 
+  const stop = message => {
+    run.disabled = false;
+    setStatus(message);
+  };
+
   async function poll(id, failures = 0) {
     try {
-      const { run: snapshot } = await api(`/api/swarm/runs/${encodeURIComponent(id)}`);
+      const body = await api(`/api/swarm/runs/${id}`);
+      // A malformed answer counts as a failure, so the bounded retry below still ends.
+      if (!isRunSnapshot(body.run)) throw new Error('The ledger sent a swarm run it could not read.');
+      const snapshot = body.run;
       const summary = render(snapshot);
-      if (snapshot?.phase === 'baseline') setStatus('Timing one agent alone first, for an honest speed-up…');
-      else if (summary.state === 'running' || summary.state === 'starting') setStatus(`Running ${summary.total} agents…`);
-      if (summary.state === 'done' || summary.state === 'failed') {
-        run.disabled = false;
-        setStatus(summary.state === 'done'
-          ? `Done: ${summary.total} agents in ${summary.wall}. Open the swarm page to see each agent's proof.`
-          : (typeof snapshot?.error === 'string' ? snapshot.error : 'The run failed.'));
-        return;
-      }
+      if (summary.state === 'done') return stop(`Done: ${summary.total} agents in ${summary.wall}. Open the swarm page to see each agent's proof.`);
+      if (summary.state === 'failed') return stop(typeof snapshot.error === 'string' ? snapshot.error : 'The run failed.');
+      setStatus(snapshot.phase === 'baseline' ? 'Timing one agent alone first, for an honest speed-up…' : `Running ${summary.total} agents…`);
       failures = 0;
     } catch (error) {
-      if (error.status === 404 || failures + 1 >= maxPollFailures) {
-        run.disabled = false;
-        setStatus(error.status === 404 ? 'This run is no longer kept by the ledger. Run again.' : `Lost contact with the ledger: ${error.message}`);
-        return;
-      }
+      if (error.status === 404) return stop('This run is no longer kept by the ledger. Run again.');
+      if (failures + 1 >= maxPollFailures) return stop(`Lost contact with the ledger: ${error.message}`);
       failures += 1;
     }
     timer = setTimeout(() => poll(id, failures), pollMs);
@@ -135,22 +152,24 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
     run.disabled = true;
     setStatus(`Starting ${agents} agents…`);
     try {
-      const { run: started } = await api('/api/swarm/runs', {
+      const body = await api('/api/swarm/runs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agents, mode: liveOffered ? 'live' : 'simulated' }),
       });
-      render(started);
-      poll(started.id);
+      const id = body.run?.id;
+      if (typeof id !== 'string' || !runId.test(id)) throw new Error('The ledger did not return a run ID.');
+      // The swarm page opens this same run, with each agent's report and proof.
+      open.href = `/swarm/#run=${id}`;
+      poll(id);
     } catch (error) {
-      run.disabled = false;
-      setStatus(error.message);
+      stop(error.message);
     }
   });
 
   (async () => {
     try {
       const config = await api('/api/swarm');
-      liveOffered = config?.live === true;
+      liveOffered = config.live === true;
       if (liveOffered) {
         const models = Array.isArray(config.models) ? config.models.filter(model => typeof model === 'string') : [];
         mode.textContent = `Live: ${models.join(', ') || 'model server'}`;
@@ -164,8 +183,9 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
     } catch (error) {
       mode.textContent = 'Simulated';
       mode.dataset.mode = 'simulated';
-      setStatus(error.message);
+      setStatus(`Could not ask the ledger for a model server (${error.message}), so a run is simulated.`);
     }
+    run.disabled = false;
   })();
 
   return { render, stop: () => clearTimeout(timer) };
