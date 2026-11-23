@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 from .data import doc_text, f1, question_suffix, squad, wikitext
 from .mapper import calibrate_sigma, parameter_count
-from .pair import TransferPair
+from .pair import RECEIVER, SENDER, TransferPair
 
 DEV_TITLES = 20  # SQuAD train articles kept out of training, for dev F1 during training
 
@@ -133,6 +133,8 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--resume", help="checkpoint to start stage 2 from (skips stage 1)")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--sender", default=SENDER, help="Hugging Face id of the sender model")
+    parser.add_argument("--receiver", default=RECEIVER, help="Hugging Face id of the receiver model (ChatML template)")
     args = parser.parse_args()
     os.makedirs(os.path.expanduser(args.out), exist_ok=True)
     out = os.path.expanduser(args.out)
@@ -147,7 +149,7 @@ def main():
             handle.write(json.dumps(fields) + "\n")
 
     config = dict(dim=args.dim, heads=args.heads, ffn=args.ffn, blocks=args.blocks)
-    pair = TransferPair(mapper_config=config, checkpoint=args.resume)
+    pair = TransferPair(sender=args.sender, receiver=args.receiver, mapper_config=config, checkpoint=args.resume)
     log(event="start", args=vars(args), mapperParams=parameter_count(pair.mapper))
 
     squad_train, squad_dev = split_squad(args.seed)
@@ -158,7 +160,9 @@ def main():
     log(event="data", squadTrain=len(squad_train), squadDev=len(dev_rows), wiki=len(wiki), contexts=len(contexts))
 
     val_docs = [doc_text(p) for p in random.Random(2).sample(wiki_val, 64)]
-    val_batches = [pair.pair(val_docs[i:i + 16], args.max_tokens) for i in range(0, 64, 16)]
+    # Held-out batches as large as a training batch: batches of 16 spill past 16 GB once the
+    # optimizer state of a 4B pair is allocated (M2b-S smoke test).
+    val_batches = [pair.pair(val_docs[i:i + args.batch1], args.max_tokens) for i in range(0, 64, args.batch1)]
 
     params = [p for p in pair.mapper.parameters() if p.requires_grad]
 
