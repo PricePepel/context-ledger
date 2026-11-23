@@ -67,8 +67,9 @@ test('an agent publishes and reads back a v2 graph through MCP against the real 
   assert.deepEqual(JSON.parse(found.content[0].text).sessions.map(item => item.id), [session.id]);
   const turns = await client.call(21, 'session_read', { sessionId: session.id });
   assert.equal(turns.isError, undefined, turns.content[0].text);
-  assert.match(turns.content[0].text, /^## user · line 1$/mu);
-  assert.match(turns.content[0].text, /^## assistant · line 2$/mu);
+  // Card P2b: each heading names the turn's key, which a version 3 graph cites.
+  assert.match(turns.content[0].text, /^## user · line 1 · key h:[0-9a-f]{32}$/mu);
+  assert.match(turns.content[0].text, /^## assistant · line 2 · key h:[0-9a-f]{32}$/mu);
 
   const packet = {
     version: 2,

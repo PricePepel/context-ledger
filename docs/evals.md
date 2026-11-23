@@ -3701,6 +3701,29 @@ When an agent publishes a graph, each node is marked **quoted** or **inferred**.
 - **Round 3** (of 6137a8c): those fixes hold, and Codex found nothing looser than `main` for ASCII labels, in either G7 or the latent check. Two more Unicode cases were fixed in the next commit: a Unicode suffix on the label's own token (`4317٥`, `retryCounté`), and combining marks (a name followed by U+0301, and Devanagari vowel signs). A new test also caught a regression from round 2, which the same commit fixes: a cited `$retry_limit` had stopped matching `retry_limit`.
   - Accepted, not changed: the header line "Labels are quoted data from the source" stays, even when some nodes are inferred. Changing it when the first inferred node appears would move the cached prefix (round 1, third finding). Changing it for every briefing would break the byte-for-byte promise for all-quoted graphs. The state section's legend says what inferred means.
 - **Suites (Windows):** `npm run -s test:graph` 9/9; node 204/205 (one skipped), was 191/192 on `main`; Playwright 14/14 (one new); Python runtime 192 run, 50 skipped, OK.
+
+
+## U3 — 60-second demo video (defined 2026-11-17)
+
+Stacked on U1 (`ruslan/console-v0`), because the video shows the console. The card asks to script and record the install, two agents, the graph growing, and a click-through to a cited line, on synthetic transcripts only.
+
+### What this card delivers, and what a person must still do
+
+- **Delivered:** the shot list and voice-over (`docs/video/u3-script.md`), timed to 60 seconds, and `demo/record-console.mjs`. The script records the console part as raw 1280×720 footage: the bundled synthetic Orbit recording played to the end, and the proof of one decision opened. The recorder plays the demo at 1.3× and writes a cue sheet with the measured second of each moment. A run on Windows gave 44 seconds at 1280×720, checked frame by frame: the office, the cards popping in with flash lines, the answer link at 22 s, and the cited lines L27 and L28 highlighted at 30 s.
+- **For a person:** the terminal shots, the voice-over and the cut, which need a microphone and a screen recorder. Also the install shot, which waits for G8 (`ledger install`) or uses the README's two `mcp add` commands until then.
+
+### What is tested
+
+`tests/video.test.mjs`:
+
+- the five shots run from 0:00 to 1:00 with no gap or overlap, and no shot needs more than 2.5 words a second;
+- the numbers shot keeps the "estimate" label, and the closing line claims only that the ledger stays on the machine;
+- the demo recording holds Leo's `answers` link to Ali's question and the decision citing lines 27 and 28;
+- the replay fits the growth shot at the recorder's speed, and every cue the script names is one the recorder marks;
+- the recorder lets only console files load, starts the ledger with a small environment, and publishes only its own take without touching other files.
+
+The browser take itself is not run in the suites: it needs about 45 seconds and Chromium. It was run by hand.
+
 ## U2 — Brand and mascot (defined 2026-11-17)
 
 A brand guide for the console (U1), the video (U3) and other pages, built on the CTM site's existing brand: `docs/brand/brand.md`, `docs/brand/tokens.css`, and an original mascot, Pip, in three poses (`pip.svg`, `pip-working.svg`, `pip-waiting.svg`) that match the console's agent states.
@@ -3720,6 +3743,75 @@ A brand guide for the console (U1), the video (U3) and other pages, built on the
 ### Acceptance
 
 - The four suites pass.
+
+## D1 — T3 Code integration (defined 2026-11-17)
+
+D1 is the guide for using the ledger from T3 Code. The importer for T3's thread store, first part of this card, moved to D3, and `ledger install` belongs to G8.
+
+### The guide (built)
+
+`docs/integrations/t3code.md`, written from T3's public documentation, with the page behind each step linked:
+
+- T3 runs Claude Code and Codex with their own configuration. So the server is registered for those CLIs, as in the README, on the machine of the environment whose threads use it, because the ledger answers on loopback. Whether T3 sessions load it is unverified, and a check from a new thread ends the steps.
+- T3 instances with their own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` need the server registered in that folder. A Codex shadow home shares the main home's configuration.
+- Other providers, and T3's own outside-agents MCP endpoint, are out of scope; the guide says which direction that endpoint goes.
+- What was not checked, since we have not run T3.
+
+`tests/integrations-t3.test.mjs` checks the guide against this repository only. Every full registration command uses the server name `context-ledger` and runs `node` with `src/mcp.mjs`. The README sections it links to exist, every T3 link points at the T3 repository, and the guide marks what is unverified. It does not check T3 itself: a live run with Claude and Codex providers is still owed, ideally with a synthetic imported transcript, `session_read` and a cited `graph_publish`.
+
+### The importer (not built; blocked)
+
+An importer would read T3's SQLite store read-only, from a copy the person makes. We did not build it, for three reasons:
+
+- T3's V2 store (`statev2.sqlite`) is event-sourced, and its tables are not documented.
+- The only layout T3 documents is the recovery query for the V1 database (`state.sqlite`). V2 keeps an event log with derived tables whose layout is not documented.
+- We have no test database made from synthetic threads on a pinned T3 release, and the ledger's store takes only Claude Code and Codex transcripts (a third provider is a schema change, after P1).
+
+An importer built on a guessed layout could silently misread threads, which matters for a tool whose point is citing the exact line. A new Backlog card, D3, holds it until a sample database exists.
+
+## D2 — Capy integration guide (defined 2026-11-17)
+
+A guide, `docs/integrations/capy.md`, for adding Context Ledger as an MCP server in a Capy organization. It is written from Capy's public documentation and links the page behind each step.
+
+### What it must say
+
+- First, what leaves the computer: the ledger stays local, but Capy stores thread messages and tool output in its cloud, so whatever a tool returns is copied there and seen by the thread's audience. Start with synthetic data.
+- The ledger answers on loopback only, and Capy runs a STDIO server on the thread's own machine. The server therefore works only for threads on the computer that runs the ledger (desktop app or Dock CLI), not for cloud threads. The guide says so first, and advises against running the ledger on a cloud machine.
+- The exact form values (STDIO, key `context-ledger`, `node` plus the absolute path to `src/mcp.mjs`, `PORT` only when it differs, owner **Only you**, no sign-in), and why the owner is not Organization.
+- How to check the connection, and how to tell the agent to use the tools through Capy's instructions or `AGENTS.md`.
+- What the agent should not trust (everything a tool returns), and who can reach the ledger: any process on that computer, teammates on a shared device, and members who message the thread. The browser check on room decisions does not prove a person clicked.
+- What was not checked: no run in a real Capy organization yet.
+
+### What is tested
+
+`tests/integrations.test.mjs` keeps the guide in step with the code: the key fits Capy's key rule, the path it names exists, the README section it links to exists, the TOML block matches the README's, and every Capy link is an `https://docs.capy.ai/` page.
+
+### Acceptance
+
+- The four suites pass.
+- Codex reviews the script and the recorder read-only; findings are fixed or recorded here.
+- A person records and cuts the video, and links it here.
+
+### U3 review (2026-11-17)
+
+- **Codex, round 1** (of 0a68d2b): three high findings and five medium, fixed in the next commit:
+  - (high) The recorder deleted every other `.webm` in its output folder. It now records into a private staging folder and writes `console-demo-<time>.webm` and a cue sheet beside whatever is there, touching nothing else.
+  - (high) The closing line "your transcripts never leave your machine; only the cited summary goes to the agent" promised more than the tool does: `session_read` returns original turns. It now says only that the ledger stays on the machine and that agents get cited context.
+  - (high) The terminal shot had no steps to keep real data off screen. The script now asks for a throwaway account or virtual machine with no other database, demo-only agent settings, an empty history and synthetic paths.
+  - (medium) The growth shot ended before the answer it narrates. The recorder plays at 1.3× and writes a cue sheet, and the shots are cut by cues.
+  - (medium) Startup and shutdown could leave the ledger or temporary files behind. Every resource now has a cleanup that runs even when another fails, the ledger has a start deadline, and a spawn error or early exit is reported.
+  - (medium) The ledger inherited the caller's environment, and the page could load anything. It now gets a small environment, and the take fails if the page loads anything outside the console's files.
+  - (medium) The install line assumed G8, and "the line behind every fact" overstated what citations prove. Before G8 the script has its own line, and the growth shot is described as a replay of agents citing their transcripts.
+  - (medium) The tests are now as listed above.
+- **Codex, round 2** (of 5dff274): the privacy, isolation, timing and wording fixes hold. Fixed in the next commit:
+  - (high) A take with the same name could overwrite an earlier one, or leave half a pair. The name now has a random part, both files are created exclusively, and a failed publish removes what it wrote.
+  - (medium) A failed spawn could stall cleanup. The ledger's end is now the first of close or error, shutdown is bounded, and cleanup failures are reported.
+  - (medium) The request guard accepted any path under `/console/`. It now allows only GET requests for the console's own files (a test pins that list to the folder), and service workers are blocked.
+  - (low) The cue test now checks that the recorder marks every cue once, in order, and that the script uses them.
+  - A new take after these changes loaded nothing outside the list, and the earlier takes in the folder were kept.
+- **Not covered by the suites:** the browser take itself, and a spawn failure, which would need the ledger start exported. Both are in the recorder's code paths, and the take was run by hand.
+- **Suites (Windows):** `npm run -s test:graph` 9/9; node 218/219 (one skipped); Playwright 17/17; Python runtime 192 run, 50 skipped, OK.
+
 - A read-only review by Codex of the guide, the tokens and the SVGs; findings fixed or recorded here.
 - A person on the team signs off on Pip's look before the console and video use it.
 
@@ -3855,3 +3947,1007 @@ Card U6 on `ali/u6-pixel-console`, stacked on U4b (#55). Ali approved the light 
 - Still needs a human review: the CSP `font-src 'self'` change and the trademark note (ADR 15).
 - Live check on a scratch ledger (2026-11-20), with two of Ali's own transcripts (one Claude Code, one Codex) and graphs citing their lines; nothing from them is committed. The console showed both agents in the right rooms. A new publish appeared within one poll. Evidence opened the cited real line, and a paraphrased fact was marked inferred. Nothing loaded from outside the loopback host, and the phone layout had no sideways scroll. Security probes all held. The server listens on 127.0.0.1 only. Without a token the API returns 401. A spoofed or DNS-rebinding Host returns 403. A cross-site POST with a valid token returns 403. Font path traversal, OFL text files and the folder return 404. The CSP adds only `font-src 'self'`. HTML in a fact renders as text, and a label with a bidi override is refused at publish. Found and fixed one bug, from U4b: newly added office agents slid in from the room's top-left corner, which was most visible on a phone. They now appear at their spot, covered by a regression test that fails without the fix.
 - Ali's follow-up from the live check: the live Activity list was empty until a new publish arrived after the page opened. Graphs read on first load are now listed too, each with its own publish time (with a date when it is not today), newest first, without flashes or pulses. Covered by an e2e test that fails without the change.
+
+
+- Codex reviews the guide read-only against T3's documentation; findings are fixed or recorded here.
+- A person who runs T3 follows the guide once and records the result here.
+
+### D1 review (2026-11-17)
+
+- **Codex, round 1** (of the first guide commit): one high finding, six medium, three low, all addressed in the next commit.
+  - (high) The guide presented MCP discovery in T3's sessions as guaranteed. It is now labelled unverified, the steps are scoped to Claude and manually configured Codex, and a per-provider check from a new thread is the last step. The README says the same.
+  - (medium) The manual setup now comes first, and `ledger install` is noted as coming with G8.
+  - (medium) The outside-agents section now names Copy MCP URL, OAuth and the access levels, and says a graph needs an imported transcript first.
+  - (medium) The store section sticks to what T3 documents: the default path and `--base-dir`, the V1 recovery query, and the V2 design without documented tables. The fork comparison is dropped.
+  - (medium) Permission modes are described as provider-dependent approval, and the ledger's own boundary is stated.
+  - (medium) This eval now says what the test checks and what is still owed.
+  - (low) Prerequisites, `PORT`, shell labels and PowerShell forms are added. The claim about every provider taking MCP servers is removed. The session-file paths are leads to check.
+  - D3 stays deferred, as the review advised. Its row now says to pin one T3 release, build a test database from synthetic threads, and consider T3's thread-reading MCP tool as a source.
+- **Codex, round 2** (of fc58cf1): the high finding is fixed, and the setup, provider, storage and permission fixes hold. Fixed in the next commit:
+  - (medium) How to use your own Codex login (Configure manually), with the check run per instance and on the tool result itself.
+  - (medium) Where to open the ledger on a remote host (on it, or through a port forward; WSL).
+  - (medium) This eval's body now matches the board: D1 is the guide, D3 the importer, G8 the installer. The fork comparison is gone.
+  - (low) T3's labels for access levels, what a migrated thread's session file may lack, and the README wording.
+- **Still owed:** a person who runs T3 follows the guide for Claude and for a manually configured Codex instance and records the result here.
+
+- Codex reviews the guide read-only against Capy's documentation; findings are fixed or recorded here.
+- A person with a Capy organization follows it once and records the result here.
+
+### D2 review (2026-11-17)
+
+- **Codex, round 1** (of the first guide commit): ten findings, all fixed in the next commit.
+  - (high) The guide implied that transcript text stays on the computer. Capy stores tool output in its cloud. This now comes first, with a synthetic-data start.
+  - (high) "Agents cannot confirm proposals" overstated it. The guide now says the MCP server has no such tool, and that the browser check does not prove a person clicked.
+  - (high) "Only you" was presented as access control. It only decides which threads get the tools; any local process, a shared device and members who message the thread can reach the ledger.
+  - (medium) Missing: automatic offline moves and checkpoints, the Dock device choice, prerequisites and `npm ci`, a real check from a thread (Test only lists tools), split troubleshooting, a copyable `AGENTS.md` note, and the transcript and file-reading tools.
+  - (low) The key rule and the Name, Working directory and Also listens on fields; and the TOML import, now marked untried.
+- **Codex, round 2** (of f156a36): the cloud-storage and "Only you" fixes hold, as do the moves, prerequisites and real-check fixes. Fixed in the next commit:
+  - (medium) The room wording, in the guide and in the README, now says the browser is the intended way and the ledger does not verify who sent a decision.
+  - (medium) Private threads still admit invited people, and a Personal device asks before others message its threads. The guide says to check both.
+  - (low) What `latent_read` returns, a broader **Unavailable** row, the port placeholder, and the `PORT` range.
+- **Still owed:** a person with a Capy organization follows the guide once and records the result here.
+
+### P4a — Signed hand-off and `ledger verify` (`ruslan/p4a-signed-export`, defined 2026-11-17, before the code)
+
+First slice of P4, following ADR-9 of the design (`origin/ruslan/p1-design`, `docs/architecture.md` sections 6 and 9): raw Ed25519 over an RFC 8785 (JCS) manifest, with the key fingerprint checked out of band. The bundle signs the existing hand-off Markdown as it is. The secret scanner, the redaction diff, allowlist export (ADR-8) and the passphrase-encrypted key are P4b. All data is synthetic: a fake ledger server returns a made-up session, and every key is generated in a temporary folder.
+
+| Eval | Expected |
+| --- | --- |
+| JCS subset | `canonicalJson` matches RFC 8785 on its section 3.2.2 example (numbers, string escapes, literals), its section 3.2.3 key-sorting example (UTF-16 order, including an emoji key), and the Appendix B number table (`-0` is `0`, `5e-324`, `1e+21`, `9.999999999999997e+22` and the rest). It refuses NaN, Infinity, lone surrogates in strings and keys, and values that are not JSON (`undefined`, functions, dates, `bigint`). |
+| Key generation | `ledger keygen` writes one PKCS#8 Ed25519 private key to the ledger data folder (the folder of `CONTEXT_LEDGER_DB`, by default `.context-ledger/`), with mode 0600 where the OS supports it. It prints only the fingerprint: SHA-256 of the key's SubjectPublicKeyInfo DER bytes, as 16 groups of 4 lowercase hex digits. Run again, it exits 1, says a key exists, and leaves the file byte-identical. |
+| Signed bundle | `ledger handoff <id> --sign <dir>` creates `<dir>` (it must not exist) with exactly four files: `handoff.md` (the same bytes `ledger handoff <id>` prints), `public-key.pem`, `manifest.json` and `manifest.sig`. `manifest.json` is canonical JCS, with no trailing newline, holding `format`, `version`, `algorithm`, `created_at`, `session`, `public_key` (base64 SPKI DER) and `files` (name, byte size and SHA-256 of `handoff.md`). `manifest.sig` is the 64-byte raw Ed25519 signature over the manifest bytes. Without a key, or when `<dir>` exists, it exits 1 and writes nothing. |
+| Verify passes | `ledger verify <dir>` exits 0 on an untouched bundle and warns on stderr that the key was not checked. With `--fingerprint` set to the keygen output (spaces, colons or none, any case) it exits 0 with no warning. |
+| Verify fails closed | `ledger verify` exits 1 with a fixed message for each of: one changed byte in `handoff.md`, one byte appended to it, a changed byte in `manifest.json`, a changed `manifest.sig`, a missing file (each of the four), an extra file, a subfolder, a manifest re-signed by another key while `--fingerprint` names the real one, a `public-key.pem` that does not match the manifest key, and a manifest that is signed correctly but not canonical (extra whitespace, unsorted keys, a duplicate key, a trailing newline, a byte-order mark). |
+| Escaped output | A file name from the folder that holds a bidi override or a control character is printed escaped, never raw. Messages are fixed strings plus escaped names. |
+| OpenSSL recipe | `docs/signed-handoff.md` shows how a client checks a bundle with OpenSSL 3 alone: the fingerprint, the signature (`openssl pkeyutl -verify -rawin`) and the file hash. A test runs those exact commands when `openssl` is on PATH and skips otherwise: they accept the real bundle, give the same fingerprint as `ledger keygen`, and refuse a manifest with one changed byte. |
+| No secrets committed | No private key, `.sqlite` or `.env` file is added; `src/` and `tests/` hold no raw control or format characters other than tab, newline and carriage return. No new dependency. |
+| Windows key access (added 2026-11-18, after the security review) | On Windows, `keygen` leaves the key with a protected access list that grants only the current account (`D:PAI(A;;FA;;;<SID>)`), even when the ledger folder grants Everyone and Users read through inheritance, and no staging file stays behind. Signing exits 1 with `Other accounts can read the signing key file.`, and writes nothing, for a key that grants Everyone, grants Users, or inherits Everyone from its folder; it signs again once the grant is removed. The access-list parser accepts only the account, SYSTEM and Administrators, and fails closed on a null DACL or a form it does not know. The Windows tests skip on other systems; the parser test runs everywhere. (Codex round 4 added:) the empty staging file and its folder already grant only the current account, the parser refuses unknown entry types and flags, and a key file replaced between the read and the check is refused. |
+| Sign from the database (added 2026-11-18, after the security review) | `handoff --sign` reads the session from the ledger database (`CONTEXT_LEDGER_DB`, or the server's default `.context-ledger/ledger.sqlite`) in process, as design ADR-2 requires. With a fake server on `PORT` that returns a forged session under the right ID, the bundle holds the database's hand-off and the server gets no request; with no server and a `PORT` that is not a number, signing still works. A missing database (which is not created), a file that is not a database, and an unknown session each exit 1 with a fixed sentence and write nothing. (Codex round 4 added:) signing and a failed lookup leave the database file byte-identical; an older-schema file is refused, not migrated; a newer one is refused; a dangling database symlink's target is not created (POSIX). |
+
+**Results — P4a (2026-11-17, Windows; updated 2026-11-18 after the security review):** all ten rows met locally. The code is in `src/sign.mjs` and `src/cli.mjs`, the tests in `tests/sign.test.mjs` (39 tests), the client guide in `docs/signed-handoff.md`. A human security review is still owed before merge.
+
+- **JCS subset:** pass. The section 3.2.2 and 3.2.3 examples and 24 Appendix B numbers match byte for byte; NaN, both infinities, lone surrogates in strings and keys, `undefined`, functions, dates, `bigint`, symbols and array holes are refused.
+- **Key generation:** pass. One PKCS#8 Ed25519 key, stdout is exactly 16 groups of 4 hex digits, a second run exits 1 and leaves the key byte-identical. The fingerprint is SHA-256 of the SPKI DER bytes rather than of the raw 32-byte key, so that the OpenSSL recipe needs nothing but `openssl`. The 0600 mode and the refusal of a key other users can read are POSIX tests that skip on Windows and run in CI on Ubuntu.
+- **Signed bundle:** pass. Exactly four files; `handoff.md` equals what `ledger handoff` prints; the manifest is canonical with no trailing newline; `manifest.sig` is 64 bytes and verifies. An existing folder (empty or not), a missing key, `--sign` with no or an empty value, and an unknown option all exit 1 without writing.
+- **Verify passes:** pass, with the warning without `--fingerprint`, and with none for the fingerprint written with spaces, colons or no separators, in either case.
+- **Verify fails closed:** pass for every case in the row, plus (from the reviews) a re-signed manifest with the right hash and the wrong size, a reformatted PEM of the same key, a 65-byte signature, a version 1 manifest that does not list exactly `handoff.md`, a case-only rename, and a folder changed after it was listed or read.
+- **Escaped output:** pass. Bidi overrides, ZWNJ and ZWJ (and on POSIX BEL and ESC) in file names are printed as `\u` escapes; option and response parser errors are replaced by fixed messages.
+- **OpenSSL recipe:** pass with OpenSSL 3.2.4 (Git for Windows). The test reads the commands from the marked block in `docs/signed-handoff.md`. It checks that every stage succeeds on the real bundle and gives the keygen fingerprint and the manifest hash, and that the signature step refuses a changed manifest byte and a 65-byte signature. It also checks the steps a client must not skip: a changed hand-off still passes the signature step and only the hash step catches it, and a bundle re-signed with another key passes the signature step and only the fingerprint step catches it.
+- **No secrets committed:** pass. Keys are made in temporary folders; `signing-key.pem*` is Git-ignored (a test runs `git check-ignore`); no new dependency; the raw-character check covers the P4a files.
+- **Codex review** (`codex exec --sandbox read-only`), three rounds:
+  - Round 1 (of 4ec3c5a), eight findings. Fixed in ed2a509, each with a regression test unless noted:
+    - (medium) Files could change between listing and reading. Bundle files are now opened without following symlinks or blocking on a FIFO (POSIX), and verify lists the folder again at the end and checks each file is still the one it read. The docs say to verify a private copy for a strong guarantee.
+    - (medium) The OpenSSL recipe checks less than `verify`. The docs now state exactly what it covers and the manual checks, and the test checks every stage and the negative cases above.
+    - (medium) On Windows the key's confidentiality rests on the folder's inherited access list. Not fixed in code: documented, and moved to P4b with the passphrase-encrypted key. Codex (round 2) judged this acceptable for a first slice if the human security reviewer accepts it.
+    - (low) A manifest without `handoff.md` was accepted. Version 1 now requires exactly that one file.
+    - (low) NTFS alternate data streams are not covered. Documented.
+    - (low) An interrupted write could leave a partial key or folder. `keygen` now stages the key and hard-links it into place; a failed bundle write removes what it created.
+    - (low) Names kept ZWNJ and ZWJ raw, and some parser errors quoted input. A strict `terminalLabel` escapes them, and the errors are fixed messages.
+    - (low) Three mutations survived the tests. The wrong-size, reformatted-PEM and 65-byte-signature tests now catch them.
+  - Round 2 (of ed2a509), seven findings. Fixed in ab576b0:
+    - (medium) `join()` folded `link/..` differently from the OS, so verify could read another folder than the one named. verify and `--sign` now resolve the path with `realpath` once (POSIX test).
+    - (medium) A killed `keygen` could leave a `.tmp` private key that Git did not ignore. Now ignored and documented.
+    - (low) Cleanup could remove a file put in its place. It now checks the inode first; documented as best effort. No regression test: the race needs a second writer.
+    - (low) A file system without hard links got a generic error. The message now names the requirement. No regression test: it needs a FAT or exFAT volume.
+    - (low) An inflated hand-off was read to the end. Its size is now compared first.
+    - (low) The race tests set the folder up before listing. Test hooks now change it after listing and after reading.
+    - (low) The recipe's fingerprint step without pipefail. Documented, and a test pins the empty-input hash.
+  - Round 3 (of ab576b0): one medium and five lows, of which three needed a change. Fixed in the final commit:
+    - (medium) `realpath` can fail on a Windows SMB share that hides an ancestor folder, and `--sign` then said the parent did not exist. The messages now say the path could not be resolved and to use a local folder; a fallback for such shares is not built.
+    - (low) Cleanup compared only the inode. It now compares the device too on POSIX, and the docs no longer promise that a replacement is left alone. No regression test: the race needs a second writer.
+    - (low) The hard-link message covered write errors and blamed the file system for `EPERM`, which Windows also uses for access denied. It now covers only `link()` and names both causes.
+    - The other findings were confirmations (the Git ignore rule, the hash bound, the hooks, the empty-input digest). The same-bytes replacement test now moves the original out of the folder first, so Linux cannot reuse its inode.
+- **Independent security review** (Claude, read-only, of 69e4581): no high findings, three medium, seven low. The three medium:
+  - (medium 1) On Windows the key's confidentiality rested on an inherited access list that nothing checked, so a key under a shared `CONTEXT_LEDGER_DB` folder could be readable by every local user. Fixed: `keygen` removes the inherited entries and grants the current account (by SID, from `whoami /user`) full control with `icacls`, run from System32 without a shell, on the still-empty staging file before the key is written, and then checks the result. `loadSigningKey` reads the access list with `icacls /save` (SDDL, so it does not depend on the display language) and refuses a key that allows any account other than the user, SYSTEM and Administrators, with a fixed message. POSIX behaviour is unchanged. Regression tests: the two Windows rows above (they fail with the fix taken out) and the parser test.
+  - (medium 3) `handoff --sign` signed whatever answered on `127.0.0.1:PORT`. Fixed as design ADR-2 says (one in-process core; "CLI as HTTP client" is a rejected option): `--sign` now opens the ledger database itself and never makes an HTTP request. Plain `handoff` and `search` still use the server; moving them is outside this card. Regression tests: the "Sign from the database" row above.
+  - (medium 2) `verify` without `--fingerprint` exits 0 for a bundle signed by any key, with only a stderr warning. Not changed: the "Verify passes" row requires exit 0, and the user decides. **Proposed for the user:** either make `--fingerprint` required (with an explicit `--no-key-check` for the cases that only want integrity), or keep it optional but exit with a distinct code (for example 2) and print `Unverified signer` on stdout when no fingerprint was given, so a script that checks only the exit status cannot mistake an unchecked key for a verified sender.
+  - The seven low findings (a cwd-relative key path, no owner check on POSIX and no symlink refusal on Windows, folder modes, no domain separation or freshness in the signature, the fingerprint comparison, stale `.tmp` keys, and the mtime-and-size race check) are left open for the human security reviewer.
+- **Codex review, round 4** (`codex exec --sandbox read-only`, of 67d91fc, the security fixes): no high findings, four medium, two low. Fixed in the next commit unless noted, each with a regression test that fails with the fix taken out:
+  - (medium) The empty staging file inherited the data folder's list for a moment, so an account allowed to read that folder could open it and keep the handle until the key was written. On Windows the staging file is now created inside a new folder beside the key that is restricted to the current account first. Test: the staging file's and its folder's lists, read from a hook while the file is empty, name only the current account.
+  - (medium) The access list was read by path after the key was read through its own handle, so a swapped file could be checked instead. The path must now name the same file ID before and after the check, and a link is refused. Node cannot read a handle's security descriptor, so an account that can rename entries in the key's folder can still swap back and forth; documented, since such an account can replace the key anyway. Test: a key readable by Everyone, swapped for a restricted stand-in between the read and the check, is refused.
+  - (medium) `openStore` could create tables or migrate an older ledger while signing, and a dangling symlink passed `lstat`. The CLI now reads the schema version through a read-only connection first and opens the store only for a current-version file; an older file is refused with a fixed sentence that says to start the server once. The read-only store lookup Codex suggested belongs in `src/store.mjs`, which card P1 (in progress, another owner) is changing, so it is not added there. Tests: the database file is byte-identical after a signing and a failed lookup, an older and a newer schema are refused without change, and a dangling symlink's target is not created (POSIX).
+  - (medium) The check ignores the file's owner, so a key file another account planted and owns passes when its list grants only the signer. Not fixed: this is low finding 5 of the security review (no owner check), which this round leaves for the human security reviewer, and `icacls /save` does not report the owner. Documented in `docs/signed-handoff.md`.
+  - (low) The SDDL parser accepted unknown entry types for the current account and unknown flags. It now allows only the flags P, AI and AR and only six-field A and D entries. Test added.
+  - (low) The tools are found through `SystemRoot` from the environment. Not changed: whoever sets the signing process's environment can already run code in it (for example through `NODE_OPTIONS`), so the environment is trusted as it is elsewhere in the CLI.
+- **Suites (Windows, this branch, 2026-11-18 after round 4):** node 227/231 (4 skipped: the three POSIX-only P4a tests and one existing skip), against 191/192 on `main`; the 39 P4a tests are 36 pass and 3 POSIX skips (the four Windows-only tests run here and skip on Linux). Graph check 9/9. Playwright 13/13 (through the shared lock). Python runtime 198 run, 50 skipped, OK. The POSIX tests (key mode, symlink and FIFO swaps, `link/..`, the dangling database symlink) run in CI on Ubuntu.
+
+## P4b — Secret scanner and redaction diff (defined 2026-11-17, before implementation)
+
+Transcripts often hold credentials: keys pasted into a prompt, tokens in tool output an agent repeated, a private key it printed. Before a hand-off or export leaves the machine, the person should see what in it looks like a secret. P4b adds the scanner and a report. It does not change `ledger handoff` or the signed export (P4a), which can use the scanner later.
+
+All fixtures are synthetic. The fake credentials are put together at test time from fragments, so no committed file holds a string in a real credential format that secret-scanning push protection would flag.
+
+### What is tested and the expected result
+
+- **Formats found:** `findSecrets(text)` finds and labels:
+  - an AWS access key ID, and an AWS secret key next to its name;
+  - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`);
+  - Anthropic (`sk-ant-`) and OpenAI (`sk-`, `sk-proj-`) keys;
+  - Slack tokens (`xox?-`);
+  - Stripe live and test secret keys;
+  - JSON Web Tokens;
+  - PEM private key blocks;
+  - bearer tokens in an `Authorization` header;
+  - a secret-looking value assigned to a name such as `password`, `api_key`, `secret` or `token`.
+
+  Each finding has its kind and its start and end in the text.
+- **Not over-eager:**
+  - Ordinary prose, hex commit hashes, UUIDs, the word "password" without a value, placeholders (`<your-key>`, `xxxx`, `${TOKEN}`, `changeme`) and short values are not flagged.
+  - Overlapping matches are reported once, by the most specific kind.
+- **Deliberate limits** (made explicit after review round 1):
+  - A JWT needs a header and a payload that both start `eyJ`. Its signature may be empty (an unsecured token).
+  - A bearer value needs at least eight characters.
+  - Under a secret-like name, a UUID, a 40-character git commit hash or a value of digits only is not flagged. Other hex values are flagged.
+  - A bearer token is found in a bare `Authorization: Bearer` header and in its JSON or quoted forms.
+- **Whole values:** a short pattern finds where a value starts, and a forward scan finds where it ends. That end is the rest of its character class; or a quoted value's closing quote (or the line break, which a backslash never escapes); or a JWT's third segment; or, for a private key, its END line. A key's span covers the BEGIN line, any PEM header lines with the blank line after them, and its base64 lines. An unfinished key ends at the first line that cannot belong to it, so it never takes in prose or a later key. No tail is ever left behind, however long the value.
+- **Overlaps:** overlapping matches merge into one span labelled with the most specific kind. Its prefix is shown only when that kind's match begins the span.
+- **Redaction:** `redactText(text)` replaces each finding with `[REDACTED <kind>]` and leaves everything else byte for byte. `redactSession(session)` does that for the source name and every message, keeps line numbers, and lists findings by line and kind; a finding in the source name has line `null` and is reported as "source name".
+- **The report never shows a secret:** `npm run ledger -- redact <session-id>` prints, for each finding:
+  - its line number and kind;
+  - its length;
+  - a masked preview that keeps at most the known prefix, such as `ghp_…`, and never any other character of the value.
+
+  It ends with the count and exits 0. With `--json` it prints the same as escaped JSON. With `--text` it prints the redacted hand-off with every format character escaped, ZWNJ and ZWJ included. All output goes through the terminal escaping in `src/text.mjs`. Errors are fixed sentences, including when the server sends something that is not a session.
+- **No surprises in the other tools:** `ledger handoff`, the browser, MCP and the store are unchanged.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` passes, with the cases above in `tests/secrets.test.mjs`, including a CLI run against a server on a temporary database.
+- No new dependency. Scanning a 1 MiB synthetic transcript takes under a second.
+
+### P4b results (2026-11-17)
+
+- `tests/secrets.test.mjs` has 38 tests. Fake credentials are assembled at run time. Running the scanner over every committed file finds no provider-format credential; it finds no provider-format credential. Its generic hits:
+  - in `tests/secrets.test.mjs`, 23 secret-looking values under names such as `password` and 6 generic `Authorization: Bearer` examples, all synthetic;
+  - in existing tests, 4 synthetic fixtures (a test bearer header in `runtime/tests/test_team_service.py`, and three test secrets assigned to a `secret` constant in `tests/list-api.test.mjs` and `tests/paging.test.mjs`);
+  - 3 lines of code, which the scanner over-redacts by design: a helper call under a `token` name in `runtime/latent_team/chat_turns.py`, and two special-token strings under `eos_token` and `pad_token` in `runtime/tests/test_latent_training.py`.
+- **Codex, round 1** (of 742b071): three high, four medium and three low findings, all fixed with tests:
+  - (high) Overlapping matches kept only one span, so part of an enclosing bearer value could stay visible. Overlaps now merge into one span, and the prefix is hidden unless the labelled match begins it.
+  - (high) Length caps could leave the tail of a long value: private keys over 16 KiB, long bearer values, quoted passwords with spaces. Values are now extended by a linear scan to their real end.
+  - (high) `--text` printed the source name unredacted. It is scanned and redacted, and reported as "source name".
+  - (medium) Anthropic keys with a letter-only tail and unsecured JWTs were missed; the bearer minimum was unstated. Fixed, and the deliberate limits are now in the eval.
+  - (medium) A `my_` prefix hid real secrets, and UUIDs and commit hashes under a name were flagged. Placeholders are now judged by shape, and those two identifiers are excluded.
+  - (medium) Overlap handling was quadratic in the number of matches. It is now one sorted sweep, and unfinished key headers reuse one search for their END line. The tests cover 50,000 matches and 30,000 unfinished headers.
+  - (medium) An unreadable server reply could put its bytes on stderr. The redact path checks the reply's shape and prints a fixed sentence.
+  - (low) `--text` kept ZWNJ and ZWJ. It now escapes every format character.
+  - (low) `constructor` was accepted as a format. The format is now checked exactly.
+  - (low) The tests now cover every GitHub, OpenAI and Stripe variant with exact spans and previews, plus full CLI output.
+- **Codex, round 2** (of 8b45c18): four high, six medium and two low findings, fixed with tests. The capped patterns are replaced by start patterns plus forward scanners:
+  - (high) A quoted value starting with a space or a bracket was never read. The opening quote is now found on its own, and the value is read from inside it to its end.
+  - (high) A JWT with a long header or payload was missed. JWTs are now walked segment by segment.
+  - (high) An unfinished encrypted key left its body after the blank line under `Proc-Type`/`DEK-Info`. That blank line now belongs to the key.
+  - (high) JSON-style `Authorization` headers were missed. Quoted and JSON forms are now found.
+  - (medium) An unfinished key could take in prose and a later key. Keys are now walked line by line and stop at the first line that cannot belong to them.
+  - (medium) Extending matches was quadratic on nested candidates. Each pattern now resumes after the whole value it found.
+  - (medium) A bearer value that began with a GitHub token showed that token's prefix. A prefix is now shown only when the labelled match covers the whole span.
+  - (medium) Values starting `env-` or `env.` were skipped. Only complete environment references are skipped now, and the digits-only rule is stated in the eval.
+  - (medium) Odd provider or role values could reach `--text`. The reply must now be for the session asked for, with provider and role values the store writes.
+  - (medium) A quoted value ending in a backslash could cross a line break. A backslash no longer escapes a line break, for both LF and CRLF.
+  - (low) `--text` kept raw tabs. Tabs are now escaped.
+  - (low) The tests now require one exact finding and preview for every variant, and compare the full JSON and redacted text.
+- **Codex, round 3** (of bb04ac8): four high and two low findings, fixed with tests:
+  - (high) A JSON `Authorization` value with an escaped slash was redacted only up to the backslash. Values that can sit in a JSON or quoted string are now read with backslash escapes, stopping at an escaped quote or a line break.
+  - (high) A rejected quoted value hid a real key nested inside it, after its own name. A rejected value is no longer skipped; a cached run end keeps nested names in one run from rescanning it. Only a complete `[REDACTED <kind>]` marker counts as a placeholder.
+  - (high) Trailing spaces or tabs on a private key's lines stopped the scan before its body. Lines are judged without trailing horizontal white space.
+  - (high) An AWS secret followed by a full stop or colon failed its length check. The AWS rule now has its own character class.
+  - (low) The scaling test only checked time. It now checks the exact span at each size and a run of 40,000 nested names.
+  - (low) The exact-finding tests now check spans, and every CLI mode is compared in full, with its exit status.
+- **Codex, round 4** (of e54f244): two high, two medium and two low findings, fixed with tests:
+  - (high) Spaces or tabs after a private key's BEGIN marker left the body visible. The scan now allows them.
+  - (high) An AWS secret written with JSON escapes (a slash as `\/` or its `\u` form) was not found. Values are now checked with their escapes decoded, and redacted at their original offsets.
+  - (medium) Escape handling could run past a value: through an escaped line break in a JSON bearer value, or an escaped comma in a bare assignment. Escapes now count only inside a string, and an escape that decodes to a character outside the value's class ends it.
+  - (medium) Trimming a key line's trailing padding used an unanchored pattern, which is slow on long runs of spaces. It now walks back from the line end. The span ends with the END marker, so padding after it is kept.
+  - (low) The nested-name tests could pass with the old skipping. A rejected outer AWS value now keeps the real one inside it, and the 40,000-name case pins its exact span.
+  - (low) The exact-output CLI test now also requires an empty stderr.
+- **Codex, round 5** (of the round 4 fixes, run by the coordinating session): two high and two low findings, fixed with tests:
+  - (high) A whole header in quotes, as in curl's `-H "Authorization: Bearer …"`, was not treated as a string, so an escaped slash stopped the value early. A quote just before the header now counts too.
+  - (high) Bare values were checked after decoding escapes, so a short password with a backslash fell under the length limit. A bare value is now checked as written; only values in a string are decoded.
+  - (low) Padding after a BEGIN marker was taken even when prose followed on the same line. It is now taken only when a line break follows.
+  - (low) The fixture audit now names the 17 secret-looking values under names in the test file, beside the generic bearer examples.
+- **Codex, round 6** (of cfbc2fd): one high and two low findings, fixed with tests:
+  - (high) The round 5 quote check applied to every rule, so a quoted field name such as `"password": …` made a bare value count as a string, leaving part or all of it visible. Only the bearer rule now reads a whole quoted header, and only when the quote opens the header rather than the field name.
+  - (low) Padding after a BEGIN marker at the end of the text was still taken. It is now taken only before an LF or CRLF line break.
+  - (low) The fixture audit now covers every committed file, as listed above. Exclusions added here for code (calls, snake_case names, special tokens) were removed again after round 7.
+- **Codex, round 7** (of 53c9156): two high and one medium finding, all regressions from round 6, fixed with tests:
+  - (high) The exclusion for values followed by `(` hid real bearer and password values, and left the tail of a token visible. It is removed.
+  - (high) Limiting the quoted-header check to bearer values dropped escaped AWS keys inside a quoted assignment. The check is general again, and precise: a value is inside a string when a quote opens the whole assignment or header, not when it only wraps the field name.
+  - (medium) The snake_case and special-token exclusions hid quoted passwords. Both are removed. Missing a secret is worse than redacting a function name, so code under a secret-like name is over-redacted by design.
+- **Not reviewed again:** the fixes after round 7. Each round found new edge cases: this is a heuristic scanner over free text, not a guarantee. The PR asks for a human security review before merge (AGENTS.md section 4.4), and the report tells people that values are not shown, not that every secret was found.
+
+### P4b narrowed to key formats (2026-11-18)
+
+Seven Codex rounds kept finding new gaps in the free-text rules, each fix opening another. On 2026-11-18 the user chose to narrow P4b to well-defined key formats.
+
+- **Kept:** provider key formats (Anthropic, OpenAI, GitHub, AWS access key IDs, Slack, Stripe), JWTs, PEM private-key blocks, and the AWS secret access key, which has a fixed 40-character shape under its own name.
+- **Removed:** the `bearer-token` rule (the value of an `Authorization: Bearer` header) and the `assigned-secret` rule (any value after a name such as `password`, `api_key` or `token`), with their helpers. A key format inside such a value is still found: `Authorization: Bearer <a GitHub token>` is redacted as `github-token`.
+- **What this means for users:** a password or a bearer value that is not in a known key format is no longer flagged. The redaction report says what it looks for, and free-text detection is card P4c.
+- **Tests:** tests that covered only the removed rules were dropped, and table rows and assertions about them were removed. The CLI test now expects two findings. A new test pins the scope: free-text values are not flagged, and key formats inside them still are. `tests/secrets.test.mjs` passes 31/31.
+- The spec bullets above that describe bearer and assigned values, and review rounds 1 to 7, describe the scanner before it was narrowed.
+- **Codex review of the narrowed scanner:** no high findings. One medium and three low, fixed:
+  - (medium) "No secrets found" could be read as a clean transcript. The report now says "No known key formats found" and always adds a line saying passwords and other free-text values are not checked.
+  - (low) Two branches served only the removed rules (the `unquoted` fallback and the bearer quote check). They are removed.
+  - (low) The test that a prefix is hidden when the labelled match covers only part of a span was lost with the bearer cases. It is restored with an AWS access key ID inside an AWS secret access key.
+  - (low) The older handoff checkpoint still listed bearer and password detection. It is marked superseded.
+  - The realistic-looking password literal in the tests is replaced with an obviously synthetic one.
+
+## P4c — Free-text secret detection (defined 2026-11-18, before implementation)
+
+P4b was narrowed to key formats with a fixed shape, because seven review rounds kept finding gaps in the free-text rules: bearer header values, and values after names such as `password=`. Each gap was the same problem: guessing exactly where a free-text value ends (quotes, escapes, punctuation, code). P4c takes a different approach and measures it against a written budget.
+
+**Approach: line-tail redaction.** After an `Authorization: Bearer` header, or after a secret-like name followed by `:` or `=`, everything from the value's start to the end of that line is redacted. An opening quote stays visible, and nothing on later lines is touched. The scanner never decides where the value ends inside the line, so no fragment of it can be left. The cost is over-redaction of whatever else is on that line, which the budget below bounds.
+
+**What is flagged:** a lead whose line tail starts with a value. Not flagged: an empty tail, a pure number, or a placeholder that fills the whole value (`${TOKEN}`, `<your-key>`, `changeme`, `xxxx`, `[REDACTED <kind>]`, `process.env.NAME`, a UUID or a 40-character commit hash). A tail with anything after such a placeholder is still flagged.
+
+**Proposed budget (the user approves it, and the line-tail approach, before this leaves draft), on a labelled synthetic corpus built at test time:**
+
+- **Misses: zero.** For every secret line, no character of the secret is left visible after redaction. The corpus covers bare, quoted, JSON, single-quoted and curl forms; escapes (`\/`, `\u` forms, an escaped quote, a backslash in a bare value); trailing punctuation; parentheses; long values; and short passwords. It includes every input earlier P4b review rounds reported as missed.
+- **False alarms:** at most 10% of the benign lines that contain a secret-like name followed by `:` or `=` (config keys holding placeholders, numbers, code), and none of the benign lines without one (prose, hashes, UUIDs, ordinary code).
+- **Line structure:** every line break survives, and text on other lines is unchanged byte for byte.
+- **Speed:** a 1 MiB transcript, and 40,000 nested names on one line, each scan in under a second.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` passes, with the corpus and the budget checks in `tests/secrets-free-text.test.mjs`. The P4b key-format tests still pass unchanged.
+- No new dependency. `ledger redact` reports these findings like the others, with no preview.
+
+### P4c results (2026-11-18)
+
+- **Corpus:** `tests/secrets-free-text.test.mjs` has 38 secret lines, including every input earlier P4b review rounds and P4c rounds 1 and 2 reported as missed, plus 23 benign keyed lines and 13 benign plain lines. The test pins the exact list of false alarms and checks that the rendered text is exactly the line with each covered span replaced by its marker.
+- **Misses:** 0. No character of any secret is visible after redaction.
+- **False alarms:** 2 of 23 benign keyed lines (8.7%; 2 of 21 before round 2 added two benign fixtures), both code under a secret-like name: `token = getToken()` and `apiKey = config.apiKey`. No plain line is flagged. (The first count, 1 of 20, was wrong: it stripped the closing bracket from a redaction marker and so mis-judged it, and it left out `apiKey = config.apiKey`. Review round 1.)
+- **Line structure:** line breaks survive and the other lines are unchanged. Each speed case runs well under a second.
+- **Tests changed on purpose:** the P4b tests that asserted the narrowed scope now assert P4c's behaviour:
+  - `password: hunter2` and short bearer values are now redacted;
+  - code under a secret-like name is over-redacted;
+  - a line tail merges with a key format on the same line, with no prefix shown.
+- **Report wording:** the `ledger redact` scope line now says what is checked: key formats, and the rest of a line after a bearer header or a secret-like name.
+- **Scope, stated after review round 1:** one physical line. A line ends at LF, CR or a Unicode line or paragraph separator, and a lead holds only spaces and tabs, so it never reaches the next line. A value that continues onto the next line, such as a quoted string with a line break inside it, is redacted only on the lead's line; the `ledger redact` report says so. A name split by a quote, such as `"pass"word`, is not recognised.
+- **Codex, round 1** (of 941e48d): three high, three medium and one low finding, fixed with tests:
+  - (high) A lead could cross a line break and redact the next line, and Unicode line separators did not end a line. Leads now hold only spaces and tabs, and every line separator ends a line.
+  - (high) The placeholder check stripped punctuation inside quotes, so `password="changeme;"` and `password="}"` stayed visible; it also accepted malformed references and any angle-bracket label. A quoted value is now judged to its closing quote, and placeholders must be complete: `${NAME}`, `$(NAME)`, `$NAME`, or an angle-bracket label naming a key, token, secret, password, value or "here".
+  - (high) A value that continues on the next line is only partly redacted. This is the line-tail rule itself, so the scope above and the report now say so.
+  - (medium) Trimming the value with a regex was quadratic on long runs of spaces (2.17 s for 64,000). It is now a backward scan, with a timing test.
+  - (medium) `api key`, and more than eight spaces or tabs before `=`, were missed. Both are found now; quote-split names stay out of scope.
+  - (medium) The false-alarm count was wrong (see above), the corpus lacked the escaped-quote case and a benign fixture, and the rendered-output check could pass with a fragment showing. All fixed.
+  - (low) The empty report said "No known key formats found" although both checks ran. It now says "No findings from the checks below", and the scope line names the leads and the placeholder exception.
+- **Codex, round 2** (of d6c39db): two high, two medium and two low findings, fixed with tests:
+  - (high) A quoted placeholder followed by more text, such as the shell value `password="changeme"synthetic9`, hid the whole value, and an escaped quote was taken as the closing one. The closing quote is now found on the same line past backslash escapes, and the quoted part counts as the whole value only when a delimiter (`, ; ) ] }`) or the line end follows it.
+  - (high) The angle-bracket exemption matched a keyword inside any word, so `password=<monkey9>` stayed visible. It now needs a whole word (key, token, secret, password, value or here) split by spaces, underscores or hyphens.
+  - (medium) The bearer lead backtracked on long padding before a non-Bearer value (343 ms for 32,000 spaces). The padding after the optional quote is now consumed only with the quote: under 1 ms for 128,000.
+  - (medium) Rejected leads each rescanned the rest of the line (4.07 s for 8,000 `token=""`). The line end is now reused for later leads on the same line: 4 ms for 8,000 and 7 ms for 32,000. Both cases are in the timing test.
+  - (low) The rendered-output check could miss a short leak. It now compares the exact rendered string.
+  - (low) Line preservation was tested for LF and CRLF only. It now covers lone CR, U+2028 and U+2029, each with empty bearer and assignment leads before the separator.
+  - Noted, not changed: U+0085 (NEL) is not a line end, so a value before it is redacted along with the text after it on the same physical line. That over-redacts and never leaks.
+
+## Cycle 15 — Teams of many agents, and a split-facts test of the hand-off (defined 2026-11-13, before any run)
+
+Card C15. Every earlier cycle ran a team of three thinking agents (Planner, Critic, Refiner) and a Solver. This cycle asks two questions:
+
+1. What happens to accuracy, time and memory as the team grows to 10 or 100 agents?
+2. Does the latent hand-off carry information when the Solver cannot do without it?
+
+On GSM8K the Solver already reads the whole question, so cycles 12 and 13 could not tell "the thoughts carry nothing" apart from "the Solver did not need them". Part 2 splits the facts between the agents to remove that escape.
+
+A measured design fact matters for both parts. The team shares one key-value memory, and it holds every agent's **prompt** as well as its latent steps. So an unsealed later agent, and the Solver, can read the earlier prompts, the question among them, directly. Part 2 therefore adds a **sealed** team. In it, every earlier agent's prompt is hidden from attention (`team.chain`, `sealed=True`), and only the latent steps and the turn-closing tokens stay visible. Their keys and values were computed while each agent read its own prompt. So even a sealed team with random thought vectors can pass on some of what an agent read, and the no-hand-off floor is the Solver alone.
+
+### Setup
+
+- Model: Qwen2.5-3B-Instruct, bf16. It has 2 key-value heads, so it stores about 36 KB of memory per position against about 384 KB for Phi-3.5-mini, and a 100-agent memory fits on the 16 GB GPU.
+- No training and no tuned setting. Soft thoughts use the defaults (top-k 16, temperature 1.0), m = 40 latent steps per thinking agent, batch 8 (31 and 101 agents ran at smaller batches; see "Changes from the plan" under the results).
+- Team of N thinking agents: the Planner, then Critic and Refiner in alternation (`chain_roles`), then the Solver. N = 3 is the team of every earlier cycle.
+- Text team of N agents: each Critic reads the latest plan, each Refiner reads the latest plan and critique, and the Solver reads the latest plan. Each turn is capped at 256 tokens.
+- Vote of N: N independent single answers sampled at temperature 0.7, and the most common number wins. This spends many calls without any hand-off, which is the fair comparison for a team of N agents.
+- Questions: block 4 of the seed-0 test shuffle (`--count 200 --block 4`, questions 800–999). Cycle 13 used block 4 with Phi-3.5-mini. Nothing in this cycle is tuned on it, and the model is different.
+
+### Part 1, scale (every agent sees the question)
+
+- N = 3, 11, 31 and 101.
+- Systems: single; latent_mas@N; latent_random@N; vote@N; and text_mas@N for N = 3 and 11. The text team grows too fast in tokens for larger N.
+- Reported for each system: accuracy, mean generated tokens, latent vectors, seconds per question, wall time and peak GPU memory.
+
+### Part 2, split facts
+
+- The questions are the block-4 questions with at least two sentences before the last one. A question's facts are those sentences, and its ask is the last sentence. The number excluded is reported.
+- Fact j goes to thinking agent j mod N, and every agent also sees the ask. The Solver sees only the ask.
+- N = 3 and 11.
+- Systems:
+  - single_full: one model with the whole question (the ceiling);
+  - alone: one model with the ask only (the floor);
+  - latent_sealed@N and random_sealed@N;
+  - latent_open@N and random_open@N (unsealed: the facts can also be read from the earlier prompts);
+  - text_mas@N, where only the notes reach the Solver.
+
+### What counts
+
+There are eight primary tests, each an exact McNemar test on the same questions, with Bonferroni correction. A result is "established" only at **p < 0.05 / 8 = 0.00625**; anything else is reported as not established, with its numbers.
+
+| Test | Systems compared | Question it answers |
+|---|---|---|
+| 1–4 | latent_mas@N against latent_random@N, for N = 3, 11, 31 and 101 | Do the thoughts beat random at any team size? |
+| 5–6 | latent_sealed@N against alone, for N = 3 and 11 | Does the sealed latent hand-off carry facts at all? |
+| 7–8 | latent_sealed@N against random_sealed@N, for N = 3 and 11 | Does the content of the thought vectors matter, beyond what any latent step's keys and values pass on? |
+
+Secondary figures, reported but not gated:
+- latent_mas@N against vote@N and against single;
+- text_mas against latent_sealed;
+- the open systems;
+- time and memory against N.
+
+Predictions, written before the run:
+- Tests 1–4 are not established.
+- vote@N is at least as accurate as latent_mas@N for N ≥ 11.
+- Seconds per question grow at least linearly with N for latent_mas.
+- Test 5 is established, because the latent positions carry what their agent read.
+- Tests 7–8 are the open question.
+
+### Acceptance for the code
+
+- CPU unit tests with the tiny model:
+  - chain_roles starts with the Planner and alternates, and chain_roles(3) is the old team;
+  - the default latent_mas is unchanged;
+  - an all-zero hide changes nothing;
+  - sealed hides exactly the prompt columns, and noise written into them does not change the Solver's logits, while unsealed it does;
+  - sealed thoughts still carry what their agent read;
+  - the text team passes the latest plan and critique;
+  - sampling is grouped per question and reproducible by seed, and temperature 0 is greedy;
+  - the split rules and the vote tally behave as described;
+  - both parts of the runner produce every system and comparison.
+- The full runtime suite still passes, and the three-agent path of earlier cycles is unchanged.
+- **Code review (Codex, 66da55f):** no sealed-mode leak and no change to the three-agent path were found. Four findings were fixed, each with a test that fails when the fix is reverted:
+  1. A vote's winner was written back with `:g`, so 1234567 read as 1.23457. The winner is now scored as a number.
+  2. Random thoughts were not seeded per system. Each system now seeds torch from `--seed` and its name.
+  3. The leak test corrupted the hidden prompts only after the whole chain and read only the Solver's first step. It now corrupts them before every later agent and over a multi-step decode, with padded rows; removing `hide` at any of the three places fails it.
+  4. The compatibility test compared the new code with itself. It now compares with the three-agent algorithm written out. A one-off run of the parent commit's `team.py` beside the new one gives identical latent_mas (soft, aligned, random), text_mas, single, working memory and training loss on the tiny model.
+
+### Results (run 2026-11-14 to 2026-11-16)
+
+The raw reports stay outside the repository because they hold GSM8K text. `tools/c15_stats.mjs`, kept with the run outputs, checks that every system answered the same questions in the same order and recomputes the McNemar tests from the per-question answers. The other figures are the runner's own summaries. Codex recomputed every figure from the per-question records (see the data check at the end).
+
+### Changes from the plan, and why
+
+- **31 agents ran at batch 4, not 8.** At batch 8, latent_mas@31 ran for about 7.5 hours and then stopped with a CUDA out-of-memory error. The slowness before the error points to GPU memory spilling into system memory, but the run's filtered log does not show that directly. A short memory probe on 8 questions, whose accuracy was not used, found a peak of 6.75 GiB at batch 4 and 6.32 GiB at batch 2. The three 31-agent systems were rerun at batch 4 on the same 200 questions. latent_mas@31 finished first. The run stopped when its session ended, and latent_random@31 and vote@31 were run separately afterwards. Each system seeds torch from `--seed` and its own name, so a separate run draws the same random thoughts.
+- **101 agents ran on 50 questions at batch 1, not 200 at batch 8.** The probe measured about 181 seconds per question at batch 1 and 341 at batch 2 (4 questions each). The thinking steps run one after another: 101 agents of 40 steps is about 4,000 forward passes before the Solver starts. At that rate, 200 questions would take about 20 hours for latent_mas and latent_random alone. With the user's agreement on 2026-11-14, the 101-agent systems ran on the first 50 of the same 200 questions (`--count 50 --block 16`, shuffle positions 800–849). Their comparisons with other systems use those systems' answers on the same 50 questions.
+- Smaller batches mean less padding. They can change greedy answers slightly through bf16 rounding, but not in any direction that favours one system. They do change seconds per question, so time is compared across N only at the same batch.
+- The setup's "a 100-agent memory fits on the 16 GB GPU" held for one question at a time (6.79 GiB peak at batch 1), not for batch 8.
+
+### Part 1 results, scale
+
+| System | Questions | Batch | Accuracy | Mean tokens | Forward steps | s / question | Peak GiB |
+|---|---|---|---|---|---|---|---|
+| single | 200 | 8 | 0.830 | 301.9 | 301.9 | 2.69 | 6.12 |
+| latent_mas@3 | 200 | 8 | 0.810 | 251.9 | 371.9 | 3.01 | 6.39 |
+| latent_random@3 | 200 | 8 | 0.425 | 247.2 | 367.2 | 3.54 | 6.41 |
+| vote@3 | 200 | 96 rows | 0.850 | 910.1 | 910.1 | 2.14 | 8.92 |
+| text_mas@3 | 200 | 8 | 0.795 | 880.0 | 880.0 | 7.33 | 6.56 |
+| latent_mas@11 | 200 | 8 | 0.780 | 251.9 | 691.9 | 6.45 | 7.13 |
+| latent_random@11 | 200 | 8 | 0.235 | 185.7 | 625.7 | 6.69 | 7.06 |
+| vote@11 | 200 | 96 rows | 0.880 | 3322.6 | 3322.6 | 7.33 | 8.67 |
+| text_mas@11 | 200 | 8 | 0.780 | 2789.3 | 2789.3 | 21.33 | 6.56 |
+| latent_mas@31 | 200 | 4 | 0.775 | 251.3 | 1491.3 | 23.64 | 7.38 |
+| latent_random@31 | 200 | 4 | 0.055 | 157.7 | 1397.7 | 35.69 | 7.40 |
+| vote@31 | 200 | 96 rows | 0.890 | 9375.6 | 9375.6 | 22.20 | 8.82 |
+| latent_mas@101 | 50 | 1 | 0.660 | 247.0 | 4287.0 | 223.83 | 6.79 |
+| latent_random@101 | 50 | 1 | 0.000 | 233.4 | 4273.4 | 193.14 | 6.79 |
+| vote@101 | 50 | 96 rows | 0.940 | 31667.8 | 31667.8 | 39.63 | 8.25 |
+
+The text team hit its 256-token turn cap on 67% (N = 3) and 74% (N = 11) of agent turns. As planned, it did not run at N = 31 or 101.
+
+Accuracy on the 50 questions that every system answered:
+
+| N | single | latent_mas | latent_random | vote | text_mas |
+|---|---|---|---|---|---|
+| 1 | 0.86 | | | | |
+| 3 | | 0.84 | 0.36 | 0.86 | 0.78 |
+| 11 | | 0.72 | 0.20 | 0.90 | 0.74 |
+| 31 | | 0.76 | 0.06 | 0.84 | |
+| 101 | | 0.66 | 0.00 | 0.94 | |
+
+| Test | Comparison | Questions | Only first right / only second right | Exact p | Verdict |
+|---|---|---|---|---|---|
+| 1 | latent_mas@3 vs latent_random@3 | 200 | 81 / 4 | 1.1e-19 | **established** |
+| 2 | latent_mas@11 vs latent_random@11 | 200 | 112 / 3 | 1.2e-29 | **established** |
+| 3 | latent_mas@31 vs latent_random@31 | 200 | 147 / 3 | 7.9e-40 | **established** |
+| 4 | latent_mas@101 vs latent_random@101 | 50 | 33 / 0 | 2.3e-10 | **established** |
+
+Secondary figures (not gated; questions as in the test of the same N):
+
+| Comparison | N = 3 | N = 11 | N = 31 | N = 101 |
+|---|---|---|---|---|
+| latent_mas vs vote | 8 / 16, p = 0.15 | 3 / 23, p = 8.8e-5 | 2 / 25, p = 5.6e-6 | 0 / 14, p = 1.2e-4 |
+| latent_mas vs single | 9 / 13, p = 0.52 | 6 / 16, p = 0.052 | 6 / 17, p = 0.035 | 0 / 10, p = 0.0020 |
+| latent_mas vs text_mas | 15 / 12, p = 0.70 | 15 / 15, p = 1.00 | not run | not run |
+
+Time and memory against N, for latent_mas:
+
+| N | Batch | Forward steps | s / question | ms per forward step | Peak GiB |
+|---|---|---|---|---|---|
+| 3 | 8 | 372 | 3.01 | 8.1 | 6.39 |
+| 11 | 8 | 692 | 6.45 | 9.3 | 7.13 |
+| 31 | 4 | 1491 | 23.64 | 15.9 | 7.38 |
+| 101 | 1 | 4287 | 223.83 | 52.2 | 6.79 |
+
+Forward steps grow by 40 per thinking agent, as designed. At the same batch (N = 3 to 11), seconds per question grew 2.1 times for 3.7 times the agents, which fits the Solver's decoding being a fixed cost (it writes about 252 tokens at both sizes). Each step also gets slower as the shared memory grows, and the smaller batches at N = 31 and 101 add to that, so the later rows cannot separate the two causes.
+
+### Part 2 results, split facts
+
+- 166 of the 200 block-4 questions had at least two fact sentences; 34 were excluded.
+- Every system ran on the same 166 questions in the same order, at batch 8.
+
+| System | Accuracy | Mean tokens | Forward steps | s / question | Peak GiB |
+|---|---|---|---|---|---|
+| single_full (ceiling) | 0.819 | 303.6 | 303.6 | 3.55 | 6.12 |
+| alone (floor) | 0.012 | 119.4 | 119.4 | 2.03 | 6.09 |
+| latent_sealed@3 | 0.000 | 189.6 | 309.6 | 3.79 | 6.25 |
+| random_sealed@3 | 0.000 | 242.9 | 362.9 | 4.23 | 6.25 |
+| latent_open@3 | 0.524 | 270.3 | 390.3 | 3.63 | 6.25 |
+| random_open@3 | 0.175 | 234.4 | 354.4 | 3.64 | 6.25 |
+| text_mas@3 | 0.301 | 897.5 | 897.5 | 7.54 | 6.45 |
+| latent_sealed@11 | 0.006 | 104.0 | 544.0 | 5.56 | 6.58 |
+| random_sealed@11 | 0.000 | 232.1 | 672.1 | 6.39 | 6.64 |
+| latent_open@11 | 0.367 | 241.3 | 681.3 | 5.83 | 6.57 |
+| random_open@11 | 0.102 | 136.1 | 576.1 | 5.60 | 6.64 |
+| text_mas@11 | 0.283 | 2897.3 | 2897.3 | 20.77 | 6.45 |
+
+The text team hit its 256-token turn cap on 68% (N = 3) and 82% (N = 11) of agent turns.
+
+| Test | Comparison | Only first right / only second right | Exact p | Verdict |
+|---|---|---|---|---|
+| 5 | latent_sealed@3 vs alone | 0 / 2 | 0.50 | not established |
+| 6 | latent_sealed@11 vs alone | 1 / 2 | 1.00 | not established |
+| 7 | latent_sealed@3 vs random_sealed@3 | 0 / 0 | 1.00 | not established |
+| 8 | latent_sealed@11 vs random_sealed@11 | 1 / 0 | 1.00 | not established |
+
+Secondary figures (not gated):
+- text_mas against latent_sealed: 50 / 0 at N = 3 and 47 / 1 at N = 11 (both p < 1e-12). Text notes carry facts that the sealed latent hand-off does not.
+- latent_open against random_open: 60 / 2 at N = 3 and 48 / 4 at N = 11 (both p < 1e-9).
+- latent_open against text_mas: 48 / 11 (p = 1.2e-6) at N = 3 and 25 / 11 (p = 0.029) at N = 11.
+- single_full against latent_open: 52 / 3 at N = 3 and 78 / 3 at N = 11. Every team stays well below one model with the whole question.
+
+### Predictions against results
+
+| Prediction | Result |
+|---|---|
+| Tests 1–4 are not established | **Wrong.** All four are established, with the gap widening as N grows. |
+| vote@N is at least as accurate as latent_mas@N for N ≥ 11 | **Held**, and vote is ahead at every N ≥ 11 with p < 0.00625. |
+| Seconds per question grow at least linearly with N | **Partly.** Forward steps grow linearly. Seconds grew less than linearly from 3 to 11 at the same batch, and much faster beyond that, where the batch also changed. |
+| Test 5 is established | **Wrong.** The sealed team is at the floor. |
+| Tests 7–8 are the open question | Not established. Both sealed teams are at the floor, so these tests did not distinguish the sealed systems. |
+
+### Reading
+
+- **Tests 1–4 show that random thoughts break the model, not that real thoughts help.** latent_random falls from 0.425 to 0.055 at 31 agents and 0 at 101, while latent_mas never scores above single and is clearly below it at 101 agents (0 / 10, p = 0.002). Beating random thoughts is therefore weak evidence that the thoughts carry anything useful; these runs show no benefit from them.
+- **The largest latent team is the worst, and the largest vote the best.** On the 50 questions every system answered, latent_mas scored 0.84, 0.72, 0.76 and 0.66 at 3, 11, 31 and 101 agents, and vote 0.86, 0.90, 0.84 and 0.94. Neither trend is steady, but vote is ahead of latent_mas at every N ≥ 11 (p < 0.00625 each). Vote never hands anything between agents: its gain comes from sampling many independent answers.
+- **Against the text team, the latent team is cheaper with no measurable accuracy difference.** At N = 3 and 11 it used 58% and 75% fewer forward steps and 2.4 and 3.3 times less time, at 0.810 against 0.795 and 0.780 against 0.780 (15 / 12, p = 0.70, and 15 / 15, p = 1). No difference was found, which is not the same as showing equal accuracy. The saving comes from not writing text: latent_random takes about the same time and is far less accurate. Vote is more accurate than either team at these sizes, at many times the tokens. It is faster than latent_mas at N = 3 (2.14 against 3.01 s) and 13% slower at N = 11 (7.33 against 6.45 s).
+- **The sealed latent hand-off showed no benefit.** With the earlier prompts hidden, the team answers 0 and 1 of 166 questions, no better than the Solver with only the ask (2 of 166). No hand-off of facts was demonstrated, which does not prove the latent steps hold none. Because both sealed teams are at the floor, tests 7 and 8 did not distinguish the thought content from the keys and values of the latent steps.
+- The open teams can read the facts straight from the earlier prompts in the shared memory. Random vectors disturbing that reading would explain latent_open beating random_open, so this result cannot be told apart from the thoughts carrying the facts. The sealed results make the first more plausible, but these runs do not separate the two.
+- The text team is the only hand-off here that passes facts the Solver could not read for itself. It is also the slowest, at 2–4 times the seconds per question.
+- Scope: one model (Qwen2.5-3B-Instruct), no training, one question block, and 50 questions at 101 agents. Cycle 14's trained thoughts were not tested here.
+
+### Data check (Codex, read-only)
+
+Codex recomputed every figure in these results from the per-question records and the run commands. Question order, the 50-question prefix, the batch sizes, the 40 steps, every McNemar split and all four established primary verdicts matched. It found:
+
+- four seconds-per-question values and one p-value rounded from already-rounded summaries, now taken from the raw values;
+- memory labelled GB where the runner measures GiB;
+- sentences in the reading that claimed more than the data show: equal accuracy with the text team, vote faster at every size, steady trends with N, a cause for tests 1–4, "no usable facts" in the sealed hand-off, and two mechanism claims;
+- a description of `c15_stats.mjs` that overstated what it recomputes.
+
+Each was corrected or narrowed above.
+
+### Suites (2026-11-16, after merging main)
+
+- `npm run -s test:graph` passes; `node --test tests/*.test.mjs` 191 of 192 pass, 1 skipped; `npx playwright test` 13 of 13.
+- Runtime, `python -m unittest discover -s tests -t .`: 211 tests OK in WSL with torch, and 211 OK with 66 skipped on Windows Python 3.13 without torch.
+- The documented command found that `runtime/tests/test_agent_scale.py` imported `test_latent_training` as a top-level module, the problem H1 fixed in the C14 test. It now imports `tests.test_latent_training`.
+
+## P5b — Install passes the database path (defined 2026-11-20, before the code)
+
+G8's `ledger install` passes a `PORT` other than 4317 to each agent's MCP server, but not `CONTEXT_LEDGER_DB`. Since P1e the MCP adapter finds the ledger's token in the file next to that database, so a ledger started on a custom database is unreachable from the agents: every tool call says there is no token. Synthetic data only: the G8 sandbox (fake home, stub CLIs).
+
+| Eval | Expected |
+| --- | --- |
+| Passed on | With `CONTEXT_LEDGER_DB` set, install adds `CONTEXT_LEDGER_DB=<absolute path>` to both registrations in the place each CLI parses (Claude `-e` before `--scope`, Codex `--env`), beside `PORT` when that is set too. A relative path is resolved against the folder `ledger install` runs in, since the agents start the MCP server elsewhere. |
+| Default unchanged | Unset or empty, nothing is added: the registrations are byte for byte the G8 ones. |
+| Refused | `:memory:` (the server refuses it) and a value with a line break or other control character are refused before any CLI runs, with a fixed sentence. |
+| Dry run | `--dry-run` prints the same commands with the path, escaped. |
+| End to end | The MCP adapter started with the environment the stub recorded reaches a real server on a custom database and port: `session_search` answers instead of saying there is no token. |
+
+**Results — P5b (2026-11-20, Windows):** every row passes. Code in `src/install.mjs`, tests in `tests/install.test.mjs`. Suites: graph 9/9; node 487 pass, 10 skipped; Playwright 27/27; runtime 239 OK, 66 skipped.
+
+- **Codex review, round 1** (of 91dde35): no misplaced argument, no unescaped output, no symlink or `/private` mismatch, unset and empty unchanged. Fixed, each with a test:
+  - (medium) On Windows a database path with `%` or `"` is refused when the CLI is a `.cmd` shim, but the dry run said it would register the server. The dry run now asks the same check (`refusedByCmd`) and prints the same refusal; the install stops before the instruction step, as it did.
+  - (low) Uninstall read `CONTEXT_LEDGER_DB` and stopped on a bad value although it registers nothing. It no longer reads it.
+  - (low) A server registered by an earlier install keeps its settings, so the README now says to remove it and install again after changing `PORT` or `CONTEXT_LEDGER_DB`.
+  - Accepted: (low) the tests use stub CLIs, so they cannot prove that the real Claude Code keeps both `-e` values and Codex both `--env` values. No test runs the real CLIs (the G8 incident); the stubs follow each CLI's documented options, and a person checks a real install.
+- **Codex review, round 2** (of 508acae): the three fixes hold. (low) The manual setup in the README, where the Windows refusal sends people, did not show `CONTEXT_LEDGER_DB`: both examples now do.
+
+## P5a — Node suites on three systems (defined 2026-11-17, before the change)
+
+The product is meant to install on Windows, macOS and Linux, but CI ran the Node suites and browser evals on Linux only (the Python checks already run on Linux and Windows).
+
+- **Expected result:** on every push and pull request, `npm run -s test:graph`, `node --test tests/*.test.mjs` and `npx playwright test` pass on `ubuntu-latest`, `windows-latest` and `macos-latest`, each as its own job, so one system failing does not hide the others.
+- **How it is checked:** the CI run on this card's pull request. `tests/*.test.mjs` is expanded by bash on every system, since PowerShell does not expand it.
+
+### P5a: the Windows runner (defined 2026-11-20, before the fix)
+
+With main merged in, the Windows Node job ran until the job limit cancelled it (20, then 45 minutes). The log shows the cause: from the first test that starts a server, every start on the runner ends with "Cannot write the access token file next to the database", so 26 tests fail; then the routes test that waits for the server's first line waits forever (the child has exited, while the test's fake runtimes keep the process alive). A one-off diagnostic job on `windows-latest` printed why the token write fails: the runner's account `runneradmin` is the built-in Administrator (RID 500), which SDDL spells `LA`, so the descriptor reads `O:LA…D:P(A;;FA;;;LA)` and the check, which compares SDDL text with `S-1-5-21-…-500`, refuses the file it has just written.
+
+| Eval | Expected |
+| --- | --- |
+| Alias of the current user | The token scripts also print how SDDL spells the current user (from a descriptor holding only that SID). `privateToOwner` treats that alias as the same account, for the owner and every allow entry; with no alias, a malformed one, or any other account in the DACL, the file is still refused. A unit test pins this on `O:LA…(A;;FA;;;LA)` with a synthetic RID-500 SID. |
+| No hang | The routes test that drives a server child fails at once with "The server child exited" when the child exits before printing a line. CI runs `node --test` with a five-minute limit per test file (the limit applies to each file as a whole), so a future hang fails one file, not the job. The job limit goes back to 30 minutes. |
+| Signing key on the runner | P4a's key check reads DACLs with `icacls /save`, which also writes `LA`. It asks PowerShell to spell the SID from a descriptor built in memory (falling back to the SID alone if PowerShell refuses), and `daclAllowsOnly` accepts that spelling like the SID; with no alias, another account spelt `LA` or Everyone in the list, the key is still refused (unit test). |
+| Test helper | Token files a test writes by hand are made private by `restrictToOwner`. On the runner `icacls /inheritance:r` was not enough: a file an elevated administrator creates where nothing is inherited gets explicit entries from the token's default DACL and the Administrators group as owner. The helper now writes one whole descriptor (this user as owner and only entry, protected) and throws with the file's SDDL if the result is not private. |
+| Slow first call | On the runner the first MCP call (the adapter's start, then a PowerShell token read) took over 5 s, past the test MCP client's wait. The client waits 45 s by default (more than the token read's own 30 s limit); a test that expects silence passes its own limit. |
+| Green on three systems | `node (ubuntu-latest)`, `node (windows-latest)` and `node (macos-latest)` pass, with the two runtime jobs. |
+
+**Codex review** (`codex exec --sandbox read-only`):
+
+- **Round 1** (of efdf301, the token fix): no ACL bypass, PowerShell bug or parsing bug found. (medium) The routes test teardown could still wait after a child ended by a signal or failed to spawn: one end promise now covers both. (low) The inherited-ACL assertion in the token test ran only when the check already refused the file: it now uses a folder that hands Everyone read access and asserts the refusal every time. Codex also asked for a check that an account spelt `LA` that is not the current user stays refused: added to the unit test.
+- **Round 2** (of e516381, the signing-key fix): (medium) the key check learned the account's spelling from a temporary folder before that folder was private. It now asks PowerShell to spell the SID from a descriptor in memory, as the token scripts do, and reads nothing from disk for it. (low, older than this card) the `icacls /save` reader took the second line without checking which file the record names: `parseSavedAcl` now needs exactly one record for the expected file name, with a unit test for another name, extra records and missing lines.
+- **Round 3** (of 5e578dc): both round-2 findings fixed. (medium) In PowerShell's Constrained Language mode the descriptor cannot be built and key creation and loading failed: the spelling now falls back to the SID, which still refuses any alias. (low) The record's file name is compared exactly, not case-folded. (low) The eval row above described the old folder probe: corrected.
+- **Round 4** (of 9f8c8cf): the round-3 fixes hold, and the new test helper replaces the whole DACL. (low) The helper checked its result with the reader's policy, which accepts more than it promises: it now requires exactly this user as owner and one protected full-control entry. (low) Its PowerShell call had no timeout: 30 s, as in `src/token.mjs`.
+- **Round 5** (of b9d3e19): both round-4 fixes hold. (low) 20 s could still be shorter than the adapter's start plus the token read's own 30 s limit: the default wait is 45 s.
+
+## P2a — Project scope for graphs and MCP (defined 2026-11-21, before the code)
+
+ADR-7a in [the architecture](architecture.md) §12. P1b put every session in a project; graphs, links, rooms and the MCP tools do not know about projects yet. Synthetic transcripts only: two projects, `orbit` and `vela`, each with sessions for two parties.
+
+| Eval | Expected |
+| --- | --- |
+| A graph's project | `GET /api/graphs` rows carry `project`, the slug of the cited session's project. `?project=<slug>` returns only that project's graphs, with paging; an unknown slug returns none; a malformed one is a 400 with the fixed slug rule, and a repeated one is refused. No packet field names a project. |
+| Links stay in a project | Publishing a graph whose link points at a graph of another project is a 400: "A link must point at a graph in the same project." The same link inside one project is accepted as before. |
+| Rooms stay in a project | `POST /api/rooms` with graphs from two projects is a 400: "A room needs two graphs from the same project." `GET /api/rooms` rows carry `project`, and `?project=` filters them. A room's "newer graph" notice (G11) names only graphs of the same project. |
+| MCP | `session_search`, `graph_list` and `room_list` take an optional `project` (ASCII letters folded to lowercase, like `party`) and pass it on; without it they cover every project. A row from a ledger that ignored the filter (another project, or no `project` field) makes the tool fail with a fixed sentence instead of returning wrong rows. The pinned tool list keeps its fourteen tools; the new arguments have their own size budget. |
+| Nothing else moves | Every response pinned by `tests/routes.test.mjs` other than the list rows' new `project` field is unchanged, the token is needed on every route as before, and the browser app and console still pass. |
+
+**Codex review, round 1** (of b7017f8): the auth gate, fixed error texts and republish path hold. Fixed, each with a test in `tests/project-scope.test.mjs`:
+
+- (medium) A room opened across projects before P2a still took choices, and its newer-graph notice searched both projects. Such a room is now read-only (`decide` refuses it with a fixed sentence), names no newer graph, lists with `project: null` and matches no project filter.
+- (medium) A session whose project is missing (`project_id` is nullable; the trigger fills it only on insert) matched another such session, so links and rooms between them passed. A missing project now matches nothing.
+- (low) Paging with the filter was tested for graphs only: added a room walk over interleaved projects, and a `session_search` whose second ledger page holds another project's row.
+
+**Codex review, round 2** (of e9d310d): the round-1 fixes hold. Two lows fixed: (low) a read-only room still showed Confirm and Reject buttons in the browser, which then failed; the room view now carries `takesChoices`, and the browser shows the recorded choices and a note instead (Playwright test). (low) The missing-project test did not cover the newer-graph notice: a room whose sessions lose their project now shows no newer graph and takes no choices (node test).
+
+**Codex review, round 3** (of 0db171d): both round-2 fixes hold, and the new text is set with `textContent`. (low) The read-only note said "two projects" also when a graph's project is missing: the browser note and the refusal now say the graphs are not both in one known project.
+
+## P2b — Message-key and artifact citations (defined 2026-11-21, before the code)
+
+ADR-7b in [the architecture](architecture.md) §12. Graph nodes still cite file line numbers; P1c gave every stored message a stable key. Synthetic transcripts and made-up repositories only (`orbit-labs/adapter`).
+
+| Eval | Expected |
+| --- | --- |
+| Version 3 packet | `schemas/semantic-graph-v3.schema.json` is version 2 with `evidence` in place of `evidenceLines`: 1 to 100 unique citations, each exactly `{ "message": "<key>" }` (a `u:`, `h:` or `l:` key) or `{ "artifact": "<64 hex>" }`. Parties, questions, edges and links are as in version 2. Versions 1 and 2 publish and read exactly as before. |
+| Citations resolve | Every message key must be a stored message of the packet's session, and every artifact must be registered in that session's project; otherwise a 400 with a fixed sentence that names no key or ID. Order is not identity: citations are sorted in the canonical packet, so a reordered packet gets the same graph ID. |
+| Derived citations | The stored graph keeps the packet as sent (canonical) and adds `citations`: for each node, the transcript lines its message keys resolve to and the artifacts it cites (`kind`, `repo`, `ref`). G7 grounding, `context_for`, the G11 diff, the G12 export and the console's evidence panel read lines from there, so a version 3 graph shows the same turns as the version 2 graph with the same lines. |
+| Rooms and links | Version 2 and version 3 graphs link to each other and meet in rooms; every party-graph rule (other party, other session, same project, no superseded target) applies to both. |
+| Artifacts | Schema version 4 adds an `artifacts` table: per project, kind `commit`, `pr` or `file`, a repository path such as `orbit-labs/adapter`, and a ref (a hex commit of 7 to 64 characters, a pull request number, or a relative file path with no `.` or `..` part). The ID is SHA-256 of the project, kind, repository and ref, so registering twice returns the same row. `POST /api/artifacts` (token and local Origin) and `ledger artifact add <kind> <repo> <ref> [--project <slug>]` register one; `GET /api/artifacts?project=` and `ledger artifact list` list them, newest first, with paging. Nothing registers an artifact by itself. A version 3 file is upgraded in place, and a newer file is refused untouched. |
+| MCP | `graph_schema` offers versions 1, 2 and 3, with 3 as the default; `session_read` shows each turn's key beside its line, so an agent can cite it; `graph_publish` says that version 3 cites message keys or artifacts. No MCP tool registers an artifact. The pinned tool list keeps its fourteen tools. |
+
+**Results — P2b (2026-11-21, Windows):** every row passes. Code in `src/artifacts.mjs`, `src/graph.mjs`, `src/store.mjs`, `src/migrate.mjs`, `src/server.mjs`, `src/cli.mjs`, `src/mcp/*` and the readers; tests in `tests/citations.test.mjs` and the console spec.
+
+**Codex review, round 1** (of 4861b83): no cross-session or cross-project resolution at publish, no canonicalization hole, and migration, auth, Origin and escaping hold. Fixed, each with a test:
+
+- (medium) The console dropped artifact citations, and its panel took the raw packet node, which a version 3 node gives no `evidenceLines`. The model now passes lines and artifacts to the panel, which lists each artifact as text and says when a node cites artifacts only (Playwright).
+- (medium) The diff and the console compared citations without their session, so `l:1`, a reused record UUID or a line number in another session looked unchanged, and an answer link carried over to a question whose cited turn changed. Citations from another session are now a change in both (node test with one key in two sessions, for version 2 lines and version 3 keys).
+- (low) The export flattened artifacts into `source_location` text, where a file path may hold `, ` or `@`: nodes also carry `ledger_artifacts` records.
+- (low) `ledger artifact list` could read only the first 20 rows: it takes `--limit` and `--after`.
+
+**Codex review, round 2** (of 4ee2126): the artifact panel, export records and CLI paging hold. Fixed, with a node test: (medium) the console still drew an `answers` edge to a question whose cited turn had changed; the edge is now drawn only while the answered question is the one it was published against. (low) Session scoping also caught artifact-only citations, which belong to the project: only lines and message keys are compared with their session now, in the diff and the console.
+
+**Codex review, round 3** (of a7bf589): both round-2 fixes hold. (low) An answer published after its question had changed still flashed a read line to the changed question: such a link now reads nothing (node test).
+
+## P5c — `npx` entry point (defined 2026-11-21, before the code)
+
+The user's answers of 2026-11-21: prepare the package for npm but do not publish it; default the database to a per-user folder under the bin; when `install` runs through `npx`, register `npx`; the bin is `context-ledger`. Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| Publishable package | `package.json` has no `private`, a `bin` named `context-ledger`, a `files` allowlist (`bin/`, `src/`, `public/`, `schemas/`, `rules/latent-rules.json`, README, LICENSE), the MIT `license`, the `repository` and `engines` (Node 22.14 or newer). `npm pack --dry-run` lists no test, fixture, `demo/` script or transcript, doc, runtime, `.sqlite`, `.env`, key or token file, and nothing outside the allowlist. The console's bundled synthetic recording (`public/console/demo-recording.json`) is included, because the console's demo mode loads it. No new runtime dependency. Nobody runs `npm publish` in this card. |
+| One bin | `context-ledger start` runs the server, `context-ledger mcp` the stdio MCP adapter, and every other argument list runs the `ledger` CLI exactly as `npm run ledger --` does (same output, exit status and escaping). With no arguments it prints the usage. |
+| Per-user database | Under the bin, an unset `CONTEXT_LEDGER_DB` becomes `.context-ledger/ledger.sqlite` in the home folder (`USERPROFILE` on Windows, `HOME` elsewhere), for the server, the CLI and the MCP adapter alike, so they find one token file whatever folder each starts in. A set value is kept. `npm start` and `npm run ledger` from a checkout keep today's defaults. |
+| Install through `npx` | Run through `npx`, `context-ledger install` registers `npx -y --package <the spec it was run from> context-ledger mcp` (on Windows through `cmd /c`, which agents need for a `.cmd` shim), with `PORT` and the absolute database path as before. A local tarball path is made absolute. A spec that is a URL (it can carry credentials) or holds a space or a shell character is refused before any CLI runs. Run from a checkout or a global install it registers `node <path>/src/mcp.mjs` as today. The registered command, run as an agent would, answers MCP. |
+| Works from a tarball | In an empty folder, `npm pack` then `npx -y --package <tarball> context-ledger …` starts the ledger, imports a synthetic transcript, publishes a graph and reads it back; a node test does this on each system. |
+
+**Codex review, round 1** (of f279d69): the server, CLI and adapter share one database and token path under the bin, and the CLI dispatch is unchanged. Fixed, each with a test in `tests/npx-entry.test.mjs`:
+
+- (high) On Windows the spec went into a `cmd /c` line that the agent later hands to cmd.exe, and the filter let shell characters through. (high) A URL spec with credentials would be copied into both agents' configs. Specs are now limited to letters, digits and `@ / \ . _ : # ~ + -`; URLs and anything else are refused before any CLI runs (ADR-15c).
+- (medium) A local tarball spec was replayed from the agent's folder, and a path with a space fell back silently to a registry version that does not exist before publication. A local path is now made absolute, and an unusable one is refused, not replaced. The tarball test now runs `install --dry-run` through npx and starts the registered command as an agent would: it answers `session_search`.
+- (medium) The tests' server start and MCP replies had no deadline, and a reply waiter never failed when the adapter exited: both now have one (90 s and 60 s) and fail on exit.
+- (low) The eval said the tarball holds no demo, while the console's synthetic recording is included (the console's demo mode loads it): the eval now says so.
+
+**Codex review, round 2** (of 693ca01): ordinary relative tarballs become absolute, credential URLs are refused, and the registered command answers MCP. Fixed, each with a test:
+
+- (medium) The URL check missed `git+ssh:` specs without `//`, and the path rule rewrote `@scope/foo.tgz` and `github:owner/repo.tgz` as local paths and kept `file:` as part of a path. Specs are now told apart first: a registry name, a host shorthand, or a local path (`file:` stripped), each with its own grammar; anything else is refused.
+- (medium) The test's MCP reader parsed partial lines from the pipe and did not fail on a closed stream: it now parses whole lines only and fails waiters on exit, error or close.
+- (low) The ADR said the characters were safe for every shell; it now states the guarantee for the two paths the command takes (one POSIX argument, the Windows `cmd /c` line).
+
+**Codex review, round 3** (of 4296c04), checked against npm's own spec parser (`npm-package-arg` 12): (medium) `dist/pkg.tgz` is a GitHub shorthand to npm, not a local file; (medium) npm resolves `file:~/…` under the home folder; (medium) npm reads `pkg@bundle.tgz` and `pkg@.next` as local paths. Now a bare name ending `.tgz` with no slash is a file, `dir/pkg.tgz` is kept as a shorthand (a local file in a folder is written `./dir/pkg.tgz`), `~` specs are refused, and a registry version must be an exact semver or a plain tag. (low) The test's MCP reader could fail a reply on exit before stdout delivered its last line: it now decides when stdout closes. Each case has an assertion.
+
+**Codex review, round 4** (of d36346a): `dir/pkg.tgz` and the reader fix hold. (medium) npm reads `pkg@1.2.3-foo.tgz` as a local tarball, and (medium) `./~/pkg.tgz` under the home folder; (low) `pkg@x` is a range to npm, and `pkg@1.2.3+build` an exact version. Now no spec ending in a tarball suffix is a registry name (so `@scope/foo.tgz` is refused too), no spec with `~` is written, a tag is lowercase with two or more characters, and an exact version may carry `+build`; each case has an assertion. The rule stays narrow on purpose: a spec it cannot be sure of is refused with the advice to install globally, never rewritten.
+- **CI on Windows** then failed the tarball test: the runner's temporary folder is `C:UsersRUNNER~1…`, and the rule refused every `~`. Only `~` as a whole path part (`~/x`, `./~/x`, `file:~/x`) is refused now; inside a name, as in a Windows short name, it is kept (unit assertion).
+
+## P2c — Approval bound to a node hash (defined 2026-11-21, before the code)
+
+ADR-7c and 7d in [the architecture](architecture.md) §12. Synthetic transcripts only.
+
+| Eval | Expected |
+| --- | --- |
+| Node hash | Each node of a stored version 3 graph has a `nodeSha256` (in the graph's `nodeHashes`, in canonical node order): SHA-256 of the JCS form of `kind`, `label`, `status` and `to` when present, and the canonical `evidence`. A reordered packet gives the same hashes; a change to any of those fields changes the hash; the node ID does not enter it. Versions 1 and 2 have no hashes. |
+| A person decides | `POST /api/graphs/<id>/reviews` with `{ nodeId, nodeSha256, decision: "approve" \| "reject", reviewer }` records the decision and returns the graph's current reviews. It needs a browser's sign-in cookie (the bearer token alone is refused), the local Origin and `Sec-Fetch-Site: same-origin`; the CLI and MCP adapter cannot send it, and no MCP tool decides. This keeps agent clients out; it does not prove who clicked. A hash that is not the node's current one is a 409; an unknown node, a version 1 or 2 graph, or a bad decision is a 400; an unknown graph is a 404. The reviewer is 1 to 64 visible characters (no control, format or separator character), typed by the person and shown as self-asserted. |
+| Republish | Publishing the same party's graph from the same session again keeps the decision of every node whose hash is unchanged; a changed node starts unreviewed. Another session's graph never sees these decisions. |
+| Read | `GET /api/graphs/<id>` adds `reviews`: for each node with a decision on its current hash, `{ nodeId, nodeSha256, decision, reviewer, decidedAt }`. MCP `graph_read` passes them on as data. |
+| Browser | The library page has a "Review a graph" section: a graph ID and a reviewer name show each node with its kind, label, cited lines or artifacts, hash prefix and decision, with Approve and Reject buttons. Labels and names are set with `textContent`; a label holding markup stays text. |
+| Schema | Schema version 5 adds the reviews table; a version 4 file is upgraded in place, and a newer file is refused. |
+
+**Results — P2c (2026-11-21, Windows):** every row passes. Suites: graph 9/9; node 519 pass, 10 skipped; Playwright 32/32; runtime OK (66 skipped).
+
+**Codex review, round 1** (of ef21bad): no decision leaks past the review key, no field left out of the hash, no review text rendered as HTML. Fixed, each with a test:
+
+- (high) Any local process holding the bearer token could send the browser's `Sec-Fetch-Site` and record a decision, so "no agent can" was false. The route now also needs a browser's sign-in cookie: the bearer token alone is refused even with the header. The README and ADR say what remains: a program running as the person could still sign in as a browser does (ADR-10 trusts the OS user).
+- (medium) A graph opened while a decision was in flight kept its buttons disabled: they are drawn again, enabled, when the decision ends (Playwright, with the POST held).
+- (medium) A lone surrogate, which the version 3 label schema allows, made the JCS hash fail with a 500: a version 3 label must now be well-formed Unicode (400). Version 2 is unchanged.
+- (low) The upgrade of a version 3 graph stored before P2c was untested: a republish now adds its hashes with the same ID and time, and the browser says how to enable review until then.
+- (low) Added: a second party in the same session sees no decision, two nodes with the same content keep separate decisions, and a question's recipient enters its hash.
+
+**Codex review, round 2** (of 4430698): the cookie check, re-enabled buttons and the 400 hold. (medium) A bearer holder can still mint a sign-in link and act as a browser, and one ADR line still named the token: the README and ADR now call the route an interface boundary, not a credential one, and the line is corrected (docs only). (low) The race test did not prove the second graph was drawn while the decision waited: it now checks that graph's own label and a disabled button before the decision is released. (low) A failed decision could move focus into the newly opened graph: focus returns only when the graph is the one decided on.
+
+## P5d — Clean-install eval on three systems (defined 2026-11-21, before the code)
+
+P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is the clean machine: nothing of the ledger is installed, and the check runs outside the checkout. Synthetic data only.
+
+| Eval | Expected |
+| --- | --- |
+| Install | A `clean install` job on `ubuntu-latest`, `windows-latest` and `macos-latest` packs the checkout with `npm pack`, installs the tarball globally into an empty prefix (`npm install --global --prefix`), and runs everything below through the installed `context-ledger` command (the `.cmd` shim on Windows), from an empty folder with an empty home folder. |
+| First run | `context-ledger` with no arguments prints the usage and exits 1. `context-ledger start` listens on loopback and writes its database and token file under `~/.context-ledger`. |
+| A round trip | `context-ledger import`, `search`, `graph publish` and `graph read` work against that server; `context-ledger login` prints a one-time sign-in link of the expected shape. |
+| Agents | `context-ledger mcp` answers `initialize` and `tools/list`, and `session_search` finds the imported session. |
+| Clean stop | The server stops, and the check leaves nothing outside its temporary folder. |
+| Local | `node scripts/clean-install-check.mjs` runs the same check on a developer machine (it packs the checkout itself). The script is not in the package. |
+
+**Results — P5d (2026-11-21):** the Clean install workflow passes on `ubuntu-latest`, `windows-latest` and `macos-latest` (run of a32fc37), and `node scripts/clean-install-check.mjs` passes on Windows locally. The first Windows run failed after every step had passed: the check waited for the server's exit event after the `cmd.exe` shim had already exited, so it now waits on the promise made at spawn, for at most 15 s. The adapter's replies are read as whole lines, as in P5c's test after its review.
+
+**Codex review, round 1** (of 7f6370b): no fallback to the checkout (the check runs the absolute shim or bin in the fresh prefix), and the workflow keeps `contents: read`, no persisted credentials and a 15-minute limit. Fixed in the script, run again on Windows from a folder whose name holds spaces:
+
+- (medium) The MCP adapter could outlive a failed check: every process the check starts is tracked from spawn and its tree is stopped in `finally`, with bounded waits.
+- (medium) A stop was assumed, not confirmed: `taskkill` has a 15 s limit, and the eval fails if the server's port still answers afterwards.
+- (medium) npm ran with the developer's cache and config: both npm calls use an empty cache and empty user and global config under the temporary folder.
+- (medium) cmd.exe expands `%` even inside quotes: the check refuses a temporary folder holding `%` or `"` with a fixed message, and its folder name now holds spaces, so the quoting of every command line is exercised.
+- (low) Failure messages could print sign-in codes: they are redacted.
+- (low) The bind address came from the banner: the check connects to 127.0.0.1 and to each of the machine's other IPv4 addresses, which must refuse.
+
+**Codex review, round 2** (of 8415733): redaction and the loopback probes hold. (medium) Cleanup could report success with a child still running (a launcher can exit before its descendant, and the adapter was not checked): the check now records each process tree while it runs, kills what is left by ID, and fails unless every process is gone within 15 s. (medium) npm still inherited `npm_config_*` settings (in any case): all `npm_*` variables are dropped before its own are set, and the check asserts the checkout has no `.npmrc`. (low) A refused temporary folder was left behind: the parent folder is checked before anything is created.
+
+**Codex review, round 3** (of 60f5e7c; that commit's CI passed all 16 jobs, the clean install on all three systems among them): (high) killing recorded process IDs could hit an unrelated program after an ID was reused, and (high) a parent ID left by an exited process could pull another program into the tree. Processes are now known by ID and creation time: a child counts only when it began after its parent, the launcher's tree is stopped through the launcher only while it still runs, and a leftover is killed by ID only while that ID still has the same creation time. (medium) A tree was read only after each readiness check, so a failure before it left descendants unknown: the tree is read every 2 s while a launcher runs, and again at stop time.
+
+**Codex review, round 4** (of c242623): (high, twice) killing by process ID stays racy however it is checked: an ID can be reused between a check and a signal, and `ps` start times have one-second resolution. The check no longer kills anything by ID. It signals only through a launcher Node still holds (a process handle on Windows, an unreaped child elsewhere, so the ID cannot have been reused), reads trees only while that holds and drops a reading taken across the launcher's exit, and afterwards only looks: a process of the tree still there after 15 s fails the eval. (medium) A descendant started before the first reading of a launcher that then exits: not possible here, since cmd.exe waits for the node it starts and on macOS and Linux the bin link runs node itself; the comment says so. (low) The 15 s limit is now a deadline that counts the table reads.
+- **CI** of c242623: 15 of 16 jobs passed; `node (windows-latest)` failed in `tests/e2e/console.spec.mjs` (live mode), whose `.node` locator also matched a node a room test publishes with the same hostile label into the shared e2e database. That is an older order-dependent flake, not this card; the job was run again.
+
+**Codex review, round 5** (of 513a69f): (medium) a tree that was never recorded passed unverified: it now fails the eval. (low) A table reading that finished after the 15 s deadline could still clear it: it no longer counts. (high, accepted) On Windows `taskkill` resolves the launcher's ID itself, so a launcher that exits on its own in the milliseconds between the check and that lookup leaves its ID free for reuse. Closing this needs a Windows Job Object, which Node cannot create without a native module, and adding a runtime dependency for a test script is not worth it. The script runs on throwaway CI runners and on a developer's own machine, and the window is a launcher exiting by itself at the moment cleanup starts. It is written down in the script.
+- **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
+
+
+## P5e — Launch docs (defined 2026-11-21, before the docs)
+
+| Eval | Expected |
+| --- | --- |
+| Install | The README opens with an Install section: a global install from the GitHub repository, which works today, the same by the npm name once the user publishes it, and `npx` for one-off commands with the whole prefix on each. The package name `@pricepepel/context-ledger` and the command `context-ledger` are both named, with why they differ. |
+| First run | It says what `start` prints (the address and a one-time sign-in link), where the data lives (`~/.context-ledger`, `USERPROFILE` on Windows) and how to import a first transcript from the browser or the command line. |
+| Agents | It shows `context-ledger install` (and `--dry-run`), what it registers through `npx` and from a global install, and that agents need the ledger running. |
+| Upgrade and remove | It says how to upgrade (re-run with a newer version; a database is upgraded in place, an older build refuses a newer one), how to remove the agents' blocks (`uninstall`) and the data folder. |
+| Not in this release | It lists what this release leaves out: the license key and paid tier (ADR-13), hosted sync, hash-chained review events and edits (P3), automatic transcript discovery. |
+| Accurate | Every command in the section runs as written: a node test runs each `context-ledger` command the section shows (through the bin, against a temporary home) and checks that the commands it does not run (`npx`, `npm install`) name the right package and bin. |
+
+**Codex review, round 1** (of b19c33b):
+
+- (high) After the `npx` quick start there was no `context-ledger` command for the next steps. The section now leads with a global install, which works from GitHub today (`npm install --global github:PricePepel/context-ledger`, checked into an empty prefix: it installs the command) and by name once published; `npx` is kept for one-off commands, with the whole prefix on each.
+- (medium) Removing `.context-ledger` left a database named in `CONTEXT_LEDGER_DB`: the removal step names it. (medium) The agent step left out that the `claude` and `codex` CLIs must be on `PATH` (a missing one gets the instruction block but no registration), the `cmd /c` wrapper on Windows, the fallback to the published name and version, and what a global install registers: all said now.
+- (medium) The test did not check the npx subcommand, passed with no global install line, and never ran `uninstall`: it checks each, and says that the installed command is driven by P5d's clean-install eval.
+- (low) The GitHub install needs Git: named as a prerequisite. (low) The handoff called P5 closed before P5d merged: reworded.
+
+**Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
+
+
+## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
+
+Run 1 of M2b (Qwen2.5-0.5B to SmolLM2-360M) passed its gate, but both models are far below the 3B–32B range of the SwaT paper (arXiv 2610.15095). This card scales the sender about 8× on the same 16 GB laptop GPU. A 7B pair does not fit in bf16 with the backward pass through the receiver, so 7B waits for quantized-receiver training or a larger GPU.
+
+- **Pair:** `microsoft/Phi-3.5-mini-instruct` (3.8B, Phi-3 architecture, 32 KV heads, LongRoPE) to `Qwen/Qwen2.5-1.5B-Instruct` (Qwen2, 2 KV heads, RoPE base 1e6). Different families, tokenizers and RoPE, large to small like the paper's Gemma3-12B to Qwen3-4B.
+- **Training:** `latent_transfer.train` with `--sender` and `--receiver`, the same two stages as run 1. Batch, mapper size and passage length are set by what fits in 16 GB without spilling to host memory, and recorded with the result.
+- **Eval:** 300 SQuAD v1.1 validation questions (seed 0), greedy, token F1 and containment, conditions `text, closed, swat, zeroed, mismatched, t2t`. `t2t` uses the sender's own chat template; run 1's ChatML prompt is unchanged.
+
+| Gate | Pass when |
+| --- | --- |
+| Carries the passage | `swat` beats `zeroed` and `mismatched` (another item's passage through the same mapper), each with the paired bootstrap 95% interval above zero. The mismatched control comes from the audit in arXiv 2608.04893. |
+| Better than text | `swat` beats `t2t` (the sender's 40-word summary read by the receiver), interval above zero. Budgets are not matched in this card. |
+| Faster than text | Mean `swat` end to end (sender prefill, mapper, receiver answer) is below mean `t2t` end to end (sender writes the summary, receiver answers). |
+| Retention | Reported, with containment beside F1, because stage 2 trains the answer style (run 1's F1 retention of 1.86 was inflated by short answers). |
+
+Not covered here, and named so nobody reads more into a pass: budget-matched compaction (Attention Matching), the fair control of a receiver fine-tuned on the same SQuAD data, and more than one task.
+
+### Result — run 1 (2026-11-22)
+
+Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, stage 2 20,000 steps at batch 2 (QA share 0.7), mapper 100.5M parameters (8 blocks, width 384, 6 heads), passages capped at 256 tokens, seed 0. Stage 2 ran at about 0.54 s per step. Best dev F1 0.8275 (100 held-out dev questions), checkpoint `ade79c34041fd529`. Eval: 300 SQuAD v1.1 validation questions, seed 0, greedy.
+
+| Condition | F1 | Containment | Mean answer words |
+| --- | --- | --- | --- |
+| `text` (receiver reads the passage) | 0.778 | 0.857 | 4.9 |
+| `swat` (receiver reads the mapped sender cache) | **0.872** | 0.853 | 3.1 |
+| `t2t` (receiver reads the sender's summary) | 0.460 | 0.433 | 3.7 |
+| `mismatched` (another item's cache) | 0.153 | 0.087 | 3.2 |
+| `closed` (no passage) | 0.170 | 0.117 | 4.2 |
+| `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
+
+Paired bootstrap 95% intervals (10,000 resamples) for the per-item difference in token F1: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135]. For containment, `swat − text` is −0.003 [−0.047, 0.040]. For latency per item, `text − swat` is 49 ms [15, 85] and `t2t − swat` is 3,240 ms [3,023, 3,473].
+
+Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
+
+| Gate | Result |
+| --- | --- |
+| Carries the passage | **Pass.** Both intervals are far above zero, and the mismatched cache scores near the closed-book floor: the gain depends on supplying the correct passage's cache, not on a generic prior from the mapper. |
+| Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms mean, about 8.6× faster. On this run it was also faster on average than the receiver reading the passage itself (426 vs 475 ms, per-item interval above zero); one machine, one run. |
+| Retention | Reported: F1 retention 1.12 against `text` (interval above zero), while containment shows no detectable difference (−0.003, interval [−0.047, 0.040], so any gap is under 5 points either way). `swat` answers are shorter (3.1 vs 4.9 words), which likely explains part of the F1 edge; these aggregates do not show how much. The claim we make: "finds the answer as often as reading the passage, within 5 points, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+
+Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.
+
+Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
+
+## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
+
+For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
+
+**Task (synthetic):** N incident reports, generated from a fixed seed (service, cause, downtime in minutes, date, a short narrative). Each agent reads one report and returns `{service, cause, downtimeMinutes, quote}`. The page combines them: which services went down because of a configuration change, and their total downtime.
+
+| Eval | Expected |
+| --- | --- |
+| Live run | With a local OpenAI-compatible server (vLLM) configured, `POST /api/swarm/runs` with `agents: 100` sends one request per agent, at most `SWARM_CONCURRENCY` at a time (default 32), assigns agents round-robin across the configured models, and records each agent's model, state, time and tokens. |
+| Local only | Model servers come from `SWARM_URLS` (comma-separated) and must be `http://127.0.0.1` or `http://localhost`; any other host is refused at start. Nothing in a request body chooses a URL or a model. |
+| Checked quotes | An agent's answer is **verified** only when its quote appears in its report (after whitespace folding) and its downtime number appears in the quote. It is **correct** when service, cause and downtime match the generator's truth. Both counts are shown; unverified answers are left out of the combined answer. |
+| Combined answer | The answer lists the services and total downtime from verified answers, beside the truth from the generator and the number of agents that agree with it. |
+| GPU numbers | During a live run the page shows the server's KV-cache use, prefix-cache hit rate and running requests from its `/metrics`, when the server exposes them; missing metrics show as not reported, never as zero. |
+| Simulation | `mode: "simulated"` runs without any model server, with seeded timings and a few seeded wrong answers. The page says **Simulated** in the header and on every number; nothing simulated is labelled as measured. |
+| Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
+| Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
+| Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
+
+**Codex review, round 1** (of fa80ac7), each finding fixed with a regression test:
+
+- (high) Overlapping runs escaped the concurrency limit, and a running run could be dropped from the kept five while its agents kept working. One run at a time now (`409` while one runs), and only finished runs are dropped.
+- (medium) Model-server requests followed redirects, which could leave loopback: every request now uses `redirect: 'error'`; a test checks the redirect target is never contacted.
+- (medium) Model-server bodies were unbounded: capped at 256 KiB before parsing (the stream is cancelled), and answer fields are capped (service 80, cause 40, quote 400 characters, downtime 0 to 100,000).
+- (medium) The prefix-cache rate could include traffic from before the run, and a short run could finish without a sample. The baseline is read before the first agent starts, a last sample is taken after the last one, and a server's counters count only when both samples have them and they did not go backwards. The page now shows the server's running requests, "not reported" when missing.
+- (medium) Any number in the quote could verify a wrong downtime (a date, the incident number): the quote must state `<number> minutes`.
+- (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
+- (low) The finished message and an agent's token counts were not labelled simulated: both are now.
+- (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
+
+**Codex review, round 2** (of 5b6dd55): the round 1 fixes work. Fixed with tests:
+
+- (medium) A failed last metrics scrape kept the earlier sample unmarked: it is now marked stale, shows no "running now", and the page says "last sample before the end".
+- (medium) A model answering `{}` to every agent made a done run: an answer needs all four fields with the right types, so such a run fails.
+- (medium) A stalled poll never counted as a failure: every page request has a 5-second deadline covering the response.
+- (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
+
+**Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
+
+### Live run on vLLM (2026-11-22)
+
+Laptop RTX 4090 (16 GB), WSL, vLLM serving `Qwen/Qwen2.5-7B-Instruct-AWQ` (max model length 4096, 64 sequences at once, prefix caching on), ledger at commit 7b3db03 with `SWARM_CONCURRENCY=64`. Synthetic incident reports (seed 7). Measured through the API with a script that keeps aggregates only. The GPU had no other job during these runs.
+
+| Agents | Wall time | Correct | Verified | Failed | Output tokens/s | Prefix-cache hits |
+| --- | --- | --- | --- | --- | --- | --- |
+| 25 | 2.1 s | 25 | 25 | 0 | 629 | 77% |
+| 50 | 2.3 s | 50 | 50 | 0 | 1,133 | 89% |
+| 100 (3 runs) | 4.6 s, 3.9 s, 3.5 s | 100 each | 100 each | 0 | 1,140–1,485 | 89%, 98%, 98% |
+
+The combined answer (services hit by a configuration change and their total downtime) matched the generator's truth on every run.
+
+**Speed-up, measured honestly.** One agent alone took 0.86–1.29 s (5 runs, mean 1.05 s), so 100 agents one after another would take about 105 s, against 3.5–4.6 s together: **about 23–30× faster**. The page's "one after another" figure is the sum of each agent's own time *while sharing the GPU* (244 s for the first 100-agent run, a 53× ratio). It is labelled as that sum, but the ratio overstates the gain because each request is slower under load. Quote the measured single-agent baseline, not the page's ratio, until the page measures it (Backlog card S1b).
+
+**KV cache in use** read 0% in every run, because the last sample is taken after the agents finish. The peak during the run is not captured yet (S1b).
+
+**Two models on one GPU** (7B AWQ plus `Qwen/Qwen2.5-1.5B-Instruct`). They fit only with both servers in eager mode (`--enforce-eager --max-num-batched-tokens 2048`), the 1.5B at `VLLM_GPU_UTIL=0.40` started first, then the 7B at `0.90`. On this vLLM, the second server's setting is a cap on the whole GPU, including the first server's memory, so `0.55` plus `0.3` does not start. 100 agents split 50/50: the 7B was 50 of 50 correct and the 1.5B 45–46 of 50 correct with 48 verified, so two or three of its answers quote real text but get a fact wrong, and the combined answer no longer matched the truth. Timings from these runs are **not usable**: another session's GPU evaluation started at the same minute, so three jobs shared the GPU (100 agents took 32–45 s, median agent 13 s on the 7B and 7 s on the 1.5B). The first 25-agent run after the 7B started had 13 of its 13 7B agents time out; warm the servers before a demo.
+
+What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
+
+## S1b — Honest speed-up and peak KV on the swarm page (defined 2026-11-22, before the code)
+
+The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divided the sum of each agent's own time *while sharing the GPU* by the wall time (53× for 100 agents), but each request is slower under load, so the honest figure against one agent run alone was about 23–30×. "KV cache in use" read 0% because the last sample is taken after the agents finish.
+
+| What | Pass when |
+| --- | --- |
+| Solo baseline | Before the agents start, a live run sends one warm-up request (not timed) and then `SWARM_BASELINE_RUNS` timed requests (default 3, 1 to 5) to each server alone, one at a time, and keeps the median per server. The baseline uses the same prompt shape as an agent (report 1) and its tokens are not added to the run's totals. It is measured once per ledger process for the same set of servers and models and reused by later runs, with the time it was measured. |
+| Speed-up | `speed-up = estimated one-after-another ÷ wall time`, where the estimate adds each finished agent's server baseline. A test with a server that answers slower under load than alone shows the speed-up uses the solo baseline (and is below the old sum ÷ wall ratio). If the baseline fails, the run still goes on and the speed-up says "not measured". |
+| Old figure | The sum of agents' own times is no longer shown as a speed-up or as "one after another". It stays in the API as `agentMsSum` only. |
+| KV peak | The KV-cache tile shows the highest value sampled during the run (across servers and samples), labelled as the peak, not the last sample. A test with a server whose KV gauge is high during the run and 0 afterwards shows the peak, not 0. |
+| Simulated | A simulated run shows "not measured" for the speed-up, the one-after-another estimate and the KV peak; no baseline is taken. |
+| Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
+| Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
+
+**Codex review, round 1** (of ed890ea), each finding fixed with a regression test:
+
+- (medium) Failed agents were credited with a full solo run, so fast errors could raise the speed-up and an all-failed run could still show one. Only agents that answered count now (`answeredForSpeedup` in the API, "N answers ×" on the page).
+- (medium) The baseline timed any HTTP 200, even a reply with no usable answer. Each baseline reply must now pass `parseAnswer`, the check an agent's reply passes; otherwise there is no baseline and no speed-up.
+- (medium) The timed requests read the same report as the warm-up, so they reused more of the prefix cache than agents do, and the page did not say the figure was a warm, possibly reused baseline. Timed requests now read reports 2 to N+1 after a warm-up on report 1, and the page says "per agent alone, warm (median of 3, measured at / reused from HH:MM)".
+- (low) The median of an even count took the lower middle value: it is now the mean of the two middle values.
+- (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
+- (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
+
+**Codex review, round 2** (of 497612e): the round 1 fixes are correct. Fixed with tests:
+
+- (medium) The baseline used the run's seed, so it sent the first agents' exact prompts before the run and a prefix cache could serve them faster, inflating the speed-up. The baseline now reads reports from its own seed (`baselineSeed`), and a test checks no baseline prompt is a run prompt.
+- (low) With several servers the note multiplied the total answer count by every server's time. Each server now shows its own answers × solo time (`perServer[].answered` in the API).
+- (low) The warm-up test could pass with the warm-up included: it now uses distinct timings and two timed runs, so only the right samples give the expected median.
+- (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
+
+Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
+## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
+
+Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
+
+| Eval | Expected |
+| --- | --- |
+| Counts | In a scoped briefing, each state list (ready actions, current decisions, open questions) names the shown items, then the number it leaves out: `open questions: 1 left out`, `current decisions: port; 1 more left out`. A list with nothing left out reads as before (`none` or the IDs), so an unscoped briefing and a scoped one that shows everything are unchanged. |
+| Budget | The counts hold when the budget, not the question, drops a node. |
+| Way back | When a scoped briefing leaves out any node, its scope line ends with `call context_for without a question for the whole graph`, as the no-match line already does. |
+| No IDs leak | A left-out node's ID, label and links still never appear; only the count does. |
+| Live | The demo question re-run against a live agent no longer gets "Leo needs nothing from you": the agent either reports the open question or says some were left out. |
+
+### G9b results (2026-11-21)
+
+- **Counts, no IDs leak, way back:** `tests/scope.test.mjs` checks `1 left out`, `port; 1 more left out` (rendered), the hint at the end of the scope line, and that no left-out ID or label appears. A scoped briefing that shows every node has the same state section as the unscoped one and no hint. The unscoped golden briefing is unchanged.
+- **Budget:** a question dropped by the budget is counted (`open questions: 1 left out`). Over MCP paging, the reassembled pages match the HTTP briefing byte for byte and carry the count and the hint once.
+- **Live:** Leo's graph from the clean-install rehearsal (8 nodes, published by Claude Sonnet), Ali's prompt sent unchanged to a fresh Claude Sonnet session over MCP, 3 runs on this branch. Before the fix (a08c6e9, 1 run), the agent said Leo needed nothing from Ali. After it: 2 runs named "Who owns the GPU box?", and 1 said one open question was left out of the filtered view. All 3 answered port 4317 and Saturday 17:00. Cost $0.03–0.07 per run. In every run the agent's first call passed a `budget` without a `question` and was refused (`budget needs a question.`); that is a separate usability point, not part of this card.
+- **Suites (Windows, before the review fixes):** node 530 of 540 (10 skipped), graph suite passing.
+
+**Codex review, round 1** (of a2a877d):
+
+- (medium) The whole-graph hint makes a cut briefing longer, so a budget that fits the full briefing could be refused before the full briefing was tried (for example a v1 graph with one goal). The full briefing is now tried first, and the refusal names the smaller of the two sizes. Regression test: every budget the full briefing fits returns it; it fails without the fix.
+- (low) The mixed-list case was checked only on `graphWith`'s data: a rendered test now asserts `current decisions: port; 1 more left out`.
+- (low) The MCP paging fixture matched every node: it now has an unmatched open question, and the test checks the count and hint appear once in the reassembled pages and the question does not.
+- (low) No live result was recorded: recorded above.
+
+**Codex review, round 2** (of 6ad003f): every round 1 fix confirmed, no new production issue. (low) The budget regression never checked the refusal message: the test now asserts that a budget below both sizes names the full briefing's estimate when it is the smaller. Suites after round 1 fixes (Windows): node 532 of 542 (10 skipped), graph suite passing.
+
+## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
+
+Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
+
+### What is tested and the expected result
+
+- **Imported as agent turns.** Either form with plain text imports as a message with role `agent`, its `author` and `recipient`, its line number, and its text exactly as written (envelope included), so a graph can cite it. Only `input_text` blocks count in the first form. One delivery written in both forms on adjacent records (opposite forms, the same original paths and text) is kept once; two identical messages of one form are both kept. A `null` record is skipped, as before.
+- **Encrypted parts stay out.** Encrypted content is never imported, in either form. A message with only encrypted content is skipped, as before.
+- **Old imports gain them.** Importing again a Codex file that was stored before I3 adds its agent turns under the same session ID, keeping every line it had, so graphs that cite it still validate.
+- **Odd paths are bounded.** An author or recipient that is missing, not a string or longer than 200 characters is stored as `unknown`.
+- **Ordinary messages are unchanged.** Codex user and assistant messages, and every Claude Code record, import exactly as before; a Claude Code record that looks like an `agent_message` is still ignored.
+- **Shown with direction.** The browser labels the turn "Agent /root/worker to /root", with control and format characters in the paths shown as escapes. The CLI hand-off and `session_read` head it `## agent /root/worker to /root · line N`, with the paths on one line and every control and format character escaped (zero-width joiners included), Markdown in them shown literally, and `session_read` paging still splits and rejoins such turns exactly.
+- **Searchable.** The text of an agent message is found by session search.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` and `npx playwright test` pass, with the cases above in `tests/import-agent-messages.test.mjs` and the library browser spec.
+- No new dependency. (The rework of 2026-11-21 below adds schema version 6.)
+
+### I3 results (2026-11-17)
+
+- `tests/import-agent-messages.test.mjs` 12/12 and the library browser spec 5/5. Full suites on Windows are listed in the PR.
+- **Codex, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) Codex also saves these messages in its own `inter_agent_communication` rollout record, which was still dropped. Both forms are now read, without encrypted content.
+  - (medium) A Codex file imported before I3 kept its old row on a new import. A new import now refreshes the row when every line it had is still there, keeping the session ID, so graphs that cite it still validate.
+  - (medium) Headings kept U+200C and U+200D and did not escape `~`. Agent paths now use a strict one-line escape, `labelText` in `src/text.mjs`.
+  - (low) `output_text` blocks were accepted in `agent_message`. Only `input_text` counts now.
+  - (low) The paging test did not rejoin a split turn. It now pages a long agent turn with escaped paths and a body that never repeats, rejoins the slices exactly and reads the turn after it.
+- **Codex, round 2:** no high findings; one medium and two low, fixed with tests:
+  - (medium) Two identical messages were merged into one. Now only opposite forms on adjacent records, with the same original paths, are merged.
+  - (low) A `null` record made a Codex import fail. It is skipped again.
+  - (low) The browser showed raw control and format characters in agent paths. They are shown as escapes.
+- **Note:** the refresh can change a graph context's savings estimate for an old session, because the hand-off it measures now includes the agent turns.
+
+### I3 rework on P1c message rows (2026-11-21)
+
+P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user or assistant, so I3 no longer merged. Recommended default, taken under the user's standing instruction: an agent turn is a row of its own with two new columns.
+
+- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author_json` and `recipient_json` columns hold the paths as JSON string literals, like `text_json`; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
+- **Keys.** An agent turn gets a line-hash key like any Codex turn, so a version 3 graph can cite it.
+- **Old imports gain agent turns.** Importing a Codex file again adds its agent turns when the stored session has none, has fewer turns and keeps every key it had. The rows are rewritten in one transaction, and every earlier turn keeps its key.
+- **Tests:** `tests/import-agent-messages.test.mjs` 13/13, including a version 5 file upgraded to version 6 with its rows unchanged, the CHECK on the paths, the legacy copy without agent turns, and the older-build trigger still working. The schema tests in `tests/message-rows.test.mjs` and `tests/node-review.test.mjs` now expect the two new columns and the newest version. The library browser spec has both I3 cases. `labelText` was dropped for main's `terminalLabel`, which escapes the same characters.
+- **Suites (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 539/539, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python 239 run, 66 skipped.
+- **Codex review of the rework, round 1:** no high findings; three medium and one low, fixed with tests:
+  - (medium) A session migrated by the version 3 step has l:<line> keys, so a re-import never matched it. Old turns are now matched by line, role and text and keep their keys.
+  - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
+  - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
+  - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
+  - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+- **Codex review of the rework, round 2:** no high findings; two medium and two low, fixed with tests:
+  - (medium) `ledger redact` scanned message text but not agent paths, which the hand-off prints in headings. Paths are now scanned and redacted too.
+  - (medium) A session deleted right after the re-import committed made the import return nothing. The summary is now read under the same lock.
+  - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
+  - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
+  - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
+- **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
+- **Codex review of the rework, round 4:** no findings.
+- **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).
+
+## P3 — review events (defined 2026-11-21, before implementation)
+
+P2c (ADR-7c) records one person's approve or reject decision per version 3 node hash as a plain row that a later decision overwrites. ADR-6 asks for append-only, hash-chained review events whose state is a fold, and the reviewer needs an edit decision as well. Synthetic graphs and reviewer names only.
+
+### What is tested and the expected result
+
+- **Events, not rows.** Every decision appends one row to `review_events` (schema version 7). An UPDATE or DELETE on it is refused by the database. The current decision for a node hash is the latest event for it.
+- **Hash chain.** Each event stores `prev` (the previous event's hash, 64 zeros for the first) and `hash`, SHA-256 of the RFC 8785 JCS form of the event: prev, session, party, node ID, node hash, decision, label when it is an edit, reviewer and time. `ledger reviews verify` recomputes the chain and reports the event count and head hash, or the first event that does not match. Changing any field of a stored event, by a raw write with the triggers dropped, is reported.
+- **Edit.** A third decision, `edit`, carries the corrected label (1 to 500 characters, well-formed Unicode, not only spaces). The graph itself never changes: the edit is a review outcome shown beside the node. Approve and reject carry no label.
+- **Same rules as P2c.** Only version 3 nodes with a current hash are reviewed; a stale hash is a 409; the reviewer is 1 to 64 visible characters on one line and self-asserted; the POST route still needs a browser sign-in; errors never echo a value.
+- **Migration.** A version 6 file with P2c rows gains one event per row, in the order they were decided, with a valid chain, and `node_reviews` is dropped. The decisions a graph shows are the same before and after.
+- **Browser.** The review section has Approve, Edit and Reject. Edit opens a field with the label filled in; saving shows "Edited by <name> (self-asserted)" and the new label as text. Everything is set with `textContent`.
+- **Concurrency.** Two stores appending to one file keep one chain: each append reads the head under the write lock.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs`, `npm run -s test:graph`, `npx playwright test` and the runtime Python checks pass, with the cases above in `tests/review-events.test.mjs` and the review browser spec.
+- No new dependency.
+
+### P3 results (2026-11-21)
+
+- `tests/review-events.test.mjs` 9/9: events and the fold, a changed node starting unreviewed, edit labels and fixed-word errors, the append-only triggers, verify naming the first rewritten event, `checkChain` on seq, prev and label, two stores on one file keeping one chain, a version 6 file with P2c rows migrating in decision order, and `ledger reviews verify` (count and head, a broken event named by number only, an older file left unmigrated, usage).
+- `tests/e2e/node-review.spec.mjs` 5/5, with an edit saved and shown as text beside the unchanged graph label, then replaced by an approval, and Cancel recording nothing.
+- The P2c tests now expect the new decision list, the edit label in the key list and the version 7 table.
+- **Codex review, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) An edit label with a NUL was cut by SQLite while its hash covered every character, so a valid edit broke the chain. The label is stored as a JSON string literal (`label_json`).
+  - (medium) `INSERT OR REPLACE` deletes a row without firing the delete trigger, so an event could be overwritten. A new insert trigger requires the next seq and the head as prev.
+  - (medium) A chain with its last events removed still verified. `ledger reviews verify --head <hash>` now checks against a head kept from earlier, and the plain check says that removal from the end would not show. The ADR no longer claims more.
+  - (low) A failed save redrew the edit field from the stored label, losing what was typed. The draft is kept.
+  - (low) The two-store test wrote one after the other. It now runs three processes appending 25 events each at the same time, and expects one chain of 75.
+  - `tests/review-events.test.mjs` 12/12, `tests/e2e/node-review.spec.mjs` 6/6, `node --test tests/*.test.mjs` 556/556.
+- **Codex review, round 2:** one medium and two low findings, fixed with tests:
+  - (medium) `INSERT OR REPLACE` could still remove the head through the unique hash: a row with the next seq and the head as both prev and hash. The insert trigger now refuses a hash already in the chain.
+  - (low) A malformed stored label made verify fail as "Cannot read the ledger database", hiding which event broke and any earlier break. An unreadable label now counts as a broken event, by number, and the fold leaves it out.
+  - (low) The edit field stayed editable while a save was pending, so the label shown could differ from the one sent. It is locked until the save finishes.
+- **Codex review, round 3:** two low findings, fixed with tests:
+  - (low) A stored label holding an escaped lone surrogate passed the string check, then made verify throw. It is now an unreadable event, named by number.
+  - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
+- **Codex review, round 4:** one medium, fixed with a test: node:sqlite cuts a stored string at a NUL, so a NUL and suffix added to a stored field hashed as the original and verify missed it. Verify now reads every text column as its stored bytes and decodes them as strict UTF-8. A NUL is hashed, and bytes that are not UTF-8 make the event unreadable.
+- **Codex review, round 5:** one medium and one low, fixed with a test. (medium) The UTF-8 decoder dropped a leading U+FEFF, so a BOM added to a stored field was missed. It is now kept and hashed. (low) A seq past 2^53 made node:sqlite throw while reading. Verify reads seq as text, and such an event is broken, named by its position.
+- **Codex review, round 6:** one medium and two low, fixed with tests:
+  - (medium) With the table rebuilt without its CHECK, a label added to an approval was parsed and then left out of the hash, so the chain still verified. Verify now breaks the chain when a non-edit has a label or an edit has none.
+  - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
+  - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
+- **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.
+- **Codex review, round 8:** one low, fixed with a test: edit labels were limited to 500 UTF-16 units while graph labels allow 500 code points, so a label with emoji could not be kept. Both count code points now, and the browser field has no maxLength (which counts UTF-16 units).
+- **Codex review, round 9:** one low, fixed with a test: an edit label of only invisible characters (a zero-width space, say) was accepted. Edit labels now follow the version 3 graph label patterns: something visible, and no control, separator or bidi control.
+- **Codex review, round 10:** two low, fixed: the label patterns held raw bidi and filler characters, which the editor had turned from escapes. They are \u escapes now, and a scan finds no raw control or format character in src, tests or public. Focus was also lost after a saved edit. It returns to the node's button, with a browser test.
+- **Codex review, round 11:** one low, fixed with a browser test: Cancel removed the focused button. Focus now returns to the node's Edit button.
+- **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
+- **Codex review, round 12:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).
+
+## P3b — review head in signed hand-offs (defined 2026-11-22, before implementation)
+
+P3's review chain shows a change in the middle, but a chain cut short at its end still checks, and `--head` needs a head someone kept. P4a's signed hand-off is the natural place to keep one: the sender's key signs it. Synthetic sessions, keys and names only.
+
+### What is tested and the expected result
+
+- **Manifest version 2.** `ledger handoff <id> --sign <folder>` writes manifest version 2, which adds `reviews`: `{ "events": <count>, "head": "<64 hex>" }`, the ledger's review chain at signing time (64 zeros and 0 for an empty chain). It is in the signed JCS bytes, so changing it breaks the signature.
+- **No signing over a broken chain.** If `ledger reviews verify` would report a break, signing refuses, names the event by number, and writes nothing.
+- **Verify shows it.** `ledger verify <folder>` checks the `reviews` shape (a safe non-negative integer, and 64 lowercase hex, which is the genesis hash exactly when events is 0) and prints "Review chain at signing: N events, head H". Version 1 bundles still verify, unchanged, and say they carry no review head. Any other version is refused.
+- **Check a ledger against a bundle.** `ledger reviews verify --bundle <folder> [--fingerprint <fp>]` first verifies the bundle as `ledger verify` does, with the same problems listed on failure, then checks the ledger's chain against the signed head. The check passes when the head is in the chain and the event count at the head matches. It fails when events up to the head were removed or rewritten, and when the bundle has no review head (version 1). `--bundle` and `--head` cannot be combined.
+- **OpenSSL path unchanged.** The OpenSSL commands in docs/signed-handoff.md still verify a version 2 bundle.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/sign.test.mjs` and `tests/review-events.test.mjs`.
+- No new dependency. docs/signed-handoff.md describes version 2.
+
+### P3b results (2026-11-22)
+
+- `tests/signed-review-head.test.mjs` 9/9. It covers signing recording the chain and verify showing it; `--bundle` passing as the ledger grows; a ledger cut short failing against the bundle while passing alone; a bundle with the wrong key, or a changed head (signature broken), not trusted; a signed count that does not match the head's position; a version 1 bundle verifying and reporting no head; an empty chain; a broken chain never signed, with nothing written; and option conflicts.
+- `tests/sign.test.mjs` now expects version 2 with `reviews`, and refuses a version 3 manifest, version 2 without `reviews`, version 1 with `reviews`, and malformed `reviews` (a count with the empty head, no events with a head, a negative count, an uppercase head, an extra key).
+- **Codex review, round 1:** no high; one medium and two low, fixed with tests:
+  - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
+  - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
+  - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.
+- **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
+- **Codex review, round 3:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).

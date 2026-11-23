@@ -1,4 +1,4 @@
-import { canonicalPacket, compareBy, kindOrder } from './graph.mjs';
+import { canonicalPacket, compareBy, kindOrder, nodeArtifacts, nodeLines } from './graph.mjs';
 import { nodeGrounding } from './grounding.mjs';
 import { handoffMarkdown } from './handoff.mjs';
 import { scopedText } from './scope.mjs';
@@ -8,9 +8,13 @@ import { inlineText } from './text.mjs';
 // tokenize differently, so exact counts belong to the M1.5 meter.
 const estimateTokens = text => Math.ceil(text.length / 4);
 
-function nodeLine(node, grounding) {
+function nodeLine(graph, node, grounding) {
   const state = [node.status, node.to && `to ${node.to}`].filter(Boolean).join(', ');
-  const lines = node.evidenceLines.map(line => 'L' + line).join(' ');
+  // P2b: a version 3 node cites the lines its message keys resolved to, then its artifacts.
+  const lines = [
+    ...nodeLines(graph, node).map(line => 'L' + line),
+    ...nodeArtifacts(graph, node).map(artifact => `${artifact.kind} ${inlineText(artifact.repo)}@${inlineText(artifact.ref)}`),
+  ].join(' ');
   // Card G7: only inferred nodes are marked, so a fully quoted graph reads as before.
   const mark = grounding === 'inferred' ? ', inferred' : '';
   return `- ${node.id}${state ? ` [${state}]` : ''}: ${inlineText(node.label)} (${lines}${mark})`;
@@ -54,7 +58,7 @@ export function contextText(graph, session, { lookupGraph, scope } = {}) {
   // identity, but rendering it sorted costs nothing.
   const nodes = [...packet.nodes].sort(compareBy('id'));
   const nodeSection = kind => section(kind, nodes.filter(node => node.kind === kind)
-    .map(node => nodeLine(node, nodeGrounding(graph, node.id))));
+    .map(node => nodeLine(graph, node, nodeGrounding(graph, node.id))));
   const firstVolatile = kindOrder.indexOf('action');
   kindOrder.slice(0, firstVolatile).forEach(nodeSection);
   section('edges', [...packet.edges].sort(compareBy('type', 'from', 'to'))
@@ -68,9 +72,9 @@ export function contextText(graph, session, { lookupGraph, scope } = {}) {
   kindOrder.slice(firstVolatile).forEach(nodeSection);
 
   section('state', [
-    `ready actions: ${graph.readyActionIds.join(', ') || 'none'}`,
-    `current decisions: ${graph.currentDecisionIds.join(', ') || 'none'}`,
-    ...(graph.openQuestionIds ? [`open questions: ${graph.openQuestionIds.join(', ') || 'none'}`] : []),
+    `ready actions: ${stateList(graph, 'readyActionIds')}`,
+    `current decisions: ${stateList(graph, 'currentDecisionIds')}`,
+    ...(graph.openQuestionIds ? [`open questions: ${stateList(graph, 'openQuestionIds')}`] : []),
     ...[...targets].sort(compareBy(1)).map(([graphId, name]) => `linked graph ${name}: ${graphId}`),
     // Card G7. In the last section, so the first inferred node cannot move the stable prefix.
     ...(graph.inferredNodeIds?.length
@@ -82,6 +86,17 @@ export function contextText(graph, session, { lookupGraph, scope } = {}) {
     ...(scope ? [scope] : []),
   ]);
   return lines.join('\n') + '\n';
+}
+
+/**
+ * A state list: the shown IDs, then how many a scoped briefing left out (card G9b), so
+ * "none" never stands for "none shown". Only graphWith (src/scope.mjs) sets leftOut.
+ */
+function stateList(graph, key) {
+  const ids = graph[key];
+  const left = graph.leftOut?.[key] ?? 0;
+  if (!left) return ids.join(', ') || 'none';
+  return ids.length ? `${ids.join(', ')}; ${left} more left out` : `${left} left out`;
 }
 
 /**
