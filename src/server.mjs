@@ -438,6 +438,8 @@ server.listen(port, '127.0.0.1', () => {
   printWelcome({
     title: 'local, on this machine',
     lines: [
+      // The store opened before the server could listen; a terminal is told so, a pipe is not.
+      { text: 'Database opened', terminalOnly: true },
       { text: `Context Ledger listening at http://127.0.0.1:${localPort}` },
       { text: `Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`, state: 'note' },
     ],

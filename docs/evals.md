@@ -5060,3 +5060,16 @@ Installing and starting the ledger prints plain lines. U9 gives a person at a te
 ### Live rehearsal on the stacked branch (2026-11-23)
 
 `node demo/rehearse.mjs --runs 1` (Claude Code as Leo, Codex as Ali, one ledger): Leo's agent published 8 nodes in 68 s, Ali's Codex published 4 nodes with 2 links to Leo's in 33 s, the room held 2 proposals, and the hand-off answered 6 of 6 from the transcript (16.8 s) and 6 of 6 from the graph briefing (15.8 s; 323 against 1,814 estimated tokens). A first attempt, run while the whole node suite was also running on the laptop, failed: Ali's Codex reported that the ledger could not read its access token and published nothing. Two direct Codex probes and this rerun on an idle machine all worked, so the cause was load, not the code; the token is read through PowerShell on Windows, with a 30 s limit. For a live demo, run nothing heavy beside it.
+
+### Codex review of U8 and U9 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, four medium and four low. All are fixed with tests. It confirmed that the task endpoint needs the token and omits the truth, that pages and model requests stay on this machine, that report, model and error strings are set as text, that the library's markup, IDs and script are unchanged, and that the welcome writes only colour codes and never delays listening.
+
+1. *(medium, U9)* Install lines were printed as given, and the installer's own escaping keeps U+200C and U+200D. Every caller line now goes through `terminalLine` in both modes; a test sends a line with zero-width, bidi and escape characters through the pipe and the terminal paths.
+2. *(medium, U8)* Each robot on the swarm page was a button with a list-item role, which can hide that it is a button. Each is now a real button inside a list item, named "Agent N, working" (or checked, left out, failed), and a test opens a report from the keyboard.
+3. *(medium, U8)* "Runs on" claimed vLLM, this machine's GPU and that the instructions are stored once. It now says only what the ledger knows: the model names, an OpenAI-compatible server at a loopback address and how many agents run at once. Cache reuse is shown only when the server reported it for that run.
+4. *(medium, U9)* The warning filter matched any experimental warning that mentions SQLite. It now matches Node's exact notice and type, lives in `src/quiet.mjs`, and a subprocess test shows a different SQLite warning and a deprecation warning still print.
+5. *(low, U9)* The install welcome gave every line the same mark, and start had no database step. The installer now returns each agent's own result, so a terminal shows `ok` or `!!` (letters as well as colour) on each agent's line with its details under it; start shows "Database opened" at a terminal only.
+6. *(low, U8)* "What it runs on" moved to its own section after the check and before the answer, and a test asserts the order of the seven sections.
+7. *(low, U8)* The pale swatches of the colour key (queued, working) now have an ink outline.
+8. *(low, U8)* The library's page links are direct children of the masthead again; the extra `nav` landmark is gone.

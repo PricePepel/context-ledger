@@ -1,12 +1,14 @@
 // Card U9: the terminal welcome. A terminal gets the pixel mark and coloured steps; a
 // pipe gets exactly the plain lines.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setupAgents } from '../src/install.mjs';
+import { isSqliteNotice, sqliteNotice } from '../src/quiet.mjs';
 import { MARK, colourDepth, fancyTerminal, markLines, printWelcome, welcomeFrames } from '../src/welcome.mjs';
 
 const ESC = String.fromCodePoint(27);
@@ -14,9 +16,11 @@ const ESC = String.fromCodePoint(27);
 const withoutColour = text => text.replaceAll(new RegExp(`${ESC}\\[[0-9;]*m`, 'gu'), '');
 const terminal = (depth, extra = {}) => ({ isTTY: true, getColorDepth: () => depth, written: [], write(text) { this.written.push(text); }, ...extra });
 const lines = [
+  { text: 'Database opened', terminalOnly: true },
   { text: 'Context Ledger listening at http://127.0.0.1:4317' },
   { text: 'Sign in to the browser app (one use, within 60 seconds): http://127.0.0.1:4317/login?code=abc', state: 'note' },
 ];
+const piped = lines.filter(line => !line.terminalOnly).map(line => `${line.text}\n`);
 
 test('the mark is five rows of sixteen pixels, each violet or empty', () => {
   assert.equal(MARK.length, 5);
@@ -50,15 +54,36 @@ test('the welcome writes colour codes and nothing else: no cursor movement, no c
     const frames = welcomeFrames({ title: 'local, on this machine', lines, footer: 'Keep this window open.', depth });
     const plain = frames.map(frame => withoutColour(frame.text));
     for (const text of plain) assert.doesNotMatch(text, /[\p{Cc}\p{Cf}]/u, `depth ${depth}`);
-    // The caller's lines are there word for word, in order, each behind one pixel.
+    // The caller's lines are there word for word, in order, each behind its mark.
     const shown = plain.filter(text => lines.some(line => text.endsWith(line.text)));
-    assert.deepEqual(shown.map(text => text.trim()), lines.map(line => line.text));
+    assert.deepEqual(shown, ['  ok Database opened', `  ok ${lines[1].text}`, `     ${lines[2].text}`]);
     assert.ok(plain.some(text => text.includes('Context Ledger  local, on this machine')));
     assert.ok(frames.reduce((total, frame) => total + frame.waitMs, 0) < 1500, 'the welcome is short');
   }
-  // An unknown state still draws a pixel, and a line is never changed.
-  const odd = welcomeFrames({ title: 't', lines: [{ text: 'x', state: 'constructor' }] });
-  assert.ok(odd.some(frame => withoutColour(frame.text) === '     x'));
+});
+
+test('a result is told in letters as well as colour, and a detail line has no mark', () => {
+  const frames = welcomeFrames({ title: 't', lines: [
+    { text: 'Claude Code', state: 'ok' }, { text: '  MCP server: added', state: 'detail' },
+    { text: 'Codex', state: 'failed' }, { text: 'x', state: 'constructor' },
+  ] }).map(frame => withoutColour(frame.text));
+  assert.ok(frames.includes('  ok Claude Code'));
+  assert.ok(frames.includes('       MCP server: added'));
+  assert.ok(frames.includes('  !! Codex'));
+  assert.ok(frames.includes('     x'), 'an unknown state still prints its line');
+});
+
+test('review: a line with invisible or control characters is escaped in both modes', async () => {
+  const sneaky = `path${String.fromCodePoint(0x200d)}a${String.fromCodePoint(0x202e)}b${ESC}[2Jc${String.fromCodePoint(0x200c)}d\te`;
+  const expected = 'path\\u200da\\u202eb\\u001b[2Jc\\u200cd\\u0009e';
+  const pipe = { isTTY: false, written: [], write(text) { this.written.push(text); } };
+  await printWelcome({ title: 't', lines: [{ text: sneaky, state: 'detail' }] }, { stream: pipe, env: {} });
+  assert.deepEqual(pipe.written, [`${expected}\n`]);
+  const screen = terminal(24);
+  await printWelcome({ title: 't', lines: [{ text: sneaky, state: 'failed' }] }, { stream: screen, env: {}, wait: async () => {} });
+  const shown = screen.written.map(withoutColour);
+  assert.ok(shown.includes(`  !! ${expected}\n`));
+  for (const text of shown) assert.doesNotMatch(text.replace(/\n$/u, ''), /[\p{Cc}\p{Cf}]/u);
 });
 
 test('a pipe gets exactly the lines, at once; a terminal gets the frames with their waits', async () => {
@@ -66,12 +91,12 @@ test('a pipe gets exactly the lines, at once; a terminal gets the frames with th
   const waits = [];
   const wait = async ms => { waits.push(ms); };
   assert.equal(await printWelcome({ title: 't', lines, footer: 'f' }, { stream: pipe, env: {}, wait }), false);
-  assert.deepEqual(pipe.written, lines.map(line => `${line.text}\n`));
+  assert.deepEqual(pipe.written, piped, 'a terminal-only line is left out');
   assert.deepEqual(waits, []);
 
   const quiet = terminal(24);
   assert.equal(await printWelcome({ title: 't', lines, footer: 'f' }, { stream: quiet, env: { NO_COLOR: '1' }, wait }), false);
-  assert.deepEqual(quiet.written, lines.map(line => `${line.text}\n`));
+  assert.deepEqual(quiet.written, piped);
 
   const screen = terminal(24);
   assert.equal(await printWelcome({ title: 't', lines, footer: 'f' }, { stream: screen, env: {}, wait }), true);
@@ -79,6 +104,20 @@ test('a pipe gets exactly the lines, at once; a terminal gets the frames with th
   assert.ok(waits.length > 0);
   assert.ok(screen.written.every(text => text.endsWith('\n')));
   assert.ok(screen.written.some(text => text.includes(ESC)));
+});
+
+test('the installer reports each agent on its own, so the welcome can mark it', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'ctm-u9-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  // A dry run in an empty home, with both agent CLIs reported as not installed: nothing is
+  // run and nothing is written.
+  const env = { HOME: home, USERPROFILE: home, PATH: home, Path: home };
+  const { ok, lines, sections } = setupAgents({ mode: 'install', agents: ['claude', 'codex'], dryRun: true, env, run: () => ({ missing: true }) });
+  assert.equal(sections.length, 2);
+  assert.deepEqual(sections.flatMap(section => section.lines), lines);
+  assert.equal(sections.every(section => section.ok), ok);
+  assert.match(sections[0].lines[0], /^Claude Code/u);
+  assert.match(sections[1].lines[0], /^Codex/u);
 });
 
 test('start with piped output prints its two plain lines and no escape codes', async t => {
@@ -102,7 +141,29 @@ test('start with piped output prints its two plain lines and no escape codes', a
   assert.ok(!output.includes(ESC));
 });
 
-test('the installed command does not show Node\'s SQLite warning, and still shows other warnings', async t => {
+test('review: only Node\'s own node:sqlite notice is hidden; other warnings still print', () => {
+  assert.equal(isSqliteNotice(sqliteNotice, 'ExperimentalWarning'), true);
+  assert.equal(isSqliteNotice(new Error(sqliteNotice), 'ExperimentalWarning'), true);
+  assert.equal(isSqliteNotice(sqliteNotice, 'DeprecationWarning'), false);
+  assert.equal(isSqliteNotice('SQLite sessions are experimental', 'ExperimentalWarning'), false);
+  assert.equal(isSqliteNotice(`${sqliteNotice}!`, 'ExperimentalWarning'), false);
+  // In a real process: the notice is dropped, a different SQLite warning and another type are kept.
+  const quiet = pathToFileURL(fileURLToPath(new URL('../src/quiet.mjs', import.meta.url))).href;
+  const script = [
+    `import { hideSqliteNotice, sqliteNotice } from ${JSON.stringify(quiet)};`,
+    'hideSqliteNotice();',
+    "process.emitWarning(sqliteNotice, 'ExperimentalWarning');",
+    "process.emitWarning('SQLite sessions are an experimental feature', 'ExperimentalWarning');",
+    "process.emitWarning('something old is deprecated', 'DeprecationWarning');",
+  ].join('\n');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.doesNotMatch(child.stderr, /SQLite is an experimental feature and might change/u);
+  assert.match(child.stderr, /ExperimentalWarning: SQLite sessions are an experimental feature/u);
+  assert.match(child.stderr, /DeprecationWarning: something old is deprecated/u);
+});
+
+test('the installed command does not show the node:sqlite notice', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'ctm-u9-bin-'));
   const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/context-ledger.mjs', import.meta.url)), 'start'], {
     env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite') }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -123,7 +184,4 @@ test('the installed command does not show Node\'s SQLite warning, and still show
   clearTimeout(timer);
   assert.match(output, /^Context Ledger listening at http:\/\/127\.0\.0\.1:\d+\r?\n/u);
   assert.doesNotMatch(errors, /ExperimentalWarning: SQLite/u);
-  // The filter is narrow: only an ExperimentalWarning that names SQLite.
-  const source = await (await import('node:fs/promises')).readFile(new URL('../bin/context-ledger.mjs', import.meta.url), 'utf8');
-  assert.match(source, /type === 'ExperimentalWarning' && \/SQLite\/u\.test/u);
 });
