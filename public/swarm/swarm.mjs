@@ -98,17 +98,23 @@ function stat(label, value, note, simulated) {
 
 function renderStats(run) {
   const sim = run.simulated;
-  const speedup = run.elapsedMs > 0 && run.counts.finished ? run.oneAfterAnotherMs / run.elapsedMs : null;
+  // Card S1b: the speed-up is wall time against one agent run alone on each server
+  // (measured by the ledger before the agents start), never the agents' own times under load.
+  const solo = run.baseline?.perServer ?? [];
+  const measured = run.baseline?.measuredAt ? new Date(run.baseline.measuredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const soloNote = solo.length
+    ? `${solo.map(entry => `${entry.answered} × ${seconds(entry.ms)}${solo.length > 1 ? ` (${entry.model})` : ''}`).join(' + ')} per agent alone, warm (median of ${run.baseline.runs}, ${run.baseline.reused ? 'reused from' : 'measured at'} ${measured})`
+    : 'one agent alone was not timed';
   const tokensPerSecond = run.elapsedMs > 0 ? run.tokensOut / (run.elapsedMs / 1000) : null;
   const metrics = run.metrics;
   $('stats').replaceChildren(
     stat('Agents finished', `${run.counts.finished} / ${run.counts.total}`, `${run.counts.running} running now`),
     stat('Wall time', seconds(run.elapsedMs), 'start to last answer', sim),
-    stat('One after another', seconds(run.oneAfterAnotherMs), 'sum of every agent’s own time', sim),
-    stat('Speed-up', speedup ? `${speedup.toFixed(1)}×` : '—', 'sum ÷ wall time', sim),
+    stat('One after another', sim || run.oneAfterAnotherMs === null ? 'not measured' : seconds(run.oneAfterAnotherMs), sim ? 'simulated run' : soloNote),
+    stat('Speed-up', sim || !run.speedup ? 'not measured' : `${run.speedup.toFixed(1)}×`, sim ? 'simulated run' : 'one after another ÷ wall time'),
     stat('Tokens out per second', tokensPerSecond ? Math.round(tokensPerSecond).toLocaleString() : '—', `${run.tokensIn.toLocaleString()} in, ${run.tokensOut.toLocaleString()} out`, sim),
     stat('Requests on the server', sim ? 'not measured' : (metrics?.requestsRunning ?? 'not reported').toLocaleString(), sim ? 'simulated run' : 'running now, from the model server'),
-    stat('KV cache in use', sim ? 'not measured' : percent(metrics?.kvCacheUsage), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'from the model server')),
+    stat('KV cache peak', sim ? 'not measured' : percent(metrics?.kvCachePeak), sim ? 'simulated run' : 'highest sample during the run'),
     stat('Prefix-cache hits', sim ? 'not measured' : percent(metrics?.prefixCacheHitRate), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'shared instructions reused')),
     stat('Quotes verified', `${run.counts.verified} / ${run.counts.finished}`, 'quote found in its report'),
     stat('Answers correct', `${run.counts.correct} / ${run.counts.finished}`, 'checked against the generator'),
@@ -194,6 +200,8 @@ async function poll(id, failures = 0) {
     const { run } = await api(`/api/swarm/runs/${id}`);
     current = run;
     render(run);
+    if (run.phase === 'baseline') setStatus('Timing one agent alone first, for an honest speed-up…');
+    else if (run.state === 'running') setStatus(`Running ${run.counts.total} agents…`);
     if (run.state === 'done' || run.state === 'failed') {
       $('run').disabled = false;
       setStatus(run.state === 'done' ? doneMessage(run) : (run.error ?? 'The run failed.'));
