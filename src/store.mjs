@@ -11,7 +11,7 @@ import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
-import { defaultProject, migrate, refuseNewerSchema } from './migrate.mjs';
+import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
 
 export { ConflictError, InputError };
@@ -366,9 +366,14 @@ function serializeGraphPacket(packet) {
   });
 }
 
-export function openStore(path) {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const database = new DatabaseSync(path);
+/**
+ * Opens the ledger. With readOnly (card P3c), the file must already exist at this build's
+ * schema: the connection cannot create, migrate or write it, and an older or newer file is
+ * refused with an error whose code is LEDGER_SCHEMA and whose version is the file's.
+ */
+export function openStore(path, { readOnly = false } = {}) {
+  if (!readOnly && path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const database = readOnly ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
   database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
   // The version 0 tables, created under the migration's lock after its version check,
   // so a newer file is refused before any DDL. The migration then upgrades them.
@@ -390,7 +395,14 @@ export function openStore(path) {
     ${roomsSchema}
   `);
   try {
-    migrate(database, bootstrap);
+    if (readOnly) {
+      const version = database.prepare('PRAGMA user_version').get().user_version;
+      if (version !== schemaVersion) {
+        throw Object.assign(new Error(`Ledger schema ${version}, not ${schemaVersion}.`), { code: 'LEDGER_SCHEMA', version });
+      }
+    } else {
+      migrate(database, bootstrap);
+    }
   } catch (error) {
     database.close();
     throw error;

@@ -367,7 +367,11 @@ async function verifyCommand(dir, fingerprint) {
 // Read one session straight from the ledger database, in this process (design ADR-2: one
 // core behind CLI, HTTP and MCP). Signing never asks whatever answers on PORT for the
 // content it signs.
-/** Opens the ledger database only if it is already at this build's schema; never creates or migrates it. */
+/**
+ * Opens the ledger database read-only, only if it is already at this build's schema. It
+ * never creates, migrates or writes the file, and the schema check and every read share
+ * the one connection, so a file swapped in afterwards is never read instead (card P3c).
+ */
 async function openCurrentStore(databasePath, upgradeHint) {
   try {
     await lstat(databasePath);
@@ -377,81 +381,32 @@ async function openCurrentStore(databasePath, upgradeHint) {
     throw new Error('Cannot open the ledger database.');
   }
   // Loaded only here: node:sqlite prints an experimental warning when it loads.
-  const { DatabaseSync } = await import('node:sqlite');
-  const { schemaVersion } = await import('./migrate.mjs');
-  // openStore creates missing tables and migrates an older file. Signing must not change
-  // the ledger, so read the schema version first with a connection that cannot write or
-  // create a file (a dangling symlink stays dangling), and open the store only when the
-  // file is already at the current version.
-  let version;
-  try {
-    const probe = new DatabaseSync(databasePath, { readOnly: true });
-    try {
-      version = probe.prepare('PRAGMA user_version').get().user_version;
-    } finally {
-      probe.close();
-    }
-  } catch {
-    throw new Error('Cannot open the ledger database.');
-  }
-  if (version > schemaVersion) {
-    throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
-      'Use that version or another CONTEXT_LEDGER_DB.');
-  }
-  if (version < schemaVersion) {
-    throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
-      `to upgrade it, then ${upgradeHint} again.`);
-  }
   const { openStore } = await import('./store.mjs');
+  const { schemaVersion } = await import('./migrate.mjs');
   try {
-    return openStore(databasePath);
-  } catch {
+    return openStore(databasePath, { readOnly: true });
+  } catch (error) {
+    if (error.code === 'LEDGER_SCHEMA' && error.version > schemaVersion) {
+      throw new Error(`This ledger database was written by a newer Context Ledger (schema ${error.version}). ` +
+        'Use that version or another CONTEXT_LEDGER_DB.');
+    }
+    if (error.code === 'LEDGER_SCHEMA') {
+      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+        `to upgrade it, then ${upgradeHint} again.`);
+    }
     throw new Error('Cannot open the ledger database.');
   }
 }
 
-/**
- * Card P3b review: the review chain, read on the same read-only connection that checks the
- * schema, so a file swapped in between can never be migrated or read instead.
- */
+/** Card P3b review: the review chain, read on the one read-only connection that checks the schema. */
 async function readReviewChain(databasePath, trustedHead) {
+  const store = await openCurrentStore(databasePath, 'verify');
   try {
-    await lstat(databasePath);
-  } catch (error) {
-    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
-    throw new Error('Cannot open the ledger database.');
-  }
-  const { DatabaseSync } = await import('node:sqlite');
-  const { schemaVersion } = await import('./migrate.mjs');
-  const { mountReviews } = await import('./reviews.mjs');
-  let database;
-  try {
-    database = new DatabaseSync(databasePath, { readOnly: true });
+    return store.verifyReviews(trustedHead);
   } catch {
-    throw new Error('Cannot open the ledger database.');
-  }
-  try {
-    let version;
-    try {
-      version = database.prepare('PRAGMA user_version').get().user_version;
-    } catch {
-      throw new Error('Cannot open the ledger database.');
-    }
-    if (version > schemaVersion) {
-      throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
-        'Use that version or another CONTEXT_LEDGER_DB.');
-    }
-    if (version < schemaVersion) {
-      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
-        'to upgrade it, then verify again.');
-    }
-    try {
-      return mountReviews(database, () => undefined).verifyReviews(trustedHead);
-    } catch {
-      throw new Error('Cannot read the ledger database.');
-    }
+    throw new Error('Cannot read the ledger database.');
   } finally {
-    database.close();
+    store.close();
   }
 }
 
