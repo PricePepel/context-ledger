@@ -4783,6 +4783,19 @@ The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divid
 
 Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
 
+**Live check** (2026-11-22, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, 64 at once, 100 agents, synthetic reports; aggregates only):
+
+| Run | Baseline | Wall time | One after another | Speed-up | Old ratio (agents' own times) | KV peak | KV last sample |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | measured, 0.80 s alone | 5.32 s | 79.9 s | 15.0× | 55.8× | 5.1% | 0% |
+| 2 | reused | 3.56 s | 79.9 s | 22.4× | 50.9× | 5.5% | 0% |
+| 3 | reused | 3.66 s | 79.9 s | 21.8× | 51.5× | 5.2% | 0% |
+| 4 | reused | 3.85 s | 79.9 s | 20.8× | 53.2× | 5.6% | 0% |
+| 5 | reused | 3.66 s | 79.9 s | 21.8× | 51.3× | 5.3% | 0% |
+| page | reused | 3.60 s | 79.9 s | 22.2× | not shown | 5% | not shown |
+
+All 100 agents answered in every run, with 100/100 quotes verified and answers correct on the page run. The first run after a server start is slower (the server is still warming up), so quote a warm run: **about 21–22× faster**. That is a little below the earlier 23–30× estimate because the warm solo time with a shared prefix is 0.80 s, not the 1.05 s mean of the earlier cold single-agent runs. The old figure was 51–56×, more than twice the honest one. The last KV sample was 0% every time, so without the peak the tile would still read 0%; the peak is about 5%. All gates pass.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
