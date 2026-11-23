@@ -67,7 +67,6 @@
           <button id="run" class="btn solid" type="submit">Run</button>
         </form>
         <p id="live-reason" class="hint" hidden></p>
-        <p id="runs-on" class="runs-on"></p>
       </section>
 
       <section class="part stats" aria-labelledby="stats-heading">
@@ -87,7 +86,7 @@
           <li><i data-state="unverified"></i>quote not found, left out</li>
           <li><i data-state="failed"></i>failed</li>
         </ul>
-        <div id="grid" class="grid" role="list"></div>
+        <ul id="grid" class="grid" aria-label="Agents"></ul>
         <p id="tally" class="hint tally" role="status"></p>
         <p class="hint">Click an agent to see its report and answer.</p>
       </section>
@@ -108,8 +107,13 @@
         <dl id="check-counts" class="check-counts"></dl>
       </section>
 
+      <section class="part step runs" aria-labelledby="runs-heading">
+        <h2 id="runs-heading"><span class="step-no" aria-hidden="true">6</span>What it runs on</h2>
+        <p id="runs-on" class="runs-on">Checking for a model server…</p>
+      </section>
+
       <section class="part step answer" aria-labelledby="answer-heading">
-        <h2 id="answer-heading"><span class="step-no" aria-hidden="true">6</span>Combined answer</h2>
+        <h2 id="answer-heading"><span class="step-no" aria-hidden="true">7</span>Combined answer</h2>
         <div id="answer"><p class="hint">Run the swarm to see the answer.</p></div>
       </section>
     </main>

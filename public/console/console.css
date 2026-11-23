@@ -325,7 +325,7 @@ mark.turn-text, .turn.is-cited .turn-text { background-image: linear-gradient(va
 .swarm-grid li[data-state="dropped"] .sa-screen { fill: var(--peach); }
 .swarm-grid li[data-state="failed"] .sa-screen { fill: var(--ink); }
 .swarm-grid li[data-state="failed"] .sa-eye { fill: var(--peach); }
-.swarm-legend i { aspect-ratio: 1; background: var(--grey-tag); box-shadow: inset 0 -3px 0 0 var(--press); }
+.swarm-legend i { aspect-ratio: 1; margin: 2px; background: var(--grey-tag); box-shadow: var(--frame-sm); }
 .swarm-legend i[data-state="running"] { background: var(--lime); }
 .swarm-legend i[data-state="verified"] { background: var(--violet); }
 .swarm-legend i[data-state="dropped"] { background: var(--peach); }

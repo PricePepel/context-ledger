@@ -64,10 +64,15 @@ async function loadConfig() {
 }
 
 /** What the page says the swarm runs on: the model server's models, or that it is simulated. */
-function runsOn({ simulated, models, concurrency }) {
-  if (simulated) return 'Runs on: nothing real. A simulated run has no model server, and its timings are made up.';
-  const names = models.length ? models.join(', ') : 'the model server';
-  return `Runs on: ${names}, served on this machine's GPU by an OpenAI-compatible server (vLLM)${concurrency ? `, up to ${concurrency} agents at the same moment` : ''}. Every agent shares the same instructions, so the server stores them once.`;
+// Only what the ledger knows: the model names the server lists, that it is an
+// OpenAI-compatible server at a loopback address, and how many agents run at once. The
+// backend, the hardware and cache reuse are not claimed; cache reuse is shown only when
+// the server itself reported it for this run.
+function runsOn({ simulated, models, concurrency, cacheHitRate }) {
+  if (simulated) return 'Simulated. A simulated run has no model server, and its timings are made up.';
+  const names = models.length ? models.join(', ') : 'the model the server lists';
+  const cache = typeof cacheHitRate === 'number' ? ` The server reported ${Math.round(cacheHitRate * 100)}% of prompt tokens served from its prefix cache.` : '';
+  return `${names}, through an OpenAI-compatible model server at a loopback address on this machine${concurrency ? `, up to ${concurrency} agents at the same moment` : ''}.${cache}`;
 }
 
 // Card U8: the dataset and the task, before any run. Report texts only; the generator's
@@ -108,10 +113,11 @@ function renderGrid(run) {
   if (tiles.size !== run.agents.length) {
     tiles.clear();
     $('grid').replaceChildren(...run.agents.map(agent => {
-      const tile = el('button', { class: 'tile', type: 'button', role: 'listitem', 'aria-pressed': 'false' }, swarmAgentSvg(), el('span', { text: String(agent.id) }));
+      // A real button inside a list item, so its role, name and pressed state are all announced.
+      const tile = el('button', { class: 'tile', type: 'button', 'aria-pressed': 'false' }, swarmAgentSvg(), el('span', { text: String(agent.id) }));
       tile.addEventListener('click', () => { selected = agent.id; render(current); });
       tiles.set(agent.id, tile);
-      return tile;
+      return el('li', {}, tile);
     }));
   }
   for (const agent of run.agents) {
@@ -120,7 +126,8 @@ function renderGrid(run) {
     tile.dataset.model = String(modelIndex(run, agent.model));
     tile.dataset.verified = String(agent.verified);
     tile.setAttribute('aria-pressed', String(agent.id === selected));
-    tile.setAttribute('aria-label', `Agent ${agent.id}, ${agent.state}${agent.state === 'done' ? (agent.verified ? ', quote verified' : ', quote not found') : ''}`);
+    const words = agent.state === 'done' ? (agent.verified ? 'answer checked' : 'quote not found, left out') : agent.state === 'running' ? 'working' : agent.state;
+    tile.setAttribute('aria-label', `Agent ${agent.id}, ${words}`);
   }
 }
 
@@ -165,7 +172,7 @@ function renderCheck(run) {
   const count = (label, value) => el('div', {}, el('dt', { text: label }), el('dd', { text: String(value) }));
   $('check-counts').replaceChildren(
     count('Quote found', checked), count('Left out', leftOut), count('Failed', run.counts.failed), count('Facts match the truth', run.counts.correct));
-  $('runs-on').textContent = runsOn({ simulated: run.simulated, models: run.models, concurrency: run.concurrency });
+  $('runs-on').textContent = runsOn({ simulated: run.simulated, models: run.models, concurrency: run.concurrency, cacheHitRate: run.metrics?.prefixCacheHitRate });
 }
 
 function row(label, value, extra = {}) {

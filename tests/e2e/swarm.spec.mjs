@@ -184,6 +184,11 @@ test('U8: the swarm page shows the dataset and the task before a run, and pixel 
   await page.getByText('Read the instructions the agents share').click();
   await expect(page.locator('#task-text')).toContainText('You read one incident report and extract four facts.');
   await expect(page.locator('#runs-on')).toContainText('A simulated run has no model server');
+  // The story is in the order a person would ask: data, task, run, agents, check, what it runs on, answer.
+  const steps = await page.locator('main .step > h2, main .step > .part-head > h2').evaluateAll(headings => headings.map(heading => heading.textContent.trim()));
+  expect(steps).toEqual(['1The dataset', '2The task', '3Run a swarm', '4The agents', '5The check', '6What it runs on', '7Combined answer']);
+  // The pale swatches of the colour key have an outline, so they read on the white sheet.
+  expect(await page.locator('.state-key i').first().evaluate(swatch => getComputedStyle(swatch).boxShadow)).not.toBe('none');
   // The console's look: its fonts and its framed sheet, all from this machine.
   const look = await page.evaluate(async () => {
     await document.fonts.ready;
@@ -206,6 +211,15 @@ test('U8: the swarm page shows the dataset and the task before a run, and pixel 
   await expect(page.locator('#check-counts')).toContainText('Quote found');
   await expect(page.locator('#check-counts div').first().locator('dd')).toHaveText(String(verified));
   expect(await page.locator('.tile svg [style], .tile svg [fill]').count()).toBe(0);
+  // Each robot is a real button inside a list item: its role, name and pressed state are announced,
+  // and the keyboard opens its report.
+  await expect(page.locator('#grid > li > button.tile')).toHaveCount(100);
+  const first = page.getByRole('button', { name: /^Agent 1, (answer checked|quote not found, left out)$/u });
+  await expect(first).toHaveAttribute('aria-pressed', 'false');
+  await first.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#detail h3')).toHaveText('Agent 1');
+  await expect(page.getByRole('button', { name: /^Agent 1, / })).toHaveAttribute('aria-pressed', 'true');
   expect([...hosts]).toEqual([new URL(page.url()).host]);
 });
 

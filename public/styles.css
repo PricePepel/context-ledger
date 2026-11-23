@@ -26,7 +26,8 @@
   box-shadow: var(--frame-sm);
   text-transform: uppercase;
 }
-.masthead-links { display: flex; flex-wrap: wrap; margin-left: auto; }
+/* The first page link takes the free space, so the links sit at the right. */
+.local-tag + .console-link { margin-left: auto; }
 .console-link {
   font: 400 19px/1 var(--ui);
   display: inline-flex;
