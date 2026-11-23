@@ -189,6 +189,19 @@ export function refuseNewerSchema(database) {
   refuseNewer(userVersion(database));
 }
 
+/** Card P4e: a read-only open of a file at an older schema, which it cannot upgrade. */
+export class OlderSchemaError extends Error {}
+
+/**
+ * Card P4e: a read-only connection migrates nothing, so it takes only the current schema.
+ * The check runs on the connection that is then read, so no other file can take its place.
+ */
+export function requireCurrentSchema(database) {
+  const version = userVersion(database);
+  refuseNewer(version);
+  if (version < schemaVersion) throw new OlderSchemaError(`This ledger database has an older schema (${version}).`);
+}
+
 /**
  * Version 1 adds created_at and party to graphs and created_at to rooms, with indexes
  * for listing. Version 2 adds projects and puts every session in one: existing

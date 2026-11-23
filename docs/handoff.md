@@ -8,6 +8,13 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — P4e signing reads the ledger read-only (2026-11-22)
+
+Branch `ruslan/p4e-sign-read-only`. `openStore(path, { readOnly: true })` opens the file without write access, checks the schema on that connection (`requireCurrentSchema` in `src/migrate.mjs`, which throws `OlderSchemaError` for an older file) and migrates nothing. `handoff --sign` uses it for every read, so a database swapped in after the schema check can no longer be upgraded and signed (ADR-18a). `tests/read-only-store.test.mjs` covers it.
+
+- **Owed before merge:** a human security review (signing, AGENTS.md section 4).
+- **Next owner:** the P4d branch (#69) changes `signCommand` next to this; whichever merges second keeps both.
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.

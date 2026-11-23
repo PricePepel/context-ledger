@@ -11,7 +11,7 @@ import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
-import { defaultProject, migrate, refuseNewerSchema } from './migrate.mjs';
+import { defaultProject, migrate, refuseNewerSchema, requireCurrentSchema } from './migrate.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
 
 export { ConflictError, InputError };
@@ -366,9 +366,14 @@ function serializeGraphPacket(packet) {
   });
 }
 
-export function openStore(path) {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const database = new DatabaseSync(path);
+/**
+ * Open the ledger database. With readOnly (card P4e) the file is opened without write
+ * access and never created; it must already be at the current schema, which is checked on
+ * the same connection, and nothing is migrated. Write methods then fail.
+ */
+export function openStore(path, { readOnly = false } = {}) {
+  if (!readOnly && path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const database = readOnly ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
   database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
   // The version 0 tables, created under the migration's lock after its version check,
   // so a newer file is refused before any DDL. The migration then upgrades them.
@@ -390,7 +395,8 @@ export function openStore(path) {
     ${roomsSchema}
   `);
   try {
-    migrate(database, bootstrap);
+    if (readOnly) requireCurrentSchema(database);
+    else migrate(database, bootstrap);
   } catch (error) {
     database.close();
     throw error;

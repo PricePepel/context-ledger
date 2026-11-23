@@ -377,35 +377,22 @@ async function openCurrentStore(databasePath, upgradeHint) {
     throw new Error('Cannot open the ledger database.');
   }
   // Loaded only here: node:sqlite prints an experimental warning when it loads.
-  const { DatabaseSync } = await import('node:sqlite');
-  const { schemaVersion } = await import('./migrate.mjs');
-  // openStore creates missing tables and migrates an older file. Signing must not change
-  // the ledger, so read the schema version first with a connection that cannot write or
-  // create a file (a dangling symlink stays dangling), and open the store only when the
-  // file is already at the current version.
-  let version;
-  try {
-    const probe = new DatabaseSync(databasePath, { readOnly: true });
-    try {
-      version = probe.prepare('PRAGMA user_version').get().user_version;
-    } finally {
-      probe.close();
-    }
-  } catch {
-    throw new Error('Cannot open the ledger database.');
-  }
-  if (version > schemaVersion) {
-    throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
-      'Use that version or another CONTEXT_LEDGER_DB.');
-  }
-  if (version < schemaVersion) {
-    throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
-      `to upgrade it, then ${upgradeHint} again.`);
-  }
   const { openStore } = await import('./store.mjs');
+  const { OlderSchemaError } = await import('./migrate.mjs');
+  // Signing must not change the ledger. Card P4e: one read-only connection checks the
+  // schema and serves every read, so it cannot create a file (a dangling symlink stays
+  // dangling), and a file swapped in after a check is never migrated or written.
   try {
-    return openStore(databasePath);
-  } catch {
+    return openStore(databasePath, { readOnly: true });
+  } catch (error) {
+    if (error instanceof OlderSchemaError) {
+      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+        `to upgrade it, then ${upgradeHint} again.`);
+    }
+    // The newer-schema message is ours and names only the version number.
+    if (/^This ledger database was written by a newer Context Ledger \(schema \d+\)\. Use that version or another CONTEXT_LEDGER_DB\.$/u.test(error?.message ?? '')) {
+      throw new Error(error.message);
+    }
     throw new Error('Cannot open the ledger database.');
   }
 }
