@@ -702,3 +702,31 @@ Next steps:
 1. **A human security review** before merge (sensitive-data handling, the shared scanner). Twenty-five Codex rounds each found up to two more ways a copy of a secret can change between the gateway and a reader; each is fixed and tested, but the family is open, and a 26th round was refused by the provider's safety filter. Look first at that boundary: any new path that transforms the prompt or the answer after the gateway must be checked against the canonical forms and rescanned.
 2. When the latent team gets file input or tools, give each file its own span (origin `file`, a path, a sensitivity from the project's settings) and name the spans the task needs; declare tools with their argument rules and clearance in `Permissions` before admitting anything. A step that calls a tool with outside effect still has to run in text (design decision 3); that is not built.
 3. Not covered, and said in the code: a fragment of a secret value, and writes by native code outside the run's folders.
+
+## Current checkpoint — W3 calibrated abstention (2026-11-22)
+
+Branch `claude/w3-calibrated-abstention`, PR #77, stacked on W2 (PR #71); it targets `claude/w2-data-gateway` until W2 merges. Card W3, built by Claude Code for Ruslan. The design is [watchdog-security.md](watchdog-security.md); the pre-registered rules, seven review rounds and the results are in the W3 section of [the eval log](evals.md).
+
+- **What it is.**
+  - `runtime/latent_team/confidence.py` scores a released answer by the log-probability of its graded number.
+  - `abstain.py` holds the math (learn then test over a grid of 20, Bonferroni, one-sided Clopper-Pearson, a 10% ceiling) and the calibration loader.
+  - The calibration is bound to the weights, the policy, the plan, the run and the service profile; `request-public` is the only profile measured.
+  - Supervisor row 5 abstains below the threshold. An abstention returns no answer: `{mode: "abstained"}` on `/latent/team`, a fixed sentence on chat.
+  - `abstain_eval.py` is the certification driver: single requests through `TeamService`, named runs, shard ownership, barriers between parts, and the worst case for holds.
+  - `safety_eval.py` is eval 14 (counts only).
+- **Measured** (run `w3-run10`, one job, plan `today`, 418 requests):
+  - **Eval 11 fails.** 42 of the 57 finite proposal scores were tied at exactly 0, so only 7 distinct cutoffs were tested, and none certified. The strictest released 149 of 200 certification answers with 18 wrong (bound 21.3% against 10%; at most 5 errors would have passed).
+  - This run therefore wrote no calibration file, and the repository has none. A `/latent/team` request with `task` set behaves as before W3: the watchdog and supervisor decide first and can still hold it, and an answer they would release is released marked uncalibrated.
+  - Eval 12 was skipped and eval 13 not run.
+  - **Eval 14** (JBB-Behaviors), counting replies the fixed keyword rule classifies as refusals. Both systems got the same instruction.
+    - Harmful requests: 24 of 100 for the team, against 67 for the model alone. 76 of the team's replies are classified as answers. Paired by request, 46 were refused only by the model alone and 3 only by the team.
+    - Benign requests: 0 refusals for the team, against 11.
+    - Under that rule, the team's refusal rate fell on both sets. The rule is rough, and nobody read the replies.
+  - Median request time: 20 s for one job alone in run 10, against 113 s per request in run 9's two shards. The runs differ in more than the shard count.
+
+Next steps:
+
+1. **A human review** of the PR before merge (security-relevant: the abstention path and the calibration loader). Do not merge it as a working ceiling: the code is the mechanism, and the measurement says the current score cannot certify one.
+2. **Eval 14 matters more than eval 11.** Under the keyword rule, 76 of the team's 100 replies to harmful requests are answers, against 33 for the model alone. Before the team serves anyone, decide whether refusals need their own check: a text-mode pass, a refusal check on the solver alone, or holding requests the solver alone refuses. Measure it with a better judge than keywords. This is Backlog card W3b.
+3. To try abstention again, use a score that does not tie at 0 on most answers, for example a token margin or a probe. The pre-registered exploratory scores were defined on the batched run, which never finished, so compute candidates on proposal rows first. Any new score needs its own pre-registered certification on fresh rows. This is Backlog card W3c.
+4. The run's aggregate files are on the GPU machine (`~/w3/out10/summary.json`, `~/w3/safety10/safety.json`). The certification rows are there too; they hold no text, but they stay off the repository.

@@ -160,6 +160,10 @@ export const latentTeam = ['latent_team', {
     if (data?.mode === 'unavailable') {
       return { content: [text(briefingText(`${data.reason ?? 'The latent team is unavailable.'} Answer the question yourself.`))] };
     }
+    if (data?.mode === 'abstained') {
+      return { content: [text(briefingText('The latent team declined to answer: its confidence was below the threshold ' +
+        'calibrated for this kind of task. Answer the question yourself.'))] };
+    }
     if (data?.mode === 'held') {
       return { content: [text(briefingText(`The latent team's watchdog held its answer (${briefingText(String(data.reason))}); ` +
         'nothing was returned. Answer the question yourself.'))] };

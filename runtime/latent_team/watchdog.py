@@ -379,7 +379,7 @@ class Watch:
     """The watchdog of one squad for one run (a batch of questions, one squad each)."""
 
     def __init__(self, team, questions, *, steps, max_new_tokens, agents=3, thresholds=None, reference=None,
-                 time_cap=None, key=None, keep_memory=False, collect=None, pinned=None):
+                 time_cap=None, key=None, keep_memory=False, collect=None, pinned=None, keep_solver_state=False):
         from .team import chain_roles
         if not 1 <= agents <= MAX_THINKERS:
             raise ValueError(f"a squad has 1 to {MAX_THINKERS} thinking agents and the solver")
@@ -410,6 +410,8 @@ class Watch:
         self.running_mask = torch.zeros(rows, 0, dtype=torch.long, device=device)
         self.boundary_ok = torch.ones(rows, dtype=torch.bool, device=device)
         self.handoff = None           # (layers, mask) the solver received, when keep_memory
+        self.keep_solver_state = keep_solver_state
+        self.solver_state = None      # W3's probe: the solver's last hidden state after its prompt
         self.boundaries = {}          # turn -> (layers, mask) it received, when keep_memory
         self.layouts_start, self.layouts_end = {}, {}
         self.broken = 0               # exceptions inside the watchdog: each fails every check
@@ -531,6 +533,8 @@ class Watch:
     def _after(self, module, args, kwargs, output):
         hidden = output.last_hidden_state if hasattr(output, "last_hidden_state") else output[0]
         self.prev_hidden = hidden[:, -1].detach()
+        if self.keep_solver_state and self.phase == self.solver_phase and self.phase_calls == 1:
+            self.solver_state = self.prev_hidden.clone()
         self.finite &= torch.isfinite(self.prev_hidden).all(-1)
         closing = self.phase is not None and self.phase < self.solver_phase and self.phase_calls > 1 and \
             self.last_kind == "ids"
@@ -733,5 +737,6 @@ class Watch:
         self.calls, self.record, self.handoff, self.prev_hidden = [], [], None, None
         self.cache, self.running_mask, self.plan, self.questions, self.checksum = None, None, None, [], None
         self.boundaries = {}
+        self.solver_state = None
         if self.results is not None:
             self.results.pop("raw", None)

@@ -24,6 +24,7 @@ Notes for operators:
   Set a separate task model there, or each task runs a full team pass and holds the slot.
 """
 import json
+import re
 import threading
 import time
 import uuid
@@ -33,7 +34,9 @@ from latent_team.guard import Guard
 from . import ApiError
 
 MODEL_ID = "ctm-latent-team"
-TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens", "secrets", "clearance"})
+TEAM_FIELDS = frozenset({"question", "latentSteps", "maxNewTokens", "secrets", "clearance", "task"})
+ABSTAINED = ("The latent team declined to answer: on this kind of task its confidence was below the calibrated "
+             "threshold, so no answer is released.")
 MAX_SECRETS, SECRET_CHARS = 16, (8, 512)
 PROJECT = "local"   # one project per runtime today; the gateway refuses spans of any other
 MAX_QUESTION_CHARS = 8000
@@ -69,6 +72,14 @@ def declared_secrets(body):
             isinstance(s, str) and low <= len(s) <= high for s in secrets):
         raise ApiError(400, f"secrets must be a list of at most {MAX_SECRETS} strings of {low} to {high} characters.")
     return secrets
+
+
+def task_name(body):
+    """W3: the kind of task a request names for calibrated abstention, or None."""
+    task = body.get("task")
+    if task is not None and (not isinstance(task, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", task)):
+        raise ApiError(400, "task must be a short lower-case name, such as gsm8k-arithmetic.")
+    return task
 
 
 def _text_content(content):
@@ -133,7 +144,8 @@ class TeamService:
         return gateway
 
     def run(self, question, steps, max_new_tokens, gone=None, origin="request", secrets=(), clearance="public",
-            gateway=None):
+            task=None, gateway=None):
+        from latent_team.abstain import service_profile
         from latent_team.gateway import GatewayError, Span
         gateway = gateway if gateway is not None else self.gateway(steps, max_new_tokens, secrets, clearance)
         try:
@@ -149,11 +161,17 @@ class TeamService:
             # A caller that gave up while waiting for the slot gets no GPU work.
             if gone is not None and gone():
                 raise ApiError(499, GONE)
-            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway])[0]
+            # W3: a calibration applies only to the service profile it was measured on (review
+            # W3-4): the route's origin, the clearance and whether secrets were declared.
+            profile = service_profile(origin, gateway.permissions.clearance, bool(gateway.declared))
+            outcome = self.guard.run([question], steps=steps, max_new_tokens=max_new_tokens, gateways=[gateway],
+                                     **({"task": task, "profile": profile} if task else {}))[0]
         finally:
             self._slot.release()
         # Fail closed: the supervisor's hold leaves as an error, so no client can take it
         # for an answer, and nothing of the squad's text goes with it.
+        if outcome.decision["action"] == "abstain":   # W3: declining is an outcome, not an error
+            return None, outcome, gateway.admission.text
         if outcome.decision["action"] != "release" or outcome.answer is None:
             raise ApiError(409, HELD.format(reason=outcome.decision["reason"]))
         return outcome.answer, outcome, gateway.admission.text
@@ -186,8 +204,12 @@ class TeamService:
         clearance = body.get("clearance", "public")
         if clearance not in ("public", "sensitive"):
             raise ApiError(400, "clearance must be public or sensitive.")
+        task = task_name(body)
         answer, outcome, _ = self.run(question, steps, limit, gone, origin="request", secrets=secrets,
-                                   clearance=clearance)
+                                      clearance=clearance, task=task)
+        if answer is None:   # abstained: no model text leaves
+            return {"mode": "abstained", "answer": None, "answerVerified": False,
+                    "reason": outcome.decision["reason"], "receipt": self.receipt(outcome)}
         return {"mode": "latent-team", "answer": answer, "answerVerified": False, "receipt": self.receipt(outcome)}
 
     # ------------------------------------------------------------ OpenAI API
@@ -217,11 +239,19 @@ class TeamService:
         limit = min(limit, MAX_NEW_TOKENS)
         # Permissions are fixed before any message is read (review W2-16): the gateway exists,
         # its budgets and clearance set, before the conversation is flattened.
+        # W3: "task" is accepted here too, as an extension field like "secrets" (review W3-1);
+        # it is checked before any message. A calibration applies only to the profile it was
+        # measured on, so this route's runs are uncalibrated unless one was measured on chat
+        # input (W3's was measured on /latent/team requests, review W3-4).
+        task = task_name(body)
         gateway = self.gateway(self.steps, limit, declared_secrets(body))
         question = build_question(messages, limit=None)
         # The flattened conversation mixes system text, history and the new message, so its
         # origin is lost: it is untrusted as a whole (docs/watchdog-security.md, "The gateway").
-        answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat", gateway=gateway)
+        answer, outcome, admitted = self.run(question, self.steps, limit, gone, origin="chat", gateway=gateway,
+                                             task=task)
+        if answer is None:   # abstained (W3): a fixed sentence, never model text
+            answer = ABSTAINED
         completion = outcome.tokens
         finish = "length" if completion >= limit else "stop"
         prompt = self.prompt_tokens(admitted)   # what the model read, placeholders and all
