@@ -3,6 +3,7 @@ import { constants, lstat, open } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { handoffMarkdown } from './handoff.mjs';
 import { setupAgents } from './install.mjs';
+import { printWelcome } from './welcome.mjs';
 import { redactSession } from './secrets.mjs';
 import {
   buildBundle, generateSigningKey, ledgerDatabasePath, loadSigningKey, normalizeFingerprint, signingKeyPath,
@@ -172,7 +173,7 @@ async function readGraphPacket(packetPath) {
 }
 
 /** Card G8: install or uninstall the MCP server and instruction block for each agent. */
-function setup(mode, args) {
+async function setup(mode, args) {
   const { values, positionals } = parseArgs({
     args,
     options: { agent: { type: 'string' }, 'dry-run': { type: 'boolean', default: false } },
@@ -180,8 +181,15 @@ function setup(mode, args) {
   });
   if (positionals.length || (values.agent !== undefined && !['claude', 'codex'].includes(values.agent))) throw new Error(usage);
   const agents = values.agent ? [values.agent] : ['claude', 'codex'];
-  const { ok, lines } = setupAgents({ mode, agents, dryRun: values['dry-run'] });
-  console.log(lines.join('\n'));
+  const { ok, sections } = setupAgents({ mode, agents, dryRun: values['dry-run'] });
+  // Card U9: at a terminal the lines arrive inside the welcome; piped, they print as before.
+  await printWelcome({
+    title: mode === 'install' ? 'connecting your agents' : 'disconnecting your agents',
+    // Each agent's first line carries its result (ok or !!); the lines under it are details.
+    lines: sections.flatMap(section => section.lines.join('\n').split('\n')
+      .map((text, index) => ({ text, state: index === 0 ? (section.ok ? 'ok' : 'failed') : 'detail' }))),
+    footer: ok ? 'Done.' : 'Some steps did not finish. Fix what the lines above name, then run this again.',
+  });
   if (!ok) process.exitCode = 1;
 }
 

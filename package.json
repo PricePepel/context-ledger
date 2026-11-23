@@ -15,7 +15,10 @@
     "src/",
     "public/",
     "schemas/",
-    "rules/latent-rules.json"
+    "rules/latent-rules.json",
+    "docs/brand/tokens.css",
+    "docs/brand/ctm-logo.svg",
+    "docs/brand/fonts/"
   ],
   "type": "module",
   "engines": {
