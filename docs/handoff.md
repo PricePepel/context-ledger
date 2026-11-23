@@ -10,7 +10,7 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 
 ## Current checkpoint — P4e signing reads the ledger read-only (2026-11-22)
 
-Branch `ruslan/p4e-sign-read-only`. `openStore(path, { readOnly: true })` opens the file without write access, checks the schema on that connection (`requireCurrentSchema` in `src/migrate.mjs`, which throws `OlderSchemaError` for an older file) and migrates nothing. `handoff --sign` uses it for every read, so a database swapped in after the schema check can no longer be upgraded and signed (ADR-18a). `tests/read-only-store.test.mjs` covers it.
+PR #81, branch `ruslan/p4e-sign-read-only`. `openStore(path, { readOnly: true })` opens the file without write access, checks the schema on that connection (`requireCurrentSchema` in `src/migrate.mjs`, which throws `OlderSchemaError` for an older file) and migrates nothing. `handoff --sign` uses it for every read, so a database swapped in after the schema check can no longer be upgraded and signed (ADR-18a). `tests/read-only-store.test.mjs` covers it.
 
 - **Owed before merge:** a human security review (signing, AGENTS.md section 4).
 - **Next owner:** the P4d branch (#69) changes `signCommand` next to this; whichever merges second keeps both.
