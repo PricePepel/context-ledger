@@ -9,7 +9,7 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setupAgents } from '../src/install.mjs';
 import { isSqliteNotice, sqliteNotice } from '../src/quiet.mjs';
-import { MARK, colourDepth, fancyTerminal, markLines, printWelcome, welcomeFrames } from '../src/welcome.mjs';
+import { MARK, colourDepth, fancyTerminal, installedCommand, markLines, printWelcome, startLines, welcomeFrames } from '../src/welcome.mjs';
 
 const ESC = String.fromCodePoint(27);
 // Colour codes (SGR) are the only escape sequences the welcome may write.
@@ -211,4 +211,68 @@ test('review: a reader that stops after the first line does not stop the server'
   await new Promise(resolve => { setTimeout(resolve, 400); });
   assert.equal(child.exitCode, null, 'the server is still running');
   assert.equal((await fetch(origin + '/')).status, 200);
+});
+
+// Card U11: the start command's lines. A synthetic code; the server mints the real one.
+const code = 'C0de-Synthetic_0123456789abcdefghijklmnopqrs';
+
+test('U11: piped, start prints exactly the two plain lines it printed before', async () => {
+  const pipe = { isTTY: false, written: [], write(text) { this.written.push(text); } };
+  const lines = startLines({ port: 4317, code, seconds: 60, installed: true });
+  assert.equal(await printWelcome({ title: 'local', lines, footer: 'Keep this window open.' }, { stream: pipe, env: {} }), false);
+  assert.deepEqual(pipe.written, [
+    'Context Ledger listening at http://127.0.0.1:4317\n',
+    `Sign in to the browser app (one use, within 60 seconds): http://127.0.0.1:4317/login?code=${code}\n`,
+  ]);
+});
+
+test('U11: at a terminal, start shows how to sign in, with the link on a line of its own', async () => {
+  for (const [installed, login] of [[true, 'context-ledger login'], [false, 'npm run ledger -- login']]) {
+    const tty = terminal(24);
+    const lines = startLines({ port: 4317, code, seconds: 60, installed });
+    assert.equal(await printWelcome({ title: 'local', lines }, { stream: tty, env: {}, wait: async () => {} }), true);
+    const shown = tty.written.map(text => withoutColour(text).replace(/\n$/u, ''));
+    const link = `http://127.0.0.1:4317/login?code=${code}`;
+    assert.ok(shown.some(line => line.endsWith('Sign in: open this link in your browser within 60 seconds')), 'the step');
+    assert.ok(shown.includes(`  ${link}`), 'the link alone on its line, two spaces in');
+    assert.ok(shown.some(line => line.trim() === 'Ctrl+click it (Cmd+click on a Mac), or copy it into the address bar.'));
+    assert.ok(shown.some(line => line.trim() === 'The console is at http://127.0.0.1:4317/console/'));
+    assert.ok(shown.some(line => line.trim() === `The link works once. For a new one, run: ${login}`), login);
+    // The plain sign-in sentence is for pipes only; a terminal does not get it as well.
+    assert.ok(!shown.some(line => line.includes('Sign in to the browser app')));
+    // Only colour codes, and nothing invisible once they are taken out.
+    for (const text of tty.written) assert.doesNotMatch(withoutColour(text).replace(/\n$/u, ''), /\p{Cc}|\p{Cf}/u, text);
+  }
+});
+
+test('U11: the sign-in link fits in 80 columns for every port', () => {
+  for (const port of [1, 80, 4317, 54788, 65535]) {
+    const lines = startLines({ port, code, seconds: 60, installed: true });
+    const frame = welcomeFrames({ title: 'local', lines, depth: 24 }).map(({ text }) => withoutColour(text));
+    const linkLine = frame.find(text => text.includes('/login?code='));
+    assert.ok(linkLine.length <= 80, `port ${port}: ${linkLine.length} columns`);
+  }
+});
+
+test('U11: a plainOnly line is left out at a terminal and a terminalOnly line in a pipe', async () => {
+  const lines = [{ text: 'both' }, { text: 'pipe only', plainOnly: true }, { text: 'terminal only', terminalOnly: true }, { text: 'a link', state: 'link' }];
+  const pipe = { isTTY: false, written: [], write(text) { this.written.push(text); } };
+  await printWelcome({ title: 't', lines }, { stream: pipe, env: {} });
+  assert.deepEqual(pipe.written, ['both\n', 'pipe only\n', 'a link\n']);
+  const frames = welcomeFrames({ title: 't', lines, depth: 8 }).map(({ text }) => withoutColour(text));
+  assert.ok(frames.some(text => text.endsWith('terminal only')));
+  assert.ok(!frames.some(text => text.includes('pipe only')));
+  assert.ok(frames.includes('  a link'), 'a link line has a two-space indent');
+});
+
+test('U11: the installed command is told apart from a checkout by the script node runs', () => {
+  const windows = String.raw`C:\Users\leo\AppData\Roaming\npm\node_modules\@pricepepel\context-ledger\bin\context-ledger.mjs`;
+  // U11 review: npx on Linux and macOS can start the bin through npm's .bin link.
+  for (const script of [windows, '/usr/lib/node_modules/@pricepepel/context-ledger/bin/context-ledger.mjs', '/usr/local/bin/context-ledger',
+    '/home/leo/.npm/_npx/4e59c1e0bc7fa72b/node_modules/.bin/context-ledger', String.raw`C:\Users\leo\proj\node_modules\.bin\context-ledger.cmd`]) {
+    assert.equal(installedCommand(script), true, script);
+  }
+  for (const script of ['/home/leo/context-ledger/src/server.mjs', String.raw`C:\repo\src\server.mjs`, '/x/bin/context-ledger-other.mjs', undefined, '']) {
+    assert.equal(installedCommand(script), false, String(script));
+  }
 });

@@ -30,7 +30,7 @@ const paint = {
   grey: { 24: '48;2;92;91;88', 8: '48;5;240', 4: '100', text: '97' },
   red: { 24: '48;2;214;51;47', 8: '48;5;160', 4: '41', text: '97' },
 };
-const ink = { dim: '2', bold: '1' };
+const ink = { dim: '2', bold: '1', underline: '4' };
 
 // What stands before a line, by its state: a coloured pixel that also says it in two
 // letters, so the state is never told by colour alone. A detail line has no pixel.
@@ -63,6 +63,9 @@ export function markLines(depth) {
 function lineFrame({ text, state = 'ok' }, depth) {
   const safe = terminalLine(String(text));
   if (state === 'detail') return `     ${safe}`;
+  // Card U11: a link has a line of its own with a two-space indent, so a sign-in link fits
+  // in 80 columns for any port and a terminal can open it with Ctrl+click.
+  if (state === 'link') return `  ${styled('underline', safe)}`;
   const [colour, letters2] = Object.hasOwn(marks, state) ? marks[state] : ['grey', '  '];
   return `  ${block(colour, depth, letters2)} ${safe}`;
 }
@@ -70,7 +73,8 @@ function lineFrame({ text, state = 'ok' }, depth) {
 /**
  * Every write of the welcome, in order, as { text, waitMs }: the mark row by row, a
  * title, then each of the caller's lines. Pure, so a test can check that only colour
- * codes are used. A line's state is 'ok', 'failed', 'note' or 'detail'.
+ * codes are used. A line's state is 'ok', 'failed', 'note', 'detail' or 'link'. A line
+ * marked plainOnly is left out here (card U11): it is the plain form of other lines.
  */
 export function welcomeFrames({ title, lines, depth = 24, footer }) {
   const frames = [{ text: '', waitMs: 0 }];
@@ -78,7 +82,9 @@ export function welcomeFrames({ title, lines, depth = 24, footer }) {
   frames.push({ text: '', waitMs: 0 });
   frames.push({ text: `  ${styled('bold', 'Context Ledger')}  ${styled('dim', title)}`, waitMs: 120 });
   frames.push({ text: '', waitMs: 0 });
-  for (const line of lines) frames.push({ text: lineFrame(line, depth), waitMs: line.state === 'detail' ? 40 : 160 });
+  for (const line of lines.filter(line => !line.plainOnly)) {
+    frames.push({ text: lineFrame(line, depth), waitMs: line.state === 'detail' || line.state === 'link' ? 40 : 160 });
+  }
   if (footer) frames.push({ text: '', waitMs: 0 }, { text: `  ${styled('dim', footer)}`, waitMs: 60 });
   frames.push({ text: '', waitMs: 0 });
   return frames;
@@ -95,7 +101,7 @@ const lineWriter = stream => (stream === process.stdout ? text => { console.log(
 /**
  * Print a command's lines. At a terminal: the welcome, a line at a time. Anywhere else:
  * the same lines, plainly and at once, as before this card; a line marked terminalOnly
- * is left out there.
+ * is left out there, and a line marked plainOnly is printed only there.
  */
 export async function printWelcome({ title, lines, footer }, { stream = process.stdout, env = process.env, wait = sleep } = {}) {
   const write = lineWriter(stream);
@@ -108,4 +114,30 @@ export async function printWelcome({ title, lines, footer }, { stream = process.
     write(text);
   }
   return true;
+}
+
+/** Card U11: true when node was started with the package's bin (a global install or npx), not a checkout's script. */
+export const installedCommand = script => /[\\/]\.?bin[\\/]context-ledger(?:\.mjs|\.cmd)?$/u.test(String(script ?? ''));
+
+/**
+ * Card U11: what `start` prints once it listens. Piped, the same two plain lines as before
+ * (scripts and tests read them); at a terminal, the steps to sign in, with the link on a
+ * line of its own. The caller mints one code and passes it here.
+ */
+export function startLines({ port, code, seconds, installed }) {
+  const origin = `http://127.0.0.1:${port}`;
+  const link = `${origin}/login?code=${code}`;
+  const login = installed ? 'context-ledger login' : 'npm run ledger -- login';
+  return [
+    // The store opened before the server could listen; a terminal is told so, a pipe is not.
+    { text: 'Database opened', terminalOnly: true },
+    { text: `Context Ledger listening at ${origin}` },
+    { text: `Sign in to the browser app (one use, within ${seconds} seconds): ${link}`, plainOnly: true },
+    { text: `Sign in: open this link in your browser within ${seconds} seconds`, state: 'note', terminalOnly: true },
+    { text: link, state: 'link', terminalOnly: true },
+    { text: 'Ctrl+click it (Cmd+click on a Mac), or copy it into the address bar.', state: 'detail', terminalOnly: true },
+    { text: 'It signs this browser in and opens the library.', state: 'detail', terminalOnly: true },
+    { text: `The console is at ${origin}/console/`, state: 'detail', terminalOnly: true },
+    { text: `The link works once. For a new one, run: ${login}`, state: 'detail', terminalOnly: true },
+  ];
 }
