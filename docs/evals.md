@@ -4974,10 +4974,23 @@ Synthetic data only: the swarm's generated incident reports.
 
 ### U7 results (2026-11-23)
 
-Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path is not checked yet: the GPU was running another card's evaluation.
+Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path was checked afterwards, once the GPU was free (see the live check below).
 
 - `node:test`: 6 tests in `tests/console-swarm.test.mjs`, and the console's read-only check now pins the one POST to `/api/swarm/runs`.
 - Playwright: 4 U7 tests in `tests/e2e/swarm.spec.mjs` (run and counts, the lost run, the recorded demo, the mode race), 12 of 12 over two repeats in one worker.
+
+**Live check from the room** (2026-11-23, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, `SWARM_CONCURRENCY=64`, 100 agents, synthetic reports; aggregates only). The room's badge read "Live: Qwen/Qwen2.5-7B-Instruct-AWQ". Every run finished 100 of 100 agents, with 100/100 quotes verified and 100/100 answers correct.
+
+| Run | Started from | Wall time | Speed-up shown |
+| --- | --- | --- | --- |
+| 1 (first after the server start) | room | 5.29 s | about 15× |
+| 2 | room | 3.92 s | about 20× |
+| 3 | room | 3.63 s | about 22× |
+| 4 | room | 3.60 s | about 22× (22.2× on `/swarm/`) |
+| 5 | room, while a second browser took screenshots | 4.10 s | about 20× |
+| 6 | `/swarm/`, while a second browser took screenshots | 3.96 s | 20.2× |
+
+The room's "Open the swarm page" link opened run 4 on `/swarm/` with the same numbers: one after another 80.0 s (100 × 0.80 s alone, baseline reused), KV peak 5%, prefix-cache hits 98%, combined answer matching the truth. Together with the S1b check (20.8–22.4× on warm runs) the figure to quote is **about 20–22×** on a warm server; the first run after a server start shows about 15×.
 
 ### Codex review of U7 (2026-11-23)
 
