@@ -22,6 +22,37 @@ npm run --silent ledger -- receive vera.parcel.json
 
 The graph has the same ID on both machines. So the receiver's agent can read it over MCP, publish its own graph with links to it, and open a negotiation room with both. Sharing that second graph back gives the first machine the same room.
 
+## Send through a relay
+
+Carrying a file is not always handy. A relay is a small mailbox that holds a sealed parcel until the other machine fetches it (card R2, ADR-20). One of the two people starts it, on a machine both can reach:
+
+```
+npm run --silent ledger -- relay serve --host 192.168.1.20
+```
+
+It prints its address, for example `http://192.168.1.20:4319`. Without `--host` it listens on 127.0.0.1, where only the same machine can reach it. The sender then runs:
+
+```
+npm run --silent ledger -- share GRAPH_ID --relay http://192.168.1.20:4319
+```
+
+That prints what `share --out` prints and, on the last line, a code such as `http://192.168.1.20:4319/#q7…`. Give the code to the other person over a channel you already trust. They run:
+
+```
+npm run --silent ledger -- receive --from "CODE"
+```
+
+The parcel is stored exactly as a parcel file is, and the relay's copy is deleted.
+
+**What the relay can and cannot do.** The code holds a random secret. From it the sender derives a key and seals the parcel (AES-256-GCM) before sending, so the relay holds bytes it cannot read, filed under a token that tells it nothing about the key. It keeps one parcel per code, in memory, for at most 24 hours, and forgets everything when it stops. It is a separate program from the ledger server: it opens no ledger database, and the ledger server still listens on this machine only.
+
+**What to know before using one.**
+
+- **The code is the key.** Anyone who has it and can reach the relay can read the parcel until it is received or expires. It appears in your shell history and, while the command runs, in the process list.
+- **Anyone who can reach the relay can use it,** to leave sealed parcels of their own up to its limits (64 parcels, 128 MiB). It has no accounts. Run it on a network you trust, and stop it when you are done.
+- **Over plain `http`,** someone who can watch the network sees the sealed bytes and the token. They cannot read or change the parcel. They can delete it, or fill the relay, which stops a delivery. Put the relay behind an `https` address to prevent that.
+- **A parcel the receiving ledger refuses stays on the relay,** so you can fix the cause (for example receive the graph it links to) and run `receive --from` again.
+
 ## What is in the file
 
 One line of JSON, at most 8 MiB, described by [`schemas/parcel-v1.schema.json`](../schemas/parcel-v1.schema.json):
@@ -66,7 +97,7 @@ The savings meter of `context_for` compares a graph with its session's hand-off.
 
 ## Limits
 
-- **A parcel is not signed.** `receive` trusts the file the way `import` trusts a transcript you chose. Take parcels only from people you trust. Signing with the sender's key is a later card.
+- **A parcel is not signed.** `receive` trusts the file the way `import` trusts a transcript you chose. Take parcels only from people you trust. A relay code shows that the parcel comes from whoever made the code, and nothing more. Signing with the sender's key is a later card.
 - **The receiver cannot check the lines against the sender's transcript.** It checks that the graph is valid against the lines it came with.
 - **Review decisions and room choices do not travel.** Each machine records its own (card R3).
 - **A graph that cites only artifacts** has no line to carry and cannot be shared.

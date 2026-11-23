@@ -8,6 +8,14 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — R2 relay: send a parcel between two machines (2026-11-23)
+
+- **What changed.** `ledger relay serve [--host] [--port]` runs a mailbox for sealed parcels (`src/relay.mjs`). `ledger share <graph-id> --relay <url>` seals R1's parcel and prints a one-time code; `ledger receive --from <code>` fetches, opens and stores it, then deletes the relay's copy (`src/relay-client.mjs`, `src/cli.mjs`).
+- **The ledger server is unchanged.** It still binds to loopback. The relay is the one program here that may listen on another address, only with `--host`. It imports only Node built-ins and opens no database; `tests/relay.test.mjs` checks that.
+- **Decisions** are ADR-20 in `docs/architecture.md` §17. User docs are the relay section of `docs/parcels.md`. Stacked on R1's branch.
+- **Needs a human security review** before merge: a listener beyond loopback, and encryption (HKDF-SHA-256, AES-256-GCM from `node:crypto`).
+- **Next.** R3: sync room choices and review events since a cursor through the same relay. Later cards: sign parcels with the P4a key, relay access control, a Docker image for the relay.
+
 ## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
 
 - **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
