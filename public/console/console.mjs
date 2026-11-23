@@ -7,6 +7,7 @@ import { createModel } from './model.mjs';
 import { createOffice, providerNames } from './office.mjs';
 import { createPanels } from './panels.mjs';
 import { demoSource, liveSource } from './source.mjs';
+import { createSwarmRoom } from './swarm-room.mjs';
 
 const params = new URLSearchParams(location.search);
 const demo = params.has('demo');
@@ -30,6 +31,10 @@ const office = createOffice($('#office'));
 const brain = createBrain($('#brain'), { onSelect: select });
 createBand($('.band'));
 const panels = createPanels(document);
+// Card U7: the local swarm in its own room; it asks the server nothing until Run but its mode.
+// The demo is a recorded replay that makes no requests, so there the room is hidden.
+if (demo) $('#swarm').hidden = true;
+else createSwarmRoom($('#swarm'));
 
 // Card P3: the reviewer prototype runs in demo mode only, on the synthetic recording.
 // startDemo loads it, so live mode never fetches or runs the review code.

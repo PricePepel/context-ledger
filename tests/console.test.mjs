@@ -251,7 +251,15 @@ test('console files stay light and never parse transcript text as HTML', async (
     assert.doesNotMatch(text, /[[\p{Cc}\p{Cf}]--[\t\n\r]]/v, name);
     if (name.endsWith('.mjs')) {
       assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function/u, name);
-      assert.doesNotMatch(text, /method:\s*['"](?:POST|PUT|PATCH|DELETE)/iu, `${name} must only read`);
+      if (name === 'swarm-room.mjs') {
+        // Card U7: the one exception. Starting a swarm run is a POST to /api/swarm/runs; it
+        // writes nothing to the ledger. No other write method and no other path.
+        assert.doesNotMatch(text, /method:\s*['"](?:PUT|PATCH|DELETE)/iu, name);
+        assert.equal([...text.matchAll(/method:\s*['"]POST['"]/giu)].length, 1, `${name} posts once`);
+        assert.deepEqual([...text.matchAll(/api\(\s*'([^']+)'/gu)].map(match => match[1]).sort(), ['/api/swarm', '/api/swarm/runs'], name);
+      } else {
+        assert.doesNotMatch(text, /method:\s*['"](?:POST|PUT|PATCH|DELETE)/iu, `${name} must only read`);
+      }
       // Browser-only modules are not imported by node tests, so check that each parses.
       const check = spawnSync(process.execPath, ['--check', fileURLToPath(new URL(name, consoleDir))], { encoding: 'utf8' });
       assert.equal(check.status, 0, `${name}: ${check.stderr}`);

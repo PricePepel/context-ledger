@@ -34,6 +34,25 @@
         <svg id="office" aria-labelledby="office-heading"></svg>
       </section>
 
+      <section id="swarm" class="part swarm" aria-labelledby="swarm-heading">
+        <div class="swarm-head">
+          <h2 id="swarm-heading" class="lab">Local swarm</h2>
+          <span id="swarm-mode" class="swarm-mode">Checking…</span>
+          <button id="swarm-run" class="btn solid" type="button">Run 100 agents</button>
+          <a class="btn bar-link swarm-open" href="/swarm/">Open the swarm page</a>
+        </div>
+        <p id="swarm-status" class="hint" role="status">Checking for a model server…</p>
+        <ul class="swarm-legend" aria-hidden="true">
+          <li><i data-state="queued"></i>queued</li>
+          <li><i data-state="running"></i>working</li>
+          <li><i data-state="verified"></i>answer checked against its source</li>
+          <li><i data-state="dropped"></i>quote not found, left out</li>
+          <li><i data-state="failed"></i>failed</li>
+        </ul>
+        <ol id="swarm-grid" class="swarm-grid" aria-label="Swarm agents"></ol>
+        <dl id="swarm-stats" class="swarm-stats"></dl>
+      </section>
+
       <section class="part brain" aria-labelledby="brain-heading">
         <h2 id="brain-heading" class="lab">What they put in the ledger</h2>
         <p class="hint">Click any node to see the line that proves it.</p>

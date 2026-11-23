@@ -4962,7 +4962,7 @@ The investor demo shows the swarm on its own page and the Claude Code and Codex 
 2. **A run fills the room.** Pressing Run starts 100 agents (POST `/api/swarm/runs`, the mode the server offers) and the room shows 100 pixel agents. Each takes the state the server reports: queued, running, done and verified, done but its quote not found (dropped), or failed. When the run ends the room shows agents finished, quotes verified and answers correct.
 3. **Honest numbers.** The room shows the speed-up only for a live run that has one, as "about N×" from the server's `speedup` (one agent alone, then all together); a simulated run shows "not measured" for speed-up and marks its wall time simulated. The room never computes a speed-up of its own.
 4. **Safe rendering.** Every model or report string reaches the page through `textContent`; the room builds no HTML from data. A failed or lost run re-enables Run and says why.
-5. **Nothing else changes.** The console's graph, evidence, activity and band keep working, in live and demo mode. The room makes no requests until Run is pressed except `GET /api/swarm`.
+5. **Nothing else changes.** The console's graph, evidence, activity and band keep working, in live and demo mode. The room makes no requests until Run is pressed except `GET /api/swarm`. In demo mode (`/console/?demo`, the recorded replay that makes no requests) the room is hidden. Starting a run is the console's only POST, and only to `/api/swarm/runs`; it writes nothing to the ledger, and a unit test pins that exception.
 
 Synthetic data only: the swarm's generated incident reports.
 
