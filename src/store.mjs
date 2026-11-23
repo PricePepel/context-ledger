@@ -530,13 +530,10 @@ function storeOn(database) {
   `);
   // A current file opens without the lock, so a newer build may have upgraded it while
   // the statements above were prepared. Refuse it now rather than hand out the store.
-  // (An upgrade after this point, while the store is open, is not detected.)
-  try {
-    refuseNewerSchema(database);
-  } catch (error) {
-    database.close();
-    throw error;
-  }
+  // (An upgrade after this point, while the store is open, is not detected.) openStore
+  // closes the connection when this throws (card P3c review: closing here too threw
+  // ERR_INVALID_STATE and hid this error).
+  refuseNewerSchema(database);
 
   /**
    * Card I3: a Codex file imported before agent messages were read gains them when it is

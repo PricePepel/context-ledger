@@ -137,3 +137,11 @@ test('P3c review: a current-schema file missing its tables is refused and the co
     setVersion(database, schemaVersion);
   }
 });
+
+test('P3c review: storeOn leaves closing to openStore, so its errors are not masked', () => {
+  const source = readFileSync(new URL('../src/store.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('function storeOn(database) {');
+  assert.ok(start >= 0);
+  const setup = source.slice(start, source.indexOf('\n  return {', start));
+  assert.doesNotMatch(setup, /database\.close\(\)/u);
+});
