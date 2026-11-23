@@ -4873,14 +4873,14 @@ A graph lives in one ledger, tied to the session it cites, so today nothing move
 
 ## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
 
-R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a one-time code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
+R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
 
 ### What is tested and the expected result
 
 - **End to end.** `ledger relay serve` prints its address. On ledger A, `ledger share <graph-id> --relay <url>` prints one code. On ledger B, `ledger receive --from <code>` stores the graph with the same ID, as R1's `receive <file>` does, and the relay then holds nothing.
 - **The relay sees only ciphertext.** What the relay holds contains no text of the parcel (a label, a transcript line, the session ID, the graph ID). The parcel is sealed with AES-256-GCM under a key derived from the code's secret, which never reaches the relay.
 - **The code is the key.** A different secret, or a parcel changed by one byte, fails to open, in fixed words, and the ledger is unchanged. A sealed parcel opens only as the version it was sealed as.
-- **One parcel per code, fetched once.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
+- **One parcel per code.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
 - **A failed receive keeps the parcel.** If B refuses the parcel (for example its graph links to a graph B lacks), the relay still holds it, so B can receive the missing graph and try again.
 - **The relay's own limits.** A request without a bearer token of the right shape is refused (401). A body over the limit is refused (413) without being held. The relay holds at most a fixed number of parcels and bytes and refuses more (507). A parcel expires after 24 hours. Unknown paths give 404 and other methods 405. Responses never echo a token or a body.
 - **The relay cannot reach a ledger.** `src/relay.mjs` imports only Node built-ins. It opens no database and reads no file.
@@ -4893,3 +4893,20 @@ R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the
 - The four suites pass, with the cases above in `tests/relay.test.mjs`.
 - No new dependency: `node:crypto` (HKDF-SHA-256, AES-256-GCM) and `node:http`.
 - `docs/parcels.md` describes the relay, the code, and what an attacker on the network can and cannot do.
+
+### R2 results (2026-11-23)
+
+- `tests/relay.test.mjs` 14/14: sealing and opening; the code's one spelling; the relay's store, fetch and delete; refusals without a token and to web pages; the size, count, byte and time limits; uploads that must declare a length and count while they arrive; expiry on an idle relay; the imports of `src/relay.mjs`; a relay that is absent, of another version, endless, oversized or redirecting; an upload stored but not confirmed; and the three commands end to end with a relay process and two ledgers, including a parcel the ledger refuses and one changed on the way.
+- Found while building: on Windows an answer sent while the sender is still writing is lost with the connection, so the sender saw a broken connection instead of the reason. A refused upload is now read to its end and dropped (up to 16 MiB) before the relay answers.
+- **Independent security review (a Claude subagent that did not write the code, round 1):** no high. Four medium and six low; all fixed with tests except two noted below.
+  - (medium) Uploads still arriving were not counted, so 64 stalled senders could make the relay hold about 500 MiB while it reported nothing held. A PUT must now declare its length (411 otherwise), and its bytes and its place count against the limits until it ends or breaks off.
+  - (medium) A reader that never read kept its connection for good, and 64 of them shut everyone out. A socket idle for a minute is closed, and each connection carries one request.
+  - (medium) `checkRelay` read the health answer without a limit, so a relay, or someone on an `http` path, could fill the sender's memory. It reads one kilobyte, asks for no compression, and gives up after 10 seconds.
+  - (medium) The code was called one-time, and it is not: fetching does not empty the box, and the 24 hours are kept only by the relay. The command, the docs and ADR-20 now say that whoever has the code can read the parcel and that it must stay secret for good.
+  - (low) The redirect test would have passed with redirects followed; it now redirects to a live second listener and checks that nothing arrives there, for all four calls. The imports test now reads every kind of import and checks what a fresh process loads.
+  - (low) Expiry ran only when a request with a token arrived. A timer now sweeps an idle relay.
+  - (low) The relay checked no Origin, so a page that reached a loopback relay by its own name could fill it. A request that names an origin is refused.
+  - (low) An upload stored but not confirmed left a box nobody held a code for. The sender now deletes the box when the upload fails.
+  - (low) One 30 second limit covered a whole transfer and reported a slow link as an unreachable relay. A transfer has 3 minutes and its own sentence.
+  - (low) `isLoopback` missed `localhost.`, `*.localhost` and the IPv4-mapped form. Added.
+  - Not changed: the timeouts and the connection limit have no test of their own (they are Node settings), and the eval's claim that nothing from the network reaches the terminal rests on the code printing only fixed sentences, which the hostile-relay cases exercise.

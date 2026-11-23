@@ -578,7 +578,7 @@ async function shareCommand(graphId, out, relay) {
     return;
   }
   // The code is the last line, alone, so it can be copied whole.
-  console.log('Give this code to the other person over a channel you trust. It opens the parcel once, within 24 hours.\n' +
+  console.log('Give this code to the other person over a channel you trust. Anyone who has it can read the parcel, so keep it secret.\n' +
     'On the other machine, run: ledger receive --from <code>\n' + client.formatCode(origin, secret));
   if (client.isLoopback(origin)) console.error('Note: the relay address is a loopback address, so only this machine can use this code.');
 }

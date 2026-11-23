@@ -67,7 +67,8 @@ export function relayOrigin(text) {
 /** True when only this machine can reach the address. */
 export function isLoopback(origin) {
   const { hostname } = new URL(origin);
-  return hostname === 'localhost' || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/u.test(hostname);
+  return /^(?:[^.]+\.)*localhost\.?$/u.test(hostname) || hostname === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/u.test(hostname)
+    || /^127\.\d+\.\d+\.\d+$/u.test(hostname);
 }
 
 /** The one line a sender passes on: the relay address with the secret as its fragment. */
@@ -94,31 +95,70 @@ export function parseCode(code) {
 }
 
 const unreachable = 'Cannot reach the relay. Check the address and that the relay is running.';
+const tooSlow = 'The relay did not finish in time. Try again, or use a relay on a faster connection.';
+// A whole parcel may travel in one call; a health check is a few bytes.
+const transferMs = 180_000;
+const healthMs = 10_000;
 
-async function call(origin, path, init = {}) {
+// A redirect is never followed, so a relay cannot send a token or a parcel elsewhere. The
+// answer is asked for as it is, so a small reply cannot unpack into a large one.
+async function call(origin, path, init = {}, timeoutMs = transferMs) {
   try {
-    return await fetch(origin + path, { ...init, redirect: 'error', signal: AbortSignal.timeout(30_000) });
-  } catch {
-    throw new Error(unreachable);
+    return await fetch(origin + path, {
+      ...init, headers: { 'Accept-Encoding': 'identity', ...init.headers }, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(error?.name === 'TimeoutError' ? tooSlow : unreachable);
   }
+}
+
+/** The body of an answer, or null once it passes `limit` bytes; an unreadable body rejects. */
+async function readBody(response, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.length;
+    if (size > limit) {
+      await response.body.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 const authorized = secret => ({ Authorization: `Bearer ${accessToken(secret)}` });
 
 /** Throws unless the address answers as a relay of this version. */
 export async function checkRelay(origin) {
-  const response = await call(origin, '/v1/health');
-  const data = response.ok ? await response.json().catch(() => null) : null;
+  const response = await call(origin, '/v1/health', {}, healthMs);
+  let data = null;
+  try {
+    // A relay's answer is a few dozen bytes; nothing longer is read.
+    const body = response.ok ? await readBody(response, 1024) : null;
+    data = body && JSON.parse(body.toString('utf8'));
+  } catch {
+    data = null;
+  }
   if (data?.relay !== relayName || data?.version !== relayVersion) {
     throw new Error('That address does not answer as a Context Ledger relay.');
   }
 }
 
-/** Puts a sealed parcel in the box of this secret. */
+/**
+ * Puts a sealed parcel in the box of this secret. When the relay may have stored it but
+ * did not say so, the box is deleted again, because nobody will hold its code.
+ */
 export async function sendSealed(origin, secret, sealed) {
-  const response = await call(origin, '/v1/parcel', {
-    method: 'PUT', headers: { ...authorized(secret), 'Content-Type': 'application/octet-stream' }, body: sealed,
-  });
+  let response;
+  try {
+    response = await call(origin, '/v1/parcel', {
+      method: 'PUT', headers: { ...authorized(secret), 'Content-Type': 'application/octet-stream' }, body: sealed,
+    });
+  } catch (error) {
+    await deleteSealed(origin, secret);
+    throw error;
+  }
   if (response.status === 201) return;
   if (response.status === 413) throw new Error('The parcel is too large for the relay.');
   if (response.status === 507) throw new Error('The relay is full. Try again later, or use another relay.');
@@ -132,24 +172,20 @@ export async function fetchSealed(origin, secret) {
     throw new Error('The relay holds no parcel for this code. It may have been received already, or have expired.');
   }
   if (response.status !== 200 || !response.body) throw new Error(`The relay returned HTTP ${response.status}.`);
-  const chunks = [];
-  let size = 0;
+  let sealed;
   try {
-    for await (const chunk of response.body) {
-      size += chunk.length;
-      if (size > maxSealedBytes) throw new Error('too large');
-      chunks.push(chunk);
-    }
-  } catch {
-    throw new Error(size > maxSealedBytes ? 'The relay sent more than a parcel can hold. Nothing was stored.' : unreachable);
+    sealed = await readBody(response, maxSealedBytes);
+  } catch (error) {
+    throw new Error(error?.name === 'TimeoutError' ? tooSlow : unreachable);
   }
-  return Buffer.concat(chunks);
+  if (sealed === null) throw new Error('The relay sent more than a parcel can hold. Nothing was stored.');
+  return sealed;
 }
 
 /** Deletes the box of this secret; false when the relay could not be asked or said no. */
 export async function deleteSealed(origin, secret) {
   try {
-    const response = await call(origin, '/v1/parcel', { method: 'DELETE', headers: authorized(secret) });
+    const response = await call(origin, '/v1/parcel', { method: 'DELETE', headers: authorized(secret) }, healthMs);
     return response.status === 204 || response.status === 404;
   } catch {
     return false;

@@ -27,14 +27,14 @@ const transcript = [
 
 /** A relay listening on a loopback port for one test. */
 async function relay(t, options) {
-  const { server, stats } = createRelay(options);
+  const { server, stats, arriving } = createRelay(options);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise(resolve => {
     server.closeAllConnections();
     server.close(resolve);
   }));
-  return { origin: `http://127.0.0.1:${server.address().port}`, stats };
+  return { origin: `http://127.0.0.1:${server.address().port}`, stats, arriving, port: server.address().port };
 }
 
 const put = (origin, token, body, headers = {}) => fetch(origin + '/v1/parcel', {
@@ -92,8 +92,9 @@ test('R2: a code is the relay address with the secret as its fragment, in one sp
     assert.throws(() => relayOrigin(bad), InputError, bad);
   }
   assert.equal(relayOrigin('http://Example.Test:4319/'), 'http://example.test:4319');
-  assert.deepEqual(['http://127.0.0.1:4319', 'http://localhost:4319', 'http://[::1]:4319', 'http://127.8.9.1', 'http://192.168.1.20:4319', 'https://relay.example.test']
-    .map(isLoopback), [true, true, true, true, false, false]);
+  assert.deepEqual(['http://127.0.0.1:4319', 'http://localhost:4319', 'http://[::1]:4319', 'http://127.8.9.1', 'http://localhost.:4319', 'http://app.localhost',
+    'http://[::ffff:127.0.0.1]:4319', 'http://192.168.1.20:4319', 'https://relay.example.test', 'http://notlocalhost'].map(isLoopback),
+  [true, true, true, true, true, true, true, false, false, false]);
 });
 
 test('R2: the relay stores one parcel per token, gives it back, and forgets it when asked', async t => {
@@ -144,10 +145,17 @@ test('R2: the relay refuses requests without a token of the right shape, and nev
   const post = await fetch(origin + '/v1/parcel', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: sealedBytes(64) });
   assert.equal(post.status, 405);
   assert.equal(post.headers.get('allow'), 'GET, PUT, DELETE');
-  // No reply names the token, and none allows another origin to read it.
-  const reply = await fetch(origin + '/v1/parcel', { headers: { Authorization: `Bearer ${token}`, Origin: 'http://other.example.test' } });
-  assert.equal((await reply.text()).includes(token), false);
-  assert.equal(reply.headers.get('access-control-allow-origin'), null);
+  // A web page gets nothing, whatever it asks for and whatever name it used for the relay.
+  await sendSealed(origin, newSecret(), sealedBytes(64));
+  for (const [method, path] of [['GET', '/v1/health'], ['GET', '/v1/parcel'], ['PUT', '/v1/parcel'], ['DELETE', '/v1/parcel']]) {
+    const reply = await fetch(origin + path, {
+      method, headers: { Authorization: `Bearer ${token}`, Origin: origin }, ...(method === 'PUT' ? { body: sealedBytes(64) } : {}),
+    });
+    assert.equal(reply.status, 403, `${method} ${path}`);
+    assert.equal(await reply.text(), '{"error":"The relay does not answer web pages."}');
+    assert.equal(reply.headers.get('access-control-allow-origin'), null);
+  }
+  assert.deepEqual(stats(), { parcels: 1, bytes: 64 });
 });
 
 test('R2: the relay holds a bounded size, count and total, for a bounded time', async t => {
@@ -182,10 +190,10 @@ test('R2: the relay holds a bounded size, count and total, for a bounded time', 
   assert.equal(defaultLimits.lifetimeMs, 24 * 60 * 60 * 1000);
 });
 
-test('R2: a body that grows past the limit without saying so is refused and not held', async t => {
-  const { origin, stats } = await relay(t);
-  // A chunked body has no Content-Length for the relay to refuse up front. Each chunk
-  // waits a turn of the event loop, so the relay in this process gets to read it.
+test('R2: an upload must say its length, and counts against the limits while it arrives', async t => {
+  const limits = { parcels: 2, bytes: 1000, lifetimeMs: 60_000 };
+  const { origin, stats, arriving, port } = await relay(t, { limits });
+  // A chunked body has no Content-Length: refused, however long it is.
   const chunked = total => {
     let sent = 0;
     return new ReadableStream({
@@ -201,22 +209,50 @@ test('R2: a body that grows past the limit without saying so is refused and not 
   const send = total => fetch(origin + '/v1/parcel', {
     method: 'PUT', headers: { Authorization: `Bearer ${accessToken(newSecret())}` }, body: chunked(total), duplex: 'half',
   }).then(response => response.status, () => 'closed');
-  // A little too long: read to its end, dropped, and answered.
-  assert.equal(await send(maxSealedBytes + 1), 413);
-  // Far too long: the relay stops reading and cuts the connection.
-  assert.equal(await send(3 * maxSealedBytes), 'closed');
+  assert.equal(await send(100), 411);
+  assert.equal(await send(3 * maxSealedBytes), 'closed', 'far too long: the connection is cut');
   assert.deepEqual(stats(), { parcels: 0, bytes: 0 });
-  // And a body of exactly the limit is held.
-  assert.equal(await send(maxSealedBytes), 201);
-  assert.deepEqual(stats(), { parcels: 1, bytes: maxSealedBytes });
+
+  // An upload that declares 600 bytes and then stalls holds its room.
+  const { connect } = await import('node:net');
+  const stalled = connect(port, '127.0.0.1');
+  await once(stalled, 'connect');
+  t.after(() => stalled.destroy());
+  stalled.write(`PUT /v1/parcel HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${accessToken(newSecret())}\r\nContent-Length: 600\r\n\r\n${'x'.repeat(100)}`);
+  for (let tries = 0; arriving().uploads === 0 && tries < 200; tries += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(arriving(), { uploads: 1, bytes: 600 });
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(401))).status, 507, 'the bytes still arriving count');
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(400))).status, 201);
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(40))).status, 507, 'and so does the upload itself');
+  // When the stalled sender goes away, its room is free again.
+  stalled.destroy();
+  for (let tries = 0; arriving().uploads !== 0 && tries < 200; tries += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(arriving(), { uploads: 0, bytes: 0 });
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(40))).status, 201);
+  assert.deepEqual(stats(), { parcels: 2, bytes: 440 });
 });
 
-test('R2: the relay imports only Node built-ins, so it cannot open a ledger', () => {
+test('R2: a parcel expires on an idle relay, with no request to prompt it', async t => {
+  const { origin, stats } = await relay(t, { limits: { parcels: 2, bytes: 1000, lifetimeMs: 150 } });
+  await sendSealed(origin, newSecret(), sealedBytes(64));
+  assert.deepEqual(stats(), { parcels: 1, bytes: 64 });
+  for (let tries = 0; stats().parcels !== 0 && tries < 100; tries += 1) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(stats(), { parcels: 0, bytes: 0 });
+});
+
+test('R2: the relay imports only Node built-ins, so it cannot open a ledger', async () => {
   const source = readFileSync(new URL('../src/relay.mjs', import.meta.url), 'utf8');
-  const imports = [...source.matchAll(/\bimport\b[^;]*?from\s+'([^']+)'|\bimport\(\s*'([^']+)'\s*\)|\brequire\(\s*'([^']+)'\s*\)/gu)]
-    .map(match => match[1] ?? match[2] ?? match[3]);
-  assert.deepEqual(imports.sort(), ['node:crypto', 'node:http']);
-  assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|node:fs|node:sqlite|process\.env/u);
+  // Every module specifier, in either kind of quotes: import and export from, a bare
+  // import, a dynamic import and require.
+  const specifiers = [...source.matchAll(/\b(?:from|import|require)\s*\(?\s*(['"`])([^'"`]+)\1/gu)].map(match => match[2]);
+  assert.deepEqual(specifiers.sort(), ['node:crypto', 'node:http']);
+  assert.doesNotMatch(source, /\bimport\s*\(|\brequire\b|getBuiltinModule|node:fs|node:sqlite|process\.(?:env|binding|dlopen)/u);
+  // And as loaded: the relay in a fresh process brings in no ledger module and no database.
+  const { execFileSync } = await import('node:child_process');
+  const loaded = execFileSync(process.execPath, ['--input-type=module', '-e',
+    "import './src/relay.mjs'; console.log(JSON.stringify(process.moduleLoadList.filter(name => name.includes('sqlite'))));"],
+  { encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(loaded.trim().split('\n').at(-1)), []);
 });
 
 test('R2: the client reports a relay that is absent, or is not one, in fixed words', async t => {
@@ -228,28 +264,81 @@ test('R2: the client reports a relay that is absent, or is not one, in fixed wor
   await assert.rejects(checkRelay(dead), { message: 'Cannot reach the relay. Check the address and that the relay is running.' });
   assert.equal(await deleteSealed(dead, newSecret()), false);
 
-  // Something else answers on the address: here, a relay of another version.
+  // Something else answers on the address: a relay of another version, with an endless
+  // health answer; a parcel too long to be one; and redirects to a second listener.
   const { createServer } = await import('node:http');
+  let elsewhere = 0;
+  const second = createServer((request, response) => {
+    elsewhere += 1;
+    response.end('{}');
+  });
+  second.listen(0, '127.0.0.1');
+  await once(second, 'listening');
+  let mode = 'version';
   const other = createServer((request, response) => {
-    if (request.url === '/v1/health') return response.end(JSON.stringify({ relay: relayName, version: 2 }));
-    if (request.method === 'GET') {
-      response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-      return response.end(Buffer.alloc(maxSealedBytes + 1, 1));
+    if (mode === 'redirect') {
+      response.writeHead(307, { Location: `http://127.0.0.1:${second.address().port}${request.url}` });
+      return response.end();
     }
-    response.writeHead(302, { Location: 'http://127.0.0.1:9/elsewhere' });
-    return response.end();
+    if (request.url === '/v1/health' && mode === 'version') return response.end(JSON.stringify({ relay: relayName, version: 2 }));
+    if (request.url === '/v1/health') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      const more = () => {
+        if (!response.destroyed && response.write(' '.repeat(65536))) setImmediate(more);
+        else if (!response.destroyed) response.once('drain', more);
+      };
+      return more();
+    }
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    return response.end(Buffer.alloc(maxSealedBytes + 1, 1));
   });
   other.listen(0, '127.0.0.1');
   await once(other, 'listening');
-  t.after(() => new Promise(resolve => {
-    other.closeAllConnections();
-    other.close(resolve);
-  }));
+  t.after(() => Promise.all([other, second].map(server => new Promise(resolve => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }))));
   const origin = `http://127.0.0.1:${other.address().port}`;
-  await assert.rejects(checkRelay(origin), { message: 'That address does not answer as a Context Ledger relay.' });
+  const notRelay = { message: 'That address does not answer as a Context Ledger relay.' };
+  await assert.rejects(checkRelay(origin), notRelay);
+  // An endless health answer is read for its first kilobyte and no further.
+  mode = 'endless';
+  const before = process.memoryUsage().arrayBuffers;
+  await assert.rejects(checkRelay(origin), notRelay);
+  assert.ok(process.memoryUsage().arrayBuffers - before < 32 * 1024 * 1024);
   await assert.rejects(fetchSealed(origin, newSecret()), { message: 'The relay sent more than a parcel can hold. Nothing was stored.' });
-  // A redirect is never followed, so the token goes nowhere else.
-  await assert.rejects(sendSealed(origin, newSecret(), sealedBytes(64)), { message: 'Cannot reach the relay. Check the address and that the relay is running.' });
+  // A redirect is never followed, so no token and no parcel go anywhere else.
+  mode = 'redirect';
+  const unreachable = { message: 'Cannot reach the relay. Check the address and that the relay is running.' };
+  await assert.rejects(checkRelay(origin), unreachable);
+  await assert.rejects(sendSealed(origin, newSecret(), sealedBytes(64)), unreachable);
+  await assert.rejects(fetchSealed(origin, newSecret()), unreachable);
+  assert.equal(await deleteSealed(origin, newSecret()), false);
+  assert.equal(elsewhere, 0);
+});
+
+test('R2: a parcel whose upload was stored but not confirmed is deleted again', async t => {
+  // A front that passes requests to a real relay, and drops the answer to a PUT.
+  const real = await relay(t);
+  const { createServer, request: httpRequest } = await import('node:http');
+  const front = createServer((request, response) => {
+    const forward = httpRequest(real.origin + request.url, { method: request.method, headers: request.headers }, answer => {
+      if (request.method === 'PUT') return answer.resume().on('end', () => response.destroy());
+      response.writeHead(answer.statusCode, answer.headers);
+      return answer.pipe(response);
+    });
+    request.pipe(forward);
+  });
+  front.listen(0, '127.0.0.1');
+  await once(front, 'listening');
+  t.after(() => new Promise(resolve => {
+    front.closeAllConnections();
+    front.close(resolve);
+  }));
+  const secret = newSecret();
+  await assert.rejects(sendSealed(`http://127.0.0.1:${front.address().port}`, secret, sealedBytes(64)),
+    { message: 'Cannot reach the relay. Check the address and that the relay is running.' });
+  assert.deepEqual(real.stats(), { parcels: 0, bytes: 0 });
 });
 
 // ---- The commands, with a relay process and two ledgers ----
@@ -327,7 +416,7 @@ test('R2: share --relay and receive --from carry a graph between two ledgers, an
     `Parcel sent to the relay at ${origin}`,
     `Graph: ${a.graph.id}`,
     'It carries the 2 lines the graph cites, of 3 in the session.',
-    'Give this code to the other person over a channel you trust. It opens the parcel once, within 24 hours.',
+    'Give this code to the other person over a channel you trust. Anyone who has it can read the parcel, so keep it secret.',
     'On the other machine, run: ledger receive --from <code>',
   ]);
   assert.match(code, new RegExp(`^${origin.replaceAll('.', '\\.')}/#[A-Za-z0-9_-]{43}$`, 'u'));

@@ -36,9 +36,11 @@ const bearer = /^Bearer ([A-Za-z0-9_-]{43})$/u;
 const problems = {
   400: 'A sealed parcel is expected as the request body.',
   401: 'A relay access token is required.',
+  403: 'The relay does not answer web pages.',
   404: 'Nothing here.',
   405: 'Method not allowed.',
   409: 'This box already holds a parcel.',
+  411: 'Say how long the parcel is (Content-Length).',
   413: 'The parcel is too large for the relay.',
   507: 'The relay is full.',
 };
@@ -96,6 +98,10 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
   // SHA-256 of the access token, in hex, to { sealed, expires }.
   const boxes = new Map();
   let held = 0;
+  // Uploads still arriving count against both limits, so many slow senders cannot make
+  // the relay hold more in memory than it says it holds.
+  let arriving = 0;
+  let arrivingBytes = 0;
   const drop = id => {
     const box = boxes.get(id);
     if (!box) return false;
@@ -133,25 +139,42 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
     }
     if (request.method !== 'PUT') return refuse(response, 405, { Allow: 'GET, PUT, DELETE' });
 
-    // What is already known to be refused is not kept while it arrives.
-    const declared = Number(request.headers['content-length']);
-    const early = boxes.has(id) ? 409
-      : declared > maxSealedBytes ? 413
-        : boxes.size >= limits.parcels || held + (declared || 0) > limits.bytes ? 507 : 0;
-    const sealed = await readBody(request, early ? 0 : maxSealedBytes);
-    if (early) return refuse(response, early);
-    if (sealed === null) return refuse(response, 413);
+    // The length must be declared, so room is set aside before a byte is kept. What is
+    // already known to be refused is not kept while it arrives.
+    const length = request.headers['content-length'];
+    const declared = /^(?:0|[1-9][0-9]{0,15})$/u.test(length ?? '') ? Number(length) : NaN;
+    const early = Number.isNaN(declared) ? 411
+      : boxes.has(id) ? 409
+        : declared > maxSealedBytes ? 413
+          : boxes.size + arriving >= limits.parcels || held + arrivingBytes + declared > limits.bytes ? 507 : 0;
+    if (early) {
+      await readBody(request, 0);
+      return refuse(response, early);
+    }
+    arriving += 1;
+    arrivingBytes += declared;
+    let sealed;
+    try {
+      sealed = await readBody(request, declared);
+    } finally {
+      arriving -= 1;
+      arrivingBytes -= declared;
+    }
+    if (sealed === null || sealed.length !== declared) return refuse(response, 400);
     if (sealed.length < minSealedBytes) return refuse(response, 400);
     // Checked again: other requests ran while this body arrived.
     sweep();
     if (boxes.has(id)) return refuse(response, 409);
-    if (boxes.size >= limits.parcels || held + sealed.length > limits.bytes) return refuse(response, 507);
+    if (boxes.size + arriving >= limits.parcels || held + arrivingBytes + sealed.length > limits.bytes) return refuse(response, 507);
     boxes.set(id, { sealed, expires: now() + limits.lifetimeMs });
     held += sealed.length;
     return send(response, 201, { stored: true, expiresInSeconds: Math.floor(limits.lifetimeMs / 1000) });
   }
 
   const server = createServer((request, response) => {
+    // A browser names the page a request comes from. The relay is for the ledger's own
+    // commands, so a page gets nothing, whatever name it reached the relay by.
+    if (request.headers.origin !== undefined) return refuse(response, 403);
     let path;
     try {
       path = new URL(request.url, 'http://relay.invalid').pathname;
@@ -168,10 +191,18 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
       response.destroy();
     });
   });
-  // A sender that stalls cannot hold a connection open for long.
+  // A sender that stalls cannot hold a connection open for long, and neither can a
+  // reader that never reads: a socket with no traffic either way for a minute is closed.
+  // One request per connection, so answers cannot queue up behind an unread one.
   server.headersTimeout = 10_000;
-  server.requestTimeout = 60_000;
+  server.requestTimeout = 120_000;
   server.keepAliveTimeout = 5_000;
+  server.maxRequestsPerSocket = 1;
   server.maxConnections = 64;
-  return { server, stats: () => ({ parcels: boxes.size, bytes: held }) };
+  server.setTimeout(60_000, socket => socket.destroy());
+  // Parcels expire on an idle relay too, not only when the next request arrives.
+  const sweeper = setInterval(sweep, Math.max(1, Math.min(60_000, limits.lifetimeMs)));
+  sweeper.unref();
+  server.on('close', () => clearInterval(sweeper));
+  return { server, stats: () => ({ parcels: boxes.size, bytes: held }), arriving: () => ({ uploads: arriving, bytes: arrivingBytes }) };
 }

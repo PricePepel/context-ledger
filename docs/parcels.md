@@ -48,8 +48,8 @@ The parcel is stored exactly as a parcel file is, and the relay's copy is delete
 
 **What to know before using one.**
 
-- **The code is the key.** Anyone who has it and can reach the relay can read the parcel until it is received or expires. It appears in your shell history and, while the command runs, in the process list.
-- **Anyone who can reach the relay can use it,** to leave sealed parcels of their own up to its limits (64 parcels, 128 MiB). It has no accounts. Run it on a network you trust, and stop it when you are done.
+- **The code is the key, and it is not one-time.** Anyone who has it and can reach the relay can read the parcel until it is received or expires, and the receiver is not told. Someone who copied the sealed bytes from the relay or from an `http` connection can open them later if the code ever leaks. So keep the code secret for good. It appears in your shell history and, while the command runs, in the process list.
+- **Anyone who can reach the relay can use it,** to leave sealed parcels of their own up to its limits (64 parcels, 128 MiB, uploads in progress included). It has no accounts. It refuses web pages, so a page in a browser on the same machine cannot fill it. Run it on a network you trust, and stop it when you are done.
 - **Over plain `http`,** someone who can watch the network sees the sealed bytes and the token. They cannot read or change the parcel. They can delete it, or fill the relay, which stops a delivery. Put the relay behind an `https` address to prevent that.
 - **A parcel the receiving ledger refuses stays on the relay,** so you can fix the cause (for example receive the graph it links to) and run `receive --from` again.
 
