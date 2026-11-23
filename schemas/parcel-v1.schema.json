@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Context Ledger parcel v1",
+  "description": "One graph with the transcript lines it cites, written by `ledger share` on one machine and stored by `ledger receive` on another. The graph packet is checked separately, as a published graph is.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "project",
+    "session",
+    "artifacts",
+    "graph",
+    "redacted"
+  ],
+  "properties": {
+    "format": {
+      "const": "context-ledger-parcel"
+    },
+    "version": {
+      "const": 1
+    },
+    "project": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "The project slug the graph's session is in. The receiver stores the session in a project of the same slug."
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provider",
+        "source",
+        "messages"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/hash"
+        },
+        "provider": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "The transcript's file name, after the secret scanner."
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "description": "The messages the graph cites, in transcript order, after the secret scanner. No other message of the session is here.",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 10000,
+      "description": "The artifacts a version 3 graph cites. The receiver registers them in the parcel's project.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "repo",
+          "ref"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "commit",
+              "pr",
+              "file"
+            ]
+          },
+          "repo": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "packet"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/hash",
+          "description": "The graph's ID on the sender's machine. The receiver computes it again from the packet and refuses a parcel where they differ."
+        },
+        "packet": {
+          "type": "object"
+        }
+      }
+    },
+    "redacted": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "How many possible secrets the scanner replaced with markers."
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "agentPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "line",
+        "role",
+        "text"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^(?:u:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|h:[0-9a-f]{32}|l:[1-9][0-9]{0,15})$"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "agent"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "$ref": "#/$defs/agentPath"
+        },
+        "recipient": {
+          "$ref": "#/$defs/agentPath"
+        }
+      },
+      "description": "One cited message. An agent turn (role agent) also has author and recipient; no other role has them."
+    }
+  }
+}

@@ -12,6 +12,7 @@ import { mountReviews, nodeHashes } from './reviews.mjs';
 import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
+import { byLine } from './parcel.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
 
 export { ConflictError, InputError };
@@ -23,7 +24,16 @@ const secureDeleteModes = ['OFF', 'ON', 'FAST'];
 const deleteJournalModes = new Set(['delete', 'truncate', 'memory', 'off']);
 
 // A summary names its project by slug; project IDs stay inside the database.
-const summaryColumns = 's.id, s.provider, s.source, s.title, s.message_count AS messageCount, p.slug AS project';
+// Card R1: excerpts is 1 for a session received in a parcel; summaryRow() turns that into
+// excerpts: true and leaves the field out of every other summary.
+const summaryColumns = 's.id, s.provider, s.source, s.title, s.message_count AS messageCount, p.slug AS project, '
+  + 'EXISTS (SELECT 1 FROM session_excerpts e WHERE e.session_id = s.id) AS excerpts';
+function summaryRow(row) {
+  if (!row) return row;
+  if (row.excerpts) row.excerpts = true;
+  else delete row.excerpts;
+  return row;
+}
 const sessionRows = 'sessions s LEFT JOIN projects p ON p.id = s.project_id';
 const projectPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 // A record UUID as Claude Code writes it. Anything else gets a line-hash key.
@@ -336,6 +346,8 @@ function sessionFilter(query, provider, project) {
 
 const whereClause = conditions => (conditions.length ? `WHERE ${conditions.join(' AND ')}` : '');
 
+const searchTextFor = (title, messages) => [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
+
 function titleFor(messages) {
   const first = messages.find(message => message.role === 'user') ?? messages[0];
   // The first 120 code points with runs of white space as one space, read only as far as
@@ -483,7 +495,17 @@ function storeOn(database) {
     .map(({ role, text, line }) => ({ role, text, line })));
   const deleteRows = database.prepare('DELETE FROM messages WHERE session_id = ?');
   const refreshSession = database.prepare('UPDATE sessions SET message_count = ?, messages = ?, search_text = ? WHERE id = ?');
-  const getSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
+  const selectSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
+  const getSummary = { get: id => summaryRow(selectSummary.get(id)) };
+  // Card R1 (ADR-19): the mark of a session that holds only received excerpts.
+  const markExcerpts = database.prepare(`
+    INSERT INTO session_excerpts (session_id, received_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT (session_id) DO NOTHING
+  `);
+  const unmarkExcerpts = database.prepare('DELETE FROM session_excerpts WHERE session_id = ?');
+  const completeSession = database.prepare(`
+    UPDATE sessions SET provider = ?, source = ?, title = ?, message_count = ?, messages = ?, search_text = ? WHERE id = ?
+  `);
   const selectMessages = database.prepare('SELECT role, text_json, line, key, author_json, recipient_json FROM messages WHERE session_id = ? ORDER BY seq');
   // Plain objects, as the JSON column gave. The text is a JSON string literal, because
   // node:sqlite cuts a string at a NUL when reading and replaces lone surrogates when
@@ -571,9 +593,47 @@ function storeOn(database) {
     }
   }
 
+  const excerptsMismatch = 'This ledger holds excerpts received from another machine under this transcript\'s ID, '
+    + 'and the file\'s lines do not match them. Nothing was changed.';
+
+  /**
+   * Card R1 (ADR-19): the full transcript of a session that so far held only excerpts
+   * received in a parcel. The whole session replaces them in one transaction; a line the
+   * excerpts had keeps its key, so the graphs that cite it hold, and the mark is removed.
+   * A file whose lines do not match the excerpts (line and role) is refused. Returns the
+   * session's summary, or undefined when it is no longer an excerpt session.
+   */
+  function completeExcerpts(id, provider, name, messages, title, searchText) {
+    database.exec('BEGIN IMMEDIATE');
+    let pending = true;
+    try {
+      if (!getSummary.get(id)?.excerpts) return undefined;
+      const old = readMessages(id);
+      const atLine = new Map(messages.map(message => [message.line, message]));
+      if (!old.every(message => atLine.get(message.line)?.role === message.role)) throw new ConflictError(excerptsMismatch);
+      const keyAt = new Map(old.map(message => [message.line, message.key]));
+      const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+      if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
+      deleteRows.run(id);
+      writeRows(id, merged);
+      completeSession.run(provider, name, title, merged.length, legacyCopy(merged), searchText, id);
+      unmarkExcerpts.run(id);
+      const summary = getSummary.get(id);
+      database.exec('COMMIT');
+      pending = false;
+      return summary;
+    } finally {
+      if (pending) database.exec('ROLLBACK');
+    }
+  }
+
   function save(id, provider, name, project, { messages, skipped }) {
     const title = titleFor(messages);
-    const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
+    const searchText = searchTextFor(title, messages);
+    if (getSummary.get(id)?.excerpts) {
+      const completed = completeExcerpts(id, provider, name, messages, title, searchText);
+      if (completed) return withSkipped(completed, skipped);
+    }
     const stored = getSummary.get(id) && addAgentTurns(id, messages, searchText);
     if (stored) return withSkipped(stored, skipped);
 
@@ -596,8 +656,7 @@ function storeOn(database) {
     return withSkipped(getSummary.get(id), skipped);
   }
 
-
-  return {
+  const store = {
     /**
      * Stores a transcript in a project (the default one when none is named), creating
      * the project on first use. The session ID depends only on the provider and the
@@ -632,7 +691,8 @@ function storeOn(database) {
 
     list(query, provider, project) {
       const { conditions, values } = sessionFilter(query, provider, project);
-      return database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC`).all(...values);
+      return database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC`).all(...values)
+        .map(summaryRow);
     },
 
     /** One page of list(), newest first; next is the last ID shown when more rows match. */
@@ -644,7 +704,7 @@ function storeOn(database) {
         values.push(rowid);
       }
       const rows = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC LIMIT ?`)
-        .all(...values, limit + 1);
+        .all(...values, limit + 1).map(summaryRow);
       const { rows: sessions, next } = page(rows, limit);
       return { sessions, next };
     },
@@ -749,6 +809,75 @@ function storeOn(database) {
 
     getGraph: readGraph,
 
+    /**
+     * Card R1 (ADR-19): store a checked parcel (parcel.mjs) in one transaction, so a
+     * parcel that fails any check changes nothing. The session keeps the sender's ID.
+     * A new session holds the parcel's lines and is marked as excerpts. Excerpts already
+     * here gain the lines they lack. A session imported here from its file stays as it is,
+     * and the parcel's lines must be in it. Then the artifacts are registered in the
+     * parcel's project and the graph is published as any graph is; its ID must be the one
+     * the parcel names. Returns the stored graph, the session's summary and how many
+     * lines were added.
+     */
+    receiveParcel(parcel) {
+      const { project, session, graph } = parcel;
+      const name = sourceName(session.source);
+      const incoming = [...session.messages].sort(byLine);
+      database.exec('BEGIN IMMEDIATE');
+      let pending = true;
+      try {
+        const stored = getSummary.get(session.id);
+        let added = 0;
+        if (!stored) {
+          const title = titleFor(incoming);
+          insertProject.run(randomBytes(16).toString('hex'), project, project);
+          // Rows first, as an import writes them (see save).
+          writeRows(session.id, incoming);
+          insert.run(session.id, session.provider, name, title, incoming.length, legacyCopy(incoming),
+            searchTextFor(title, incoming), projectId.get(project).id);
+          markExcerpts.run(session.id);
+          added = incoming.length;
+        } else {
+          if (stored.provider !== session.provider || stored.project !== project) {
+            throw new ConflictError('This ledger has the parcel\'s session under another provider or project, so the parcel was not stored.');
+          }
+          const old = readMessages(session.id);
+          const byKey = new Map(old.map(message => [message.key, message]));
+          const lines = new Set(old.map(message => message.line));
+          const fresh = [];
+          for (const message of incoming) {
+            const have = byKey.get(message.key);
+            if (have ? have.line !== message.line || have.role !== message.role : lines.has(message.line) || !stored.excerpts) {
+              throw new ConflictError('The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.');
+            }
+            if (!have) fresh.push(message);
+          }
+          if (fresh.length > 0) {
+            const merged = [...old, ...fresh].sort(byLine);
+            const title = titleFor(merged);
+            deleteRows.run(session.id);
+            writeRows(session.id, merged);
+            completeSession.run(stored.provider, stored.source, title, merged.length, legacyCopy(merged), searchTextFor(title, merged), session.id);
+            added = fresh.length;
+          }
+        }
+        for (const artifact of parcel.artifacts) artifacts.insertArtifact({ ...artifact, project });
+        // Said here, in words a person can act on; validateGraph would refuse it too.
+        const linked = Array.isArray(graph.packet.links) ? graph.packet.links.map(link => link?.graph) : [];
+        if (linked.some(id => typeof id === 'string' && !readGraph(id))) {
+          throw new InputError('This graph links to a graph that is not in this ledger. Receive that graph first.');
+        }
+        const published = store.publishGraph(graph.packet);
+        if (published.id !== graph.id) throw new InputError('The parcel\'s graph ID does not match its packet.');
+        const summary = getSummary.get(session.id);
+        database.exec('COMMIT');
+        pending = false;
+        return { graph: published, session: summary, added };
+      } finally {
+        if (pending) database.exec('ROLLBACK');
+      }
+    },
+
     diffGraphs: diff,
 
     ...rooms,
@@ -779,4 +908,5 @@ function storeOn(database) {
       return graphContext(graph, readDetail(graph.packet.sessionId), { lookupGraph: readGraph, question, budget });
     },
   };
+  return store;
 }
