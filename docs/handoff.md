@@ -711,3 +711,11 @@ Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 
 PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
 
 Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.
+
+## Current checkpoint — P3c signing reads the ledger read-only (2026-11-22)
+
+Branch `ruslan/p3c-sign-readonly`. `openStore(path, { readOnly: true })` opens an existing, current-schema ledger on a connection that cannot write, and never creates or migrates it; an older or newer file is refused with `code: 'LEDGER_SCHEMA'` and its version. The CLI helper `openCurrentStore` uses it, so `ledger handoff --sign` and `ledger reviews verify` (with or without `--bundle`) check the schema and read on one connection. This closes the gap P3b's Codex round 1 left open for signing. The store's methods are now built in `storeOn`, and `openStore` closes the connection whenever setup fails.
+
+`tests/fixtures/count-opens.cjs` is a `--require` preload that logs every `DatabaseSync` a process opens; use it to count connections in other CLI tests.
+
+Known and accepted: a ledger someone switched to WAL mode cannot be read read-only from a read-only folder without its `-wal` and `-shm` files.
