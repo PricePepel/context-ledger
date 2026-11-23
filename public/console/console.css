@@ -306,23 +306,38 @@ mark.turn-text, .turn.is-cited .turn-text { background-image: linear-gradient(va
 .swarm-open { margin-left: auto; }
 .swarm-grid {
   list-style: none; margin: 8px 0 10px; padding: 10px;
-  display: grid; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 4px;
+  display: grid; grid-template-columns: repeat(25, minmax(0, 1fr)); gap: 8px 4px;
   background: var(--paper); box-shadow: var(--frame-sm);
 }
 .swarm-grid:empty { display: none; }
-.swarm-grid li, .swarm-legend i { aspect-ratio: 1; min-width: 0; background: var(--grey-tag); box-shadow: inset 0 -3px 0 0 var(--press); }
-.swarm-grid li[data-state="running"], .swarm-legend i[data-state="running"] { background: var(--lime); }
-.swarm-grid li[data-state="running"] { animation: swarm-blink .6s steps(2, jump-none) infinite; }
-.swarm-grid li[data-state="verified"], .swarm-legend i[data-state="verified"] { background: var(--violet); }
-.swarm-grid li[data-state="dropped"], .swarm-legend i[data-state="dropped"] { background: var(--peach); }
-.swarm-grid li[data-state="failed"], .swarm-legend i[data-state="failed"] { background: var(--ink); }
-@keyframes swarm-blink { from { opacity: 1; } to { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) { .swarm-grid li[data-state="running"] { animation: none; } }
+/* Card U8: each agent is the pixel robot from swarm-agent.mjs; its screen shows the state. */
+.swarm-grid li { min-width: 0; display: grid; justify-items: center; }
+.swarm-agent { display: block; width: 100%; max-width: 30px; height: auto; }
+.swarm-agent .sa-body { fill: var(--soft); }
+.swarm-agent .sa-screen { fill: var(--grey-tag); }
+.swarm-agent .sa-eye { fill: var(--ink); }
+.swarm-grid li[data-state="queued"] .swarm-agent, .swarm-grid li[data-state="unknown"] .swarm-agent { opacity: .55; }
+.swarm-grid li[data-state="running"] .sa-screen { fill: var(--lime); }
+.swarm-grid li[data-state="running"] .swarm-agent { animation: swarm-work .5s steps(2, jump-none) infinite; }
+.swarm-grid li[data-state="verified"] .sa-body, .swarm-grid li[data-state="dropped"] .sa-body, .swarm-grid li[data-state="failed"] .sa-body { fill: var(--ink); }
+.swarm-grid li[data-state="verified"] .sa-screen { fill: var(--violet); }
+.swarm-grid li[data-state="verified"] .sa-eye { fill: var(--paper); }
+.swarm-grid li[data-state="dropped"] .sa-screen { fill: var(--peach); }
+.swarm-grid li[data-state="failed"] .sa-screen { fill: var(--ink); }
+.swarm-grid li[data-state="failed"] .sa-eye { fill: var(--peach); }
+.swarm-legend i { aspect-ratio: 1; background: var(--grey-tag); box-shadow: inset 0 -3px 0 0 var(--press); }
+.swarm-legend i[data-state="running"] { background: var(--lime); }
+.swarm-legend i[data-state="verified"] { background: var(--violet); }
+.swarm-legend i[data-state="dropped"] { background: var(--peach); }
+.swarm-legend i[data-state="failed"] { background: var(--ink); }
+@keyframes swarm-work { from { transform: translateY(0); } to { transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .swarm-grid li[data-state="running"] .swarm-agent { animation: none; } }
 .swarm-legend { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--soft); }
 .swarm-legend li { display: flex; align-items: center; gap: 6px; }
 .swarm-legend i { display: inline-block; width: 12px; }
 .swarm-tally { margin: 0 0 8px; font-size: 13px; color: var(--soft); }
 .swarm-tally:empty { display: none; }
+@container (max-width: 900px) { .swarm-grid { grid-template-columns: repeat(20, minmax(0, 1fr)); } }
 @container (max-width: 560px) { .swarm-grid { grid-template-columns: repeat(10, minmax(0, 1fr)); } }
 .swarm-stats { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; }
 .swarm-stats div { min-width: 0; }

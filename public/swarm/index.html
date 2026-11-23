@@ -3,67 +3,116 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#F2F1EE">
   <title>CTM Swarm</title>
+  <link rel="icon" type="image/svg+xml" href="/console/logo.svg">
+  <link rel="stylesheet" href="/console/tokens.css">
+  <link rel="stylesheet" href="/pixel.css">
   <link rel="stylesheet" href="/swarm/swarm.css">
   <script type="module" src="/swarm/swarm.mjs"></script>
 </head>
 <body>
-  <header class="bar">
-    <span class="brand" aria-hidden="true">CTM</span>
-    <h1>Swarm</h1>
-    <span id="mode-badge" class="badge">Checking models…</span>
-    <p id="status" class="status" role="status"></p>
-    <a class="bar-link" href="/console/">Console</a>
-    <a class="bar-link" href="/">Library</a>
-  </header>
+  <div class="sheet">
+    <header class="bar">
+      <img class="brand" src="/console/logo.svg" alt="CTM" width="32" height="32">
+      <h1 class="bar-title">Swarm</h1>
+      <span id="mode-badge" class="tag badge">Checking models…</span>
+      <p id="status" class="status" role="status"></p>
+      <nav class="bar-links" aria-label="Pages">
+        <a class="btn bar-link" href="/console/">Console</a>
+        <a class="btn bar-link" href="/">Library</a>
+      </nav>
+    </header>
 
-  <main class="swarm">
-    <section class="part controls" aria-labelledby="controls-heading">
-      <h2 id="controls-heading">Run a swarm</h2>
-      <p class="hint">Each agent reads one incident report and pulls out four facts. The page checks every quote against its report and combines the answers.</p>
-      <form id="run-form" class="run-form">
-        <label for="agents">Agents
-          <select id="agents" name="agents">
-            <option value="10">10</option>
-            <option value="25">25</option>
-            <option value="50">50</option>
-            <option value="100" selected>100</option>
-            <option value="200">200</option>
-          </select>
-        </label>
-        <fieldset class="modes">
-          <legend>Models</legend>
-          <label><input type="radio" name="mode" id="mode-live" value="live"> Live (local GPU)</label>
-          <label><input type="radio" name="mode" id="mode-simulated" value="simulated"> Simulated</label>
-        </fieldset>
-        <button id="run" type="submit">Run</button>
-      </form>
-      <p id="live-reason" class="hint" hidden></p>
-    </section>
+    <main class="swarm">
+      <section class="part step dataset" aria-labelledby="dataset-heading">
+        <h2 id="dataset-heading"><span class="step-no" aria-hidden="true">1</span>The dataset</h2>
+        <p id="dataset-note" class="hint">Loading the reports…</p>
+        <ol id="dataset-sample" class="reports" aria-label="The first reports"></ol>
+      </section>
 
-    <section class="part stats" aria-labelledby="stats-heading">
-      <h2 id="stats-heading" class="visually-hidden">Numbers</h2>
-      <dl id="stats" class="stat-grid"></dl>
-    </section>
+      <section class="part step task" aria-labelledby="task-heading">
+        <h2 id="task-heading"><span class="step-no" aria-hidden="true">2</span>The task</h2>
+        <p class="hint">Every agent gets one report and these same instructions. It must answer with four facts, and one of them is the sentence that proves the others.</p>
+        <ul class="facts-list" aria-label="The four facts">
+          <li><span class="tag lilac">service</span>which service went down</li>
+          <li><span class="tag lilac">cause</span>one of four kinds of cause</li>
+          <li><span class="tag lilac">downtime</span>how many minutes</li>
+          <li><span class="tag">quote</span>the exact sentence that says so</li>
+        </ul>
+        <details class="instructions">
+          <summary>Read the instructions the agents share</summary>
+          <pre id="task-text" class="task-text"></pre>
+        </details>
+      </section>
 
-    <section class="part grid-part" aria-labelledby="grid-heading">
-      <div class="part-head">
-        <h2 id="grid-heading">Agents</h2>
-        <ul id="legend" class="legend" aria-label="Models"></ul>
-      </div>
-      <div id="grid" class="grid" role="list"></div>
-      <p class="hint">Click an agent to see its report and answer.</p>
-    </section>
+      <section class="part step controls" aria-labelledby="controls-heading">
+        <h2 id="controls-heading"><span class="step-no" aria-hidden="true">3</span>Run a swarm</h2>
+        <p class="hint">Each agent reads one incident report and pulls out four facts. The page checks every quote against its report and combines the answers.</p>
+        <form id="run-form" class="run-form">
+          <label for="agents">Agents
+            <select id="agents" name="agents">
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+          <fieldset class="modes">
+            <legend>Models</legend>
+            <label><input type="radio" name="mode" id="mode-live" value="live"> Live (local GPU)</label>
+            <label><input type="radio" name="mode" id="mode-simulated" value="simulated"> Simulated</label>
+          </fieldset>
+          <button id="run" class="btn solid" type="submit">Run</button>
+        </form>
+        <p id="live-reason" class="hint" hidden></p>
+        <p id="runs-on" class="runs-on"></p>
+      </section>
 
-    <section class="part answer" aria-labelledby="answer-heading">
-      <h2 id="answer-heading">Combined answer</h2>
-      <div id="answer"><p class="hint">Run the swarm to see the answer.</p></div>
-    </section>
+      <section class="part stats" aria-labelledby="stats-heading">
+        <h2 id="stats-heading" class="visually-hidden">Numbers</h2>
+        <dl id="stats" class="stat-grid"></dl>
+      </section>
 
-    <section class="part detail" aria-labelledby="detail-heading">
-      <h2 id="detail-heading">Agent</h2>
-      <div id="detail"><p class="hint">Pick an agent.</p></div>
-    </section>
-  </main>
+      <section class="part step grid-part" aria-labelledby="grid-heading">
+        <div class="part-head">
+          <h2 id="grid-heading"><span class="step-no" aria-hidden="true">4</span>The agents</h2>
+          <ul id="legend" class="legend" aria-label="Models"></ul>
+        </div>
+        <ul class="state-key" aria-hidden="true">
+          <li><i data-state="queued"></i>queued</li>
+          <li><i data-state="running"></i>working</li>
+          <li><i data-state="done"></i>answer checked</li>
+          <li><i data-state="unverified"></i>quote not found, left out</li>
+          <li><i data-state="failed"></i>failed</li>
+        </ul>
+        <div id="grid" class="grid" role="list"></div>
+        <p id="tally" class="hint tally" role="status"></p>
+        <p class="hint">Click an agent to see its report and answer.</p>
+      </section>
+
+      <section class="part detail" aria-labelledby="detail-heading">
+        <h2 id="detail-heading">Agent</h2>
+        <div id="detail"><p class="hint">Pick an agent.</p></div>
+      </section>
+
+      <section class="part step check" aria-labelledby="check-heading">
+        <h2 id="check-heading"><span class="step-no" aria-hidden="true">5</span>The check</h2>
+        <p class="hint">No answer counts until it is checked. The check is a rule in the ledger, not another model, so it cannot be talked round.</p>
+        <ol class="check-rules">
+          <li><b>The quote is real.</b> The sentence the agent gives must be in its report, word for word, and state the downtime.</li>
+          <li><b>The facts are scored.</b> Service, cause and minutes are compared with what the generator wrote into the report, and the page counts how many match.</li>
+          <li><b>No proof, no vote.</b> An answer whose quote is not found is left out of the combined answer.</li>
+        </ol>
+        <dl id="check-counts" class="check-counts"></dl>
+      </section>
+
+      <section class="part step answer" aria-labelledby="answer-heading">
+        <h2 id="answer-heading"><span class="step-no" aria-hidden="true">6</span>Combined answer</h2>
+        <div id="answer"><p class="hint">Run the swarm to see the answer.</p></div>
+      </section>
+    </main>
+  </div>
 </body>
 </html>

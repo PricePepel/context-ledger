@@ -171,3 +171,31 @@ test('I3 review: an agent path with a bidi control is shown escaped', async ({ p
   await upload(page, 'codex', 'pyxis-codex.jsonl', transcript);
   await expect(page.getByText('Agent /root/\\u202eevil to /root', { exact: true })).toBeVisible();
 });
+
+// Card U8: the library takes the console's pixel look; nothing about how it works changes.
+test('U8: the library loads the console fonts, sits in the framed sheet and links to the other pages', async ({ page }) => {
+  const hosts = new Set();
+  page.on('request', item => hosts.add(new URL(item.url()).host));
+  await page.goto('/');
+  const look = await page.evaluate(async () => {
+    await document.fonts.ready;
+    return {
+      heading: getComputedStyle(document.querySelector('h1')).fontFamily,
+      body: getComputedStyle(document.body).fontFamily,
+      loaded: [...document.fonts].filter(font => font.status === 'loaded').map(font => font.family.replaceAll('"', '')).sort(),
+      frame: getComputedStyle(document.querySelector('.shell')).boxShadow !== 'none',
+      button: getComputedStyle(document.querySelector('#import-form .primary')).borderRadius,
+    };
+  });
+  expect(look.heading).toContain('Jersey 15');
+  expect(look.body).toContain('Inter Tight');
+  expect(look.loaded).toEqual(expect.arrayContaining(['Inter Tight', 'Jersey 15']));
+  expect(look.frame).toBe(true);
+  expect(look.button).toBe('0px');
+  await expect(page.getByRole('link', { name: 'Console' })).toHaveAttribute('href', '/console/');
+  await expect(page.getByRole('link', { name: 'Swarm' })).toHaveAttribute('href', '/swarm/');
+  expect([...hosts]).toEqual([new URL(page.url()).host]);
+  // On a phone the framed sheet still has no sideways scroll.
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
