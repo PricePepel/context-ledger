@@ -63,3 +63,33 @@ test('U7 review: only an object with agents and a known state is a run the room 
     assert.equal(isRunSnapshot(bad), false, JSON.stringify(bad));
   }
 });
+
+// Card U8: the pixel robot the console's swarm room and the swarm page both draw.
+test('U8: the robot is a fixed grid of whole pixels with three kinds of part', async () => {
+  const { AGENT_GRID, swarmAgentPixels } = await import('../public/console/swarm-agent.mjs');
+  const pixels = swarmAgentPixels();
+  assert.deepEqual(pixels, swarmAgentPixels(), 'the same every time');
+  for (const [x, y, width, height, part] of pixels) {
+    for (const value of [x, y, width, height]) assert.ok(Number.isInteger(value) && value >= 0, String(value));
+    assert.ok(width > 0 && height > 0);
+    assert.ok(x + width <= AGENT_GRID.width && y + height <= AGENT_GRID.height, 'inside the grid');
+    assert.ok(['body', 'screen', 'eye'].includes(part), part);
+  }
+  assert.equal(pixels.filter(pixel => pixel[4] === 'screen').length, 1);
+  assert.equal(pixels.filter(pixel => pixel[4] === 'eye').length, 2);
+});
+
+test('U8: the robot is drawn with class names only, no fill, style or text from outside', async () => {
+  const { swarmAgentSvg } = await import('../public/console/swarm-agent.mjs');
+  const made = [];
+  const doc = { createElementNS: (ns, name) => { const node = { ns, name, attrs: {}, children: [], setAttribute(key, value) { this.attrs[key] = value; }, append(child) { this.children.push(child); } }; made.push(node); return node; } };
+  const svg = swarmAgentSvg(doc);
+  assert.equal(svg.name, 'svg');
+  assert.equal(svg.attrs['aria-hidden'], 'true');
+  assert.equal(svg.children.length, 11);
+  for (const node of made) {
+    assert.equal(node.ns, 'http://www.w3.org/2000/svg');
+    assert.ok(!('style' in node.attrs) && !('fill' in node.attrs), 'colours come from the stylesheet');
+  }
+  assert.ok(svg.children.every(rect => /^sa-(body|screen|eye)$/u.test(rect.attrs.class)));
+});

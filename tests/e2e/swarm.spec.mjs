@@ -165,3 +165,68 @@ test('U7 review: Run stays off until the server says which mode it offers, then 
   expect(posts).toEqual([{ agents: 100, mode: 'live' }]);
   await expect(runButton).toBeEnabled();
 });
+
+// Card U8: the swarm page tells the swarm's story in the console's pixel look.
+test('U8: the swarm page shows the dataset and the task before a run, and pixel robots after', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const hosts = new Set();
+  page.on('request', item => hosts.add(new URL(item.url()).host));
+  await page.goto('/swarm/');
+  // 1. The dataset, as text, before anything runs.
+  await expect(page.locator('#dataset-note')).toContainText('100 incident reports');
+  await expect(page.locator('#dataset-note')).toContainText('synthetic');
+  await expect(page.locator('#dataset-sample li')).toHaveCount(3);
+  await expect(page.locator('#dataset-sample li').first()).toContainText('Incident 1,');
+  await page.locator('#agents').selectOption('25');
+  await expect(page.locator('#dataset-note')).toContainText('25 incident reports');
+  await page.locator('#agents').selectOption('100');
+  // 2. The task every agent shares.
+  await page.getByText('Read the instructions the agents share').click();
+  await expect(page.locator('#task-text')).toContainText('You read one incident report and extract four facts.');
+  await expect(page.locator('#runs-on')).toContainText('A simulated run has no model server');
+  // The story is in the order a person would ask: data, task, run, agents, check, what it runs on, answer.
+  const steps = await page.locator('main .step > h2, main .step > .part-head > h2').evaluateAll(headings => headings.map(heading => heading.textContent.trim()));
+  expect(steps).toEqual(['1The dataset', '2The task', '3Run a swarm', '4The agents', '5The check', '6What it runs on', '7Combined answer']);
+  // The pale swatches of the colour key have an outline, so they read on the white sheet.
+  expect(await page.locator('.state-key i').first().evaluate(swatch => getComputedStyle(swatch).boxShadow)).not.toBe('none');
+  // The console's look: its fonts and its framed sheet, all from this machine.
+  const look = await page.evaluate(async () => {
+    await document.fonts.ready;
+    return {
+      title: getComputedStyle(document.querySelector('.bar-title')).fontFamily,
+      loaded: [...document.fonts].filter(font => font.status === 'loaded').map(font => font.family.replaceAll('"', '')).sort(),
+      frame: getComputedStyle(document.querySelector('.sheet')).boxShadow !== 'none',
+    };
+  });
+  expect(look.title).toContain('Jersey 15');
+  expect(look.loaded).toEqual(expect.arrayContaining(['Inter Tight', 'Jersey 15', 'Silkscreen']));
+  expect(look.frame).toBe(true);
+
+  // 4 and 5. Robots, their states in words, and the check's counts.
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(page.locator('.tile svg.swarm-agent')).toHaveCount(100);
+  await expect(page.locator('body')).toHaveAttribute('data-run-state', 'done', { timeout: 30_000 });
+  const verified = await page.locator('.tile[data-verified="true"]').count();
+  await expect(page.locator('#tally')).toHaveText(`${verified} checked, 0 working, 0 queued, ${100 - verified} left out, 0 failed.`);
+  await expect(page.locator('#check-counts')).toContainText('Quote found');
+  await expect(page.locator('#check-counts div').first().locator('dd')).toHaveText(String(verified));
+  expect(await page.locator('.tile svg [style], .tile svg [fill]').count()).toBe(0);
+  // Each robot is a real button inside a list item: its role, name and pressed state are announced,
+  // and the keyboard opens its report.
+  await expect(page.locator('#grid > li > button.tile')).toHaveCount(100);
+  const first = page.getByRole('button', { name: /^Agent 1, (answer checked|quote not found, left out)$/u });
+  await expect(first).toHaveAttribute('aria-pressed', 'false');
+  await first.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#detail h3')).toHaveText('Agent 1');
+  await expect(page.getByRole('button', { name: /^Agent 1, / })).toHaveAttribute('aria-pressed', 'true');
+  expect([...hosts]).toEqual([new URL(page.url()).host]);
+});
+
+test('U8: the console\'s swarm room draws the same pixel robots', async ({ page }) => {
+  await page.goto('/console/');
+  await page.locator('#swarm-run').click();
+  await expect(page.locator('#swarm-grid li svg.swarm-agent')).toHaveCount(100);
+  await expect(page.locator('#swarm')).toHaveAttribute('data-run-state', 'done', { timeout: 30_000 });
+  expect(await page.locator('#swarm-grid svg [style], #swarm-grid svg [fill]').count()).toBe(0);
+});

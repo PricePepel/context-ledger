@@ -4992,3 +4992,45 @@ A read-only Codex review found four medium and three low issues, all fixed with 
 7. *(low)* On a narrow screen the grid uses ten columns, the state counts are also written in words under the grid, and a long model name wraps.
 
 Test gaps it named are closed: the recorded demo asserts zero API requests and a hidden room; the run test seeds a real graph node and checks the counts against the run's snapshot; the console's own lost-run recovery has a test.
+
+## U8 — One pixel style: library and swarm page (defined 2026-11-23, before the code)
+
+The console has Ali's pixel look (card U6); the library and the swarm page still have their first styles, so the demo looks like three products. U8 gives both the console's look and makes the swarm page explain itself in the order a person would ask: what is the data, what is the task, who does it, who checks it, what does it run on, what came out.
+
+### What is tested and the expected result
+
+1. **One look.** The library (`/`) and the swarm page (`/swarm/`) load the brand tokens and the three local fonts the console uses, sit on the same dotted page in a framed sheet, and use the same pixel buttons and tags. Nothing is fetched from another host.
+2. **The library works as before.** Every library, room, review, delete, hand-off and auth journey passes unchanged: same text, same roles, same IDs. Only the look changes. On a phone the page has no sideways scroll.
+3. **The swarm page tells the story, in order.**
+   - *Dataset:* before any run, the page shows how many reports there are, that they are synthetic, and the first three reports as text (`GET /api/swarm/task`, which returns the report texts only, never the generator's truth).
+   - *Task:* the instructions every agent shares, as text, with the four facts an answer must hold.
+   - *Agents:* one pixel robot per agent, with its state in its colour and in words; working robots move unless the person asked for reduced motion.
+   - *Check:* how an answer is checked (the quote must be in the report and state the downtime; the facts are compared with the generator), said as a rule of the ledger and not as a model, with the verified, left-out and failed counts.
+   - *Runs on:* the model, the server and how many agents run at once, or "Simulated" with no measured numbers.
+   - *Answer:* the combined answer beside the truth, as today.
+4. **Honest numbers and safe text, as before.** A simulated run shows no measured speed-up, and every report, model and error string is set with `textContent`.
+5. **The console's swarm room shows the same pixel robots.**
+
+Synthetic data only.
+
+### Acceptance for the code
+
+- `node:test`: `GET /api/swarm/task` returns the sample and the instructions and no truth; the pixel robot's drawing is a fixed grid with no script or style attribute; route and CSP checks pass with the new files.
+- Playwright: the existing library, room, review and swarm journeys pass unchanged; new checks for the swarm page's dataset and task before a run and the robots after one, and for the library's fonts and frame.
+- The full suites pass, and Codex reviews the change.
+
+## U9 — Terminal welcome (defined 2026-11-23, before the code)
+
+Installing and starting the ledger prints plain lines. U9 gives a person at a terminal a short welcome in the product's look, and changes nothing for scripts.
+
+### What is tested and the expected result
+
+1. **At a terminal:** `context-ledger start` draws the CTM pixel mark in the brand colours, then shows its steps (database opened, listening, sign-in link) one after another; `context-ledger install` shows each agent it connects as a step with a tick or a cross.
+2. **Not at a terminal:** when output is piped, or `NO_COLOR` is set, or `TERM` is `dumb`, the output is exactly the plain lines of today: no colour codes, no cursor movement, no delay. Scripts that wait for "listening at" keep working.
+3. **Safe:** the welcome prints only fixed text and values the ledger made (port, link). Anything else printed to the terminal still goes through the existing escaping. The animation never delays the server starting to listen.
+4. **Short:** the whole welcome takes under 1.5 seconds, and `CONTEXT_LEDGER_NO_BANNER=1` turns it off.
+
+### Acceptance for the code
+
+- `node:test` for the pure frame builder (plain mode has no escape codes; colour mode only uses SGR colour codes and its own fixed cursor moves; the mark is a fixed grid), and for `start` run with piped output giving today's exact lines.
+- The full suites pass, and Codex reviews the change.

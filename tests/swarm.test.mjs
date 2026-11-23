@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { baselineSeed, createSwarm, median, metricsView, parseMetrics, swarmUrls } from '../src/swarm.mjs';
+import { baselineSeed, createSwarm, median, metricsView, parseMetrics, swarmSeed, swarmUrls } from '../src/swarm.mjs';
 import { causes, combine, incidents, isCorrect, isVerified, parseAnswer, systemPrompt } from '../src/swarm-task.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -440,7 +440,13 @@ test('the swarm routes need the token, check the origin and serve snapshots', as
   assert.equal(run.agents.length, 12);
   assert.equal((await fetch(`${origin}/api/swarm/runs/${'0'.repeat(64)}`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${origin}/api/swarm/runs/${id}`)).status, 401);
-  for (const path of ['/swarm/', '/swarm/swarm.mjs', '/swarm/swarm.css']) assert.equal((await fetch(origin + path)).status, 200, path);
+  for (const path of ['/swarm/', '/swarm/swarm.mjs', '/swarm/swarm.css', '/pixel.css', '/console/swarm-agent.mjs']) assert.equal((await fetch(origin + path)).status, 200, path);
+  // Card U8: the task the page shows before a run needs the token like every other route.
+  assert.equal((await fetch(`${origin}/api/swarm/task`)).status, 401);
+  const task = await (await fetch(`${origin}/api/swarm/task`, { headers: auth })).json();
+  assert.equal(task.sample.length, 3);
+  assert.equal(task.sample[0].text, run.agents[0].report, 'the sample is what agent 1 read');
+  assert.equal((await fetch(`${origin}/api/swarm/task`, { method: 'POST', headers: { ...auth, Origin: origin } })).status, 404);
   assert.equal((await fetch(`${origin}/swarm/other.mjs`)).status, 401, 'only the listed files are open');
 });
 
@@ -459,4 +465,17 @@ test('a server started with a non-local model URL refuses to start', async t => 
   const code = await new Promise(resolve => child.once('exit', resolve));
   assert.equal(code, 1);
   assert.match(errors, /SWARM_URLS must hold/u);
+});
+
+// Card U8: what the swarm page shows before a run.
+test('U8: the task holds the first reports as text and the shared instructions, never the truth', () => {
+  const task = createSwarm({ env: {} }).task();
+  assert.equal(task.seed, swarmSeed);
+  assert.equal(task.synthetic, true);
+  assert.deepEqual(task.sample, incidents(3, swarmSeed).map(({ id, text }) => ({ id, text })));
+  assert.equal(task.instructions, systemPrompt);
+  assert.deepEqual(task.facts, ['service', 'cause', 'downtimeMinutes', 'quote']);
+  // No truth object and no cause label: the cause is the task, so the page must not hand it over.
+  assert.ok(task.sample.every(report => Object.keys(report).join() === 'id,text'));
+  assert.doesNotMatch(JSON.stringify(task.sample), /"truth"|"cause"/u);
 });

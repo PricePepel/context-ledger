@@ -135,7 +135,7 @@ test('the server request table answers every probe as before', async t => {
   };
 
   // Static files: GET only, exact paths only.
-  for (const [path, type, start] of [['/', 'text/html', '<!doctype html>'], ['/app.js', 'text/javascript', ''], ['/styles.css', 'text/css', '']]) {
+  for (const [path, type, start] of [['/', 'text/html', '<!doctype html>'], ['/app.js', 'text/javascript', ''], ['/styles.css', 'text/css', ''], ['/pixel.css', 'text/css', '']]) {
     const response = await expect(`GET ${path}`, state.get(path), 200);
     assert.equal(response.headers['content-type'], `${type}; charset=utf-8`);
     assert.ok(response.body.toLowerCase().startsWith(start), path);

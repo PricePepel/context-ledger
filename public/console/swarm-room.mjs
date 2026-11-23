@@ -3,6 +3,8 @@
 // and shows one pixel agent per swarm agent, coloured by state. It never computes a
 // speed-up of its own: it shows the server's, and only for a live run. Every string from a
 // model or a report is set with textContent.
+import { swarmAgentSvg } from './swarm-agent.mjs';
+
 export const pollMs = 250;
 const maxPollFailures = 20;
 export const defaultAgents = 100;
@@ -102,7 +104,7 @@ export function createSwarmRoom(root, { api = defaultApi, agents = defaultAgents
     root.dataset.runState = summary.state;
     const list = snapshot.agents;
     if (tiles.length !== list.length) {
-      tiles = list.map(() => document.createElement('li'));
+      tiles = list.map(() => { const tile = document.createElement('li'); tile.append(swarmAgentSvg()); return tile; });
       grid.replaceChildren(...tiles);
     }
     list.forEach((agent, index) => {

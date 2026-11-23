@@ -14,6 +14,8 @@ const staticFiles = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.js', ['app.js', 'text/javascript']],
   ['/styles.css', ['styles.css', 'text/css']],
+  // Card U8: the pixel look the library and the swarm page share with the console.
+  ['/pixel.css', ['pixel.css', 'text/css']],
   // The console (card U1): a fixed list, so no other path under /console/ is served.
   ['/console', ['console/index.html', 'text/html']],
   ['/console/', ['console/index.html', 'text/html']],
@@ -22,7 +24,7 @@ const staticFiles = new Map([
   ['/console/tokens.css', ['../docs/brand/tokens.css', 'text/css']],
   // Card U4b: the header logo and favicon, the CTM mark from ctm-ai.uz.
   ['/console/logo.svg', ['../docs/brand/ctm-logo.svg', 'image/svg+xml']],
-  ...['console.mjs', 'office.mjs', 'office-furniture.mjs', 'sprites.mjs', 'agent-marks.mjs', 'ctm-band.mjs', 'panels.mjs', 'review.mjs', 'swarm-room.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
+  ...['console.mjs', 'office.mjs', 'office-furniture.mjs', 'sprites.mjs', 'agent-marks.mjs', 'ctm-band.mjs', 'panels.mjs', 'review.mjs', 'swarm-room.mjs', 'swarm-agent.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
   // Card U6: the console's three OFL fonts, local so no request leaves the loopback host.
@@ -323,6 +325,7 @@ const routes = [
     return latentTeam(input, { latentUrl: latentUrl() });
   } },
   { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'GET', path: '/api/swarm/task', handler: () => swarm.task() },
   { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Starting a swarm run');
     return { run: swarm.start(input) };
