@@ -56,6 +56,12 @@ test('the demo plays from empty to finished, and one click shows the proof', asy
   await expect(page.locator('.office-agent[data-sprite="codex"]')).toHaveCount(1);
   expect(await page.locator('.office-agent[data-sprite="claude"] .oa-sprite rect').count()).toBeGreaterThan(5);
   expect(await page.locator('.office-agent [style]').count()).toBe(0);
+  // Card U4b: the furnished office and the logo.
+  await expect(page.locator('.office-room')).toHaveCount(2);
+  await expect(page.locator('.of-desk')).toHaveCount(12);
+  await expect(page.locator('.office-standing .office-agent[data-state="waiting"]')).toHaveCount(1);
+  expect(await page.locator('header img.brand').evaluate(img => img.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/console/logo.svg');
   await page.screenshot({ path: `${shotsDir}/03-finished.png`, fullPage: true });
 
   // Keyboard: focus the node and press Enter; focus stays on the node.
@@ -241,4 +247,85 @@ test('on a phone the parts stack with no sideways scroll', async ({ page }) => {
   expect(evidence.y).toBeGreaterThan(brain.y + brain.height - 1);
   await expect(page.locator('.flash-line')).toHaveCount(0);
   if (process.env.CONSOLE_SHOTS_DIR) await page.screenshot({ path: `${shotsDir}/05-phone.png`, fullPage: true });
+});
+
+test('card U4b: working agents sit at a lit desk, waiting ones stand beside it, idle ones go to the lounge', async ({ page }) => {
+  await mkdir(shotsDir, { recursive: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const writes = watchRequests(page);
+  await page.goto('/console/?demo&autoplay=0');
+  await expect(page.locator('body')).toHaveAttribute('data-demo', 'ready');
+  // Drive a second office with every state and every role (synthetic labels only).
+  const placed = await page.evaluate(async () => {
+    const { createOffice } = await import('/console/office.mjs');
+    const { seatAt, besideDesk, loungeSpot } = await import('/console/office-furniture.mjs');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.id = 'office-states';
+    document.querySelector('.office').appendChild(svg);
+    const office = createOffice(svg);
+    const agents = [
+      ['planner', 'working'], ['builder', 'working'], ['reviewer', 'waiting'], ['tests', 'working'], ['docs', 'idle'], ['scout', 'idle'],
+    ].flatMap(([label, state], i) => ['claude', 'codex'].map(provider => ({ key: `${provider}-${i}`, provider, label, state })));
+    office.update(agents);
+    const at = node => node.style.getPropertyValue('transform');
+    const px = ([x, y]) => `translate(${x}px, ${y}px)`;
+    const agent = key => svg.querySelector(`.office-agent[data-key="${key}"]`);
+    return {
+      working: at(agent('claude-0')) === px(seatAt(0)) && agent('claude-0').parentNode.classList.contains('office-seated'),
+      waiting: at(agent('codex-2')) === px(besideDesk(2)) && agent('codex-2').parentNode.classList.contains('office-standing'),
+      idle: at(agent('claude-4')) === px(loungeSpot(0)) && at(agent('claude-5')) === px(loungeSpot(1)),
+      lit: [...svg.querySelectorAll('.office-room-claude .of-desk')].map(desk => desk.classList.contains('is-lit')),
+      roles: [0, 1, 2, 3, 4, 5].map(i => agent(`codex-${i}`).dataset.role),
+      states: [0, 1, 2, 3, 4, 5].map(i => agent(`claude-${i}`).dataset.state),
+      stateWords: [...svg.querySelectorAll('.office-room-claude .oa-state')].map(node => node.textContent).sort(),
+      labels: agent('codex-2').getAttribute('aria-label'),
+      styled: svg.querySelectorAll('.office-agent [style]').length,
+    };
+  });
+  expect(placed.working).toBe(true);
+  expect(placed.waiting).toBe(true);
+  expect(placed.idle).toBe(true);
+  expect(placed.lit).toEqual([true, true, false, true, false, false]);
+  expect(placed.roles).toEqual(['planner', 'builder', 'reviewer', 'tester', 'writer', 'scout']);
+  expect(placed.states).toEqual(['working', 'working', 'waiting', 'working', 'idle', 'idle']);
+  expect(placed.stateWords).toEqual(['idle', 'idle', 'waiting', 'working', 'working', 'working']);
+  expect(placed.labels).toBe('reviewer, Codex, waiting');
+  expect(placed.styled).toBe(0);
+  await expect(page.locator('#office-states .is-new')).toHaveCount(0);
+  await page.locator('#office-states').scrollIntoViewIfNeeded();
+  await page.locator('#office-states').screenshot({ path: `${shotsDir}/07-office-states.png` });
+  // update() over time (review of U4b): desks stay put, a state change walks to the new spot,
+  // and more than six agents in a room show a "+n" chip.
+  const later = await page.evaluate(async () => {
+    const { seatAt, loungeSpot } = await import('/console/office-furniture.mjs');
+    const svg = document.getElementById('office-states');
+    const { createOffice } = await import('/console/office.mjs');
+    const office = createOffice(svg);
+    const agent = key => svg.querySelector(`.office-agent[data-key="${key}"]`);
+    const px = ([x, y]) => `translate(${x}px, ${y}px)`;
+    office.update([0, 1, 2, 3].map(i => ({ key: `c${i}`, provider: 'claude', label: `agent ${i}`, state: 'working' })));
+    await new Promise(resolve => setTimeout(resolve, 800));
+    office.update([
+      { key: 'c0', provider: 'claude', label: 'agent 0', state: 'idle' },
+      { key: 'c3', provider: 'claude', label: 'agent 3', state: 'working' },
+      ...Array.from({ length: 8 }, (_, i) => ({ key: `x${i}`, provider: 'codex', label: `codex ${i}`, state: 'working' })),
+    ]);
+    const walking = agent('c0').getAnimations().some(animation => animation.transitionProperty === 'transform');
+    return {
+      stayed: agent('c3').style.getPropertyValue('transform') === px(seatAt(3)),
+      lounge: agent('c0').style.getPropertyValue('transform') === px(loungeSpot(0)) && agent('c0').parentNode.classList.contains('office-standing'),
+      walking,
+      lit: [...svg.querySelectorAll('.office-room-claude .of-desk')].map(desk => desk.classList.contains('is-lit')),
+      gone: svg.querySelectorAll('.office-agent[data-key="c1"], .office-agent[data-key="c2"]').length,
+      tags: svg.querySelectorAll('.office-room-claude .oa-tag').length,
+      codex: svg.querySelectorAll('.office-room-codex .office-agent').length,
+      more: svg.querySelector('.office-room-codex .office-more.is-shown text')?.textContent,
+      hatless: agent('x0').dataset.role,
+    };
+  });
+  expect(later).toEqual({
+    stayed: true, lounge: true, walking: true, lit: [false, false, false, true, false, false],
+    gone: 0, tags: 2, codex: 6, more: '+2', hatless: 'none',
+  });
+  expect(writes()).toEqual([]);
 });

@@ -3796,3 +3796,39 @@ Terms: a **review** is one person's decision on one node of one graph snapshot, 
   - (low) An open edit form lost its text when the same node was picked again. Showing the same snapshot again is now a no-op, and there is a test for it.
   - (low) Live mode loaded `review.mjs` although none of it ran. It is now imported only in demo mode, and the live test checks that no request for it is made.
 - **Suites (macOS, Node 26):** node 253/254 (the one failure is the same `tests/mcp.test.mjs` test that fails on `ruslan/console-v0`); Playwright 26/26; `npm run -s test:graph` passes.
+
+## U4b — Furnished pixel office (defined 2026-11-19, before implementation)
+
+Source: Ali's lookbook pick "pixel sprites at desks" (`refs/virtual-office.png`) and his preview choices of 2026-11-19: a top-down office with the mood of his isometric reference (navy walls, windows with daylight, lamps, a whiteboard), his blue cloud Codex character, and a hat or prop per agent role. Stacked on U4 (#51). Synthetic data only: the demo recording and the live e2e graphs.
+
+| Eval | Expected |
+| --- | --- |
+| Furnished rooms | Each room (Claude Code: wood floor; Codex: tiled floor) has 6 desks with a monitor and chair, bookshelves, plants, windows with daylight on the floor, ceiling lamps, a whiteboard, a kitchen with a water cooler, and a lounge with a sofa and rug. |
+| Seated when working | A working agent sits at its desk: its feet are at `seatAt(desk)`, it is drawn behind the desk, and that desk's monitor is lit. A unit test checks the position for each desk. |
+| Beside when waiting | A waiting agent stands at `besideDesk(desk)` with a "?" bubble, and its monitor is off. A unit test checks the position stays inside the work area and clear of the next desk. |
+| Lounge when idle | An idle agent stands at `loungeSpot(n)` in the lounge, in the order the idle agents arrive. A unit test checks every lounge spot is inside the lounge. |
+| Same API and limits | `createOffice(svg)` still returns `{update, anchor, pulse}`; at most 6 agents per room, picked by the same `RANK` order, with a "+n" chip for the rest. The state word and the `aria-label` stay on each agent. |
+| Roles | An agent label with a role word (plan, build, test, review, doc, scout and close words) gets that role's accessory: notebook, hard hat, flask, glasses (a magnifier on Codex), pencil or safari hat. No match, no accessory. Unit tests cover the words and that `constructor` or `__proto__` match nothing harmful. |
+| CSP-safe and read-only | Built with `createElementNS`, positions through CSSOM `style.setProperty`, text through `textContent`, no style attribute in the office, every request a GET. |
+| Colours | `office.css` takes every colour from `--ctm-*` tokens; the office materials are new tokens in `docs/brand/tokens.css`. The only literals in `office.css` stay the Claude room's two colours. Every `var()` is defined. |
+| Logo and favicon | The header shows the CTM logo instead of the "CTM" text, and the page has a favicon. Until Ali sends the logo file, both are the Pip SVG, marked as a placeholder. The new static path is on the server's fixed list. |
+| Budget and phone | Added assets stay under 300 KB; at 375 px there is no sideways scroll. |
+| Screenshots | `docs/console/` gets the empty, mid-run, finished (`/console/?demo`) and phone views. |
+
+### U4b results (2026-11-19, macOS)
+
+- **Preview approved** by Ali on 2026-11-19 after three rounds: his Codex character, role props, and the mood of his isometric reference on the top-down layout (`docs/console/preview/approved-*.png`).
+- **Furnished rooms, seated, beside and lounge: pass.** Unit tests check every seat, beside-desk spot and lounge spot against the work area and lounge bounds. An e2e test drives every state and role in both rooms, and checks the spots, layers, lit monitors, state words and `aria-label`s. Screenshot `07-office-states.png`.
+- **Same API and limits: pass.** The e2e test checks that desks stay put when others leave, that a seventh and eighth Codex agent show "+2", that removed agents leave no label behind, and that the existing demo, live and pulse tests still pass.
+- **Roles: pass.** Unit tests cover the role words, whole words only, and `constructor` and `__proto__`.
+- **CSP-safe and read-only, colours, budget and phone: pass.** No style attribute inside an agent. Every request is a GET. `office.css` keeps only the two Claude colours. The added assets are about 36 KB. At 375 px there is no sideways scroll.
+- **Logo and favicon: pass, with a placeholder.** `/console/logo.svg` serves Pip byte for byte. The CSP gained `img-src 'self'`, and the pinned header test is updated. A human should check this change.
+- **Independent review** (Claude Sonnet as `code-reviewer`, read-only). It found no high-severity issues, two medium and three low. The fixes:
+  - (medium) An agent jumped instead of walking when it changed layer between desk and lounge. It now moves to the new layer first, then animates. The e2e test checks for a running transform transition and fails on the old code.
+  - (medium) Role words matched inside other words, so "codex" and "claude-code" got a hard hat. Roles now match whole words only, with regression cases in the unit table.
+  - (low) A second `createOffice` on the same SVG left the old `ResizeObserver` running. It is now disconnected.
+  - (low) No test covered `update()` over time. The e2e test above now does.
+- **Suites (macOS, Node 26):**
+  - node: 252/253. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, the known failure on every branch.
+  - Playwright: 22/22.
+  - `npm run -s test:graph` passes.

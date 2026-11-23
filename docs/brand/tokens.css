@@ -37,6 +37,46 @@
   /* Type: Inter Tight where installed, as on the site; the console loads no web fonts. */
   --ctm-font-sans: "Inter Tight", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --ctm-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Office materials (card U4b): the pixel office in the console. Art colours, not text
+   * pairs, so they are the same in the light and dark sets. */
+  --ctm-office-wall: #161b2e;
+  --ctm-office-wall-face: #2b3656;
+  --ctm-office-wood: #b5804f;
+  --ctm-office-wood-line: #93623a;
+  --ctm-office-tile: #d9dce6;
+  --ctm-office-tile-line: #bfc3d1;
+  --ctm-office-check: #e2d9c6;
+  --ctm-office-check-light: #efe9dc;
+  --ctm-office-carpet: #3c4d74;
+  --ctm-office-desk: #9a6238;
+  --ctm-office-desk-edge: #6f4224;
+  --ctm-office-metal: #2b2b33;
+  --ctm-office-screen-off: #444855;
+  --ctm-office-screen-on: #8fe6ff;
+  --ctm-office-chair: #d9c49a;
+  --ctm-office-chair-back: #b9a173;
+  --ctm-office-leaf: #5cae5c;
+  --ctm-office-leaf-dark: #3c8445;
+  --ctm-office-pot: #e4ded4;
+  --ctm-office-shelf: #7c4c2a;
+  --ctm-office-shelf-in: #4f2f1a;
+  --ctm-office-white: #f2f2f5;
+  --ctm-office-steel: #c9cfdc;
+  --ctm-office-steel-dark: #9aa3b8;
+  --ctm-office-sky: #a9d6f5;
+  --ctm-office-trees: #8dbf9a;
+  --ctm-office-sun: #fff3c4;
+  --ctm-office-water: #9fd4f3;
+  --ctm-office-blue: #4fa3c7;
+  --ctm-office-counter: #c9bfae;
+  --ctm-office-counter-top: #e6dfd1;
+  --ctm-office-note-yellow: #ffd84d;
+  --ctm-office-note-pink: #ff9fb7;
+  --ctm-office-note-green: #8fe39a;
+  --ctm-office-note-blue: #8fc9ff;
+  --ctm-office-red: #d6332f;
+  --ctm-office-shadow: rgb(0 0 0 / 0.22);
 }
 
 /* Dark set (site, video). Every variable the light set has for text, fills and

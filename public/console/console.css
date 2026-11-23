@@ -40,14 +40,7 @@ h1, h2, h3, p { margin: 0; }
   border-bottom: 1px solid var(--line);
 }
 
-.brand {
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--ctm-charcoal);
-  color: var(--ctm-lime);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
+.brand { display: block; width: 32px; height: 32px; flex: none; }
 
 .bar h1 { font-size: 18px; }
 

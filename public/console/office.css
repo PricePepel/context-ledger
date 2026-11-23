@@ -1,70 +1,117 @@
-/* CTM Console office. Theme via the custom properties on .office-svg. */
-/* Card U4: brand tokens for the floor and text; each room keeps its sprite's colour. */
+/* CTM Console office (card U4b): a furnished top-down pixel office per agent source.
+   Every colour is a brand token; the office materials are the --ctm-office-* tokens.
+   The only literals are the Claude room's two sprite colours. */
 .office-svg {
-  --office-ink: var(--ctm-text); --office-muted: var(--ctm-text-2); --office-paper: var(--ctm-surface);
-  --office-chip: var(--ctm-charcoal); --office-edge: var(--ctm-line);
-  --office-edge-side: color-mix(in srgb, var(--ctm-line) 80%, var(--ctm-text-2));
-  --office-grid: color-mix(in srgb, var(--ctm-text) 7%, transparent);
-  --office-laptop: var(--ctm-charcoal); --office-desk: color-mix(in srgb, var(--ctm-text-2) 55%, var(--ctm-surface));
-  --claude-accent: #d77757; --claude-ink: #9a4615;
-  --codex-accent: var(--ctm-violet); --codex-ink: var(--ctm-link-hover);
   display: block; width: 100%; height: auto; overflow: visible;
   font-family: var(--ctm-font-sans);
 }
-.office-room-claude { --accent: var(--claude-accent); --accent-ink: var(--claude-ink); }
-.office-room-codex { --accent: var(--codex-accent); --accent-ink: var(--codex-ink); }
-.office-room { --floor: var(--ctm-surface); --wall: color-mix(in srgb, var(--accent) 12%, var(--ctm-paper)); }
+.office-room-claude { --accent: #d77757; --accent-ink: #9a4615; }
+.office-room-codex { --accent: var(--ctm-violet); --accent-ink: var(--ctm-link-hover); }
 
-.office-wall { fill: var(--wall); }
-.office-trim, .office-dot, .oa-logo { fill: var(--accent); }
-.office-floor { fill: var(--floor); }
-.office-edge { fill: var(--office-edge); }
-.office-edge-side { fill: var(--office-edge-side); }
-.office-grid { fill: none; stroke: var(--office-grid); }
-.office-room-name { fill: var(--office-ink); font-size: 13px; font-weight: 650; }
-.office-room-count { fill: var(--office-muted); font-size: 11px; }
-.office-empty { fill: var(--office-muted); font-size: 12px; font-style: italic; opacity: 0.75; }
+/* Room header */
+.office-room-name { fill: var(--ctm-text); font-size: 13px; font-weight: 650; }
+.office-room-count { fill: var(--ctm-text-2); font-size: 11px; }
+.office-empty {
+  fill: var(--ctm-office-white); font-size: 12px; font-style: italic;
+  paint-order: stroke; stroke: var(--ctm-office-wall); stroke-width: 3px; stroke-linejoin: round;
+}
 .office-room.has-agents .office-empty, .office-more { display: none; }
 .office-more.is-shown { display: inline; }
-.office-more rect { fill: var(--office-chip); }
-.office-more text { fill: var(--office-paper); font-size: 11px; font-weight: 650; }
+.office-more rect { fill: var(--ctm-charcoal); }
+.office-more text { fill: var(--ctm-surface); font-size: 11px; font-weight: 650; }
+.office-more.is-pulse rect { stroke: var(--ctm-text-2); stroke-width: 3; }
 
-.oa-shadow { fill: color-mix(in srgb, var(--ctm-text) 12%, transparent); }
-.oa-desk-leg { stroke: var(--office-laptop); stroke-width: 3; stroke-linecap: round; }
-.oa-halo { fill: var(--accent); opacity: 0.25; }
-.oa-laptop { fill: var(--office-laptop); }
-.oa-desk-top { fill: var(--office-desk); }
-.oa-bubble rect, .oa-bubble path { fill: var(--office-paper); stroke: var(--accent-ink); stroke-width: 1.2; }
+/* Building */
+.of-wall { fill: var(--ctm-office-wall); }
+.of-wall-face { fill: color-mix(in srgb, var(--accent) 12%, var(--ctm-office-wall-face)); }
+.of-skirting { fill: color-mix(in srgb, var(--ctm-office-wall-face) 60%, var(--ctm-charcoal)); }
+.of-wood { fill: var(--ctm-office-wood); }
+.of-tile { fill: var(--ctm-office-tile); }
+.of-line { fill: none; stroke-width: 1; }
+.of-plank { stroke: var(--ctm-office-wood-line); }
+.of-tile-line { stroke: var(--ctm-office-tile-line); }
+.of-check { fill: var(--ctm-office-check); }
+.of-check-light { fill: var(--ctm-office-check-light); }
+.of-carpet { fill: color-mix(in srgb, var(--accent) 30%, var(--ctm-office-carpet)); }
+.of-rug { fill: color-mix(in srgb, var(--accent) 45%, var(--ctm-paper)); }
+.of-rug-line { fill: none; stroke: color-mix(in srgb, var(--accent) 60%, var(--ctm-surface)); stroke-width: 1.5; }
+.of-mat { fill: color-mix(in srgb, var(--accent) 40%, var(--ctm-charcoal)); }
+
+/* Light */
+.of-steel { fill: var(--ctm-office-steel); }
+.of-steel-dark { fill: var(--ctm-office-steel-dark); }
+.of-sky { fill: var(--ctm-office-sky); }
+.of-trees { fill: var(--ctm-office-trees); }
+.of-sun { fill: var(--ctm-office-sun); opacity: 0.2; }
+.of-lamp { fill: var(--ctm-office-white); }
+.of-lamp-glow { fill: var(--ctm-office-sun); opacity: 0.14; }
+
+/* Furniture */
+.of-shelf { fill: var(--ctm-office-shelf); }
+.of-shelf-in { fill: var(--ctm-office-shelf-in); }
+.of-b1 { fill: var(--ctm-violet); }
+.of-b2, .of-lime { fill: var(--ctm-lime); }
+.of-b3 { fill: var(--accent); }
+.of-b4, .of-blue { fill: var(--ctm-office-blue); }
+.of-b5 { fill: var(--ctm-paper); }
+.of-accent { fill: var(--accent); }
+.of-leaf { fill: var(--ctm-office-leaf); }
+.of-leaf-dark { fill: var(--ctm-office-leaf-dark); }
+.of-pot { fill: var(--ctm-office-pot); }
+.of-pot-rim { fill: color-mix(in srgb, var(--ctm-office-pot) 80%, var(--ctm-charcoal)); }
+.of-chair { fill: var(--ctm-office-chair); }
+.of-chair-back { fill: var(--ctm-office-chair-back); }
+.of-desk-top { fill: var(--ctm-office-desk); }
+.of-desk-edge { fill: var(--ctm-office-desk-edge); }
+.of-metal { fill: var(--ctm-office-metal); }
+.of-white { fill: var(--ctm-office-white); }
+.of-red { fill: var(--ctm-office-red); }
+.of-water { fill: var(--ctm-office-water); }
+.of-counter { fill: var(--ctm-office-counter); }
+.of-counter-top { fill: var(--ctm-office-counter-top); }
+.of-n1 { fill: var(--ctm-office-note-yellow); }
+.of-n2 { fill: var(--ctm-office-note-pink); }
+.of-n3 { fill: var(--ctm-office-note-green); }
+.of-n4 { fill: var(--ctm-office-note-blue); }
+.of-clock { fill: var(--ctm-office-white); stroke: var(--ctm-office-metal); stroke-width: 1; }
+.of-clock-hand { stroke: var(--ctm-office-metal); stroke-width: 1; }
+.of-sofa { fill: color-mix(in srgb, var(--accent) 70%, var(--ctm-office-shelf-in)); }
+.of-sofa-back { fill: color-mix(in srgb, var(--accent) 55%, var(--ctm-charcoal)); }
+.of-cushion { fill: color-mix(in srgb, var(--accent) 35%, var(--ctm-surface)); }
+.of-screen { fill: var(--ctm-office-screen-off); }
+.of-screen-on, .of-desk.is-lit .of-screen { fill: var(--ctm-office-screen-on); }
+.of-glow { fill: var(--ctm-office-screen-on); opacity: 0; }
+.of-desk.is-lit .of-glow { opacity: 0.35; }
+
+/* Agents */
+.oa-shadow { fill: var(--ctm-office-shadow); }
+.state-working .oa-shadow, .office-agent:not(.state-waiting) .oa-bubble { display: none; }
+.oa-bubble rect, .oa-bubble path { fill: var(--ctm-surface); stroke: var(--accent-ink); stroke-width: 1.2; }
 .oa-q { fill: var(--accent-ink); font-size: 12px; font-weight: 800; }
-.oa-name { fill: var(--office-ink); font-size: 10px; font-weight: 650; }
-.oa-state { fill: var(--office-muted); font-size: 8.5px; }
 .oa-ring { fill: none; stroke: var(--accent); stroke-width: 2.5; opacity: 0; }
-
-.office-agent:not(.state-working) .oa-desk, .office-agent:not(.state-waiting) .oa-bubble { display: none; }
-.state-working .oa-state, .state-waiting .oa-state { fill: var(--accent-ink); font-weight: 650; }
-.state-waiting .oa-state { font-style: italic; }
-.state-idle .oa-body { opacity: 0.45; }
-.state-idle .oa-name { fill: var(--office-muted); }
 .office-agent.is-pulse .oa-ring { opacity: 0.9; }
-.office-more.is-pulse rect { stroke: var(--office-muted); stroke-width: 3; }
+.oa-name, .oa-state { paint-order: stroke; stroke: var(--ctm-surface); stroke-width: 3px; stroke-linejoin: round; }
+.oa-name { fill: var(--ctm-text); font-size: 9.5px; font-weight: 650; }
+.oa-state { fill: var(--accent-ink); font-size: 8.5px; font-weight: 650; }
+.state-waiting .oa-state { font-style: italic; }
+.state-idle .oa-state { fill: var(--ctm-text-2); font-weight: 500; }
 
-.office-svg.is-narrow .office-room-name { font-size: 15px; }
-.office-svg.is-narrow .office-room-count, .office-svg.is-narrow .oa-name { font-size: 12px; }
-.office-svg.is-narrow .oa-state { font-size: 10px; }
+.office-svg.is-narrow .office-room-name { font-size: 16px; }
+.office-svg.is-narrow .office-room-count { font-size: 13px; }
+.office-svg.is-narrow .oa-name { font-size: 12px; }
+.office-svg.is-narrow .oa-state { font-size: 10.5px; }
 
 @media (prefers-reduced-motion: no-preference) {
-  .office-agent { transition: transform 0.45s ease; }
+  .office-agent, .oa-tag { transition: transform 0.45s ease; }
   .oa-fig, .oa-bubble, .oa-ring { transform-box: fill-box; }
   .state-working .oa-fig { animation: oa-bob 0.7s ease-in-out infinite alternate; }
-  .state-working .oa-halo { animation: oa-flicker 1.8s ease-in-out infinite; }
+  .of-desk.is-lit .of-glow { animation: oa-flicker 1.8s ease-in-out infinite; }
   .state-waiting .oa-bubble { transform-origin: 20% 100%; animation: oa-ask 1.6s ease-in-out infinite; }
-  .office-agent.is-new .oa-body { animation: oa-enter 0.45s ease-out both; }
+  .office-agent.is-new .oa-fig { animation: oa-enter 0.45s ease-out both; }
   .office-agent.is-pulse .oa-ring { transform-origin: center; animation: oa-ring 1.2s ease-out both; }
 }
 @keyframes oa-bob { to { transform: translateY(-1.6px); } }
-@keyframes oa-flicker { 50% { opacity: 0.5; } }
+@keyframes oa-flicker { 50% { opacity: 0.2; } }
 @keyframes oa-ask { 50% { transform: scale(1.14); } }
 @keyframes oa-enter { from { opacity: 0; transform: translateY(8px); } }
 @keyframes oa-ring { from { transform: scale(0.6); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
-
-

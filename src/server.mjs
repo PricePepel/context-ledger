@@ -19,7 +19,9 @@ const staticFiles = new Map([
   ...['console.css', 'office.css'].map(name => [`/console/${name}`, [`console/${name}`, 'text/css']]),
   // Card U4: the brand tokens have one source, docs/brand/tokens.css (card U2).
   ['/console/tokens.css', ['../docs/brand/tokens.css', 'text/css']],
-  ...['console.mjs', 'office.mjs', 'sprites.mjs', 'review.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
+  // Card U4b: the header logo and favicon, the CTM mark from ctm-ai.uz.
+  ['/console/logo.svg', ['../docs/brand/ctm-logo.svg', 'image/svg+xml']],
+  ...['console.mjs', 'office.mjs', 'office-furniture.mjs', 'sprites.mjs', 'review.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
 ]);
@@ -305,7 +307,7 @@ function matchRoute(route, pathname) {
 
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');
 
