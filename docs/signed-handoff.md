@@ -36,7 +36,7 @@ Signing does not redact anything. The bundle holds the same Markdown as `npm run
 | File | What it is |
 | --- | --- |
 | `handoff.md` | The hand-off Markdown, byte for byte what `ledger handoff <session-id>` prints. |
-| `manifest.json` | RFC 8785 canonical JSON, with no trailing newline: `format` (`context-ledger-signed-handoff`), `version` (1), `algorithm` (`Ed25519`), `created_at` (UTC, milliseconds), `session`, `public_key` (base64 of the key's SubjectPublicKeyInfo DER bytes) and `files`, which lists the name, byte size and SHA-256 of every content file (today only `handoff.md`). |
+| `manifest.json` | RFC 8785 canonical JSON, with no trailing newline: `format` (`context-ledger-signed-handoff`), `version` (2; bundles signed before P3b are version 1), `algorithm` (`Ed25519`), `created_at` (UTC, milliseconds), `session`, `public_key` (base64 of the key's SubjectPublicKeyInfo DER bytes) and `files`, which lists the name, byte size and SHA-256 of every content file (today only `handoff.md`). Version 2 adds `reviews`: `events` and `head`, the length and head hash of the ledger's review chain when it was signed (0 and 64 zeros when there were no reviews). |
 | `manifest.sig` | The 64-byte raw Ed25519 signature over the exact bytes of `manifest.json`. |
 | `public-key.pem` | The same public key as `public_key`, as PEM, for OpenSSL. |
 
@@ -48,7 +48,19 @@ The fingerprint is the SHA-256 of the public key's SubjectPublicKeyInfo DER byte
 npm run ledger -- verify <folder> --fingerprint "<fingerprint from the sender>"
 ```
 
-It exits 0 only when every check passes: the manifest is canonical JCS in the expected format (version 1 lists exactly one file, `handoff.md`), the signature matches the manifest, the key matches the fingerprint, `public-key.pem` holds exactly the PEM of the manifest key, `handoff.md` has its listed size and hash, and the folder holds only these four regular files (no symlink, subfolder or other file). Otherwise it prints what failed and exits 1. Without `--fingerprint` it still checks everything else, but warns that the key was not checked: anyone can make a bundle that is consistent with a key of their own.
+It exits 0 only when every check passes: the manifest is canonical JCS in the expected format (versions 1 and 2 list exactly one file, `handoff.md`; version 2 also has a well-formed `reviews`), the signature matches the manifest, the key matches the fingerprint, `public-key.pem` holds exactly the PEM of the manifest key, `handoff.md` has its listed size and hash, and the folder holds only these four regular files (no symlink, subfolder or other file). Otherwise it prints what failed and exits 1. Without `--fingerprint` it still checks everything else, but warns that the key was not checked: anyone can make a bundle that is consistent with a key of their own.
+
+On success it also prints the review chain at signing, or says a version 1 bundle records none.
+
+### Checking the review decisions against the bundle
+
+Anyone with the sender's ledger, such as an auditor given a copy later, can check that no review decision recorded before signing was removed or rewritten since:
+
+```sh
+npm run ledger -- reviews verify --bundle <folder> --fingerprint "<fingerprint from the sender>"
+```
+
+It verifies the bundle first, exactly as `verify` does, and trusts the signed head only if that passes. It then checks the ledger's chain and passes when the signed head is in it at the signed position. Decisions added after signing are fine. It fails when events up to the head were removed or rewritten, and for a version 1 bundle. Signing refuses a ledger whose chain is already broken.
 
 What `verify` does not cover:
 
@@ -69,7 +81,7 @@ openssl dgst -sha256 handoff.md
 1. The first command prints the key fingerprint (for example `SHA2-256(stdin)= fd788b7d...`). It must equal the fingerprint the sender gave you, ignoring spaces. If it does not, stop: the bundle was not signed by that sender. If `openssl pkey` prints an error (say `public-key.pem` is missing), most shells still run the second half of the pipe and print the hash of empty input, `e3b0c442...b855`, which never matches a real fingerprint.
 2. The second must print `Signature Verified Successfully`. It proves that `manifest.json` is exactly what the key holder signed.
 3. The third prints the SHA-256 of `handoff.md`. It must equal the `sha256` given for `handoff.md` in the `files` list of `manifest.json`. Do the same for any other file the list names.
-4. Open `manifest.json` in a text editor. Check that `format` is `context-ledger-signed-handoff`, `version` is 1, and `files` lists exactly one entry, `handoff.md`, whose `bytes` matches the file's size. Check that the folder holds exactly four regular files with these exact names (`handoff.md`, `manifest.json`, `manifest.sig`, `public-key.pem`), and no symlink or subfolder. A file that is not listed is not covered by the signature.
+4. Open `manifest.json` in a text editor. Check that `format` is `context-ledger-signed-handoff`, `version` is 1 or 2, and `files` lists exactly one entry, `handoff.md`, whose `bytes` matches the file's size. For version 2, check that `reviews` has exactly `events` and `head`: `events` a whole number from 0 to 9007199254740991 (2^53 - 1), written without a fraction or exponent, and `head` 64 lowercase hex characters, all zeros exactly when `events` is 0; version 1 has no `reviews`. Check that the folder holds exactly four regular files with these exact names (`handoff.md`, `manifest.json`, `manifest.sig`, `public-key.pem`), and no symlink or subfolder. A file that is not listed is not covered by the signature.
 
 All four steps are needed: each command alone proves less than it seems to. Step 2 passes for a bundle re-signed with someone else's key, which only step 1 catches. Step 2 also passes when `handoff.md` was changed, which only step 3 catches.
 
