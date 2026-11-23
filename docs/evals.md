@@ -4482,6 +4482,14 @@ Card P4e on `ruslan/p4e-sign-read-only`, from `main` 8b7083c. The P3b review fou
 | Reads work, writes fail | A read-only store returns a session and its review chain as the normal store does. A write method (import, delete) throws, and the file is unchanged. |
 | Signing uses it | `handoff --sign` opens the ledger only through the read-only store: `src/cli.mjs` has no writable `openStore` call on the signing path, and the separate schema probe is gone. The older-schema and newer-schema refusals keep their fixed messages, and a signed database is byte for byte unchanged. |
 
+### P4e results (2026-11-22)
+
+- **All rows:** pass. `tests/read-only-store.test.mjs` (four tests), and the existing signing tests (`tests/sign.test.mjs`, including the older-schema, newer-schema and unchanged-file case, and `tests/signed-review-head.test.mjs`). The new test file fails on `main`.
+- **Codex review, round 1** (of 73e3f1f): no high finding. Codex confirmed that signing checks the schema and reads the session and review chain through one read-only handle, and found no path that creates, writes or migrates the ledger file.
+  - (medium, documented) On a ledger in WAL journal mode, a read-only open can create the `-wal` and `-shm` side files, and fails in a folder it cannot write. The old probe did the same. The ledger never turns WAL on, and deleting a session refuses a WAL file. A check of the journal mode before opening would be a second read of the file, which reopens a check-then-open window. The ledger's contents are unchanged either way. Documented in `docs/signed-handoff.md` and ADR-18a.
+  - (low, not changed) If a prepared statement fails during setup (a file at the current version with its tables missing), the connection stays open until the process exits. This is older than P4e and affects the writable open too. The CLI exits on the fixed error.
+  - (low, not changed) The one-connection row is checked on the source text of `openCurrentStore`. Node offers no hook to count connections, and the unchanged-file tests check the outcome.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
