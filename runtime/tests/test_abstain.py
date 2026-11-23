@@ -261,8 +261,8 @@ class RunProvenanceTest(unittest.TestCase):
         import argparse
         from latent_team import abstain_eval
         with tempfile.TemporaryDirectory() as folder:
-            for shard, (manifest, rows) in enumerate(shards):
-                with open(os.path.join(folder, f"certify-{shard}-of-2.json"), "w") as handle:
+            for shard, (manifest, rows) in enumerate(shards):   # distinct files even for repeated shards
+                with open(os.path.join(folder, f"certify-{shard}-of-{manifest.get('shards')}.json"), "w") as handle:
                     json.dump(dict(manifest, rows=rows, complete=True), handle)
             out = calibration_dir if calibration_dir is not None else None
             args = argparse.Namespace(out=folder, calibration_dir=out, run=run)
@@ -283,6 +283,27 @@ class RunProvenanceTest(unittest.TestCase):
         self.assertEqual((summary["plan"], summary["certificationQuestions"], summary["scoredQuestions"]),
                          ("today", 200, 150))
         self.assertIn("holdsByReason", summary)
+        self.assertEqual(summary["execution"], "two shards sharing one GPU")
+
+    def test_one_job_is_recorded_as_one_job(self):
+        # w3-run10 ran as one job; its summary said "two shards sharing one GPU" (fixed after it).
+        from latent_team import abstain_eval
+        keys = abstain_eval.work_keys("today")
+        rows = shard_rows(keys)
+        self.assertIn(keys[0], abstain_eval.plan_keys("today", "propose"))
+        rows[0].update(action="hold", reason="report-late", confidence=None, releasedCorrect=False)
+        with tempfile.TemporaryDirectory() as calibration_dir:
+            summary = self.analyse([(self.manifest(0, shards=1), rows)], calibration_dir=calibration_dir)
+            self.assertEqual(summary["execution"], "one job on one GPU")
+            # Review W3-8: a proposal hold is listed, and stays out of eval 11 and the worst case.
+            self.assertEqual(summary["holdsByReason"]["propose"], {"report-late": 1})
+            self.assertEqual(summary["worstCaseForHolds"]["eval11"]["heldCountedWrong"], 0)
+            self.assertEqual(summary["worstCaseForHolds"]["certification"]["heldCountedWrong"], 0)
+            with open(os.path.join(calibration_dir, abstain.artifact_name(abstain_eval.TASK, abstain_eval.MODEL))) as handle:
+                written = json.load(handle)
+        self.assertEqual(written["measuredOn"]["execution"], "one job on one GPU")
+        self.assertIn("run as one job on one GPU", written["about"])
+        self.assertNotIn("shards", written["about"])
 
     def test_shards_of_two_runs_or_no_provenance_are_refused(self):
         from latent_team import abstain_eval

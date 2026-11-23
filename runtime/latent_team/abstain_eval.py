@@ -664,7 +664,7 @@ def part_analyze(args):
              "eval11": worst_case_eval11(scored, worst_threshold)}
     seconds = [r["seconds"] for r in single]
     summary = {
-        "run": meta["run"], "commit": meta["commit"], "execution": "two shards sharing one GPU",
+        "run": meta["run"], "commit": meta["commit"], "execution": execution(meta["shards"]),
         "plan": plan, "threshold": threshold, "certification": chosen, "candidates": len(steps),
         "proposalQuestions": len(proposal), "scoredQuestions": len(scored),
         "certificationQuestions": len(cert), "eval11": result, "worstCaseForHolds": worst,
@@ -672,11 +672,14 @@ def part_analyze(args):
             "certify": round(sum(r["releasedCorrect"] for r in cert) / len(cert), 4),
             "score": round(sum(r["releasedCorrect"] for r in scored) / len(scored), 4)},
         "decisions": {word: sum(r["action"] == word for r in scored) for word in ("release", "hold")},
-        # By reason and part (review W3-4): deadline holds are counted apart, since the two
-        # shards shared one GPU and one request's length can push another past its deadline.
+        # By reason and part (review W3-4): deadline holds are counted apart, since shards that
+        # share one GPU can push each other's requests past their deadlines. The proposal part is
+        # listed for diagnosis only (review W3-8); its holds give no score and so no candidate,
+        # and they never enter eval 11 or the worst case.
         "holdsByReason": {part: {reason: sum(r["action"] == "hold" and r["reason"] == reason for r in rows)
                                  for reason in sorted({r["reason"] for r in rows if r["action"] == "hold"})}
-                          for part, rows in (("certify", cert), ("score", scored), ("fresh", fresh_all))},
+                          for part, rows in (("propose", [r for r in gsm if part_of(r, "propose")]),
+                                             ("certify", cert), ("score", scored), ("fresh", fresh_all))},
         "singleSeconds": {"median": sorted(seconds)[len(seconds) // 2], "mean": round(sum(seconds) / len(seconds), 2)},
     }
     # Eval 12: the same threshold on the fresh set; nothing to transfer when nothing certified.
@@ -747,6 +750,11 @@ def part_analyze(args):
     return finish(args, summary, worst, meta)
 
 
+def execution(shards):
+    """How the certification ran, from its shard count (w3-run10 was one job; earlier runs two)."""
+    return {1: "one job on one GPU", 2: "two shards sharing one GPU"}.get(shards, f"{shards} shards sharing one GPU")
+
+
 def finish(args, summary, worst, meta):
     """Print and write the summary; write the calibration only from the worst case for holds
     (review W3-5), when it is certified and passes eval 11's rule."""
@@ -774,7 +782,7 @@ def finish(args, summary, worst, meta):
                            "certify": [list(x) for x in PLANS[plan]["certify"]],
                            "score": [list(x) for x in PLANS[plan]["score"]],
                            "fittedByW1": list(FITTED_BY_W1),
-                           "requests": "single, through TeamService", "execution": "two shards sharing one GPU",
+                           "requests": "single, through TeamService", "execution": execution(meta["shards"]),
                            "date": time.strftime("%Y-%m-%d")},
             "certification": {"threshold": threshold, "released": chosen["released"], "errors": chosen["errors"],
                               "heldCountedWrong": chosen["heldCountedWrong"],
@@ -787,8 +795,8 @@ def finish(args, summary, worst, meta):
                       f"came from the scores of GSM8K test {describe(plan, 'propose')}, were tested on "
                       f"{describe(plan, 'certify')} at 0.05 / 20 each (Bonferroni over the grid, one-sided "
                       f"Clopper-Pearson) for a 10% error ceiling, and the threshold was scored on {describe(plan, 'score')} "
-                      f"(plan {plan!r}), every held request counted as a released wrong answer (the two "
-                      "certification shards shared one GPU). Void for any other weights, task, policy or service profile "
+                      f"(plan {plan!r}), every held request counted as a released wrong answer (run as "
+                      f"{execution(meta['shards'])}). Void for any other weights, task, policy or service profile "
                       "(it was measured on /latent/team requests with public clearance and no declared secrets)."),
         }
         validate(calibration, TASK, MODEL)

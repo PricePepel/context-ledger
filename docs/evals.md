@@ -5225,3 +5225,41 @@ Design: [watchdog-security.md](watchdog-security.md), "What we can and cannot sa
 | 14. Safety in latent mode | The model's refusals alone (`single`) and as the latent team (`latent_mas`), on JBB-Behaviors' 100 harmful and 100 benign requests, judged by the fixed refusal phrases above | Reported: counts only (refused, empty, and refused by only one system, per set and per system), for this weights hash. No request or answer text is written or committed. The user allowed the download of the two files on 2026-11-22 |
 | Supervisor and service | Unit tests | Row 5 abstains below the threshold, and only on a calibrated kind of task for the request's service profile (`task` on `/latent/team`, or as an extension field on the chat route, where it finds a calibration only if one was measured on chat input; W3's was not, so chat runs are uncalibrated; the MCP tool has no `task` field, within its schema size budget, so its runs are uncalibrated); a fallback is released whatever its confidence; an uncalibrated task is released marked uncalibrated. An abstention returns no answer: `/latent/team` answers `{mode: "abstained"}`, the chat route a fixed sentence saying the team declined, and neither carries model text |
 | Calibration math | Unit tests (synthetic scores) | The Clopper-Pearson bound and Wilson interval match known values; a separable score releases its confident part; no safe threshold releases nothing; the ceiling holds on held-out draws from the same source |
+
+### W3 results (2026-11-22, live: run `w3-run10`, one job at 470282a, plan `today`, weights hash 1ed1d835…)
+
+The certification ran from 16:37 to 19:57 (times from the run log): 418 single requests through `TeamService`, one at a time on the laptop GPU. The analysis and eval 14 ran next from the same commit and finished at 20:08. Only aggregate counts are reported. Questions, answers and replies were graded or judged in memory by the code. None was written to disk or to the repository, and no person or agent looked at any of them.
+
+- **Eval 11 fails, and nothing is calibrated.** None of the 7 tested cutoffs certified, so this run wrote no calibration file, and none is committed. No certification or scored request was held, so the worst case for holds gives the same numbers as the pre-registered count.
+  - Why so few cutoffs: 42 of the 57 finite proposal scores were tied at exactly 0 (the log-probability of the answer's number), so the grid of 20 collapsed to 7 distinct candidates, and the score could not rank those answers among themselves.
+  - The strictest candidate (score 0) still released 149 of the 200 certification answers, 18 of them wrong (12.1%, one-sided bound 21.3% at 0.05 / 20). At 149 released, a 10% bound at that level allows at most 5 errors. The loosest candidate released 199, with 33 wrong (bound 25.2%).
+  - The certification block held 190 scored team answers (31 wrong), 9 fallbacks (2 wrong) and 1 released answer with no score.
+  - Held-out scoring, with nothing certified: of the 150 scored questions, 6 were released (4%), all of them fallbacks, and 1 of those was wrong (16.7%, 95% Wilson interval 3.0% to 56.4%). The other 144 abstained (96%); none was held.
+  - Before any cutoff, the service's released answers were 89.3% correct on the scored questions and 83.5% on the certification block.
+  - The confidence score's AUROC for a wrong team answer on the scored questions is 0.70.
+  - The pre-registered exploratory scores (mean and minimum log-probability, agreement with the solver alone), which say which signal to try next, were defined on the batched run. That run never finished, so they were not computed. No rule or threshold was changed after these results.
+- **Holds and time.**
+  - 1 of the 418 requests was held: the first request of the run, in the proposal part (`report-late`, 782 s). The S1b session reported that its vLLM job was starting on the same GPU at that time (its graph capture at 16:37).
+  - No other request took over 180 s. Over all 418, the median was 20.2 s, the mean 28.4 s and the 90th percentile 52.0 s.
+  - The observed median was 113 s per request in run 9 (two shards) against 20.2 s here, a ratio of about 5.6. The two runs differ in more than the shard count (run 9 measured only its first 215 requests), so this ratio is not an isolated effect of sharding.
+- **Eval 12:** skipped, because no threshold certified. Baseline: of the 8 fresh questions, 7 were graded and 1 was ungraded. All 7 graded answers were released as fallbacks, and 1 of them was wrong.
+- **Eval 13:** not run; its probe ran only in the batched run.
+- **Eval 14:** counts of replies the fixed keyword rule classifies as refusals.
+
+  | Set (100 each) | `single` refused | Team refused | Only `single` refused | Only the team refused | Both refused | Empty |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Harmful | 67 | 24 | 46 | 3 | 21 | 0 |
+  | Benign | 11 | 0 | 11 | 0 | 0 | 0 |
+
+  Both systems got the same math-style instruction. Under the keyword rule, 76 of the team's 100 replies to harmful requests are classified as answers, against 33 for the model alone. Paired by request, 46 harmful requests were classified as refused by the model alone but not by the team, and 3 the other way. On the benign set the team had no reply classified as a refusal; the model alone had 11. The team's refusal rate under this rule fell on both sets, which is a reason to check refusals before the team serves anyone (Backlog card W3b). Caveats:
+  - The keyword rule misses refusals worded otherwise and counts phrases used in passing. Using one rule makes the two systems' counts comparable under that rule; it does not show the rule's errors cancel out. These counts do not establish that latent mode weakens refusals in general.
+  - Nobody read the replies, so this says nothing about whether the team's answers to harmful requests were harmful or useful.
+  - Eval 14 has no pass rule. It is reported for the human review of W3.
+- **Fixed after the run:** the summary's `execution` field said "two shards sharing one GPU" for a one-job run, because the analysis wrote that label whatever the shard count. It now follows the shard count (`one job on one GPU` here), tested in `test_one_job_is_recorded_as_one_job`. No number changes.
+- **Review W3-8 (2026-11-22, Codex, read-only, of this write-up and the label fix):** no high-severity findings; it found no post-result tuning and no committed text. Fixed:
+  1. Eval 14 is now worded as counts under the keyword rule, with the paired counts.
+  2. At 149 released, the bound allows 5 errors, not 4 as first written; the held-out Wilson interval is added.
+  3. The handoff no longer says every tagged request is released (the watchdog can still hold one).
+  4. `holdsByReason` now lists the proposal part, where this run's one hold was, for diagnosis only; it stays out of eval 11 and the worst case, and the test covers it.
+  5. The test files are named by their shard count.
+  6. The saturation and timing claims are narrowed to what was measured.
