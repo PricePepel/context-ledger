@@ -104,7 +104,8 @@ test('graph_list and room_list filter, page newest first and name the parties wi
   assert.deepEqual(Object.keys(all), ['graphs']);
   assert.deepEqual(ids(all.graphs), [g5.id, g4.id, g3.id, g2.id, g1.id]);
   for (const row of all.graphs) {
-    assert.deepEqual(Object.keys(row), ['id', 'sessionId', 'sessionTitle', 'party', 'version', 'createdAt', 'nodes', 'edges', 'links']);
+    // P2a: each row names its session's project.
+    assert.deepEqual(Object.keys(row), ['id', 'sessionId', 'sessionTitle', 'party', 'project', 'version', 'createdAt', 'nodes', 'edges', 'links']);
     assert.match(row.createdAt, iso);
   }
   assert.deepEqual(all.graphs.at(-1), { ...all.graphs.at(-1), sessionId: leo.id, sessionTitle: 'Leo plans the synthetic Vega demo.',
@@ -125,7 +126,7 @@ test('graph_list and room_list filter, page newest first and name the parties wi
   assert.equal((await state.room(g3, g2)).id, r1.id, 'a room opened twice lists once');
   const rooms = await state.call('room_list', {});
   assert.deepEqual(ids(rooms.rooms), [r3.id, r2.id, r1.id]);
-  assert.deepEqual(rooms.rooms[2], { id: r1.id, createdAt: rooms.rooms[2].createdAt, parties: [
+  assert.deepEqual(rooms.rooms[2], { id: r1.id, createdAt: rooms.rooms[2].createdAt, project: 'default', parties: [
     { party: 'ali', graphId: g3.id, sessionId: ali.id }, { party: 'leo', graphId: g2.id, sessionId: leo.id }] });
   assert.match(rooms.rooms[2].createdAt, iso);
   assert.deepEqual(ids((await state.call('room_list', { graphId: g2.id })).rooms), [r3.id, r1.id]);

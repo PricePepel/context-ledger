@@ -85,12 +85,22 @@ async function search() {
   }
 }
 
+// Card I3: a message between two Codex agents shows who sent it to whom.
+// Paths are shown with control and format characters escaped, so they cannot reorder or hide text.
+const pathLabel = path => path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, character => [...Array(character.length).keys()]
+  .map(index => '\\u' + character.charCodeAt(index).toString(16).padStart(4, '0')).join(''));
+
+function speaker(message) {
+  if (message.role === 'agent') return `Agent ${pathLabel(message.author)} to ${pathLabel(message.recipient)}`;
+  return message.role === 'user' ? 'User' : 'Assistant';
+}
+
 function messageRow(message) {
   const item = document.createElement('li');
   const meta = document.createElement('div');
   meta.className = 'message-meta';
   meta.append(
-    textElement('span', message.role === 'user' ? 'User' : 'Assistant'),
+    textElement('span', speaker(message)),
     textElement('span', `Line ${message.line}`, 'line-number'),
   );
   item.append(meta, textElement('p', message.text, 'message-text'));
@@ -263,7 +273,7 @@ function partyColumn(party) {
   return column;
 }
 
-function proposalRow(proposal, parties) {
+function proposalRow(proposal, parties, takesChoices = true) {
   const item = document.createElement('li');
   item.dataset.proposal = proposal.id;
   item.dataset.state = proposal.state;
@@ -275,7 +285,8 @@ function proposalRow(proposal, parties) {
     group.className = 'choice-group';
     const made = proposal.choices[party];
     group.append(textElement('span', `${party}: ${made ?? 'undecided'}`, 'choice-made'));
-    for (const choice of ['confirm', 'reject']) {
+    // Card P2a: a read-only room keeps its recorded choices and offers no buttons.
+    for (const choice of takesChoices ? ['confirm', 'reject'] : []) {
       const button = textElement('button', `${choice === 'confirm' ? 'Confirm' : 'Reject'} as ${party}`, 'choice-button');
       button.type = 'button';
       button.setAttribute('aria-pressed', String(made === choice));
@@ -360,7 +371,12 @@ function renderRoom(room) {
   renderUpdates(room);
   const parties = room.parties.map(party => party.party);
   renderRows(roomParties, room.parties, partyColumn);
-  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties));
+  // A ledger from before P2a sends no takesChoices; its rooms take choices as before.
+  const takesChoices = room.takesChoices !== false;
+  renderRows(roomProposals, room.proposals, proposal => proposalRow(proposal, parties, takesChoices));
+  if (!takesChoices) {
+    roomProposals.prepend(textElement('li', "This room's graphs are not both in one known project, so it takes no choices. Open a room with two graphs from the same project.", 'room-note'));
+  }
   const agreed = room.proposals.filter(proposal => proposal.state === 'agreed');
   renderRows(roomAgreed, agreed, proposal => proposalSentence(proposal, 'li'));
   if (!agreed.length) roomAgreed.append(textElement('li', 'Nothing agreed yet.', 'room-note'));
@@ -450,3 +466,183 @@ roomForm.addEventListener('submit', async (event) => {
 
 const hashRoom = location.hash.match(/^#room=([a-f0-9]{64})$/u)?.[1];
 if (hashRoom) void loadRoom(hashRoom);
+
+// Card P2c (ADR-7c, 7d): a person approves or rejects the nodes of a version 3 graph by
+// their hash. Card P3: or edits one, giving the corrected label; each decision is a review
+// event in the ledger. Every label, citation and name is set with textContent.
+const reviewForm = document.querySelector('#review-form');
+const reviewGraphInput = document.querySelector('#review-graph');
+const reviewName = document.querySelector('#review-name');
+const reviewStatus = document.querySelector('#review-status');
+const reviewNodes = document.querySelector('#review-nodes');
+const reviewSubmit = reviewForm.querySelector('button[type="submit"]');
+const decisionWords = { approve: 'Approved', edit: 'Edited', reject: 'Rejected' };
+const stateOf = { approve: 'agreed', edit: 'edited', reject: 'rejected' };
+// The node whose edit field is open, if any, and what was typed for each node, so a
+// draft survives switching to another node and back.
+let editingNode = null;
+const editDrafts = new Map();
+let reviewGraph = null;
+let reviewing = false;
+
+function citationText(graph, node) {
+  const entry = (graph.citations ?? []).find(citation => citation.id === node.id);
+  const lines = (entry?.lines ?? []).map(line => `L${line}`);
+  const artifacts = (entry?.artifacts ?? []).map(artifact => `${artifact.kind} ${artifact.repo}@${artifact.ref}`);
+  return [...lines, ...artifacts].join(', ') || 'nothing';
+}
+
+function reviewRow(graph, node) {
+  const hash = (graph.nodeHashes ?? []).find(entry => entry.id === node.id)?.sha256;
+  const review = (graph.reviews ?? []).find(entry => entry.nodeId === node.id && entry.nodeSha256 === hash);
+  const item = document.createElement('li');
+  item.dataset.node = node.id;
+  item.dataset.state = stateOf[review?.decision] ?? 'proposed';
+  const detail = [node.kind, node.status, node.to && `to ${node.to}`].filter(Boolean).join(' · ');
+  item.append(textElement('p', detail, 'node-kind'), labelElement(node.label),
+    textElement('p', `Cites ${citationText(graph, node)} · hash ${hash ? hash.slice(0, 12) + '…' : 'none'}`, 'room-note'),
+    textElement('p', review ? `${decisionWords[review.decision]} by ${review.reviewer} (self-asserted)` : 'Not reviewed', 'proposal-state'));
+  if (review?.decision === 'edit') {
+    const edited = textElement('p', 'Corrected label: ', 'edited-label');
+    edited.append(labelElement(review.label));
+    item.append(edited);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'proposal-actions';
+  for (const [decision, word] of [['approve', 'Approve'], ['edit', 'Edit'], ['reject', 'Reject']]) {
+    const button = textElement('button', word, 'choice-button');
+    button.type = 'button';
+    button.dataset.decision = decision;
+    button.setAttribute('aria-pressed', String(review?.decision === decision));
+    button.disabled = reviewing || !hash;
+    button.addEventListener('click', () => {
+      if (decision !== 'edit') return reviewNode(node.id, hash, decision);
+      // A second click on an open editor keeps what was typed.
+      if (editingNode !== node.id) {
+        editingNode = node.id;
+        renderReview(graph);
+      }
+      reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] .edit-label`)?.focus();
+    });
+    actions.append(button);
+  }
+  item.append(actions);
+  if (editingNode === node.id && hash) item.append(editForm(node, hash, review));
+  return item;
+}
+
+// Card P3: the field for a corrected label, filled in with the label as it is now.
+function editForm(node, hash, review) {
+  const form = document.createElement('form');
+  form.className = 'edit-form';
+  const id = `edit-${hash.slice(0, 12)}`;
+  const label = textElement('label', 'Corrected label');
+  label.htmlFor = id;
+  const input = document.createElement('input');
+  input.id = id;
+  input.className = 'edit-label';
+  // No maxLength: it counts UTF-16 units, while labels are limited to 500 code points.
+  input.required = true;
+  input.value = editDrafts.get(node.id) ?? (review?.decision === 'edit' ? review.label : node.label);
+  // Locked while a decision is being saved, so what is shown is what was sent.
+  input.disabled = reviewing;
+  input.addEventListener('input', () => { editDrafts.set(node.id, input.value); });
+  const save = textElement('button', 'Save edit', 'choice-button');
+  save.type = 'submit';
+  save.disabled = reviewing;
+  const cancel = textElement('button', 'Cancel', 'choice-button');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => {
+    editingNode = null;
+    editDrafts.delete(node.id);
+    renderReview(reviewGraph);
+    // Back to the node's Edit button, so a keyboard user keeps their place.
+    reviewNodes.querySelector(`li[data-node="${CSS.escape(node.id)}"] button[data-decision="edit"]`)?.focus();
+  });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!input.value.trim()) {
+      reviewStatus.textContent = 'Type the corrected label first.';
+      input.focus();
+      return;
+    }
+    void reviewNode(node.id, hash, 'edit', input.value);
+  });
+  form.append(label, input, save, cancel);
+  return form;
+}
+
+function renderReview(graph) {
+  reviewGraph = graph;
+  renderRows(reviewNodes, graph.packet.nodes, node => reviewRow(graph, node));
+}
+
+async function loadReview(id) {
+  reviewStatus.textContent = 'Reading the graph…';
+  reviewNodes.replaceChildren();
+  reviewGraph = null;
+  editingNode = null;
+  editDrafts.clear();
+  try {
+    const { graph } = await request(`/api/graphs/${id}`);
+    if (graph.packet.version !== 3) {
+      reviewStatus.textContent = 'Only version 3 graphs are reviewed node by node.';
+      return;
+    }
+    renderReview(graph);
+    reviewStatus.textContent = Array.isArray(graph.nodeHashes)
+      ? `${graph.packet.nodes.length} ${graph.packet.nodes.length === 1 ? 'node' : 'nodes'} of ${graph.packet.party}'s graph.`
+      : 'This graph was stored before node hashes existed. Publish the same packet again to review it.';
+  } catch (error) {
+    reviewStatus.textContent = `Unable to read the graph. ${error.message}`;
+  }
+}
+
+async function reviewNode(nodeId, nodeSha256, decision, label) {
+  if (reviewing || !reviewGraph) return;
+  const reviewer = reviewName.value.trim();
+  if (!reviewer) {
+    reviewStatus.textContent = 'Type your name first.';
+    reviewName.focus();
+    return;
+  }
+  reviewing = true;
+  const graph = reviewGraph;
+  for (const control of reviewNodes.querySelectorAll('button, input')) control.disabled = true;
+  try {
+    const { reviews } = await request(`/api/graphs/${graph.id}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(decision === 'edit' ? { nodeId, nodeSha256, decision, label, reviewer } : { nodeId, nodeSha256, decision, reviewer }),
+    });
+    reviewing = false;
+    if (reviewGraph !== graph) return;
+    if (editingNode === nodeId) editingNode = null;
+    editDrafts.delete(nodeId);
+    renderReview({ ...graph, reviews });
+    reviewStatus.textContent = `${decisionWords[decision]} ${nodeId}.`;
+  } catch (error) {
+    reviewing = false;
+    if (reviewGraph === graph) {
+      renderReview(graph);
+      reviewStatus.textContent = `Review failed. ${error.message}`;
+    }
+  } finally {
+    reviewing = false;
+    // P2c review: another graph opened while this decision was in flight was drawn with
+    // its buttons disabled; draw it again, enabled.
+    if (reviewGraph && reviewGraph !== graph) renderReview(reviewGraph);
+  }
+  // Focus goes back only to the graph this decision was for (P2c review round 2).
+  if (reviewGraph?.id === graph.id) reviewNodes.querySelector(`li[data-node="${CSS.escape(nodeId)}"] button[data-decision="${decision}"]`)?.focus();
+}
+
+reviewForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  reviewSubmit.disabled = true;
+  try {
+    await loadReview(reviewGraphInput.value.trim());
+  } finally {
+    reviewSubmit.disabled = false;
+  }
+});

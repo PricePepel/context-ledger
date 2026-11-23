@@ -151,7 +151,8 @@ test('live mode shows a graph published while the page is open, and renders its 
   });
   expect(published.ok(), await published.text()).toBe(true);
 
-  const node = page.locator('.node', { hasText: 'onerror' });
+  // By its own party, not its label: other e2e tests publish nodes with the same hostile label into the shared database.
+  const node = page.locator(`.node[data-key="party:${party}/hostile"]`);
   await expect(node).toBeVisible({ timeout: 3500 });
   await expect(page.locator(`.office-agent[aria-label*="${party}"]`)).toHaveAttribute('data-state', 'working');
   await expect(page.locator('#activity')).toContainText(`${party} (Codex) published: 1 new`);
@@ -463,4 +464,30 @@ test('card U6: live activity shows today\'s earlier hand-offs as soon as the pag
   expect(Math.abs(shown - Date.parse(graph.createdAt ?? new Date().toISOString())), 'the entry carries the publish time, not the page load time').toBeLessThan(5_000);
   const times = await page.locator('#activity li').evaluateAll(items => items.map(item => Number(item.dataset.at)));
   expect(times, 'newest first').toEqual([...times].sort((a, b) => b - a));
+});
+
+test('P2b review: a version 3 node that cites only an artifact shows it in the evidence panel, as text', async ({ page, request, baseURL }) => {
+  const writes = watchRequests(page);
+  await page.goto('/console/');
+  await expect(page.locator('#status')).toContainText('Live: watching the ledger');
+  const marker = `console-artifact-${Date.now()}`;
+  const imported = await request.post('/api/import', { headers: { origin: baseURL },
+    data: { provider: 'claude', source: `${marker}.jsonl`, transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: `Write the ${marker} doc.` } }) } });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  const { session } = await imported.json();
+  const registered = await request.post('/api/artifacts', { headers: { origin: baseURL },
+    data: { kind: 'file', repo: 'orbit-labs/adapter', ref: `docs/<b>${marker}</b>.md` } });
+  expect(registered.ok(), await registered.text()).toBe(true);
+  const { artifact } = await registered.json();
+  const party = `art-${Date.now().toString(36)}`;
+  const published = await request.post('/api/graphs', { headers: { origin: baseURL },
+    data: { version: 3, sessionId: session.id, party, nodes: [{ id: 'doc', kind: 'goal', label: `Doc for ${marker}`, evidence: [{ artifact: artifact.id }] }], edges: [] } });
+  expect(published.ok(), await published.text()).toBe(true);
+  const node = page.locator('.node', { hasText: marker });
+  await expect(node).toBeVisible({ timeout: 3500 });
+  await node.click();
+  await expect(page.locator('#evidence-meta .evidence-artifact')).toHaveText(`cites file orbit-labs/adapter@docs/<b>${marker}</b>.md`);
+  await expect(page.locator('#evidence-status')).toHaveText('This node cites artifacts only, listed above; no transcript line.');
+  expect(await page.locator('#evidence b').count()).toBe(0);
+  expect(writes()).toEqual([]);
 });

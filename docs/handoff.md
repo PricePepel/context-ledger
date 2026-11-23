@@ -8,6 +8,19 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
+
+PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.
+
+## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
+
+100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
+
+
+## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
+
+Phi-3.5-mini (3.8B) to Qwen2.5-1.5B, trained on the 16 GB laptop GPU and evaluated on 300 SQuAD questions. Three gates pass and retention is reported: `swat` F1 0.872 vs text summary (`t2t`) 0.460, paired 95% interval for the F1 difference [0.36, 0.46]; the mismatched cache scores 0.153 and the zeroed one 0.002, so the gain depends on the correct passage's cache; 426 ms mean end to end vs 3,666 ms for `t2t`. Against the receiver reading the passage, the containment difference is −0.003 [−0.047, 0.040], so claim "finds the answer as often as reading it, within 5 points", not "beats it". Full table in [evals](evals.md) under M2b-S. Next owner: Codex review of the record, then the budget-matched compaction card (Attention Matching) and a receiver fine-tuned on the same SQuAD data as the fair control. Checkpoint stays on the GPU machine at `~/m2b-scale/run1/best.pt`.
+
 ## Current checkpoint — 2026-11-06
 
 The initial import/search and CLI handoff cycles are implemented and tested. Claude reviewed the design and the CLI. The independent Codex reviewer checked the backend, browser and CLI and verified the review fixes. The fixtures are synthetic. Start a new eval cycle before adding format coverage, incremental imports, or automatic discovery. Preserve explicit user control over which transcript content is ingested and which handoff is shared.
@@ -283,6 +296,17 @@ Next steps:
 1. **The 60-second recording (raw material for U3) is for a person to make.** Run `npm start`, open `http://127.0.0.1:4317/console/?demo&autoplay=0` in a 1440×900 window, start a screen recorder, click **Play demo**, wait for "Demo finished" (34 s), then click "The ledger stays on port 4317" to open its proof, and stop at about 60 s.
 2. A human review of the PR. It touches no security, export or signing code, but it does add static routes to the server.
 3. When G7 lands, give the quoted and inferred marks a field name and check the colours in the console.
+
+## Current checkpoint — U3 60-second demo video (2026-11-17)
+
+Branch `ruslan/u3-demo-video`, stacked on U1 (`ruslan/console-v0`). [docs/video/u3-script.md](video/u3-script.md) is the shot list and voice-over, timed to 60 seconds. `node demo/record-console.mjs` records the console part as raw footage into `test-results/u3/console-demo.webm` (about 42 seconds, synthetic Orbit demo, not committed).
+
+Next steps:
+
+1. A person records the terminal shots and the voice-over and cuts the video to the shot list. The install shot uses `npm run ledger -- install` once G8 is merged, or the README's two `mcp add` commands before that.
+2. Swap in Pip for the title card once U2 is merged.
+3. Link the finished video in the U3 eval section, and move the card to Done.
+
 ## Current checkpoint — U2 brand and mascot (2026-11-17)
 
 Branch `ruslan/u2-brand-mascot`. [docs/brand/brand.md](brand/brand.md) is the brand guide: the CTM site's colours (Deep Charcoal, Electric Violet, Acid Lime, Paper), with light (console) and dark (site, video) sets in [tokens.css](brand/tokens.css), each pair checked for WCAG AA contrast. It also sets the quoted and inferred mark colours, the type stacks, and Pip, an original mascot in three poses for the console's idle, working and waiting agents. `tests/brand.test.mjs` checks the colours, the contrast and the SVG rules.
@@ -517,3 +541,169 @@ Next steps:
 Branch `ruslan/h8-model-call-deadline`, from `main`. Each model call in `runtime/latent_pool/vllm_client.py` now keeps to its whole budget, not a timeout per socket read. One absolute deadline covers the call and its folded retry. A timer shuts the call's socket down at the deadline: the plain socket before it connects, and the TLS socket before its handshake. The name lookup is bounded, redirects are not followed, and every step checks the clock. A connect timeout capped by the deadline now returns 504, not 503, and `_Run.call` returns 504 for a reply or a 503 that lands after the read deadline. Codex reviewed it twice; every finding is fixed with a test (docs/evals.md, H8).
 
 Next owner: nothing is open on this card beyond review. Known limits are listed under H8 in docs/evals.md. Addresses are still tried one after another, and an abandoned lookup finishes on its own thread.
+
+## Current checkpoint — D1 T3 Code integration (2026-11-17)
+
+Branch `ruslan/d1-t3code-guide`. [docs/integrations/t3code.md](integrations/t3code.md) explains how T3 Code's Claude and Codex threads get the ledger: T3 runs those CLIs with their own configuration, so the server is registered for them on the environment's machine. Instances with their own `CLAUDE_CONFIG_DIR` or `CODEX_HOME` need it there too. `tests/integrations-t3.test.mjs` keeps the guide's commands and links in step with the code.
+
+The importer half of the card was not built. T3's store is undocumented, and its layout differs between versions (see the D1 eval). It is the new Backlog card D3, blocked on a sample database of a known T3 version.
+
+Next steps:
+
+1. Someone who runs T3 follows the guide and records the result in the D1 eval section, including whether T3's runs write Claude Code and Codex session files that can be imported.
+2. D3, once a sample T3 database exists.
+
+## Current checkpoint — D2 Capy integration guide (2026-11-17)
+
+Branch `ruslan/d2-capy-guide`. [docs/integrations/capy.md](integrations/capy.md) explains how to add the ledger to Capy as a local (STDIO) MCP server. It works only for threads that run on the computer that runs the ledger, through Capy's desktop app or Dock CLI, because the ledger answers on loopback and Capy runs STDIO servers on the thread's machine. The owner is "Only you", because an Organization server would fail on other members' computers and on cloud machines. `tests/integrations.test.mjs` keeps the guide's key, path, README link and TOML block in step with the code.
+
+Next steps:
+
+1. Someone with a Capy organization follows the guide once and records the result in the D2 eval section, including whether a device thread finds `node` on its `PATH`.
+2. If Capy threads should use the ledger from the cloud, that needs a design decision first: the ledger would then hold transcripts on Capy's machines.
+
+## Current checkpoint — P4a signed hand-off (2026-11-17)
+
+First slice of P4, after ADR-9 of the design (`origin/ruslan/p1-design`): `ledger keygen` makes an Ed25519 key beside the ledger database; `ledger handoff <id> --sign <new-folder>` writes `handoff.md`, `public-key.pem`, an RFC 8785 canonical `manifest.json` (file name, size and SHA-256) and the raw signature `manifest.sig`; `ledger verify <folder> [--fingerprint]` checks all of it and exits 0 only on a full match. Code: `src/sign.mjs` and `src/cli.mjs`; tests: `tests/sign.test.mjs`; client guide with the OpenSSL-only recipe: `docs/signed-handoff.md`. Eval and three Codex review rounds: P4a in `docs/evals.md`.
+
+Update 2026-11-18, after an independent security review (no high, three medium, seven low) and a fourth Codex round on the fixes (all in the P4a section of `docs/evals.md`):
+
+- On Windows, `keygen` stages the key inside a folder restricted to the current account and gives the key file a protected access list that grants only that account (`icacls`, run without a shell, by SID). Signing refuses a key whose list allows any other account than the user, SYSTEM and Administrators, a key file that is a link, and one replaced while it is checked. POSIX is unchanged.
+- `handoff --sign` reads the session from the ledger database in process (design ADR-2) and makes no HTTP request, so a process on `PORT` can no longer get content signed. It never creates or migrates the database: an older-schema file is refused with a sentence that says to start the server once. Plain `handoff` and `search` still use the server.
+- Not changed, for the user to decide: `verify` without `--fingerprint` still exits 0 with a stderr warning. The proposal (a required flag, or a distinct exit code with `Unverified signer` on stdout) is in the eval and the PR body.
+
+Next steps:
+
+1. **A human security review before merge** (AGENTS.md section 4). Points to decide: the fingerprint is SHA-256 of the SPKI DER bytes (not of the raw key), for an OpenSSL-only recipe; the private key is unencrypted PKCS#8, 0600 on POSIX and restricted to the account on Windows; the `verify` exit-code proposal above; the seven low findings of the security review, which are left open (among them no owner check of the key file on either system, which Codex round 4 also raised); concurrent writers and NTFS alternate data streams are out of scope (documented).
+2. P4b (Backlog): the secret scanner, the redaction diff, allowlist export from cleared excerpts (ADR-8) and the passphrase-encrypted key. Signing today does not redact anything.
+3. Version 1 bundles hold exactly one content file. A redaction report or other extra file needs manifest version 2.
+
+## Current checkpoint — P4b secret scanner and redaction diff (2026-11-17)
+
+*Superseded on 2026-11-18: P4b was narrowed to key formats; see the next checkpoint. The bearer and password rules described here were removed.*
+
+Branch `ruslan/p4b-secret-scanner`. `src/secrets.mjs` finds text that looks like a credential: cloud, GitHub, model-provider, Slack and Stripe keys, JWTs, private keys, bearer tokens, and secret-looking values under names such as `password` or `api_key`. It redacts each one as `[REDACTED <kind>]`.
+
+`npm run ledger -- redact <session-id> [--json | --text]` reports line, kind, length and a known public prefix, never a value; `--text` prints the redacted hand-off. `ledger handoff`, the store, the browser and MCP are unchanged.
+
+Next owner: P4a can call `redactSession` before signing an export. The scanner is a heuristic. Codex ran four rounds and every finding is fixed, but round 4's fixes are not reviewed again, and a human security review is still owed.
+
+## Current checkpoint — P4b narrowed to key formats (2026-11-18)
+
+PR #47 now detects only well-defined key formats (provider keys, JWTs, PEM private keys, AWS secret access keys). The free-text `bearer-token` and `assigned-secret` rules were removed at the user's choice after seven Codex rounds kept finding gaps; that work is card P4c. A human security review is still required before merge.
+
+## Current checkpoint — P4c free-text secret detection (2026-11-18)
+
+Branch `ruslan/p4c-free-text-secrets`, stacked on P4b (#47). After an `Authorization: Bearer` header, or a secret-like name followed by `:` or `=`, the rest of that line is redacted, unless the whole value is a placeholder. On the corpus this misses nothing and flags 2 of 23 benign keyed lines (8.7%). Codex reviewed it twice; every finding is fixed with a test (docs/evals.md).
+
+Next owner: the budget (zero misses, at most 10% false alarms) and the line-tail approach are proposals. The user approves them before the PR leaves draft.
+
+## Current checkpoint — cycle 15 (teams of many agents, split facts, 2026-11-16)
+
+Branch `ruslan/agent-scale`. Card C15. Read the cycle 15 definition, results and changes from the plan in [the eval log](evals.md). Qwen2.5-3B-Instruct, no training, GSM8K block 4.
+
+- **Scale (part 1).** Tests 1–4 are all established: latent_mas beats random thoughts at 3, 11, 31 and 101 agents. This happens because random thoughts break the model (0.425 at 3 agents, 0 at 101), not because real thoughts help. The latent team never beats one model alone and gets worse as it grows: 0.81 at 3 agents, 0.66 at 101 (single 0.86 on the same 50 questions, 0 / 10, p = 0.002). A vote of N samples gets better instead (0.85 to 0.94).
+- **Cost.** At 3 and 11 agents the latent team matched the text team's accuracy with 58% and 75% fewer forward steps and 2.4 and 3.3 times less time. Time per question then grows fast: 224 s at 101 agents.
+- **Split facts (part 2).** Tests 5–8 are not established. With earlier prompts hidden (sealed), the latent team answers 0 and 1 of 166 questions, the same as the Solver with only the ask. Text notes pass the facts (0.30 and 0.28).
+- **Changes from the plan:** 31 agents ran at batch 4 after batch 8 ran out of GPU memory; 101 agents ran at batch 1 on the first 50 of the 200 questions, agreed with the user on 2026-11-14.
+- **New code:** `runtime/latent_team/scale.py` (the runner for both parts) and, in `team.py`, `chain_roles(N)`, the sealed mode (`hide`), the N-agent text team and grouped sampling for the vote. The three-agent path is unchanged. Run outputs hold GSM8K text and are not committed.
+
+Next steps:
+
+1. A human reviews the sealed mode in `team.py` (`forward(..., hide=...)`, `chain(..., sealed=True)`). The Codex code review and data check are recorded in the eval log.
+2. On this evidence, the latent hand-off between untrained agents does not carry facts, and adding agents costs accuracy. Any further latent work should first show a sealed hand-off above the floor on the split-facts set, for example with a trained hand-off, before more scale runs.
+
+## Current checkpoint — P5b install passes the database path (2026-11-20)
+
+PR #57, branch `claude/p5b-install-db`. `ledger install` passes `CONTEXT_LEDGER_DB` (absolute) to both agents' MCP servers beside `PORT`, so agents find the P1e token of a ledger on a custom database. Read the P5b section of [the eval log](evals.md).
+
+- Dry run and install refuse alike a path cmd.exe cannot take (`%`, `"`) on Windows; uninstall ignores the value.
+- **Next owner:** a person checks one real install with a custom database against Claude Code and Codex (the tests use stub CLIs). Users who ran install before this card must remove the old registration and install again; the README says how.
+
+## Current checkpoint — P5a Node suites on three systems (2026-11-20)
+
+PR #38, branch `ruslan/p5a-cross-os-ci`. The Node suites, the graph suite and the browser evals run on `ubuntu-latest`, `windows-latest` and `macos-latest`, one job each. Read the P5a section of [the eval log](evals.md).
+
+- **Why Windows hung.** GitHub's Windows runners run as `runneradmin`, the built-in Administrator (RID 500). SDDL spells that SID `LA`, so the P1e token check (`privateToOwner` in `src/token.mjs`) and the P4a key check (`daclAllowsOnly` in `src/sign.mjs`) refused every file they had just made private, every server start failed, and one routes test then waited forever on a child that had exited. A one-off diagnostic job confirmed the spelling (`O:LA…D:P(A;;FA;;;LA)`).
+- **Fix.** Both checks ask PowerShell how SDDL spells the current account (from a descriptor built in memory from the SID; the key check falls back to the SID if PowerShell refuses) and accept that spelling like the SID. The test helper `restrictToOwner` writes one owner-only descriptor, since an elevated administrator's new files carry explicit default entries and belong to Administrators. Waits on server children fail when the child exits, the test MCP client waits 45 s for the slow first call, and CI runs `node --test` with a five-minute limit per file.
+- **Review:** five Codex rounds, each finding fixed or recorded in the P5a section of the eval log.
+- **Next owner:** nothing open on this card. If a new Windows-only failure shows up in CI and not locally, suspect the runner account first: it is an elevated administrator, unlike most developer machines.
+
+## Current checkpoint — P2a project scope (2026-11-21)
+
+PR #58, branch `claude/p2a-project-scope`. P2 is split into P2a–P2c on the board; the user's wave 2 decisions are ADR-7a to 7d in [the architecture](architecture.md) §12. Read the P2a section of [the eval log](evals.md).
+
+- A graph's project is the project of the session it cites. Links and rooms across projects are refused; a session with no project matches nothing.
+- Graph and room list rows name the project, and the HTTP lists and MCP `session_search`, `graph_list` and `room_list` take `project`. The MCP tools refuse rows a ledger from before P2a did not filter.
+- A room opened across projects before P2a stays readable but takes no choices (`takesChoices: false`); the browser shows its choices without buttons.
+- **Next owner:** P2b (version 3 citations) is stacked on this branch; P2c follows it.
+
+## Current checkpoint — P2b message-key and artifact citations (2026-11-21)
+
+PR #59, branch `claude/p2b-citations`. Read the P2b section of [the eval log](evals.md) and ADR-7b in [the architecture](architecture.md) §12.
+
+- Packet version 3 cites `{ message: <P1c key> }` or `{ artifact: <id> }`; versions 1 and 2 are unchanged. The stored graph adds `citations` (lines and artifact rows per node), which every reader uses.
+- Artifacts (commit, pull request, file) are registered per project with `ledger artifact add|list` or `/api/artifacts`; schema version 4.
+- `graph_schema` defaults to version 3, and `session_read` shows each turn's key.
+- Citations compare with their session (lines and keys) in the diff and the console; artifacts compare as they are.
+- **Next owner:** P2c (node-hash approval) is stacked on this branch.
+
+## Current checkpoint — P5c `npx` entry point (2026-11-21)
+
+Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
+
+- `bin/context-ledger.mjs`: `context-ledger start`, `context-ledger mcp`, and every `ledger` subcommand. Under the bin an unset `CONTEXT_LEDGER_DB` is `~/.context-ledger/ledger.sqlite` (USERPROFILE on Windows); a checkout's `npm start` keeps its own default.
+- `package.json` is publishable: no `private`, a `files` allowlist, MIT, repository and engines. The name `context-ledger` is taken on npm by an unrelated package, so the package is `@pricepepel/context-ledger` (publish with `--access public`); the command stays `context-ledger`. Nobody has run `npm publish`: that is the user's step.
+- Run through `npx`, `install` registers `npx -y --package <spec> context-ledger mcp` (through `cmd /c` on Windows). A bare `npx -y <tarball>` runs nothing for a local tarball, so use the `--package` form.
+- **Next owner:** P5d (clean-install CI job on three systems) and P5e (launch docs).
+
+## Current checkpoint — P2c approval bound to a node hash (2026-11-21)
+
+Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
+
+- Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
+
+## Current checkpoint — P5d clean-install eval (2026-11-21)
+
+PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the checkout, installs the tarball globally into an empty prefix on Linux, Windows and macOS, and drives the installed `context-ledger` command from an empty folder and home: usage, start, import, search, graph publish and read, login and the MCP adapter. Run it locally with `node scripts/clean-install-check.mjs`. The script is not in the package.
+
+## Current checkpoint — P5e launch docs (2026-11-21)
+
+Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
+
+
+## Current checkpoint — S1 swarm demo (2026-11-21)
+
+Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and [the run sheet](swarm-demo.md). `/swarm/` runs up to 200 agents at once on local OpenAI-compatible model servers (`SWARM_URLS`, loopback only), shows each agent live, checks each quote against its report, and combines verified answers beside the generator's truth. A seeded simulation, labelled on every number, runs without a GPU.
+
+- **Next owner:** run it live on the laptop GPU once the M2b-S training (branch `claude/m2b-scale`) frees it: one 7B server, then two models. Record wall time, tokens per second, KV-cache use and prefix-cache hit rate at 25, 50 and 100 agents in the eval log.
+- Then add the latent lane: a second pass where agents hand a compacted cache instead of text, once M2b-S and Attention Matching pass.
+
+## Current checkpoint — G9b scoped briefing says what it left out (2026-11-21)
+
+Branch `claude/g9b-scoped-state`. Read the G9b section of [the eval log](evals.md). Found while rehearsing the investor demo from a clean install: a `context_for` briefing scoped to a question said `open questions: none` when the graph had an open question the question did not match, and a live agent told Ali that Leo needed nothing from him.
+
+- Each state list in a scoped briefing names the shown items, then counts the rest (`1 left out`, `port; 1 more left out`). The scope line ends with `call context_for without a question for the whole graph` whenever a node is not shown. Unscoped briefings are unchanged.
+- A budget now tries the full briefing first, since the hint makes a cut briefing longer.
+- Live re-run: 3 of 3 runs no longer say Leo needs nothing.
+- **Next owner:** in every live run the agent's first `context_for` call passed `budget` without `question` and was refused. Consider accepting a budget alone (cut the whole briefing), as a separate card.
+
+## Current checkpoint — I3 on P1c message rows (2026-11-21)
+
+PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
+
+Next owner: any later schema step goes after version 6. If the `messages` table is rebuilt again, recreate the `sessions_messages` trigger.
+
+## Current checkpoint — P3 review events (2026-11-21)
+
+PR #67, branch `ruslan/p3-review-events`, merged after I3 (#34) on 2026-11-22; its schema step is version 7. Review decisions are append-only, hash-chained events in `review_events` (ADR-17). The browser review section has Approve, Edit and Reject, and `ledger reviews verify` checks the chain. P2c's rows are migrated.
+
+Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 prototype (#52) keeps its own decisions in browser storage. Wiring it to `POST /api/graphs/<id>/reviews` is a choice for Ali.
+
+## Current checkpoint — P3b review head in signed hand-offs (2026-11-22)
+
+PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
+
+Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.

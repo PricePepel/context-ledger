@@ -11,6 +11,8 @@ function el(tag, className, text) {
 }
 
 const lineList = lines => lines.map(line => `L${line}`).join(', ');
+// Card P2b: a version 3 node can cite artifacts beside (or instead of) transcript lines.
+const artifactText = artifact => visibleText(`${artifact.kind} ${artifact.repo}@${artifact.ref}`);
 
 export function createEvidence(panel, { loadSession }) {
   const heading = panel.querySelector('#evidence-heading');
@@ -37,11 +39,16 @@ export function createEvidence(panel, { loadSession }) {
       meta.replaceChildren(
         el('span', 'evidence-tag', node.kind),
         el('span', '', `${entry.label} · ${providerNames[entry.provider] ?? entry.provider}`),
-        el('span', '', `cites ${lineList(node.evidenceLines)}`),
+        ...(node.evidenceLines.length ? [el('span', '', `cites ${lineList(node.evidenceLines)}`)] : []),
+        ...(node.artifacts ?? []).map(artifact => el('span', 'evidence-artifact', `cites ${artifactText(artifact)}`)),
       );
-      status.textContent = 'Reading the cited lines…';
       turns.replaceChildren();
       panel.classList.add('is-open');
+      if (!node.evidenceLines.length) {
+        status.textContent = 'This node cites artifacts only, listed above; no transcript line.';
+        return;
+      }
+      status.textContent = 'Reading the cited lines…';
       try {
         const session = await loadSession(entry.sessionId);
         if (ticket !== request) return;

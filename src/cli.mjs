@@ -1,31 +1,70 @@
 import { createHash } from 'node:crypto';
-import { constants, open } from 'node:fs/promises';
+import { constants, lstat, open } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { handoffMarkdown } from './handoff.mjs';
 import { setupAgents } from './install.mjs';
-import { terminalJson, terminalLine } from './text.mjs';
+import { redactSession } from './secrets.mjs';
+import {
+  buildBundle, generateSigningKey, ledgerDatabasePath, loadSigningKey, normalizeFingerprint, signingKeyPath,
+  verifyBundle, writeBundle,
+} from './sign.mjs';
+import { inlineText, terminalJson, terminalLabel, terminalLine } from './text.mjs';
 import { clientToken } from './token.mjs';
 
 const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--project <slug>] [query]\n' +
   '       npm run ledger -- import --provider claude|codex <file.jsonl>\n' +
-  '       npm run ledger -- handoff <session-id>\n' +
+  '       npm run ledger -- handoff <session-id> [--sign <new-folder>]\n' +
+  '       npm run ledger -- keygen\n' +
+  '       npm run ledger -- verify <folder> [--fingerprint <fingerprint>]\n' +
+  '       npm run ledger -- reviews verify [--head <hash> | --bundle <folder> [--fingerprint <fingerprint>]]\n' +
+  '       npm run ledger -- redact <session-id> [--json | --text]\n' +
   '       npm run ledger -- delete <session-id>\n' +
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
+  '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
+  '       npm run ledger -- artifact list [--project <slug>] [--limit <n>] [--after <id>]\n' +
   '       npm run ledger -- login\n' +
   '       npm run ledger -- import-t3 <copy-of-statev2.sqlite> [--thread <id>] [--list]\n' +
   '       npm run ledger -- install|uninstall [--agent claude|codex] [--dry-run]';
 const maxGraphPacketBytes = 8 * 1024 * 1024;
 
+// parseArgs errors quote the user's argument, so they are replaced by the usage text.
+function options(args, spec) {
+  try {
+    return parseArgs({ args, options: spec, allowPositionals: true, strict: true });
+  } catch {
+    throw new Error(usage);
+  }
+}
+
 function command(argv) {
   const [action, ...args] = argv;
+  if (action === 'keygen' && args.length === 0) return { action };
+  // Card P3: check the chain of review events in the ledger database.
+  if (action === 'reviews' && args[0] === 'verify') {
+    const { values, positionals } = options(args.slice(1), { head: { type: 'string' }, bundle: { type: 'string' }, fingerprint: { type: 'string' } });
+    // Card P3b: the trusted head comes from a signed hand-off, or is given as it was kept.
+    if (values.bundle !== undefined && values.head !== undefined) throw new Error('Give --head or --bundle, not both.');
+    if (values.fingerprint !== undefined && values.bundle === undefined) throw new Error('--fingerprint goes with --bundle.');
+    if (positionals.length === 0 && values.bundle !== undefined) {
+      const fingerprint = values.fingerprint === undefined ? undefined : normalizeFingerprint(values.fingerprint);
+      return { action: 'reviews-verify', dir: values.bundle, fingerprint };
+    }
+    if (positionals.length === 0 && (values.head === undefined || /^[a-f0-9]{64}$/u.test(values.head))) {
+      return { action: 'reviews-verify', head: values.head };
+    }
+    if (values.head !== undefined) throw new Error('--head must be a 64-character lowercase hex hash.');
+  }
+  if (action === 'verify') {
+    const { values, positionals } = options(args, { fingerprint: { type: 'string' } });
+    if (positionals.length === 1) {
+      const fingerprint = values.fingerprint === undefined ? undefined : normalizeFingerprint(values.fingerprint);
+      return { action, dir: positionals[0], fingerprint };
+    }
+  }
   if (action === 'search') {
-    const { values, positionals } = parseArgs({
-      args,
-      options: { provider: { type: 'string' }, project: { type: 'string', multiple: true } },
-      allowPositionals: true,
-    });
+    const { values, positionals } = options(args, { provider: { type: 'string' }, project: { type: 'string', multiple: true } });
     if (values.provider && !['claude', 'codex'].includes(values.provider)) {
       throw new Error('Provider must be claude or codex.');
     }
@@ -54,12 +93,44 @@ function command(argv) {
     return { action, provider: values.provider, filePath: positionals[0] };
   }
   if (action === 'login' && args.length === 0) return { action, path: '/api/login', login: true };
-  if (action === 'handoff' && args.length === 1 && /^[a-f0-9]{64}$/.test(args[0])) {
-    return { action, path: '/api/sessions/' + args[0] };
+  // Card P4b: report what in a session looks like a secret, without showing any value.
+  if (action === 'redact' && args.length >= 1 && args.length <= 2 && /^[a-f0-9]{64}$/.test(args[0])) {
+    const format = args[1] === undefined ? 'report' : args[1] === '--json' ? 'json' : args[1] === '--text' ? 'text' : null;
+    if (format) return { action, format, id: args[0], path: '/api/sessions/' + args[0] };
+  }
+  if (action === 'handoff') {
+    const { values, positionals } = options(args, { sign: { type: 'string' } });
+    if (positionals.length === 1 && /^[a-f0-9]{64}$/.test(positionals[0]) && values.sign !== '') {
+      return { action, path: '/api/sessions/' + positionals[0], sessionId: positionals[0], signDir: values.sign };
+    }
   }
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
     return { action, path: '/api/export?' + new URLSearchParams(args.slice(1).map(id => ['graph', id])), raw: true };
+  }
+  // Card P2b: a person registers an artifact a version 3 graph can cite; the ledger checks it.
+  if (action === 'artifact' && (args[0] === 'add' || args[0] === 'list')) {
+    const { values, positionals } = options(args.slice(1), {
+      project: { type: 'string', multiple: true }, limit: { type: 'string', multiple: true }, after: { type: 'string', multiple: true },
+    });
+    if (values.project?.length > 1 || values.limit?.length > 1 || values.after?.length > 1) throw new Error('Give each option once.');
+    const [project] = values.project ?? [];
+    if (project !== undefined && (project.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(project))) {
+      throw new Error('Project must be a slug of at most 64 lowercase letters, digits and single hyphens.');
+    }
+    const [limit] = values.limit ?? [];
+    const [after] = values.after ?? [];
+    if (limit !== undefined && (!/^[1-9][0-9]{0,2}$/u.test(limit) || Number(limit) > 100)) throw new Error('Limit must be an integer from 1 to 100.');
+    if (after !== undefined && !/^[a-f0-9]{64}$/u.test(after)) throw new Error('After must be an artifact ID from a previous list.');
+    if (args[0] === 'list' && positionals.length === 0) {
+      const query = new URLSearchParams({ ...(project ? { project } : {}), ...(limit ? { limit } : {}), ...(after ? { after } : {}) });
+      return { action, path: '/api/artifacts' + (String(query) ? '?' + query : '') };
+    }
+    if (args[0] === 'add' && (limit !== undefined || after !== undefined)) throw new Error(usage);
+    if (args[0] === 'add' && positionals.length === 3) {
+      const [kind, repo, ref] = positionals;
+      return { action, path: '/api/artifacts', body: JSON.stringify({ kind, repo, ref, ...(project ? { project } : {}) }) };
+    }
   }
   if (action === 'delete' && args.length === 1 && /^[a-f0-9]{64}$/.test(args[0])) {
     return { action, path: '/api/sessions/' + args[0], sessionId: args[0] };
@@ -274,14 +345,245 @@ async function importT3(args) {
   }
 }
 
+async function verifyCommand(dir, fingerprint) {
+  const { problems, files, createdAt, session, fingerprint: signer, reviews } = await verifyBundle(dir, { fingerprint });
+  if (problems.length > 0) {
+    for (const problem of problems) console.error(problem);
+    throw new Error('Verification failed.');
+  }
+  const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
+  // Card P3b: version 2 says what the review chain was when it was signed.
+  const chain = reviews
+    ? `Review chain at signing: ${reviews.events} ${reviews.events === 1 ? 'event' : 'events'}, head ${reviews.head}`
+    : 'Review chain at signing: not recorded (a version 1 bundle)';
+  console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
+    '\nKey fingerprint: ' + signer + '\n' + chain);
+  if (fingerprint === undefined) {
+    console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
+      'and run verify again with --fingerprint.');
+  }
+}
+
+// Read one session straight from the ledger database, in this process (design ADR-2: one
+// core behind CLI, HTTP and MCP). Signing never asks whatever answers on PORT for the
+// content it signs.
+/** Opens the ledger database only if it is already at this build's schema; never creates or migrates it. */
+async function openCurrentStore(databasePath, upgradeHint) {
+  try {
+    await lstat(databasePath);
+  } catch (error) {
+    // Never create an empty database just to find no session in it.
+    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
+    throw new Error('Cannot open the ledger database.');
+  }
+  // Loaded only here: node:sqlite prints an experimental warning when it loads.
+  const { DatabaseSync } = await import('node:sqlite');
+  const { schemaVersion } = await import('./migrate.mjs');
+  // openStore creates missing tables and migrates an older file. Signing must not change
+  // the ledger, so read the schema version first with a connection that cannot write or
+  // create a file (a dangling symlink stays dangling), and open the store only when the
+  // file is already at the current version.
+  let version;
+  try {
+    const probe = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      version = probe.prepare('PRAGMA user_version').get().user_version;
+    } finally {
+      probe.close();
+    }
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  if (version > schemaVersion) {
+    throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+      'Use that version or another CONTEXT_LEDGER_DB.');
+  }
+  if (version < schemaVersion) {
+    throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+      `to upgrade it, then ${upgradeHint} again.`);
+  }
+  const { openStore } = await import('./store.mjs');
+  try {
+    return openStore(databasePath);
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+}
+
+/**
+ * Card P3b review: the review chain, read on the same read-only connection that checks the
+ * schema, so a file swapped in between can never be migrated or read instead.
+ */
+async function readReviewChain(databasePath, trustedHead) {
+  try {
+    await lstat(databasePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error('No ledger database. Import a session first, or set CONTEXT_LEDGER_DB.');
+    throw new Error('Cannot open the ledger database.');
+  }
+  const { DatabaseSync } = await import('node:sqlite');
+  const { schemaVersion } = await import('./migrate.mjs');
+  const { mountReviews } = await import('./reviews.mjs');
+  let database;
+  try {
+    database = new DatabaseSync(databasePath, { readOnly: true });
+  } catch {
+    throw new Error('Cannot open the ledger database.');
+  }
+  try {
+    let version;
+    try {
+      version = database.prepare('PRAGMA user_version').get().user_version;
+    } catch {
+      throw new Error('Cannot open the ledger database.');
+    }
+    if (version > schemaVersion) {
+      throw new Error(`This ledger database was written by a newer Context Ledger (schema ${version}). ` +
+        'Use that version or another CONTEXT_LEDGER_DB.');
+    }
+    if (version < schemaVersion) {
+      throw new Error('This ledger database has an older schema. Start Context Ledger once with npm start ' +
+        'to upgrade it, then verify again.');
+    }
+    try {
+      return mountReviews(database, () => undefined).verifyReviews(trustedHead);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+  } finally {
+    database.close();
+  }
+}
+
+async function readLedgerSession(databasePath, sessionId) {
+  const store = await openCurrentStore(databasePath, 'sign');
+  try {
+    let session;
+    let reviews;
+    try {
+      session = store.get(sessionId);
+      reviews = store.verifyReviews();
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+    if (session?.id !== sessionId) throw new Error('Session not found.');
+    // Card P3b: a signed head vouches for the chain, so a broken one is never signed.
+    if (reviews.brokenAt !== undefined) {
+      throw new Error(`Review chain broken at event ${reviews.brokenAt}: run reviews verify, and sign once the ledger is repaired.`);
+    }
+    return { session, reviews: { events: reviews.events, head: reviews.head } };
+  } finally {
+    store.close();
+  }
+}
+
+// Card P3: recompute the chain of review events. A broken chain is an error, and its
+// first bad event is named by number only, never by what it says.
+async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
+  let signed;
+  if (bundleDir !== undefined) {
+    const bundle = await verifyBundle(bundleDir, { fingerprint });
+    if (bundle.problems.length > 0) {
+      for (const problem of bundle.problems) console.error(problem);
+      throw new Error('The signed hand-off did not verify, so its review head is not trusted.');
+    }
+    if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
+    signed = bundle.reviews;
+    trustedHead = signed.head;
+  }
+  const result = await readReviewChain(ledgerDatabasePath(), trustedHead);
+  if (result.brokenAt !== undefined) {
+    throw new Error(`Review chain broken at event ${result.brokenAt}: it does not match the events before it.`);
+  }
+  if (trustedHead !== undefined && result.trustedAt === null) {
+    throw new Error('The trusted head is not in this review chain: events up to it were removed or rewritten.');
+  }
+  // A signed head also fixes how many events led to it.
+  if (signed !== undefined && result.trustedAt !== signed.events) {
+    throw new Error(`The signed head is event ${signed.events} of its chain, but event ${result.trustedAt} here.`);
+  }
+  const count = `${result.events} ${result.events === 1 ? 'event' : 'events'}`;
+  if (trustedHead === undefined) {
+    console.log(`Review chain verified: ${count}.\nHead: ${result.head}`);
+    // A chain cut short at its end still checks; only a head kept from earlier can show that.
+    console.error('Note: events removed from the end would not show. Keep this head and run again with --head to check.');
+    return;
+  }
+  if (signed !== undefined && fingerprint === undefined) {
+    console.error('Warning: the key was not checked. Ask the sender for the key fingerprint and run again with --fingerprint.');
+  }
+  const since = result.events - result.trustedAt;
+  console.log(`Review chain verified: ${count}, with the trusted head at event ${result.trustedAt} (${since} added since).\nHead: ${result.head}`);
+}
+
+async function signCommand(sessionId, signDir) {
+  // Load the key first, so a missing key fails before anything is read or written.
+  const privateKey = await loadSigningKey(signingKeyPath());
+  const { session, reviews } = await readLedgerSession(ledgerDatabasePath(), sessionId);
+  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(session) + '\n', privateKey, reviews });
+  await writeBundle(signDir, bundle);
+  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
+}
+
+// The hand-off renderer keeps ZWNJ, ZWJ and tabs; the redaction view escapes every format
+// character and tab too, so nothing in it can be hidden or misaligned.
+const strict = text => text.replace(/[\p{Cf}\t]/gu, character => Array.from({ length: character.length },
+  (_, index) => `\\u${character.charCodeAt(index).toString(16).padStart(4, '0')}`).join(''));
+
+/** A session as the server returns it, checked before anything is scanned or printed. */
+function sessionShape(data, id) {
+  const session = data?.session;
+  // Provider and role are printed as they are, so only the values the store writes pass.
+  const ok = session && typeof session === 'object' && session.id === id && typeof session.source === 'string'
+    && (session.provider === 'claude' || session.provider === 'codex') && Array.isArray(session.messages)
+    && session.messages.every(message => message && typeof message.text === 'string'
+      && ['user', 'assistant', 'agent'].includes(message.role)
+      && (message.role !== 'agent' || (typeof message.author === 'string' && typeof message.recipient === 'string'))
+      && Number.isSafeInteger(message.line) && message.line >= 1);
+  if (!ok) throw new Error('Context Ledger returned an unexpected session response.');
+  return session;
+}
+
+/** Card P4b: the redaction report, the findings as JSON, or the redacted hand-off. */
+function redactionOutput(session, format) {
+  const { session: redacted, findings } = redactSession(session);
+  if (format === 'text') return strict(handoffMarkdown(redacted));
+  const lines = new Set(findings.map(finding => finding.line ?? 'source')).size;
+  if (format === 'json') return terminalJson({ sessionId: session.id, count: findings.length, lines, findings });
+  const rows = findings.map(finding => `${finding.line === null ? 'source name' : `line ${finding.line}`}  ${finding.kind}  ${finding.length} characters  ${strict(inlineText(finding.preview))}`);
+  const total = findings.length
+    ? `${findings.length} possible ${findings.length === 1 ? 'secret' : 'secrets'} in ${lines} ${lines === 1 ? 'line' : 'lines'}. Values are not shown; use --text for the redacted hand-off.`
+    : 'No findings from the checks below.';
+  // Say what is checked (P4b key formats, P4c line tails), so a clean report is not read as "no secrets".
+  return [...rows, total, 'Checked: known key formats, and the rest of the same line after an Authorization: Bearer header or a secret-like name followed by : or = (such as password=), unless the whole value is a placeholder. A value that continues onto the next line, and other free-text secrets, are not found.'].join('\n');
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, login, sessionId, provider, filePath, raw } = command(argv);
+  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
+  // Card P4a: keys, signing and checking work on local files; signing reads the session
+  // from the ledger database in this process, never from whatever answers on PORT.
+  if (action === 'keygen') {
+    console.log(await generateSigningKey(signingKeyPath()));
+    return;
+  }
+  if (action === 'verify') {
+    await verifyCommand(dir, fingerprint);
+    return;
+  }
+  if (action === 'reviews-verify') {
+    await reviewsVerifyCommand(head, dir, fingerprint);
+    return;
+  }
+  if (action === 'handoff' && signDir !== undefined) {
+    await signCommand(sessionId, signDir);
+    return;
+  }
   const port = ledgerPort();
   const origin = `http://127.0.0.1:${port}`;
   // The token goes only to the port its file names. Without it the request still goes
@@ -293,10 +595,11 @@ async function main() {
   const withoutToken = otherPort !== undefined ? tokenForOtherPort(otherPort) : noToken;
   // A graph packet or a delete is not sent where the token does not go: the listener on
   // this port is not known to be the ledger.
-  if ((packetPath !== undefined || action === 'delete') && token === undefined) throw new Error(withoutToken);
+  if ((packetPath !== undefined || body !== undefined || action === 'delete') && token === undefined) throw new Error(withoutToken);
   let write = login ? { method: 'POST' } : {};
-  if (packetPath !== undefined) {
-    write = { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: await readGraphPacket(packetPath) };
+  if (packetPath !== undefined || body !== undefined) {
+    const sent = body ?? await readGraphPacket(packetPath);
+    write = { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: sent };
   } else if (action === 'delete') {
     write = { method: 'DELETE', headers: { Origin: origin } };
   }
@@ -326,7 +629,7 @@ async function main() {
   }
   if (response.status === 404) throw new Error(action === 'graph' ? 'Graph not found.' : 'Session not found.');
   if (!response.ok) {
-    if (action === 'graph' && (response.status === 400 || response.status === 413)) {
+    if ((action === 'graph' || action === 'artifact') && (response.status === 400 || response.status === 413)) {
       const message = serverProblem(await response.json().catch(() => null));
       if (message) throw new Error(message);
     }
@@ -342,6 +645,17 @@ async function main() {
       }
     }
     throw new Error(`Context Ledger returned HTTP ${response.status}.`);
+  }
+  if (action === 'redact') {
+    let session;
+    try {
+      session = sessionShape(await response.json(), id);
+    } catch {
+      // The parser's message can quote response bytes, so it is never shown.
+      throw new Error('Context Ledger returned an unexpected session response.');
+    }
+    console.log(redactionOutput(session, format));
+    return;
   }
   // A JSON parse error quotes the body, which is the server's text: never print it.
   let data;
@@ -360,7 +674,7 @@ async function main() {
     console.log(terminalJson(data));
     return;
   }
-  if (action === 'graph') {
+  if (action === 'graph' || action === 'artifact') {
     console.log(terminalJson(data));
     return;
   }

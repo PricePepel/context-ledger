@@ -3,7 +3,17 @@ on: [push, pull_request]
 
 jobs:
   playwright:
-    runs-on: ubuntu-latest
+    # Card P5a: the Node suites and browser evals run on the three systems the product
+    # installs on, not only Linux.
+    name: node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # The 45-minute runs on Windows were a hang, not slowness: every server start failed
+    # there (the runner's account is spelt "LA" in SDDL) and one test then waited forever.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -11,12 +21,19 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: node --test tests/*.test.mjs
+      - run: npm run -s test:graph
+      # A test file that hangs fails on its own after five minutes instead of holding the job.
+      - run: node --test --test-timeout=300000 tests/*.test.mjs
+        shell: bash
+      # System packages for Chromium are only needed on Linux.
       - run: npx playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright install chromium
+        if: runner.os != 'Linux'
       - run: npm test
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-test-results
+          name: playwright-test-results-${{ matrix.os }}
           path: test-results/
           if-no-files-found: ignore

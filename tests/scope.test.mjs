@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { questionTerms, rankNodes } from '../src/scope.mjs';
+import { graphWith, questionTerms, rankNodes } from '../src/scope.mjs';
 import { InputError, openStore } from '../src/store.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
@@ -79,8 +79,8 @@ test('a question shows the matching nodes, the nodes one edge away and the edges
   assert.match(text, /^- port supersedes old-port$/mu);
   assert.doesNotMatch(text, /record|GPU/u);
   assert.match(text, /^current decisions: port$/mu);
-  assert.match(text, /^ready actions: none$/mu, 'state lists only shown nodes');
-  assert.match(text, /\nscope: the question matched 2 of 5 nodes; showing 2 of them and 0 neighbours\n$/u);
+  assert.match(text, /^ready actions: 1 left out$/mu, 'state names only shown nodes and counts the rest (G9b)');
+  assert.match(text, /\nscope: the question matched 2 of 5 nodes; showing 2 of them and 0 neighbours; call context_for without a question for the whole graph\n$/u);
   assert.equal(meter.graphCharacters, text.length, 'the meter counts the scoped text');
 
   const record = store.getGraphContext(graph.id, { question: 'When do we record?' }).text;
@@ -136,7 +136,7 @@ test('a budget drops neighbours before matches and keeps the estimate within it'
   const cut = store.getGraphContext(graph.id, { question, budget: estimate(full) - 1 });
   assert.ok(cut.meter.graphTokens <= estimate(full) - 1);
   assert.deepEqual(nodeIds(cut.text), ['port'], 'port has the most matched words, so it stays');
-  assert.match(cut.text, /showing 1 of them and 0 neighbours; 1 left out for a budget of \d+ tokens\n$/u);
+  assert.match(cut.text, /showing 1 of them and 0 neighbours; 1 left out for a budget of \d+ tokens; call context_for without a question for the whole graph\n$/u);
   assert.equal(cut.meter.graphCharacters, cut.text.length);
 
   const neighbourFirst = store.getGraphContext(graph.id, { question: 'record' });
@@ -185,13 +185,99 @@ test('a scoped briefing leaves out the links, state and linked graphs of nodes i
   assert.match(sunday, /^- record advances demo$/mu);
   for (const hidden of ['port', 'pairing', 'gpu-owner', '## links', 'linked graph', ali.id]) assert.ok(!sunday.includes(hidden), hidden);
   assert.match(sunday, /^ready actions: record$/mu);
-  assert.match(sunday, /^current decisions: none$/mu);
-  assert.match(sunday, /^open questions: none$/mu);
+  // Card G9b: a left-out decision or question is counted, never read as none.
+  assert.match(sunday, /^current decisions: 1 left out$/mu);
+  assert.match(sunday, /^open questions: 1 left out$/mu);
 
   const port = store.getGraphContext(leo.id, { question: 'port 4317' }).text;
   assert.match(port, /^- port answers ali:which-port$/mu, 'a link from a shown node stays');
   assert.doesNotMatch(port, /pairing matches/u);
   assert.match(port, new RegExp(`^linked graph ali: ${ali.id}$`, 'mu'));
+  store.close();
+});
+
+test('G9b: a scoped briefing that shows every node reads as the unscoped state, with no hint', () => {
+  const { store, graph } = setup();
+  const plain = store.getGraphContext(graph.id).text;
+  const all = store.getGraphContext(graph.id, { question: 'port demo record GPU owner' }).text;
+  const state = text => text.slice(text.indexOf('## state')).split('\n').filter(line => !line.startsWith('scope:')).join('\n');
+  assert.equal(state(all), state(plain));
+  assert.match(all, /^scope: the question matched 5 of 5 nodes; showing 5 of them and 0 neighbours$/mu);
+  assert.doesNotMatch(all, /left out|without a question/u);
+  store.close();
+});
+
+test('G9b: a list with some items shown counts the rest after them', () => {
+  const graph = {
+    id: 'g', packet: { nodes: [{ id: 'a' }, { id: 'b' }], edges: [] },
+    readyActionIds: [], openQuestionIds: ['a', 'b'], currentDecisionIds: ['b'],
+  };
+  const scoped = graphWith(graph, ['a']);
+  assert.deepEqual(scoped.openQuestionIds, ['a']);
+  assert.deepEqual(scoped.leftOut, { readyActionIds: 0, openQuestionIds: 1, currentDecisionIds: 1 });
+});
+
+test('G9b: the demo question no longer reads as "nothing open" and names no hidden node', () => {
+  const store = openStore(':memory:');
+  const { leo } = linkedFixture(store);
+  const { text } = store.getGraphContext(leo.id, { question: 'port ledger uses, video recording date, what Leo needs from me' });
+  assert.doesNotMatch(text, /^open questions: none$/mu);
+  assert.match(text, /^open questions: 1 left out$/mu);
+  assert.ok(!text.includes('gpu-owner') && !text.includes('GPU'), 'the hidden question is counted, not shown');
+  assert.match(text, /call context_for without a question for the whole graph\n$/u);
+  store.close();
+});
+
+test('G9b: a node dropped by the budget is counted too', () => {
+  const store = openStore(':memory:');
+  const { leo } = linkedFixture(store);
+  // port matches two words; old-port and gpu-owner one each, so the budget drops gpu-owner first.
+  const question = 'port 4317 GPU';
+  const full = store.getGraphContext(leo.id, { question }).text;
+  assert.match(full, /^open questions: gpu-owner$/mu);
+  const cut = store.getGraphContext(leo.id, { question, budget: estimate(full) - 1 }).text;
+  assert.ok(!nodeIds(cut).includes('gpu-owner'), 'the budget dropped the question');
+  assert.match(cut, /^open questions: 1 left out$/mu);
+  assert.match(cut, /left out for a budget of \d+ tokens; call context_for without a question for the whole graph\n$/u);
+  store.close();
+});
+
+test('G9b review: a rendered list with one item shown and one left out names the first and counts the second', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'two.jsonl', transcript: [
+    say('The ledger stays on port 4317.'), say('The server binds to loopback only.'),
+  ].join('\n') });
+  const graph = store.publishGraph({ version: 2, sessionId: session.id, party: 'leo', edges: [], nodes: [
+    { id: 'port', kind: 'decision', label: 'The ledger stays on port 4317', evidenceLines: [1] },
+    { id: 'loopback', kind: 'decision', label: 'The server binds to loopback only', evidenceLines: [2] },
+  ] });
+  const { text } = store.getGraphContext(graph.id, { question: 'port' });
+  assert.match(text, /^current decisions: port; 1 more left out$/mu);
+  assert.ok(!text.includes('loopback'));
+  store.close();
+});
+
+test('G9b review: a budget that fits the full briefing is never refused because a cut one is longer', () => {
+  const store = openStore(':memory:');
+  const session = store.importTranscript({ provider: 'claude', source: 'one.jsonl', transcript: say('Ship it.') });
+  const graph = store.publishGraph({ version: 1, sessionId: session.id, edges: [],
+    nodes: [{ id: 'g', kind: 'goal', label: 'Ship', evidenceLines: [1] }] });
+  // The full briefing under a budget names that budget in its scope line; build it for each.
+  const big = store.getGraphContext(graph.id, { question: 'goal', budget: 100000 }).text;
+  assert.doesNotMatch(big, /without a question/u, 'the full briefing shows every node, so it has no hint');
+  const fullAt = budget => big.replace('budget of 100000 tokens', `budget of ${budget} tokens`);
+  let fitted = 0;
+  for (let budget = 50; budget <= estimate(big) + 10; budget += 1) {
+    if (estimate(fullAt(budget)) > budget) continue;
+    // The full briefing fits this budget, so it is the answer, even where a cut one (with the hint) would not fit.
+    assert.equal(store.getGraphContext(graph.id, { question: 'goal', budget }).text, fullAt(budget), String(budget));
+    fitted += 1;
+  }
+  assert.ok(fitted > 0);
+  // Round 2: a budget below both sizes names the smaller one, here the full briefing (no hint).
+  assert.ok(estimate(fullAt(50)) > 50, 'the fixture refuses a budget of 50');
+  assert.throws(() => store.getGraphContext(graph.id, { question: 'goal', budget: 50 }),
+    { message: `budget is below the smallest briefing of this graph, about ${estimate(fullAt(50))} tokens.` });
   store.close();
 });
 
@@ -350,7 +436,9 @@ test('the context route checks question and budget with fixed messages', async t
   assert.equal(astral.status, 200, '500 characters outside the BMP are within the limit');
   // A briefing too long for one MCP page, through the real route and the adapter.
   const big = await post('/api/import', { provider: 'claude', source: 'big.jsonl', transcript: say('Port '.repeat(20) + 'notes.') });
-  const nodes = Array.from({ length: 100 }, (_, index) => ({ id: `port-${index}`, kind: 'decision', label: `Port note ${index} ${'with many words '.repeat(28)}`, evidenceLines: [1] }));
+  const nodes = Array.from({ length: 99 }, (_, index) => ({ id: `port-${index}`, kind: 'decision', label: `Port note ${index} ${'with many words '.repeat(28)}`, evidenceLines: [1] }));
+  // G9b review: one open question the question does not match, so the pages carry its count.
+  nodes.push({ id: 'gpu-owner', kind: 'question', to: 'ali', status: 'open', label: 'Who owns the GPU box?', evidenceLines: [1] });
   const bigGraph = (await post('/api/graphs', { version: 2, sessionId: big.session.id, party: 'leo', nodes, edges: [] })).graph;
   const client = mcp(t, Number(new URL(origin).port), { CONTEXT_LEDGER_DB: database });
   const pages = [];
@@ -367,6 +455,10 @@ test('the context route checks question and budget with fixed messages', async t
   assert.ok(pages.length > 1, 'the scoped briefing needed more than one page');
   const whole = await fetch(`${origin}/api/graphs/${bigGraph.id}/context?question=port+note&budget=100000`, { headers: auth }).then(response => ({ body: response.json() })).then(async r => ({ body: await r.body }));
   assert.equal(pages.join('\n'), whole.body.context.text);
+  const joined = pages.join('\n');
+  assert.equal(joined.match(/^open questions: 1 left out$/gmu)?.length, 1);
+  assert.equal(joined.match(/call context_for without a question for the whole graph/gu)?.length, 1);
+  assert.ok(!joined.includes('gpu-owner') && !joined.includes('GPU'));
 });
 
 test('review round 2: ASCII words find mixed-script labels, and letter pairs end at whole letters', () => {

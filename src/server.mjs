@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
+import { createSwarm } from './swarm.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 
@@ -26,6 +27,12 @@ const staticFiles = new Map([
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
   // Card U6: the console's three OFL fonts, local so no request leaves the loopback host.
   ...['jersey-15', 'inter-tight', 'silkscreen'].map(name => [`/console/fonts/${name}.woff2`, [`../docs/brand/fonts/${name}.woff2`, 'font/woff2']]),
+
+  // The swarm demo (card S1), also a fixed list.
+  ['/swarm', ['swarm/index.html', 'text/html']],
+  ['/swarm/', ['swarm/index.html', 'text/html']],
+  ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
+  ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
 ]);
 
 class HttpError extends Error {
@@ -89,6 +96,9 @@ function listParameters(url, filters) {
       if (value.length > 32 || !partyParameter.test(value)) {
         throw new InputError('party must be a party name of at most 32 lowercase letters, digits and single hyphens.');
       }
+    } else if (name === 'project') {
+      // P2a: a present but empty or malformed project is invalid, never "every project".
+      if (!isProjectSlug(value)) throw new InputError(projectSlugRule);
     } else if (!hexParameter.test(value)) {
       throw new InputError(`${name} must be a 64-character lowercase hex ID.`);
     }
@@ -104,6 +114,14 @@ const latentUrl = () => process.env.LATENT_URL ?? defaultLatentUrl;
 const port = Number(process.env.PORT ?? 4317);
 const database = process.env.CONTEXT_LEDGER_DB ?? '.context-ledger/ledger.sqlite';
 const store = openStore(database);
+// Card S1: SWARM_URLS names local model servers; a bad value stops the start, like a bad database.
+let swarm;
+try {
+  swarm = createSwarm();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 // A fresh API token at each start, in a file next to the database named for the port
 // (ADR-10; <database>.<port>.token), written only once the port is ours: a second
@@ -199,6 +217,15 @@ const routes = [
     const packet = await readJson(request, origin, 'Graph publication');
     return { graph: store.publishGraph(packet) };
   } },
+  // Card P2b (ADR-7b): artifacts are registered by a person, never found automatically.
+  { method: 'POST', path: '/api/artifacts', handler: async ({ request, origin }) => {
+    const input = await readJson(request, origin, 'Artifact registration');
+    return { artifact: store.registerArtifact(input) };
+  } },
+  { method: 'GET', path: '/api/artifacts', handler: ({ url }) => {
+    const { limit = 20, after, project } = listParameters(url, ['project']);
+    return store.listArtifacts({ project, limit, after });
+  } },
   { method: 'GET', path: '/api/sessions', handler: ({ url }) => {
     const query = url.searchParams.get('q') ?? '';
     const provider = url.searchParams.get('provider') ?? '';
@@ -215,12 +242,12 @@ const routes = [
     return store.listSessionsPage({ query, provider, project, limit, after });
   } },
   { method: 'GET', path: '/api/graphs', handler: ({ url }) => {
-    const { limit = 20, after, sessionId, party } = listParameters(url, ['sessionId', 'party']);
-    return store.listGraphs({ sessionId, party, limit, after });
+    const { limit = 20, after, sessionId, party, project } = listParameters(url, ['sessionId', 'party', 'project']);
+    return store.listGraphs({ sessionId, party, project, limit, after });
   } },
   { method: 'GET', path: '/api/rooms', handler: ({ url }) => {
-    const { limit = 20, after, graphId, party } = listParameters(url, ['graphId', 'party']);
-    return store.listRooms({ graphId, party, limit, after });
+    const { limit = 20, after, graphId, party, project } = listParameters(url, ['graphId', 'party', 'project']);
+    return store.listRooms({ graphId, party, project, limit, after });
   } },
   { method: 'GET', pattern: idPattern('/api/sessions'), handler: ({ params: [id] }) => {
     const session = store.get(id);
@@ -235,7 +262,22 @@ const routes = [
   } },
   { method: 'GET', pattern: idPattern('/api/graphs'), handler: ({ params: [id] }) => {
     const graph = store.getGraph(id);
-    return graph ? { graph } : undefined;
+    if (!graph) return undefined;
+    // Card P2c: a version 3 graph comes with the decisions on its nodes' current hashes.
+    return { graph: graph.packet.version === 3 ? { ...graph, reviews: store.graphReviews(id) } : graph };
+  } },
+  { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
+    // People approve, edit or reject nodes in the browser (P2c, P3). The request must carry a browser's
+    // sign-in cookie (the CLI and the MCP adapter hold only the bearer token) and a
+    // browser's Sec-Fetch-Site, which page scripts cannot forge. That keeps agent clients
+    // out; it does not prove who clicked: a program running as the person can still sign
+    // in as a browser does (ADR-10 trusts the OS user; P2c review).
+    if (!auth.signedIn(request) || request.headers['sec-fetch-site'] !== 'same-origin') {
+      throw new HttpError(403, 'Nodes are reviewed by people in the browser, signed in.');
+    }
+    const input = await readJson(request, origin, 'A node review');
+    const reviews = store.reviewNode(id, input);
+    return reviews ? { reviews } : undefined;
   } },
   { method: 'GET', pattern: idPattern('/api/graphs', '/export'), handler: ({ params: [id], url, response }) => {
     if ([...url.searchParams.keys()].length) throw new InputError('This export takes no parameters.');
@@ -279,6 +321,15 @@ const routes = [
   { method: 'POST', path: '/api/latent/team', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'A latent team run');
     return latentTeam(input, { latentUrl: latentUrl() });
+  } },
+  { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
+    const input = await readJson(request, origin, 'Starting a swarm run');
+    return { run: swarm.start(input) };
+  } },
+  { method: 'GET', pattern: idPattern('/api/swarm/runs'), handler: ({ params: [id] }) => {
+    const run = swarm.snapshot(id);
+    return run ? { run } : undefined;
   } },
   { method: 'POST', path: '/api/rooms', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Opening a room');

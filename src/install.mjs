@@ -18,6 +18,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import packageJson from '../package.json' with { type: 'json' };
 import { inlineText } from './text.mjs';
 
 export const serverName = 'context-ledger';
@@ -54,12 +55,94 @@ export function homeOf(env = process.env, platform = process.platform) {
   return named || (env === process.env ? homedir() : (() => { throw new InstallError('No home folder in this environment.'); })());
 }
 
+/**
+ * CONTEXT_LEDGER_DB as an absolute path, or undefined when it is unset or empty.
+ * `:memory:` (which the server refuses) and control characters are refused.
+ */
+function databaseFor(env) {
+  const value = env.CONTEXT_LEDGER_DB;
+  if (!value) return undefined;
+  if (value === ':memory:' || /\p{Cc}/u.test(value)) throw new InstallError('Invalid CONTEXT_LEDGER_DB: give the path of the database file.');
+  return resolve(value);
+}
+
+// The package spec npm hands a bin it runs through npx (npm_config_package) goes into the
+// agents' configs: on POSIX as one argument of the command, on Windows inside the cmd /c
+// line the agent hands to cmd.exe. Only three kinds are written (P5c review), each in a
+// grammar with no space, quote or character cmd.exe treats specially (% ! ^ & | < > ( ) , ; =):
+// - a registry package: name or @scope/name, with an optional @version or @tag;
+// - a hosted shorthand: github:, gitlab:, bitbucket: or gist: owner/repo, or a bare
+//   owner/repo, with an optional #ref;
+// - a local path (file:, ./, ../, /, \ or a drive letter, or a relative path ending .tgz),
+//   made absolute, since the agent starts in another folder.
+// Anything else, git+ssh: and every URL (which can carry credentials) among them, is refused.
+// A version is an exact semver (with an optional prerelease and +build) or a lowercase tag
+// of two or more characters (latest, next): npm reads name@bundle.tgz or name@.next as a
+// local path and name@x as a range, so such a spec is not a registry name here, and no
+// spec ending in a tarball suffix is one (P5c review rounds 3 and 4).
+const registrySpec = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|[a-z][a-z0-9-]+))?$/u;
+const tarSuffix = /\.(?:tgz|tar\.gz|tar)$/iu;
+const hostedSpec = /^(?:(?:github|gitlab|bitbucket|gist):)?[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*(?:#[A-Za-z0-9._/-]+)?$/u;
+const localSpec = /^(?:file:(?!\/\/)|\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/u;
+// As npm reads it: a bare name ending .tgz with no slash is a file; dir/pkg.tgz is a GitHub
+// shorthand, and a local file in a folder is written ./dir/pkg.tgz (P5c review).
+const tarballName = /^[^@/\\:~]+\.t(?:ar\.)?gz$/u;
+const safePath = /^[A-Za-z0-9@/\\._:~+-]{1,500}$/u;
+export const unsafeSpecLine = 'The npx package spec cannot be written into the agents\' MCP config safely (only a registry name, a host shorthand such as github:owner/repo, or a local path without spaces can). ' +
+  'Install the package with npm install --global and run context-ledger install again.';
+
+/** The spec as written to the agents' configs, or undefined when it cannot be written safely. */
+export function writableSpec(spec, cwd) {
+  if (typeof spec !== 'string' || spec.length > 500) return undefined;
+  // A scheme first (a URL, git+ssh:, npm: and the like) is refused before anything else
+  // can read it as a path: only the host shorthands, file: and a drive letter pass.
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(spec)?.[1];
+  if (scheme && !['github', 'gitlab', 'bitbucket', 'gist'].includes(scheme) && !(scheme === 'file' && !spec.startsWith('file://'))
+    && !/^[A-Za-z]:[\\/]/u.test(spec)) return undefined;
+  // ~ as a whole path part is the home folder to npm (~/x, ./~/x, file:~/x), which this
+  // process cannot be sure to see the same way, so such a spec is not written. Inside a
+  // name it is an ordinary character: Windows short names such as RUNNER~1 hold one.
+  if (/(?:^|[\\/:])~(?:[\\/]|$)/u.test(spec)) return undefined;
+  if (localSpec.test(spec) || tarballName.test(spec)) {
+    const path = resolve(cwd, spec.startsWith('file:') ? spec.slice('file:'.length) : spec);
+    return safePath.test(path) ? path : undefined;
+  }
+  if ((registrySpec.test(spec) && !tarSuffix.test(spec)) || hostedSpec.test(spec)) return spec;
+  return undefined;
+}
+
+/**
+ * Card P5c: the command an agent runs for the MCP adapter. From a checkout or a global
+ * install, node and this file, as before. Run through npx (npm says exec, and the file
+ * sits in npm's _npx cache, which npm may clear), npx with the spec it was run from, or,
+ * when npm names none, this package's name and version; on Windows through cmd /c, since
+ * the agents cannot start the npx.cmd shim themselves. An unsafe spec is an InstallError.
+ */
+export function mcpServerCommand(env = process.env, { file = mcpPath, platform = process.platform, cwd = process.cwd() } = {}) {
+  if (env.npm_command !== 'exec' || !/[\\/]_npx[\\/]/u.test(file)) return ['node', file];
+  let spec = env.npm_config_package;
+  if (spec === undefined || spec === '') {
+    spec = `${packageJson.name}@${packageJson.version}`;
+  } else {
+    spec = writableSpec(spec, cwd);
+    if (spec === undefined) throw new InstallError(unsafeSpecLine);
+  }
+  const npx = ['npx', '-y', '--package', spec, Object.keys(packageJson.bin)[0], 'mcp'];
+  return platform === 'win32' ? ['cmd', '/c', ...npx] : npx;
+}
+
 /** The two agents, with their CLI, instruction file and MCP commands. */
-export function agentTargets(env = process.env) {
+export function agentTargets(env = process.env, mode = 'install') {
   const home = homeOf(env);
   const port = env.PORT && env.PORT !== defaultPort ? env.PORT : undefined;
   if (port !== undefined && (!/^[1-9]\d{0,4}$/u.test(port) || Number(port) > 65535)) throw new InstallError('Invalid PORT.');
-  const server = ['node', mcpPath];
+  // Card P5b: the MCP adapter finds the ledger's token next to its database (P1e), so a
+  // custom database goes to both servers too, as an absolute path: the agents start the
+  // adapter in another folder.
+  // Uninstall registers nothing, so it does not read the value (P5b review).
+  const database = mode === 'install' ? databaseFor(env) : undefined;
+  const pairs = [...(port ? [`PORT=${port}`] : []), ...(database ? [`CONTEXT_LEDGER_DB=${database}`] : [])];
+  const server = mcpServerCommand(env);
   return {
     claude: {
       key: 'claude',
@@ -71,7 +154,7 @@ export function agentTargets(env = process.env) {
       // No get: `claude mcp get` can start project servers for a health check. `add`
       // itself refuses a name its scope already has.
       // -e takes every value up to the next option, so it must not sit just before the name.
-      add: ['mcp', 'add', ...(port ? ['-e', `PORT=${port}`] : []), '--scope', 'user', serverName, '--', ...server],
+      add: ['mcp', 'add', ...pairs.flatMap(pair => ['-e', pair]), '--scope', 'user', serverName, '--', ...server],
       remove: ['mcp', 'remove', '--scope', 'user', serverName],
       // Claude's own answer for a name its user scope has; any other failure stops install.
       // The whole line, so a longer message that contains it does not count.
@@ -79,6 +162,7 @@ export function agentTargets(env = process.env) {
     },
     codex: {
       key: 'codex',
+      env,
       name: 'Codex',
       envName: 'CONTEXT_LEDGER_CODEX_BIN',
       bin: env.CONTEXT_LEDGER_CODEX_BIN || 'codex',
@@ -87,7 +171,7 @@ export function agentTargets(env = process.env) {
       codexHome: env.CODEX_HOME ? resolve(env.CODEX_HOME) : undefined,
       // `codex mcp add` replaces an entry of the same name, so install asks first.
       get: ['mcp', 'get', serverName, '--json'],
-      add: ['mcp', 'add', serverName, ...(port ? ['--env', `PORT=${port}`] : []), '--', ...server],
+      add: ['mcp', 'add', serverName, ...pairs.flatMap(pair => ['--env', pair]), '--', ...server],
       remove: ['mcp', 'remove', serverName],
       absent: /^Error: No MCP server named 'context-ledger' found\.$/mu,
     },
@@ -128,6 +212,19 @@ function isExecutableFile(path, windows) {
   }
 }
 
+const throughCmd = (path, platform) => platform === 'win32' && /\.(?:cmd|bat)$/iu.test(path);
+const unsafeForCmd = (path, args) => [path, ...args].some(arg => /["%\r\n]/u.test(arg));
+
+/**
+ * True when runAgent would refuse these arguments: the CLI is a Windows .cmd or .bat
+ * shim and an argument holds a quote, a percent sign or a line break. A dry run uses it
+ * to report the same refusal as the real run (P5b review: a database path with %).
+ */
+export function refusedByCmd(bin, args, { platform = process.platform, env = process.env } = {}) {
+  const path = findCommand(bin, { platform, env });
+  return Boolean(path) && throughCmd(path, platform) && unsafeForCmd(path, args);
+}
+
 /**
  * Run an agent CLI from the home folder, so no project's MCP configuration applies. On
  * Windows the CLIs are usually .cmd shims, which only cmd.exe can run: each argument is
@@ -141,8 +238,8 @@ export function runAgent(bin, args, { platform = process.platform, env = process
   if (!path) return { missing: true };
   const options = { encoding: 'utf8', env, cwd, timeout: commandTimeoutMs, windowsHide: true };
   let result;
-  if (platform === 'win32' && /\.(?:cmd|bat)$/iu.test(path)) {
-    if ([path, ...args].some(arg => /["%\r\n]/u.test(arg))) return { unsafe: true };
+  if (throughCmd(path, platform)) {
+    if (unsafeForCmd(path, args)) return { unsafe: true };
     const line = [path, ...args].map(arg => `"${arg}"`).join(' ');
     // /s takes the outer quotes off and leaves the line as written.
     result = spawnSync(env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { ...options, windowsVerbatimArguments: true });
@@ -372,6 +469,7 @@ function applyInstructions(plan) {
 }
 
 const failure = result => (result.unsafe ? 'a path holds " or %' : result.detail || `exit status ${result.status}`);
+const unsafeLine = 'a path holds " or %, which cmd.exe cannot be given safely; register the server by hand (see README).';
 const missingLine = (target, what) => `${shown(target.bin)} was not found, so the server was not ${what}. Install the CLI or set its path in ${target.envName}.`;
 
 /** The MCP server step of install. stop: the instruction file is left as it is. */
@@ -383,16 +481,19 @@ function installServer(target, dryRun, run) {
     }
     const state = probeCodex(target, run);
     if (state.missing) return { ok: false, line: missingLine(target, 'registered') };
-    if (state.unsafe) return { ok: false, stop: true, line: 'a path holds " or %, which cmd.exe cannot be given safely; register the server by hand (see README).' };
+    if (state.unsafe) return { ok: false, stop: true, line: unsafeLine };
     if (state.failed) return { ok: false, stop: true, line: `${command(target.get)} failed (${state.detail}).` };
     if (state.present) return { ok: true, line: `${serverName} is already registered; left as it is.` };
+    if (dryRun && refusedByCmd(target.bin, target.add, { env: target.env })) return { ok: false, stop: true, line: unsafeLine };
     if (dryRun) return { ok: true, line: `would run ${command(target.add)}` };
   } else if (dryRun) {
     if (!findCommand(target.bin, { env: target.env })) return { ok: false, line: missingLine(target, 'registered') };
+    if (refusedByCmd(target.bin, target.add, { env: target.env })) return { ok: false, stop: true, line: unsafeLine };
     return { ok: true, line: `would run ${command(target.add)} (Claude Code refuses it when the name is already registered at user scope)` };
   }
   const result = run(target.bin, target.add);
   if (result.missing) return { ok: false, line: missingLine(target, 'registered') };
+  if (result.unsafe) return { ok: false, stop: true, line: unsafeLine };
   if (result.status === 0) return { ok: true, line: `ran ${command(target.add)}` };
   if (target.exists?.test(result.output ?? '')) return { ok: true, line: `${serverName} is already registered; left as it is.` };
   return { ok: false, stop: true, line: `${command(target.add)} failed (${failure(result)}).` };
@@ -445,7 +546,7 @@ function setupOne(target, mode, dryRun, run) {
  * report, one section per agent. `run` replaces runAgent in tests.
  */
 export function setupAgents({ mode, agents = ['claude', 'codex'], dryRun = false, env = process.env, run }) {
-  const targets = agentTargets(env);
+  const targets = agentTargets(env, mode);
   // A relative CODEX_HOME means the same folder to Codex as to the instruction step.
   const childEnv = env.CODEX_HOME ? { ...env, CODEX_HOME: resolve(env.CODEX_HOME) } : env;
   const runner = run ?? ((bin, args) => runAgent(bin, args, { env: childEnv }));

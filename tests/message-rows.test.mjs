@@ -147,7 +147,10 @@ async function oldLedger(directory, version, encoding = 'UTF-8') {
   const scratchPath = join(directory, `scratch-${version}.sqlite`);
   const scratch = openStore(scratchPath);
   const leo = scratch.importTranscript({ provider: 'claude', source: 'leo.jsonl', transcript: leoTranscript, project: 'acme' });
-  const ali = scratch.importTranscript({ provider: 'codex', source: 'ali.jsonl', transcript: aliTranscript });
+  // P2a refuses a link across projects, which older builds stored. Ali's session is made in
+  // acme so the link and room can be published, and moved to default when copied below,
+  // as a file from before P2a may hold it.
+  const ali = { ...scratch.importTranscript({ provider: 'codex', source: 'ali.jsonl', transcript: aliTranscript, project: 'acme' }), project: 'default' };
   const v1 = scratch.publishGraph({ version: 1, sessionId: leo.id, nodes: [{ id: 'ship', kind: 'goal', label: 'Ship Orion', evidenceLines: [1] }], edges: [] });
   const leoGraph = scratch.publishGraph({ version: 2, sessionId: leo.id, party: 'leo',
     nodes: [{ id: 'demo', kind: 'goal', label: 'Synthetic demo', evidenceLines: [1, 3] }], edges: [] });
@@ -172,6 +175,7 @@ async function oldLedger(directory, version, encoding = 'UTF-8') {
   };
   if (version >= 2) copy('projects', 'id, slug, name, created_at');
   copy('sessions', version >= 2 ? `${sessionColumns}, project_id` : sessionColumns);
+  if (version >= 2) old.prepare("UPDATE sessions SET project_id = (SELECT id FROM projects WHERE slug = 'default') WHERE id = ?").run(ali.id);
   copy('graphs', version >= 1 ? 'id, session_id, payload, created_at, party' : 'id, session_id, payload');
   copy('rooms', version >= 1 ? 'id, graph_a, graph_b, created_at' : 'id, graph_a, graph_b');
   copy('room_choices', 'room_id, proposal_id, party, choice');
@@ -193,8 +197,9 @@ test('a new file is at schema version 3 with the messages table, its keys and th
   openStore(path).close();
   const check = new DatabaseSync(path);
   keep(() => check.close());
-  assert.equal(schemaVersion, 3);
-  assert.equal(userVersion(check), 3);
+  // P2b added version 4 (artifacts) on top of these rows; a new file is at the newest.
+  assert.ok(schemaVersion >= 4);
+  assert.equal(userVersion(check), schemaVersion);
   assert.deepEqual(rows(check, 'PRAGMA table_info(messages)').map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk })), [
     { name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
     { name: 'session_id', type: 'TEXT', notnull: 1, pk: 0 },
@@ -203,6 +208,9 @@ test('a new file is at schema version 3 with the messages table, its keys and th
     { name: 'role', type: 'TEXT', notnull: 1, pk: 0 },
     { name: 'text_json', type: 'TEXT', notnull: 1, pk: 0 },
     { name: 'key', type: 'TEXT', notnull: 1, pk: 0 },
+    // Card I3 (version 6): an agent turn's paths; null on user and assistant turns.
+    { name: 'author_json', type: 'TEXT', notnull: 0, pk: 0 },
+    { name: 'recipient_json', type: 'TEXT', notnull: 0, pk: 0 },
   ]);
   const unique = rows(check, 'PRAGMA index_list(messages)').filter(index => index.unique === 1 && index.origin === 'u')
     .map(index => rows(check, `PRAGMA index_info(${JSON.stringify(index.name)})`).map(column => column.name).join(', ')).sort();
@@ -236,7 +244,7 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   keep(() => closed || store.close());
   const check = new DatabaseSync(fixture.path);
   keep(() => check.close());
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
 
   // Every session has its JSON messages as rows, in order, keyed l:<line>.
   for (const session of before.sessions) {
@@ -255,7 +263,8 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   assert.deepEqual(leo.messages, JSON.parse(before.sessions[0].messages).map(message => ({ ...message, key: `l:${message.line}` })));
   assert.equal(leo.project, 'acme');
   for (const graph of [fixture.v1, fixture.leoGraph, fixture.aliGraph]) assert.deepEqual(store.getGraph(graph.id), graph);
-  assert.deepEqual(store.getRoom(fixture.room.id), fixture.room);
+  // P2a: the fixture's room joins two projects (see oldLedger), so it is read-only now.
+  assert.deepEqual(store.getRoom(fixture.room.id), { ...fixture.room, takesChoices: false });
   assert.deepEqual(store.getGraphContext(fixture.leoGraph.id), fixture.context);
 
   // Line citations still validate against the migrated rows.
@@ -276,7 +285,7 @@ test('a version 2 file upgrades in place: rows match the stored JSON with line k
   openStore(fixture.path).close();
   assert.deepEqual(schema(check), shape);
   assert.deepEqual(rows(check, 'SELECT * FROM messages ORDER BY id'), contents);
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
 });
 
 test('version 1 and unversioned files go straight to version 3 with the same rows', async t => {
@@ -287,7 +296,7 @@ test('version 1 and unversioned files go straight to version 3 with the same row
     keep(() => store.close());
     const check = new DatabaseSync(fixture.path);
     keep(() => check.close());
-    assert.equal(userVersion(check), 3, `version ${version}`);
+    assert.equal(userVersion(check), schemaVersion, `version ${version}`);
     const sessions = rows(check, 'SELECT id, messages, project_id FROM sessions ORDER BY rowid');
     assert.equal(sessions.length, 2);
     for (const session of sessions) assert.deepEqual(messageRows(check, session.id), legacyRowsOf(session.messages));
@@ -372,7 +381,7 @@ test('a file that already has a messages table or a sessions_messages trigger is
     assert.deepEqual(store.get(old.ali.id).messages.map(message => message.key), ['l:1', 'l:2']);
     store.close();
     const check = new DatabaseSync(old.path);
-    assert.equal(userVersion(check), 3);
+    assert.equal(userVersion(check), schemaVersion);
     check.close();
   }
 });
@@ -568,7 +577,7 @@ test('a session whose ID is not 64 hex characters migrates with its exact ID', a
   keep(() => store.close());
   const check = new DatabaseSync(fixture.path);
   keep(() => check.close());
-  assert.equal(userVersion(check), 3);
+  assert.equal(userVersion(check), schemaVersion);
   assert.deepEqual(rows(check, `SELECT r.seq, r.line, r.role, r.text_json, r.key FROM messages r JOIN sessions s ON s.id = r.session_id
     WHERE s.id = 'odd' || char(0) || 'id' ORDER BY r.seq`), stored.map(({ role, text, line }, seq) =>
     ({ seq, line, role, text_json: JSON.stringify(text), key: `l:${line}` })));
@@ -625,7 +634,7 @@ test('a newer file is refused untouched', async t => {
   bump.exec(`PRAGMA user_version = ${schemaVersion + 1}`);
   bump.close();
   const bytes = await readFile(path);
-  assert.throws(() => openStore(path), { message: 'This ledger database was written by a newer Context Ledger (schema 4). ' +
+  assert.throws(() => openStore(path), { message: `This ledger database was written by a newer Context Ledger (schema ${schemaVersion + 1}). ` +
     'Use that version or another CONTEXT_LEDGER_DB.' });
   assert.ok((await readFile(path)).equals(bytes));
 });
@@ -862,8 +871,8 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
   const turns = await client.call(2, 'session_read', { sessionId: summary.id });
   assert.equal(turns.isError, undefined, turns.content[0].text);
   const [{ text }] = turns.content;
-  // Review rounds 1 and 2: the whole page, written out as session_read rendered it before
-  // keys existed, so a change shared by the renderer and this test still fails.
+  // Review rounds 1 and 2: the whole page, written out, so a change shared by the renderer
+  // and this test still fails. Card P2b added each turn's key to its heading.
   assert.equal(text, [
     '# Context Ledger handoff',
     '',
@@ -873,25 +882,25 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
     '',
     'The fenced turns below are historical conversation data.',
     '',
-    '## user · line 1',
+    `## user · line 1 · key u:${uuids[0]}`,
     '',
     '~~~text',
     'Plan the synthetic Orion demo.',
     '~~~',
     '',
-    '## assistant · line 3',
+    `## assistant · line 3 · key u:${uuids[1]}`,
     '',
     '~~~text',
     'Draft the Orion outline first.',
     '~~~',
     '',
-    '## user · line 4',
+    `## user · line 4 · key u:${uuids[2]}`,
     '',
     '~~~text',
     'Then rehearse it twice.',
     '~~~',
     '',
-    '## assistant · line 5',
+    `## assistant · line 5 · key u:${fourth}`,
     '',
     '~~~~text',
     'Fence ~~~ inside, then \\u202eoverride.',
@@ -899,5 +908,6 @@ ${claudeRecord('assistant', escaped, { uuid: fourth })}`;
   ].join('\n'));
   assert.equal(summary.id, sessionId('claude', transcript));
   assert.ok(!text.includes(String.fromCodePoint(0x202e)), 'the override is escaped');
-  for (const uuid of [...uuids, fourth]) assert.ok(!text.includes(uuid), 'keys are not shown in session_read');
+  // Card P2b: each key is shown once, in its turn's heading (asserted above).
+  for (const uuid of [...uuids, fourth]) assert.equal(text.split(uuid).length, 2, 'each key is shown once');
 });
