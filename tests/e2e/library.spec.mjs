@@ -194,6 +194,9 @@ test('U8: the library loads the console fonts, sits in the framed sheet and link
   expect(look.button).toBe('0px');
   await expect(page.getByRole('link', { name: 'Console' })).toHaveAttribute('href', '/console/');
   await expect(page.getByRole('link', { name: 'Swarm' })).toHaveAttribute('href', '/swarm/');
+  // The page links stay direct children of the masthead: no new landmark was added.
+  expect(await page.locator('.masthead > a.console-link').count()).toBe(2);
+  expect(await page.locator('.masthead nav').count()).toBe(0);
   expect([...hosts]).toEqual([new URL(page.url()).host]);
   // On a phone the framed sheet still has no sideways scroll.
   await page.setViewportSize({ width: 390, height: 800 });
