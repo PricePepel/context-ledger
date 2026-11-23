@@ -4763,3 +4763,14 @@ P3's review chain shows a change in the middle, but a chain cut short at its end
 - **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
 - **Codex review, round 3:** no findings.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+### P3c eval: signing reads the ledger read-only (2026-11-22)
+
+What is tested: `ledger handoff --sign` and `ledger reviews verify` open the ledger once, read-only, and never create, migrate or write it. Synthetic data only: one synthetic Claude transcript imported into a temporary ledger.
+
+- `openStore(path, { readOnly: true })` opens a current-schema ledger and reads sessions and the review chain; a write through it fails and leaves the file unchanged.
+- It refuses an older or a newer schema with the version, and the file's `user_version` and bytes are unchanged afterwards.
+- It refuses a missing file without creating it or its folder.
+- Signing an older-schema ledger fails with "older schema … then sign again", writes no bundle and leaves the file at its old version.
+- Signing a current ledger still produces a bundle that verifies, with the review head.
+- No code path in signing or `reviews verify` opens the ledger read-write: the CLI has one helper for both, and it passes `readOnly: true`.
