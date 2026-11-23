@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
+import { createSwarm } from './swarm.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 
@@ -27,6 +28,13 @@ const staticFiles = new Map([
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
   // The same session.js, so the console's files all stay under /console/ (P1f).
   ['/console/session.js', ['session.js', 'text/javascript']],
+  // The swarm demo (card S1), also a fixed list.
+  ['/swarm', ['swarm/index.html', 'text/html']],
+  ['/swarm/', ['swarm/index.html', 'text/html']],
+  ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
+  ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
+  // The same session.js, so the swarm page signs its API calls like the library (P1f).
+  ['/swarm/session.js', ['session.js', 'text/javascript']],
 ]);
 
 class HttpError extends Error {
@@ -115,6 +123,14 @@ const latentUrl = () => process.env.LATENT_URL ?? defaultLatentUrl;
 const port = Number(process.env.PORT ?? 4317);
 const database = process.env.CONTEXT_LEDGER_DB ?? '.context-ledger/ledger.sqlite';
 const store = openStore(database);
+// Card S1: SWARM_URLS names local model servers; a bad value stops the start, like a bad database.
+let swarm;
+try {
+  swarm = createSwarm();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 // A fresh API token at each start, in a file next to the database named for the port
 // (ADR-10; <database>.<port>.token), written only once the port is ours: a second
@@ -270,13 +286,13 @@ const routes = [
     return { graph: graph.packet.version === 3 ? { ...graph, reviews: store.graphReviews(id) } : graph };
   } },
   { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
-    // People approve or reject nodes in the browser. The request must carry a browser's
+    // People approve, edit or reject nodes in the browser (P2c, P3). The request must carry a browser's
     // sign-in session (the CLI and the MCP adapter hold only the bearer token) and a
     // browser's Sec-Fetch-Site, which page scripts cannot forge. That keeps agent clients
     // out; it does not prove who clicked: a program running as the person can still sign
     // in as a browser does (ADR-10 trusts the OS user; P2c review).
     if (!auth.signedIn(request) || request.headers['sec-fetch-site'] !== 'same-origin') {
-      throw new HttpError(403, 'Nodes are approved or rejected by people in the browser, signed in.');
+      throw new HttpError(403, 'Nodes are reviewed by people in the browser, signed in.');
     }
     const input = await readJson(request, origin, 'A node review');
     const reviews = store.reviewNode(id, input);
@@ -324,6 +340,15 @@ const routes = [
   { method: 'POST', path: '/api/latent/team', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'A latent team run');
     return latentTeam(input, { latentUrl: latentUrl() });
+  } },
+  { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
+    const input = await readJson(request, origin, 'Starting a swarm run');
+    return { run: swarm.start(input) };
+  } },
+  { method: 'GET', pattern: idPattern('/api/swarm/runs'), handler: ({ params: [id] }) => {
+    const run = swarm.snapshot(id);
+    return run ? { run } : undefined;
   } },
   { method: 'POST', path: '/api/rooms', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Opening a room');

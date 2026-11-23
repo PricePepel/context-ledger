@@ -8,6 +8,28 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21)
+
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §14).
+
+- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
+- `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
+- The CLI, the MCP adapter and the link format are unchanged.
+- **Next owner:** a human security review of the PR. Then P1's remaining items (project delete and retention). The P3 review routes take the browser session as the P2c route does.
+
+## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
+
+PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.
+
+## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
+
+100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
+
+
+## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
+
+Phi-3.5-mini (3.8B) to Qwen2.5-1.5B, trained on the 16 GB laptop GPU and evaluated on 300 SQuAD questions. Three gates pass and retention is reported: `swat` F1 0.872 vs text summary (`t2t`) 0.460, paired 95% interval for the F1 difference [0.36, 0.46]; the mismatched cache scores 0.153 and the zeroed one 0.002, so the gain depends on the correct passage's cache; 426 ms mean end to end vs 3,666 ms for `t2t`. Against the receiver reading the passage, the containment difference is −0.003 [−0.047, 0.040], so claim "finds the answer as often as reading it, within 5 points", not "beats it". Full table in [evals](evals.md) under M2b-S. Next owner: Codex review of the record, then the budget-matched compaction card (Attention Matching) and a receiver fine-tuned on the same SQuAD data as the fair control. Checkpoint stays on the GPU machine at `~/m2b-scale/run1/best.pt`.
+
 ## Current checkpoint — 2026-11-06
 
 The initial import/search and CLI handoff cycles are implemented and tested. Claude reviewed the design and the CLI. The independent Codex reviewer checked the backend, browser and CLI and verified the review fixes. The fixtures are synthetic. Start a new eval cycle before adding format coverage, incremental imports, or automatic discovery. Preserve explicit user control over which transcript content is ingested and which handoff is shared.
@@ -604,11 +626,45 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
-## Current checkpoint — P1f origin-scoped browser credential (2026-11-21)
 
-PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §14).
+## Current checkpoint — S1 swarm demo (2026-11-21)
 
-- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
-- `public/session.js` (also served as `/console/session.js`) adds the header to the app's and the console's requests and forgets the secret on a 401.
-- The CLI, the MCP adapter and the link format are unchanged.
-- **Next owner:** a human security review of the PR. Then P1's remaining items (project delete and retention) and P3, whose review events can rely on the browser session as the P2c route does.
+Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and [the run sheet](swarm-demo.md). `/swarm/` runs up to 200 agents at once on local OpenAI-compatible model servers (`SWARM_URLS`, loopback only), shows each agent live, checks each quote against its report, and combines verified answers beside the generator's truth. A seeded simulation, labelled on every number, runs without a GPU.
+
+- **Next owner:** run it live on the laptop GPU once the M2b-S training (branch `claude/m2b-scale`) frees it: one 7B server, then two models. Record wall time, tokens per second, KV-cache use and prefix-cache hit rate at 25, 50 and 100 agents in the eval log.
+- Then add the latent lane: a second pass where agents hand a compacted cache instead of text, once M2b-S and Attention Matching pass.
+
+## Current checkpoint — G9b scoped briefing says what it left out (2026-11-21)
+
+Branch `claude/g9b-scoped-state`. Read the G9b section of [the eval log](evals.md). Found while rehearsing the investor demo from a clean install: a `context_for` briefing scoped to a question said `open questions: none` when the graph had an open question the question did not match, and a live agent told Ali that Leo needed nothing from him.
+
+- Each state list in a scoped briefing names the shown items, then counts the rest (`1 left out`, `port; 1 more left out`). The scope line ends with `call context_for without a question for the whole graph` whenever a node is not shown. Unscoped briefings are unchanged.
+- A budget now tries the full briefing first, since the hint makes a cut briefing longer.
+- Live re-run: 3 of 3 runs no longer say Leo needs nothing.
+- **Next owner:** in every live run the agent's first `context_for` call passed `budget` without `question` and was refused. Consider accepting a budget alone (cut the whole briefing), as a separate card.
+
+## Current checkpoint — I3 on P1c message rows (2026-11-21)
+
+PR #34 (`ruslan/i3-codex-agent-messages`) now merges main. Codex messages between agents import as `agent` rows with `author_json` and `recipient_json` columns (JSON string literals), added by schema version 6 (ADR-16 in docs/architecture.md). Encrypted content is never stored. A Codex file imported before I3 gains its agent turns when it is imported again, and every earlier turn keeps its key. Builds from before versions see only user and assistant turns in `sessions.messages`.
+
+Next owner: any later schema step goes after version 6. If the `messages` table is rebuilt again, recreate the `sessions_messages` trigger.
+
+## Current checkpoint — P3 review events (2026-11-21)
+
+PR #67, branch `ruslan/p3-review-events`, merged after I3 (#34) on 2026-11-22; its schema step is version 7. Review decisions are append-only, hash-chained events in `review_events` (ADR-17). The browser review section has Approve, Edit and Reject, and `ledger reviews verify` checks the chain. P2c's rows are migrated.
+
+Next owner: P3b puts the chain's head in the signed hand-off manifest. Ali's P3 prototype (#52) keeps its own decisions in browser storage. Wiring it to `POST /api/graphs/<id>/reviews` is a choice for Ali.
+
+## Current checkpoint — P3b review head in signed hand-offs (2026-11-22)
+
+PR #70, branch `ruslan/p3b-review-head`. `ledger handoff --sign` writes manifest version 2, with the review chain's count and head (ADR-18). `ledger verify` shows them, and `ledger reviews verify --bundle <folder>` checks a ledger against them. Version 1 bundles still verify. docs/signed-handoff.md describes version 2 and the new check.
+
+Next owner: a later manifest version that adds files (P4b's redaction report, say) goes to version 3 and keeps `reviews`.
+
+## Current checkpoint — P3c signing reads the ledger read-only (2026-11-22)
+
+Branch `ruslan/p3c-sign-readonly`. `openStore(path, { readOnly: true })` opens an existing, current-schema ledger on a connection that cannot write, and never creates or migrates it; an older or newer file is refused with `code: 'LEDGER_SCHEMA'` and its version. The CLI helper `openCurrentStore` uses it, so `ledger handoff --sign` and `ledger reviews verify` (with or without `--bundle`) check the schema and read on one connection. This closes the gap P3b's Codex round 1 left open for signing. The store's methods are now built in `storeOn`, and `openStore` closes the connection whenever setup fails.
+
+`tests/fixtures/count-opens.cjs` is a `--require` preload that logs every `DatabaseSync` a process opens; use it to count connections in other CLI tests.
+
+Known and accepted: a ledger someone switched to WAL mode cannot be read read-only from a read-only folder without its `-wal` and `-shm` files.

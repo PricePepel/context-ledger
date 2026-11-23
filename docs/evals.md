@@ -4527,3 +4527,338 @@ Threat model change: a page or server on another port of 127.0.0.1 or localhost 
   - (low) The cross-port test swallowed the simple POST's failure. Fixed: it now asserts the ledger answered that POST with 403.
   - (low) The README said every request needs the token, and repeated "sign-in". Corrected, naming the redemption, link-minting and node-review exceptions.
 - **Suites after round 2:** node 526/536 (10 skipped), graph 9/9, Playwright 33/33, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+- **Merge of main (2026-11-23):** I3, P3, P3b, P3c, P4c, S1, S1b, G9b and M2b-S. The swarm page (S1) called the guarded `/api/swarm` routes with a plain `fetch`, so it relied on the P1e cookie and would have got only 401s after P1f. It now loads `/swarm/session.js` (the same file) and sends the header through `ledgerSession`, forgetting the secret after a 401 as the app and console do. `tests/e2e/swarm.spec.mjs` runs against it, and `tests/routes.test.mjs` lists the new static path. P3's node-review test signs in through `POST /api/session`. Suites after the merge: node 616/626 (10 skipped), graph 9/9, Playwright 43/43, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
+
+Run 1 of M2b (Qwen2.5-0.5B to SmolLM2-360M) passed its gate, but both models are far below the 3B–32B range of the SwaT paper (arXiv 2610.15095). This card scales the sender about 8× on the same 16 GB laptop GPU. A 7B pair does not fit in bf16 with the backward pass through the receiver, so 7B waits for quantized-receiver training or a larger GPU.
+
+- **Pair:** `microsoft/Phi-3.5-mini-instruct` (3.8B, Phi-3 architecture, 32 KV heads, LongRoPE) to `Qwen/Qwen2.5-1.5B-Instruct` (Qwen2, 2 KV heads, RoPE base 1e6). Different families, tokenizers and RoPE, large to small like the paper's Gemma3-12B to Qwen3-4B.
+- **Training:** `latent_transfer.train` with `--sender` and `--receiver`, the same two stages as run 1. Batch, mapper size and passage length are set by what fits in 16 GB without spilling to host memory, and recorded with the result.
+- **Eval:** 300 SQuAD v1.1 validation questions (seed 0), greedy, token F1 and containment, conditions `text, closed, swat, zeroed, mismatched, t2t`. `t2t` uses the sender's own chat template; run 1's ChatML prompt is unchanged.
+
+| Gate | Pass when |
+| --- | --- |
+| Carries the passage | `swat` beats `zeroed` and `mismatched` (another item's passage through the same mapper), each with the paired bootstrap 95% interval above zero. The mismatched control comes from the audit in arXiv 2608.04893. |
+| Better than text | `swat` beats `t2t` (the sender's 40-word summary read by the receiver), interval above zero. Budgets are not matched in this card. |
+| Faster than text | Mean `swat` end to end (sender prefill, mapper, receiver answer) is below mean `t2t` end to end (sender writes the summary, receiver answers). |
+| Retention | Reported, with containment beside F1, because stage 2 trains the answer style (run 1's F1 retention of 1.86 was inflated by short answers). |
+
+Not covered here, and named so nobody reads more into a pass: budget-matched compaction (Attention Matching), the fair control of a receiver fine-tuned on the same SQuAD data, and more than one task.
+
+### Result — run 1 (2026-11-22)
+
+Trained on the 16 GB laptop GPU (WSL, bf16): stage 1 15,000 steps at batch 4, stage 2 20,000 steps at batch 2 (QA share 0.7), mapper 100.5M parameters (8 blocks, width 384, 6 heads), passages capped at 256 tokens, seed 0. Stage 2 ran at about 0.54 s per step. Best dev F1 0.8275 (100 held-out dev questions), checkpoint `ade79c34041fd529`. Eval: 300 SQuAD v1.1 validation questions, seed 0, greedy.
+
+| Condition | F1 | Containment | Mean answer words |
+| --- | --- | --- | --- |
+| `text` (receiver reads the passage) | 0.778 | 0.857 | 4.9 |
+| `swat` (receiver reads the mapped sender cache) | **0.872** | 0.853 | 3.1 |
+| `t2t` (receiver reads the sender's summary) | 0.460 | 0.433 | 3.7 |
+| `mismatched` (another item's cache) | 0.153 | 0.087 | 3.2 |
+| `closed` (no passage) | 0.170 | 0.117 | 4.2 |
+| `zeroed` (zeroed cache) | 0.002 | 0.000 | 13.0 |
+
+Paired bootstrap 95% intervals (10,000 resamples) for the per-item difference in token F1: `swat − zeroed` [0.836, 0.901], `swat − mismatched` [0.670, 0.764], `swat − closed` [0.659, 0.744], `swat − t2t` [0.363, 0.464], `swat − text` [0.053, 0.135]. For containment, `swat − text` is −0.003 [−0.047, 0.040]. For latency per item, `text − swat` is 49 ms [15, 85] and `t2t − swat` is 3,240 ms [3,023, 3,473].
+
+Mean end to end: `swat` 426 ms (align 4 ms, sender prefill 84 ms, mapper 52 ms, receiver answer the rest), `t2t` 3,666 ms, `text` 475 ms.
+
+| Gate | Result |
+| --- | --- |
+| Carries the passage | **Pass.** Both intervals are far above zero, and the mismatched cache scores near the closed-book floor: the gain depends on supplying the correct passage's cache, not on a generic prior from the mapper. |
+| Better than text (`t2t`) | **Pass.** +0.41 F1, interval [0.36, 0.46]. |
+| Faster than text (`t2t`) | **Pass.** 426 ms vs 3,666 ms mean, about 8.6× faster. On this run it was also faster on average than the receiver reading the passage itself (426 vs 475 ms, per-item interval above zero); one machine, one run. |
+| Retention | Reported: F1 retention 1.12 against `text` (interval above zero), while containment shows no detectable difference (−0.003, interval [−0.047, 0.040], so any gap is under 5 points either way). `swat` answers are shorter (3.1 vs 4.9 words), which likely explains part of the F1 edge; these aggregates do not show how much. The claim we make: "finds the answer as often as reading the passage, within 5 points, and beats a text summary by 0.41 F1 at 8.6× the speed". |
+
+Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 0.46 → 0.41, and the mismatched control (new in this card) confirms the gain is passage-specific. Still not covered: budget-matched compaction, a receiver fine-tuned on the same SQuAD data as the fair control, more than one task, and 7B+ senders. Aggregates only are committed; the per-item file stays in `~/m2b-scale/run1/eval.json` on the GPU machine.
+
+Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
+
+## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
+
+For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
+
+**Task (synthetic):** N incident reports, generated from a fixed seed (service, cause, downtime in minutes, date, a short narrative). Each agent reads one report and returns `{service, cause, downtimeMinutes, quote}`. The page combines them: which services went down because of a configuration change, and their total downtime.
+
+| Eval | Expected |
+| --- | --- |
+| Live run | With a local OpenAI-compatible server (vLLM) configured, `POST /api/swarm/runs` with `agents: 100` sends one request per agent, at most `SWARM_CONCURRENCY` at a time (default 32), assigns agents round-robin across the configured models, and records each agent's model, state, time and tokens. |
+| Local only | Model servers come from `SWARM_URLS` (comma-separated) and must be `http://127.0.0.1` or `http://localhost`; any other host is refused at start. Nothing in a request body chooses a URL or a model. |
+| Checked quotes | An agent's answer is **verified** only when its quote appears in its report (after whitespace folding) and its downtime number appears in the quote. It is **correct** when service, cause and downtime match the generator's truth. Both counts are shown; unverified answers are left out of the combined answer. |
+| Combined answer | The answer lists the services and total downtime from verified answers, beside the truth from the generator and the number of agents that agree with it. |
+| GPU numbers | During a live run the page shows the server's KV-cache use, prefix-cache hit rate and running requests from its `/metrics`, when the server exposes them; missing metrics show as not reported, never as zero. |
+| Simulation | `mode: "simulated"` runs without any model server, with seeded timings and a few seeded wrong answers. The page says **Simulated** in the header and on every number; nothing simulated is labelled as measured. |
+| Speed figure | The page shows wall time and the sum of the agents' own times ("one after another"), labelled as that sum, not as a measured single-agent run. |
+| Safety | All text from reports and models is rendered with `textContent`. Run IDs are 64-hex. The routes need the token or sign-in cookie, and `POST` checks the origin like every other write. At most 200 agents per run; at most 5 runs kept in memory. |
+| Browser | Playwright: sign in, start a simulated 100-agent run, see 100 agent tiles reach done, the answer and the counts, and open one agent to see its report with the quote marked. |
+
+**Codex review, round 1** (of fa80ac7), each finding fixed with a regression test:
+
+- (high) Overlapping runs escaped the concurrency limit, and a running run could be dropped from the kept five while its agents kept working. One run at a time now (`409` while one runs), and only finished runs are dropped.
+- (medium) Model-server requests followed redirects, which could leave loopback: every request now uses `redirect: 'error'`; a test checks the redirect target is never contacted.
+- (medium) Model-server bodies were unbounded: capped at 256 KiB before parsing (the stream is cancelled), and answer fields are capped (service 80, cause 40, quote 400 characters, downtime 0 to 100,000).
+- (medium) The prefix-cache rate could include traffic from before the run, and a short run could finish without a sample. The baseline is read before the first agent starts, a last sample is taken after the last one, and a server's counters count only when both samples have them and they did not go backwards. The page now shows the server's running requests, "not reported" when missing.
+- (medium) Any number in the quote could verify a wrong downtime (a date, the incident number): the quote must state `<number> minutes`.
+- (medium) A run the ledger no longer keeps left the page polling forever: a `404` stops polling and frees **Run**, and 20 failed polls in a row stop it too (Playwright test).
+- (low) The finished message and an agent's token counts were not labelled simulated: both are now.
+- (low) A run where every agent failed still said done, and zero answers could "match" an empty truth: such a run is a failure, the finished message counts failed agents, and a match needs at least one answer and equal incident counts.
+
+**Codex review, round 2** (of 5b6dd55): the round 1 fixes work. Fixed with tests:
+
+- (medium) A failed last metrics scrape kept the earlier sample unmarked: it is now marked stale, shows no "running now", and the page says "last sample before the end".
+- (medium) A model answering `{}` to every agent made a done run: an answer needs all four fields with the right types, so such a run fails.
+- (medium) A stalled poll never counted as a failure: every page request has a 5-second deadline covering the response.
+- (low) The short-run metrics test passed without the last scrape: the fake server now moves its counters only when a completion finishes.
+
+**Suites (Windows, round 1 fixes):** node 534 of 545 passing, 10 skipped, 0 failed; `tests/paging.test.mjs` passes alone (17 of 17, 283 s) but went over the 300 s per-file limit in the full run while the GPU was training. Playwright 34 of 34. The swarm page was checked in the in-app browser with a simulated 100-agent run. A live run on vLLM is not done yet: the GPU was training the M2b-S mapper.
+
+### Live run on vLLM (2026-11-22)
+
+Laptop RTX 4090 (16 GB), WSL, vLLM serving `Qwen/Qwen2.5-7B-Instruct-AWQ` (max model length 4096, 64 sequences at once, prefix caching on), ledger at commit 7b3db03 with `SWARM_CONCURRENCY=64`. Synthetic incident reports (seed 7). Measured through the API with a script that keeps aggregates only. The GPU had no other job during these runs.
+
+| Agents | Wall time | Correct | Verified | Failed | Output tokens/s | Prefix-cache hits |
+| --- | --- | --- | --- | --- | --- | --- |
+| 25 | 2.1 s | 25 | 25 | 0 | 629 | 77% |
+| 50 | 2.3 s | 50 | 50 | 0 | 1,133 | 89% |
+| 100 (3 runs) | 4.6 s, 3.9 s, 3.5 s | 100 each | 100 each | 0 | 1,140–1,485 | 89%, 98%, 98% |
+
+The combined answer (services hit by a configuration change and their total downtime) matched the generator's truth on every run.
+
+**Speed-up, measured honestly.** One agent alone took 0.86–1.29 s (5 runs, mean 1.05 s), so 100 agents one after another would take about 105 s, against 3.5–4.6 s together: **about 23–30× faster**. The page's "one after another" figure is the sum of each agent's own time *while sharing the GPU* (244 s for the first 100-agent run, a 53× ratio). It is labelled as that sum, but the ratio overstates the gain because each request is slower under load. Quote the measured single-agent baseline, not the page's ratio, until the page measures it (Backlog card S1b).
+
+**KV cache in use** read 0% in every run, because the last sample is taken after the agents finish. The peak during the run is not captured yet (S1b).
+
+**Two models on one GPU** (7B AWQ plus `Qwen/Qwen2.5-1.5B-Instruct`). They fit only with both servers in eager mode (`--enforce-eager --max-num-batched-tokens 2048`), the 1.5B at `VLLM_GPU_UTIL=0.40` started first, then the 7B at `0.90`. On this vLLM, the second server's setting is a cap on the whole GPU, including the first server's memory, so `0.55` plus `0.3` does not start. 100 agents split 50/50: the 7B was 50 of 50 correct and the 1.5B 45–46 of 50 correct with 48 verified, so two or three of its answers quote real text but get a fact wrong, and the combined answer no longer matched the truth. Timings from these runs are **not usable**: another session's GPU evaluation started at the same minute, so three jobs shared the GPU (100 agents took 32–45 s, median agent 13 s on the 7B and 7 s on the 1.5B). The first 25-agent run after the 7B started had 13 of its 13 7B agents time out; warm the servers before a demo.
+
+What this shows for the pitch: 100 live agents on one laptop GPU in about 4 seconds with every answer cited and checked, and mixing models works but costs speed on one GPU. "Verified" means the quote is in the report, not that the answer is right; the two-model run shows the difference.
+
+## S1b — Honest speed-up and peak KV on the swarm page (defined 2026-11-22, before the code)
+
+The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divided the sum of each agent's own time *while sharing the GPU* by the wall time (53× for 100 agents), but each request is slower under load, so the honest figure against one agent run alone was about 23–30×. "KV cache in use" read 0% because the last sample is taken after the agents finish.
+
+| What | Pass when |
+| --- | --- |
+| Solo baseline | Before the agents start, a live run sends one warm-up request (not timed) and then `SWARM_BASELINE_RUNS` timed requests (default 3, 1 to 5) to each server alone, one at a time, and keeps the median per server. The baseline uses the same prompt shape as an agent (report 1) and its tokens are not added to the run's totals. It is measured once per ledger process for the same set of servers and models and reused by later runs, with the time it was measured. |
+| Speed-up | `speed-up = estimated one-after-another ÷ wall time`, where the estimate adds each finished agent's server baseline. A test with a server that answers slower under load than alone shows the speed-up uses the solo baseline (and is below the old sum ÷ wall ratio). If the baseline fails, the run still goes on and the speed-up says "not measured". |
+| Old figure | The sum of agents' own times is no longer shown as a speed-up or as "one after another". It stays in the API as `agentMsSum` only. |
+| KV peak | The KV-cache tile shows the highest value sampled during the run (across servers and samples), labelled as the peak, not the last sample. A test with a server whose KV gauge is high during the run and 0 afterwards shows the peak, not 0. |
+| Simulated | A simulated run shows "not measured" for the speed-up, the one-after-another estimate and the KV peak; no baseline is taken. |
+| Safety | Baseline requests use the same request path as agents: loopback servers from `SWARM_URLS` only, `redirect: 'error'`, timeouts and the 256 KiB body cap. The page renders with `textContent` only. |
+| Browser | The simulated Playwright run shows "not measured" on the speed-up tile. |
+
+**Codex review, round 1** (of ed890ea), each finding fixed with a regression test:
+
+- (medium) Failed agents were credited with a full solo run, so fast errors could raise the speed-up and an all-failed run could still show one. Only agents that answered count now (`answeredForSpeedup` in the API, "N answers ×" on the page).
+- (medium) The baseline timed any HTTP 200, even a reply with no usable answer. Each baseline reply must now pass `parseAnswer`, the check an agent's reply passes; otherwise there is no baseline and no speed-up.
+- (medium) The timed requests read the same report as the warm-up, so they reused more of the prefix cache than agents do, and the page did not say the figure was a warm, possibly reused baseline. Timed requests now read reports 2 to N+1 after a warm-up on report 1, and the page says "per agent alone, warm (median of 3, measured at / reused from HH:MM)".
+- (low) The median of an even count took the lower middle value: it is now the mean of the two middle values.
+- (low) Playwright did not check the speed-up tile: the simulated journey now checks "not measured" on the speed-up and KV-peak tiles.
+- (low) Test robustness: the solo-time ceiling is loosened for busy runners, the stale path now also checks the kept peak, and a new test checks the warm-up is not timed and each server gets its own median.
+
+**Codex review, round 2** (of 497612e): the round 1 fixes are correct. Fixed with tests:
+
+- (medium) The baseline used the run's seed, so it sent the first agents' exact prompts before the run and a prefix cache could serve them faster, inflating the speed-up. The baseline now reads reports from its own seed (`baselineSeed`), and a test checks no baseline prompt is a run prompt.
+- (low) With several servers the note multiplied the total answer count by every server's time. Each server now shows its own answers × solo time (`perServer[].answered` in the API).
+- (low) The warm-up test could pass with the warm-up included: it now uses distinct timings and two timed runs, so only the right samples give the expected median.
+- (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
+
+Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
+## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
+
+Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
+
+| Eval | Expected |
+| --- | --- |
+| Counts | In a scoped briefing, each state list (ready actions, current decisions, open questions) names the shown items, then the number it leaves out: `open questions: 1 left out`, `current decisions: port; 1 more left out`. A list with nothing left out reads as before (`none` or the IDs), so an unscoped briefing and a scoped one that shows everything are unchanged. |
+| Budget | The counts hold when the budget, not the question, drops a node. |
+| Way back | When a scoped briefing leaves out any node, its scope line ends with `call context_for without a question for the whole graph`, as the no-match line already does. |
+| No IDs leak | A left-out node's ID, label and links still never appear; only the count does. |
+| Live | The demo question re-run against a live agent no longer gets "Leo needs nothing from you": the agent either reports the open question or says some were left out. |
+
+### G9b results (2026-11-21)
+
+- **Counts, no IDs leak, way back:** `tests/scope.test.mjs` checks `1 left out`, `port; 1 more left out` (rendered), the hint at the end of the scope line, and that no left-out ID or label appears. A scoped briefing that shows every node has the same state section as the unscoped one and no hint. The unscoped golden briefing is unchanged.
+- **Budget:** a question dropped by the budget is counted (`open questions: 1 left out`). Over MCP paging, the reassembled pages match the HTTP briefing byte for byte and carry the count and the hint once.
+- **Live:** Leo's graph from the clean-install rehearsal (8 nodes, published by Claude Sonnet), Ali's prompt sent unchanged to a fresh Claude Sonnet session over MCP, 3 runs on this branch. Before the fix (a08c6e9, 1 run), the agent said Leo needed nothing from Ali. After it: 2 runs named "Who owns the GPU box?", and 1 said one open question was left out of the filtered view. All 3 answered port 4317 and Saturday 17:00. Cost $0.03–0.07 per run. In every run the agent's first call passed a `budget` without a `question` and was refused (`budget needs a question.`); that is a separate usability point, not part of this card.
+- **Suites (Windows, before the review fixes):** node 530 of 540 (10 skipped), graph suite passing.
+
+**Codex review, round 1** (of a2a877d):
+
+- (medium) The whole-graph hint makes a cut briefing longer, so a budget that fits the full briefing could be refused before the full briefing was tried (for example a v1 graph with one goal). The full briefing is now tried first, and the refusal names the smaller of the two sizes. Regression test: every budget the full briefing fits returns it; it fails without the fix.
+- (low) The mixed-list case was checked only on `graphWith`'s data: a rendered test now asserts `current decisions: port; 1 more left out`.
+- (low) The MCP paging fixture matched every node: it now has an unmatched open question, and the test checks the count and hint appear once in the reassembled pages and the question does not.
+- (low) No live result was recorded: recorded above.
+
+**Codex review, round 2** (of 6ad003f): every round 1 fix confirmed, no new production issue. (low) The budget regression never checked the refusal message: the test now asserts that a budget below both sizes names the full briefing's estimate when it is the smaller. Suites after round 1 fixes (Windows): node 532 of 542 (10 skipped), graph suite passing.
+
+## I3 — Codex agent-to-agent messages (defined 2026-11-17, before implementation)
+
+Codex multi-agent runs write messages between agents in two forms: `response_item` records of type `agent_message`, with an `author` and a `recipient` agent path (for example `/root` and `/root/worker`) and content blocks of `input_text` or `encrypted_content`; and the rollout's own `inter_agent_communication` records, with the same paths, a plain `content` string and an optional `encrypted_content`. The plain text carries a short envelope (`Message Type`, `Task name`, `Sender`, `Payload`). The importer dropped these records, so a hand-off between Codex agents vanished from the ledger. The format is taken from the public Codex issues that introduced it (openai/codex#26210, #27830 and #28368) and from `InterAgentCommunication` and `RolloutItem` in the Codex source; the fixtures are synthetic.
+
+### What is tested and the expected result
+
+- **Imported as agent turns.** Either form with plain text imports as a message with role `agent`, its `author` and `recipient`, its line number, and its text exactly as written (envelope included), so a graph can cite it. Only `input_text` blocks count in the first form. One delivery written in both forms on adjacent records (opposite forms, the same original paths and text) is kept once; two identical messages of one form are both kept. A `null` record is skipped, as before.
+- **Encrypted parts stay out.** Encrypted content is never imported, in either form. A message with only encrypted content is skipped, as before.
+- **Old imports gain them.** Importing again a Codex file that was stored before I3 adds its agent turns under the same session ID, keeping every line it had, so graphs that cite it still validate.
+- **Odd paths are bounded.** An author or recipient that is missing, not a string or longer than 200 characters is stored as `unknown`.
+- **Ordinary messages are unchanged.** Codex user and assistant messages, and every Claude Code record, import exactly as before; a Claude Code record that looks like an `agent_message` is still ignored.
+- **Shown with direction.** The browser labels the turn "Agent /root/worker to /root", with control and format characters in the paths shown as escapes. The CLI hand-off and `session_read` head it `## agent /root/worker to /root · line N`, with the paths on one line and every control and format character escaped (zero-width joiners included), Markdown in them shown literally, and `session_read` paging still splits and rejoins such turns exactly.
+- **Searchable.** The text of an agent message is found by session search.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs` and `npx playwright test` pass, with the cases above in `tests/import-agent-messages.test.mjs` and the library browser spec.
+- No new dependency. (The rework of 2026-11-21 below adds schema version 6.)
+
+### I3 results (2026-11-17)
+
+- `tests/import-agent-messages.test.mjs` 12/12 and the library browser spec 5/5. Full suites on Windows are listed in the PR.
+- **Codex, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) Codex also saves these messages in its own `inter_agent_communication` rollout record, which was still dropped. Both forms are now read, without encrypted content.
+  - (medium) A Codex file imported before I3 kept its old row on a new import. A new import now refreshes the row when every line it had is still there, keeping the session ID, so graphs that cite it still validate.
+  - (medium) Headings kept U+200C and U+200D and did not escape `~`. Agent paths now use a strict one-line escape, `labelText` in `src/text.mjs`.
+  - (low) `output_text` blocks were accepted in `agent_message`. Only `input_text` counts now.
+  - (low) The paging test did not rejoin a split turn. It now pages a long agent turn with escaped paths and a body that never repeats, rejoins the slices exactly and reads the turn after it.
+- **Codex, round 2:** no high findings; one medium and two low, fixed with tests:
+  - (medium) Two identical messages were merged into one. Now only opposite forms on adjacent records, with the same original paths, are merged.
+  - (low) A `null` record made a Codex import fail. It is skipped again.
+  - (low) The browser showed raw control and format characters in agent paths. They are shown as escapes.
+- **Note:** the refresh can change a graph context's savings estimate for an old session, because the hand-off it measures now includes the agent turns.
+
+### I3 rework on P1c message rows (2026-11-21)
+
+P1c (#45) moved turns into one `messages` row each, with a `role` CHECK of user or assistant, so I3 no longer merged. Recommended default, taken under the user's standing instruction: an agent turn is a row of its own with two new columns.
+
+- **Schema version 6.** `messages` is rebuilt with the same rows: `role` may be `agent`, and nullable `author_json` and `recipient_json` columns hold the paths as JSON string literals, like `text_json`; a CHECK makes both present on an agent row and absent on every other. The `sessions_messages` trigger for builds from before versions is recreated. The copy in `sessions.messages`, which only such builds read, leaves agent turns out, because those builds know only user and assistant turns.
+- **Keys.** An agent turn gets a line-hash key like any Codex turn, so a version 3 graph can cite it.
+- **Old imports gain agent turns.** Importing a Codex file again adds its agent turns when the stored session has none, has fewer turns and keeps every key it had. The rows are rewritten in one transaction, and every earlier turn keeps its key.
+- **Tests:** `tests/import-agent-messages.test.mjs` 13/13, including a version 5 file upgraded to version 6 with its rows unchanged, the CHECK on the paths, the legacy copy without agent turns, and the older-build trigger still working. The schema tests in `tests/message-rows.test.mjs` and `tests/node-review.test.mjs` now expect the two new columns and the newest version. The library browser spec has both I3 cases. `labelText` was dropped for main's `terminalLabel`, which escapes the same characters.
+- **Suites (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 539/539, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python 239 run, 66 skipped.
+- **Codex review of the rework, round 1:** no high findings; three medium and one low, fixed with tests:
+  - (medium) A session migrated by the version 3 step has l:<line> keys, so a re-import never matched it. Old turns are now matched by line, role and text and keep their keys.
+  - (medium) Two identical deliveries in a row, each written in both forms, collapsed into one. A dropped repeat no longer counts as the previous delivery.
+  - (medium) SQLite cut an agent path at a NUL, so a turn could name the wrong sender. Paths are stored as JSON string literals, and a NUL is shown escaped.
+  - (low) A session deleted by another process between the duplicate check and the write lock left the re-import failing on the foreign key. The check now runs under the lock, and the file is imported as new.
+  - `tests/import-agent-messages.test.mjs` 18/18; `node --test tests/*.test.mjs` 544/544.
+- **Codex review of the rework, round 2:** no high findings; two medium and two low, fixed with tests:
+  - (medium) `ledger redact` scanned message text but not agent paths, which the hand-off prints in headings. Paths are now scanned and redacted too.
+  - (medium) A session deleted right after the re-import committed made the import return nothing. The summary is now read under the same lock.
+  - (low) Two deliveries on either side of an unreadable or oversized line could be paired. A skipped line now ends a pair.
+  - (low) The CHECK accepted one path on a user or assistant row. Both paths are now required on an agent row, and neither is allowed on any other.
+  - `tests/import-agent-messages.test.mjs` 21/21; `node --test tests/*.test.mjs` 547/547; `npm run -s test:graph` passes.
+- **Codex review of the rework, round 3:** one medium, fixed with a test: a blank line between two deliveries still let them pair. A blank line now ends a pair too. Codex confirmed the round 1 and 2 fixes. `tests/import-agent-messages.test.mjs` 22/22.
+- **Codex review of the rework, round 4:** no findings.
+- **Suites after the reviews (Windows, 2026-11-21):** `node --test tests/*.test.mjs` 548/548, `npm run -s test:graph` passes, `npx playwright test` 34/34, runtime Python OK (66 skipped).
+
+## P3 — review events (defined 2026-11-21, before implementation)
+
+P2c (ADR-7c) records one person's approve or reject decision per version 3 node hash as a plain row that a later decision overwrites. ADR-6 asks for append-only, hash-chained review events whose state is a fold, and the reviewer needs an edit decision as well. Synthetic graphs and reviewer names only.
+
+### What is tested and the expected result
+
+- **Events, not rows.** Every decision appends one row to `review_events` (schema version 7). An UPDATE or DELETE on it is refused by the database. The current decision for a node hash is the latest event for it.
+- **Hash chain.** Each event stores `prev` (the previous event's hash, 64 zeros for the first) and `hash`, SHA-256 of the RFC 8785 JCS form of the event: prev, session, party, node ID, node hash, decision, label when it is an edit, reviewer and time. `ledger reviews verify` recomputes the chain and reports the event count and head hash, or the first event that does not match. Changing any field of a stored event, by a raw write with the triggers dropped, is reported.
+- **Edit.** A third decision, `edit`, carries the corrected label (1 to 500 characters, well-formed Unicode, not only spaces). The graph itself never changes: the edit is a review outcome shown beside the node. Approve and reject carry no label.
+- **Same rules as P2c.** Only version 3 nodes with a current hash are reviewed; a stale hash is a 409; the reviewer is 1 to 64 visible characters on one line and self-asserted; the POST route still needs a browser sign-in; errors never echo a value.
+- **Migration.** A version 6 file with P2c rows gains one event per row, in the order they were decided, with a valid chain, and `node_reviews` is dropped. The decisions a graph shows are the same before and after.
+- **Browser.** The review section has Approve, Edit and Reject. Edit opens a field with the label filled in; saving shows "Edited by <name> (self-asserted)" and the new label as text. Everything is set with `textContent`.
+- **Concurrency.** Two stores appending to one file keep one chain: each append reads the head under the write lock.
+
+### Acceptance for the code
+
+- `node --test tests/*.test.mjs`, `npm run -s test:graph`, `npx playwright test` and the runtime Python checks pass, with the cases above in `tests/review-events.test.mjs` and the review browser spec.
+- No new dependency.
+
+### P3 results (2026-11-21)
+
+- `tests/review-events.test.mjs` 9/9: events and the fold, a changed node starting unreviewed, edit labels and fixed-word errors, the append-only triggers, verify naming the first rewritten event, `checkChain` on seq, prev and label, two stores on one file keeping one chain, a version 6 file with P2c rows migrating in decision order, and `ledger reviews verify` (count and head, a broken event named by number only, an older file left unmigrated, usage).
+- `tests/e2e/node-review.spec.mjs` 5/5, with an edit saved and shown as text beside the unchanged graph label, then replaced by an approval, and Cancel recording nothing.
+- The P2c tests now expect the new decision list, the edit label in the key list and the version 7 table.
+- **Codex review, round 1:** one high, two medium and two low findings, fixed with tests:
+  - (high) An edit label with a NUL was cut by SQLite while its hash covered every character, so a valid edit broke the chain. The label is stored as a JSON string literal (`label_json`).
+  - (medium) `INSERT OR REPLACE` deletes a row without firing the delete trigger, so an event could be overwritten. A new insert trigger requires the next seq and the head as prev.
+  - (medium) A chain with its last events removed still verified. `ledger reviews verify --head <hash>` now checks against a head kept from earlier, and the plain check says that removal from the end would not show. The ADR no longer claims more.
+  - (low) A failed save redrew the edit field from the stored label, losing what was typed. The draft is kept.
+  - (low) The two-store test wrote one after the other. It now runs three processes appending 25 events each at the same time, and expects one chain of 75.
+  - `tests/review-events.test.mjs` 12/12, `tests/e2e/node-review.spec.mjs` 6/6, `node --test tests/*.test.mjs` 556/556.
+- **Codex review, round 2:** one medium and two low findings, fixed with tests:
+  - (medium) `INSERT OR REPLACE` could still remove the head through the unique hash: a row with the next seq and the head as both prev and hash. The insert trigger now refuses a hash already in the chain.
+  - (low) A malformed stored label made verify fail as "Cannot read the ledger database", hiding which event broke and any earlier break. An unreadable label now counts as a broken event, by number, and the fold leaves it out.
+  - (low) The edit field stayed editable while a save was pending, so the label shown could differ from the one sent. It is locked until the save finishes.
+- **Codex review, round 3:** two low findings, fixed with tests:
+  - (low) A stored label holding an escaped lone surrogate passed the string check, then made verify throw. It is now an unreadable event, named by number.
+  - (low) The API took a label with a line break, which the browser's one-line field drops, so saving an unchanged field recorded a different label. Edit labels are one line.
+- **Codex review, round 4:** one medium, fixed with a test: node:sqlite cuts a stored string at a NUL, so a NUL and suffix added to a stored field hashed as the original and verify missed it. Verify now reads every text column as its stored bytes and decodes them as strict UTF-8. A NUL is hashed, and bytes that are not UTF-8 make the event unreadable.
+- **Codex review, round 5:** one medium and one low, fixed with a test. (medium) The UTF-8 decoder dropped a leading U+FEFF, so a BOM added to a stored field was missed. It is now kept and hashed. (low) A seq past 2^53 made node:sqlite throw while reading. Verify reads seq as text, and such an event is broken, named by its position.
+- **Codex review, round 6:** one medium and two low, fixed with tests:
+  - (medium) With the table rebuilt without its CHECK, a label added to an approval was parsed and then left out of the hash, so the chain still verified. Verify now breaks the chain when a non-edit has a label or an edit has none.
+  - (low) Verify decoded stored text as UTF-8, so a UTF-16 ledger reported a break at event 1. It now decodes in the database's own encoding.
+  - (low) Clicking Edit on an open editor redrew it and dropped what was typed. A second click keeps it.
+- **Codex review, round 7:** one low, fixed with a test: opening the editor on another node dropped the first node's draft. Drafts are now kept per node until that node's decision is saved or its edit is cancelled. No high or medium findings.
+- **Codex review, round 8:** one low, fixed with a test: edit labels were limited to 500 UTF-16 units while graph labels allow 500 code points, so a label with emoji could not be kept. Both count code points now, and the browser field has no maxLength (which counts UTF-16 units).
+- **Codex review, round 9:** one low, fixed with a test: an edit label of only invisible characters (a zero-width space, say) was accepted. Edit labels now follow the version 3 graph label patterns: something visible, and no control, separator or bidi control.
+- **Codex review, round 10:** two low, fixed: the label patterns held raw bidi and filler characters, which the editor had turned from escapes. They are \u escapes now, and a scan finds no raw control or format character in src, tests or public. Focus was also lost after a saved edit. It returns to the node's button, with a browser test.
+- **Codex review, round 11:** one low, fixed with a browser test: Cancel removed the focused button. Focus now returns to the node's Edit button.
+- **Browser suite:** the room spec's newer-graph test sometimes failed in full runs. Rooms look for a newer graph from the same party across the project, and the review spec published `leo` graphs in parallel. The review spec now uses its own party, `reviewer-leo`, and two full runs passed 40/40.
+- **Codex review, round 12:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22):** `node --test tests/*.test.mjs` 563/563, `npm run -s test:graph` passes, `npx playwright test` 40/40, runtime Python OK (66 skipped).
+
+## P3b — review head in signed hand-offs (defined 2026-11-22, before implementation)
+
+P3's review chain shows a change in the middle, but a chain cut short at its end still checks, and `--head` needs a head someone kept. P4a's signed hand-off is the natural place to keep one: the sender's key signs it. Synthetic sessions, keys and names only.
+
+### What is tested and the expected result
+
+- **Manifest version 2.** `ledger handoff <id> --sign <folder>` writes manifest version 2, which adds `reviews`: `{ "events": <count>, "head": "<64 hex>" }`, the ledger's review chain at signing time (64 zeros and 0 for an empty chain). It is in the signed JCS bytes, so changing it breaks the signature.
+- **No signing over a broken chain.** If `ledger reviews verify` would report a break, signing refuses, names the event by number, and writes nothing.
+- **Verify shows it.** `ledger verify <folder>` checks the `reviews` shape (a safe non-negative integer, and 64 lowercase hex, which is the genesis hash exactly when events is 0) and prints "Review chain at signing: N events, head H". Version 1 bundles still verify, unchanged, and say they carry no review head. Any other version is refused.
+- **Check a ledger against a bundle.** `ledger reviews verify --bundle <folder> [--fingerprint <fp>]` first verifies the bundle as `ledger verify` does, with the same problems listed on failure, then checks the ledger's chain against the signed head. The check passes when the head is in the chain and the event count at the head matches. It fails when events up to the head were removed or rewritten, and when the bundle has no review head (version 1). `--bundle` and `--head` cannot be combined.
+- **OpenSSL path unchanged.** The OpenSSL commands in docs/signed-handoff.md still verify a version 2 bundle.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/sign.test.mjs` and `tests/review-events.test.mjs`.
+- No new dependency. docs/signed-handoff.md describes version 2.
+
+### P3b results (2026-11-22)
+
+- `tests/signed-review-head.test.mjs` 9/9. It covers signing recording the chain and verify showing it; `--bundle` passing as the ledger grows; a ledger cut short failing against the bundle while passing alone; a bundle with the wrong key, or a changed head (signature broken), not trusted; a signed count that does not match the head's position; a version 1 bundle verifying and reporting no head; an empty chain; a broken chain never signed, with nothing written; and option conflicts.
+- `tests/sign.test.mjs` now expects version 2 with `reviews`, and refuses a version 3 manifest, version 2 without `reviews`, version 1 with `reviews`, and malformed `reviews` (a count with the empty head, no events with a head, a negative count, an uppercase head, an extra key).
+- **Codex review, round 1:** no high; one medium and two low, fixed with tests:
+  - (medium) `reviews verify` checked the schema read-only, then reopened the file with `openStore`, which migrates. A file swapped in between could be migrated and then pass. The schema check and the chain read now share one read-only connection. Signing still uses the earlier helper; it migrates nothing a newer build would not, and is left as it was.
+  - (low) The OpenSSL steps in docs/signed-handoff.md did not check the version 2 `reviews` rules. They do now.
+  - (low) No test covered a failure found after the signature checks. A changed `handoff.md` under a valid signature is now tested, and its head is not trusted.
+- **Codex review, round 2:** one low, fixed in the docs: the OpenSSL checklist did not give the upper limit of `reviews.events`, which `ledger verify` holds to 2^53 - 1. It does now.
+- **Codex review, round 3:** no findings.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 601/601, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped).
+
+### P3c eval: signing reads the ledger read-only (2026-11-22)
+
+What is tested: `ledger handoff --sign` and `ledger reviews verify` open the ledger once, read-only, and never create, migrate or write it. Synthetic data only: one synthetic Claude transcript imported into a temporary ledger.
+
+- `openStore(path, { readOnly: true })` opens a current-schema ledger and reads sessions and the review chain; a write through it fails and leaves the file unchanged.
+- It refuses an older or a newer schema with the version, and the file's `user_version` and bytes are unchanged afterwards.
+- It refuses a missing file without creating it or its folder.
+- Signing an older-schema ledger fails with "older schema … then sign again", writes no bundle and leaves the file at its old version.
+- Signing a current ledger still produces a bundle that verifies, with the review head.
+- No code path in signing or `reviews verify` opens the ledger read-write: the CLI has one helper for both, and it passes `readOnly: true`.
+
+### P3c results (2026-11-22)
+
+- `tests/readonly-store.test.mjs` covers the eval: a read-only store reads a current ledger and a write through it fails with the file unchanged; an older or newer schema refused with `LEDGER_SCHEMA` and its version, the file unchanged; a missing file and folder never created; signing an older-schema ledger writes no bundle; signing a current ledger still verifies with its head; and a static check that signing and `reviews verify` open the ledger only through the one read-only helper, exactly once.
+- **Codex review, round 1:** no high; one medium and two low:
+  - (medium) Statements prepared after the open sat outside the cleanup, so a damaged file (current `user_version`, missing tables) left the connection open, which on Windows keeps the file from being replaced or deleted. The store's methods are now built in `storeOn`, and any failure there closes the connection, in both modes. Test: such a file is refused and can be removed at once. A side effect Codex noted: `reviews verify` on that damaged file now says "Cannot open the ledger database." rather than checking the chain alone; such a file is not a ledger this build wrote, so that is accepted.
+  - (low) The static test would have passed with a second, writable open in the helper. It now counts the opens and needs exactly one.
+  - (low, accepted) A read-only open of a ledger in WAL mode can need `-wal` and `-shm` files, so it fails in a read-only folder without them. The ledger uses the default rollback journal, which needs no sidecar to read; P3b's read-only check behaved the same. Left as it is.
+- **Codex review, round 2:** two low:
+  - (low) When the final newer-schema check in the store setup threw, the setup closed the connection and `openStore` closed it again; on Node 22 the second close throws `ERR_INVALID_STATE`, which hid the real error. `openStore` alone closes it now. The two concurrent-upgrade tests in tests/projects.test.mjs ("a file that a newer build upgrades while this one opens it gets no DDL" and "an upgrade that keeps every table, committed after the last statement is prepared, is refused") failed with ERR_INVALID_STATE under round 1 and pass now; a static test also checks the setup has no close of its own.
+  - (low, accepted) The static check cannot see a second connection opened inside `openStore` itself. Counting opens at run time would mean patching `node:sqlite` in a child process, which ES modules do not allow without a loader. `openStore` opens exactly one `DatabaseSync`, and the read-only behaviour tests cover what that connection can do.
+- **Codex review, round 3:** two low, both fixed with tests:
+  - (low) If a newer build upgraded the file between the read-only check and the store's final recheck, the recheck's error had no code, and the CLI said "Cannot open the ledger database." instead of naming the newer schema. `refuseNewer` now throws with `code: 'LEDGER_SCHEMA'` and the version, like the read-only refusal. Test: the recheck on a newer file throws that code and version.
+  - (low) Round 2's accepted gap, closed: Codex showed a CommonJS preload can replace `DatabaseSync` and pass it to ES modules with `syncBuiltinESMExports()`. `tests/fixtures/count-opens.cjs` logs every connection, and a test runs `handoff --sign`, `reviews verify` and `reviews verify --bundle` under it: each opens exactly one connection, read-only, on the ledger.
+- **Codex review, round 4:** two low, both accepted; no medium or high, so the review stops here:
+  - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
+  - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
+- **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.

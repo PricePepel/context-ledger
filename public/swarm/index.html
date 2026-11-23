@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTM Swarm</title>
+  <link rel="stylesheet" href="/swarm/swarm.css">
+  <script src="/swarm/session.js" defer></script>
+  <script type="module" src="/swarm/swarm.mjs"></script>
+</head>
+<body>
+  <header class="bar">
+    <span class="brand" aria-hidden="true">CTM</span>
+    <h1>Swarm</h1>
+    <span id="mode-badge" class="badge">Checking models…</span>
+    <p id="status" class="status" role="status"></p>
+    <a class="bar-link" href="/console/">Console</a>
+    <a class="bar-link" href="/">Library</a>
+  </header>
+
+  <main class="swarm">
+    <section class="part controls" aria-labelledby="controls-heading">
+      <h2 id="controls-heading">Run a swarm</h2>
+      <p class="hint">Each agent reads one incident report and pulls out four facts. The page checks every quote against its report and combines the answers.</p>
+      <form id="run-form" class="run-form">
+        <label for="agents">Agents
+          <select id="agents" name="agents">
+            <option value="10">10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+        <fieldset class="modes">
+          <legend>Models</legend>
+          <label><input type="radio" name="mode" id="mode-live" value="live"> Live (local GPU)</label>
+          <label><input type="radio" name="mode" id="mode-simulated" value="simulated"> Simulated</label>
+        </fieldset>
+        <button id="run" type="submit">Run</button>
+      </form>
+      <p id="live-reason" class="hint" hidden></p>
+    </section>
+
+    <section class="part stats" aria-labelledby="stats-heading">
+      <h2 id="stats-heading" class="visually-hidden">Numbers</h2>
+      <dl id="stats" class="stat-grid"></dl>
+    </section>
+
+    <section class="part grid-part" aria-labelledby="grid-heading">
+      <div class="part-head">
+        <h2 id="grid-heading">Agents</h2>
+        <ul id="legend" class="legend" aria-label="Models"></ul>
+      </div>
+      <div id="grid" class="grid" role="list"></div>
+      <p class="hint">Click an agent to see its report and answer.</p>
+    </section>
+
+    <section class="part answer" aria-labelledby="answer-heading">
+      <h2 id="answer-heading">Combined answer</h2>
+      <div id="answer"><p class="hint">Run the swarm to see the answer.</p></div>
+    </section>
+
+    <section class="part detail" aria-labelledby="detail-heading">
+      <h2 id="detail-heading">Agent</h2>
+      <div id="detail"><p class="hint">Pick an agent.</p></div>
+    </section>
+  </main>
+</body>
+</html>

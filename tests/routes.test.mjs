@@ -332,7 +332,7 @@ test('the server request table answers every probe as before', async t => {
   assert.equal(runtime.seen.length, seenBefore);
   await expect('no token, foreign Host', raw(port, { path: '/api/sessions', headers: { Host: 'evil.example' } }), 403, { error: 'Unrecognized local host.' });
   await expect('no token, bad URL', raw(port, { path: '//api/sessions' }), 400, { error: 'Invalid request URL.' });
-  for (const path of ['/', '/app.js', '/styles.css', '/session.js', '/login', '/login.js']) await expect(`no token GET ${path}`, raw(port, { path }), 200);
+  for (const path of ['/', '/app.js', '/styles.css', '/session.js', '/login', '/login.js', '/swarm/session.js']) await expect(`no token GET ${path}`, raw(port, { path }), 200);
   await expect('no token HEAD / is still 404', raw(port, { method: 'HEAD', path: '/' }), 404, '');
 
   if (process.env.ROUTES_PROBE_OUT) {
