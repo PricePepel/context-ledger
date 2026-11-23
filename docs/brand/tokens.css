@@ -34,8 +34,25 @@
   --ctm-waiting: #8a4f00;
   --ctm-idle: #56535e;
 
-  /* Type: Inter Tight where installed, as on the site; the console loads no web fonts. */
+  /* Type: Inter Tight, as on the site. The console loads it and its two pixel faces from
+   * docs/brand/fonts (card U6); other pages use it where installed. */
   --ctm-font-sans: "Inter Tight", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ctm-font-pixel: "Jersey 15", "Arial Narrow", system-ui, sans-serif;
+  --ctm-font-tag: "Silkscreen", ui-monospace, monospace;
+
+  /* Pixel console (card U6): the light retro set Ali approved on 2026-11-20. */
+  --ctm-pixel-page: #f2f1ee;
+  --ctm-pixel-paper: #ffffff;
+  --ctm-pixel-ink: #141414;
+  --ctm-pixel-soft: #5c5b58;
+  --ctm-pixel-line: #e3e1dc;
+  --ctm-pixel-dots: #d6d4ce;
+  --ctm-pixel-press: #e4e2dd;
+  --ctm-pixel-violet-deep: #4a1fb8;
+  --ctm-pixel-lime: #ddf77e;
+  --ctm-pixel-peach: #ffd9c2;
+  --ctm-pixel-lilac: #e3d8ff;
+  --ctm-pixel-grey: #ecebe7;
   --ctm-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   /* Office materials (card U4b): the pixel office in the console. Art colours, not text

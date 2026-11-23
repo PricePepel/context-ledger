@@ -140,7 +140,7 @@ test('card U4: an I3 agent turn says who sent it to whom, with its paths escaped
 test('card U4: each source has its pixel sprite on the 16 x 20 grid, and others get the bot', () => {
   assert.equal(spriteKey('claude'), 'claude');
   assert.equal(spriteKey('codex'), 'codex');
-  for (const other of ['gemini', 'constructor', '__proto__', undefined]) assert.equal(spriteKey(other), 'bot');
+  for (const other of ['aider', 'constructor', '__proto__', undefined]) assert.equal(spriteKey(other), 'bot');
   for (const key of ['claude', 'codex', 'bot']) {
     const pixels = spritePixels(key);
     assert.ok(pixels.length > 5, key);
@@ -299,6 +299,13 @@ test('the server serves exactly the console files, read-only, with the usual hea
   assert.equal(logo.headers['content-type'], 'image/svg+xml; charset=utf-8');
   assert.equal(logo.body, await readFile(new URL('../docs/brand/ctm-logo.svg', import.meta.url), 'utf8'));
   assert.match(logo.headers['content-security-policy'], /img-src 'self'/u);
+  // Card U6: the three fonts come from docs/brand/fonts, and the CSP lets the page use them.
+  for (const name of ['jersey-15', 'inter-tight', 'silkscreen']) {
+    const font = await raw(port, { path: `/console/fonts/${name}.woff2` });
+    assert.equal(font.status, 200, name);
+    assert.equal(font.headers['content-type'], 'font/woff2', name);
+    assert.match(font.headers['content-security-policy'], /font-src 'self'/u);
+  }
 
   // Card U4: the brand tokens are served from their one source, docs/brand/tokens.css.
   const tokens = await raw(port, { path: '/console/tokens.css' });
@@ -322,8 +329,50 @@ test('the server serves exactly the console files, read-only, with the usual hea
   assert.equal((await raw(port, { path: '/console' })).status, 200);
   // P1e: only the listed files are open; any other path needs the token, and then is 404.
   const auth = bearer(await ledgerToken(join(directory, 'ledger.sqlite'), port));
-  for (const path of ['/console/pip.svg', '/console/brand.md', '/console/../docs/brand/tokens.css', '/docs/brand/tokens.css', '/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
+  for (const path of ['/console/fonts/OFL-silkscreen.txt', '/console/fonts/', '/console/pip.svg', '/console/brand.md', '/console/../docs/brand/tokens.css', '/docs/brand/tokens.css', '/console/index.html', '/console/nope.mjs', '/console/console.mjs/', '/console/%2e%2e/src/server.mjs', '/public/console/console.mjs']) {
     assert.equal((await raw(port, { path })).status, 401, path);
     assert.equal((await raw(port, { path, headers: auth })).status, 404, path);
   }
+});
+
+test('card U6: every Mark bot has its official mark and brand colour, on the grid and with room for role props', async () => {
+  const { MARKS } = await import('../public/console/agent-marks.mjs');
+  const { spriteMark } = await import('../public/console/sprites.mjs');
+  const { bandCrew, BAND_W } = await import('../public/console/ctm-band.mjs');
+  assert.deepEqual(Object.keys(MARKS), ['cursor', 'opencode', 'gemini', 'copilot', 'windsurf', 'kimi', 'deepseek', 'qwen', 'mistral', 'cline', 'warp', 'zed', 'minimax', 'ollama']);
+  for (const [key, mark] of Object.entries(MARKS)) {
+    assert.equal(spriteKey(key), key);
+    assert.match(mark.hex, /^#[0-9A-F]{6}$/u, key);
+    assert.match(mark.source, /^https:\/\//u, key);
+    assert.ok(mark.paths.length > 0 && mark.paths.every(d => /^[MLHVCSQTAZmlhvcsqtaz0-9.,\s-]+$/u.test(d)), `${key} path data`);
+    for (const [x, y, width, height, fill] of spritePixels(key)) {
+      assert.ok(x >= 0 && y >= 0 && x + width <= 16 && y + height <= 20, `${key} ${x},${y}`);
+      assert.match(fill, /^#[0-9a-f]{6}$/iu);
+    }
+    const face = spriteMark(key);
+    assert.ok(face.x >= 3 && face.y >= 1 && face.x + 24 * face.scale <= 13 && face.y + 24 * face.scale <= 11, `${key} mark stays on the screen`);
+    for (const role of ROLES) assert.ok(accessoryPixels(key, role).length > 0, `${key} ${role}`);
+  }
+  assert.equal(spriteMark('claude'), null);
+  assert.equal(spriteMark('codex'), null);
+  assert.equal(spriteMark('aider'), null);
+
+  const crew = bandCrew();
+  assert.equal(crew.length, 6 + Object.keys(MARKS).length);
+  for (const member of crew) assert.ok(member.x - 8 * member.scale >= 0 && member.x + 8 * member.scale <= BAND_W, `${member.provider} on the band`);
+  const spots = crew.map(member => Math.round(member.x));
+  assert.equal(new Set(spots).size, spots.length, 'no two crew members stand in one spot');
+});
+
+test('card U6: the console fonts are local OFL files, and the CSS asks for no other host', async () => {
+  for (const name of ['jersey-15', 'inter-tight', 'silkscreen']) {
+    const bytes = await readFile(new URL(`../docs/brand/fonts/${name}.woff2`, import.meta.url));
+    assert.equal(bytes.subarray(0, 4).toString('latin1'), 'wOF2', name);
+  }
+  for (const name of ['OFL-jersey15.txt', 'OFL-intertight.txt', 'OFL-silkscreen.txt']) {
+    assert.match(await readFile(new URL(`../docs/brand/fonts/${name}`, import.meta.url), 'utf8'), /SIL Open Font License/u, name);
+  }
+  const css = await readFile(new URL('console.css', consoleDir), 'utf8');
+  for (const url of css.matchAll(/url\("([^"]+)"\)/gu)) assert.match(url[1], /^\/console\/fonts\/[a-z0-9-]+\.woff2$/u);
+  assert.doesNotMatch(await readFile(new URL('index.html', consoleDir), 'utf8'), /https?:\/\//u);
 });

@@ -3,7 +3,7 @@
 // monitor lit, waiting agents stand beside it with a "?" bubble, idle agents go to the
 // lounge. CSP-safe: every node is built with createElementNS, text goes through
 // textContent, and positions use SVG attributes or CSSOM (never a style attribute).
-import { accessoryPixels, roleOf, spriteKey, spritePixels } from './sprites.mjs';
+import { accessoryPixels, roleOf, spriteKey, spriteMark, spritePixels } from './sprites.mjs';
 import { DESKS, ROOM_H, ROOM_W, besideDesk, drawRoom, el, loungeSpot, seatAt } from './office-furniture.mjs';
 
 export const providers = ['claude', 'codex'];
@@ -67,6 +67,11 @@ function buildAgent(provider, role) {
   for (const [x, y, width, height, fill] of [...spritePixels(provider), ...accessoryPixels(provider, role)]) {
     el('rect', { x: x * PX, y: y * PX, width: width * PX, height: height * PX, fill }, sprite);
   }
+  const mark = spriteMark(provider);
+  if (mark) {
+    const face = el('g', { class: 'oa-mark', transform: `translate(${mark.x * PX} ${mark.y * PX}) scale(${mark.scale * PX})`, 'shape-rendering': 'geometricPrecision' }, sprite);
+    for (const d of mark.paths) el('path', { d, fill: mark.fill }, face);
+  }
   const bubble = el('g', { class: 'oa-bubble' }, g);
   el('rect', { x: 4, y: -58, width: 17, height: 15, rx: 6 }, bubble);
   el('path', { d: 'M7.5 -43.5l-3 5.5 7.5-5.5z' }, bubble);
@@ -90,8 +95,17 @@ function restartClass(node, name, ms, holder) {
   holder.timer = setTimeout(() => node.classList.remove(name), ms);
 }
 
+// A newcomer appears at its spot; only later moves slide, so nobody flies in from the room's corner.
 function moveTo(item, [x, y]) {
-  for (const node of [item.g, item.tag]) node.style.setProperty('transform', `translate(${x}px, ${y}px)`);
+  const first = !item.placed;
+  for (const node of [item.g, item.tag]) {
+    if (first) node.style.setProperty('transition', 'none');
+    node.style.setProperty('transform', `translate(${x}px, ${y}px)`);
+  }
+  if (!first) return;
+  item.placed = true;
+  item.g.getBoundingClientRect();
+  for (const node of [item.g, item.tag]) node.style.removeProperty('transition');
 }
 
 // Keep each agent at the desk it already has; give newcomers the lowest free desk.

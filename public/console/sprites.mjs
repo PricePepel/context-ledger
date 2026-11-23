@@ -2,8 +2,36 @@
 // Codex pet are drawn after each vendor's own mascot for this local console: they are
 // trademarks, so swap them for the neutral bot before a public video or deploy.
 // Every pixel is an SVG rect with a fill attribute, so the CSP needs no style attribute.
+// Card U6: every other coding agent is a Mark bot, one robot body in its brand colour with
+// its official mark (agent-marks.mjs) on the screen face. The same trademark note applies.
+import { MARKS } from './agent-marks.mjs';
 
 const K = '#1d1820';
+
+function mix(hex, other, t) {
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const [a, b] = [rgb(hex), rgb(other)];
+  return '#' + a.map((v, i) => Math.round(v + (b[i] - v) * t).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// Near-black brands get a soft charcoal body, so the robot reads on the dark office floor.
+const isDark = hex => { const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)); return r * 0.3 + g * 0.59 + b * 0.11 < 40; };
+
+/** The colours of one Mark bot: body, shade, highlight and the mark on its screen. */
+export function markBotColours(hex) {
+  const base = isDark(hex) ? '#2E2A35' : hex.toUpperCase();
+  return { base, shade: mix(base, '#000000', 0.3), light: mix(base, '#FFFFFF', 0.3), ink: isDark(hex) ? '#FFFFFF' : mix(base, '#FFFFFF', 0.3) };
+}
+
+function markBot(hex) {
+  const c = markBotColours(hex);
+  return p => {
+    p(2, 0, 12, 12, c.base); p(1, 2, 1, 8, c.base); p(14, 2, 1, 8, c.base); p(3, 0, 3, 1, c.light);
+    p(3, 1, 10, 10, '#15131B');
+    p(4, 12, 8, 4, c.base); p(4, 15, 8, 1, c.shade); p(2, 12, 2, 3, c.base); p(12, 12, 2, 3, c.base);
+    p(5, 16, 2, 2, c.base); p(9, 16, 2, 2, c.base); p(5, 18, 2, 1, c.shade); p(9, 18, 2, 1, c.shade);
+  };
+}
 
 export const SPRITES = {
   claude: {
@@ -30,6 +58,7 @@ export const SPRITES = {
       p(5, 16, 2, 2, b); p(9, 16, 2, 2, b); p(5, 18, 2, 1, d); p(9, 18, 2, 1, d);
     },
   },
+  ...Object.fromEntries(Object.entries(MARKS).map(([key, mark]) => [key, { label: mark.label, draw: markBot(mark.hex) }])),
   bot: {
     label: 'Agent',
     draw: p => {
@@ -43,6 +72,16 @@ export const SPRITES = {
 
 /** The sprite for an agent source; any source without its own sprite gets the neutral bot. */
 export const spriteKey = provider => (provider !== 'bot' && Object.hasOwn(SPRITES, provider) ? provider : 'bot');
+
+// Where a Mark bot's mark sits: the 10 x 10 screen at (3, 1), inset by 0.6 of a pixel.
+export const MARK_BOX = { x: 3.6, y: 1.6, size: 8.8 };
+
+/** The official mark on a sprite's screen, as { paths, fill, x, y, scale }; null when it has none. */
+export function spriteMark(provider) {
+  const key = spriteKey(provider);
+  if (!Object.hasOwn(MARKS, key)) return null;
+  return { paths: MARKS[key].paths, fill: markBotColours(MARKS[key].hex).ink, x: MARK_BOX.x, y: MARK_BOX.y, scale: MARK_BOX.size / 24 };
+}
 
 /**
  * The pixels of a sprite as [x, y, width, height, fill] on the 16 x 20 grid.
@@ -81,6 +120,8 @@ const BODY = {
   codex: { top: 1, cx: 8, eyes: [5, 10], eyeY: 6, hand: [11, 12], screenFace: true },
   bot: { top: 5, cx: 8, eyes: [6, 9], eyeY: 9, hand: [11, 13] },
 };
+const MARK_BODY = { top: 0, cx: 8, eyes: [5, 10], eyeY: 5, hand: [12, 12], screenFace: true };
+for (const key of Object.keys(MARKS)) BODY[key] = MARK_BODY;
 
 const ACCESSORIES = {
   builder: (p, b) => {

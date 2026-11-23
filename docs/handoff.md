@@ -427,6 +427,20 @@ Next steps:
 2. `malformed transport input is answered without stopping the server` in `tests/mcp.test.mjs` fails on macOS with Node 26, on this branch and on `ruslan/console-v0` alike. Not checked on Node 22.
 3. P3 (reviewer prototype) is next, stacked on this branch: approve, edit or reject beside the evidence, with the decisions kept in the browser only.
 
+## Current checkpoint — U6 pixel console and agent crew (2026-11-20)
+
+Branch `ali/u6-pixel-console`, stacked on U4b (#55). The console is now the light pixel look Ali approved:
+
+- Local fonts (Jersey 15, Inter Tight, Silkscreen) under `docs/brand/fonts` with OFL licences; the server serves them from its fixed list and the CSP adds only `font-src 'self'`.
+- `console.css` is rewritten with pixel frames and buttons and new `--ctm-pixel-*` tokens in `docs/brand/tokens.css`. The number tiles are gone: their counters (same IDs) sit on the activity heading.
+- `agent-marks.mjs` holds 14 official vendor marks (Simple Icons 16.38.0). `sprites.mjs` builds a Mark bot for each: a robot in the brand colour with the mark on its screen. The office draws the mark for any agent whose provider has one; Claude Code and Codex are unchanged.
+- The activity feed sits under the evidence in the right column, more compact. `panels.mjs` adds header switches for Evidence and Activity (remembered in `localStorage` when allowed); with both off the left column takes the full width, and selecting a fact turns Evidence back on.
+- `ctm-band.mjs` draws the CTM band at the bottom with the crew; click or Enter shows a name bubble.
+
+Checks: node tests 415 pass with the 3 known local failures (also failing on the base); Playwright 31 pass, 1 skipped (the I3 agent-turn `fixme`); runtime Python has 2 timing failures that also fail on the untouched base. Screenshots are regenerated in `docs/console`, with `08-ctm-band.png` new.
+
+Next owner: get a human review of the CSP change and the trademark note (ADR 15), then merge after U4b.
+
 ## Current checkpoint — U4b furnished pixel office (2026-11-19)
 
 Branch `ali/u4b-pixel-office`, stacked on U4 (#51). Ali approved the preview on 2026-11-19 (`docs/console/preview/approved-*.png`).

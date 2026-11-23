@@ -1,9 +1,11 @@
-// CTM Console v0: wires the office, the ledger graph, the evidence panel and the
-// numbers to one source of published graphs. It only reads; see source.mjs.
+// CTM Console: wires the office, the ledger graph, the evidence panel, the activity
+// feed with its counters and the CTM band to one source of published graphs. It only reads; see source.mjs.
 import { createBrain } from './brain.mjs';
+import { createBand } from './ctm-band.mjs';
 import { createEvidence } from './evidence.mjs';
 import { createModel } from './model.mjs';
 import { createOffice, providerNames } from './office.mjs';
+import { createPanels } from './panels.mjs';
 import { demoSource, liveSource } from './source.mjs';
 
 const params = new URLSearchParams(location.search);
@@ -26,6 +28,8 @@ let source;
 let evidence;
 const office = createOffice($('#office'));
 const brain = createBrain($('#brain'), { onSelect: select });
+createBand($('.band'));
+const panels = createPanels(document);
 
 // Card P3: the reviewer prototype runs in demo mode only, on the synthetic recording.
 // startDemo loads it, so live mode never fetches or runs the review code.
@@ -72,14 +76,22 @@ function flash(from, element, kind) {
   setTimeout(() => { line.remove(); dot.remove(); }, flashMs);
 }
 
-function logActivity(text) {
+// Newest first by publish time, so graphs read on first load slot in where they belong.
+function logActivity(text, at = Date.now()) {
+  const when = new Date(at);
   const item = document.createElement('li');
+  item.dataset.at = String(at);
   const time = document.createElement('time');
-  time.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  time.dateTime = when.toISOString();
+  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  time.textContent = when.toDateString() === new Date().toDateString()
+    ? clock
+    : `${when.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${clock}`;
   const body = document.createElement('span');
   body.textContent = text;
   item.append(time, body);
-  activity.prepend(item);
+  const later = [...activity.children].find(other => Number(other.dataset.at) <= at);
+  activity.insertBefore(item, later ?? null);
   while (activity.children.length > 30) activity.lastElementChild.remove();
 }
 
@@ -106,18 +118,19 @@ function onGraph(event, { initial }) {
   renderOffice();
   renderNumbers();
   reconcileSelection(new Set(moved.changed));
-  if (initial) return;
 
   const name = partyName(moved.party);
   const where = providerNames[event.provider] ?? event.provider;
+  const at = Number.isFinite(event.at) ? event.at : Date.now();
   const parts = [];
   if (moved.added.length) parts.push(`${moved.added.length} new`);
   if (moved.changed.length) parts.push(`${moved.changed.length} changed`);
-  logActivity(`${name} (${where}) published${parts.length ? `: ${parts.join(', ')}` : ''}`);
+  logActivity(`${name} (${where}) published${parts.length ? `: ${parts.join(', ')}` : ''}`, at);
   if (moved.read.length) {
     const readParties = [...new Set(moved.read.map(key => partyName(key.slice(0, key.lastIndexOf('/')))))];
-    logActivity(`${name} linked to ${moved.read.length} ${moved.read.length === 1 ? 'node' : 'nodes'} of ${readParties.join(', ')}`);
+    logActivity(`${name} linked to ${moved.read.length} ${moved.read.length === 1 ? 'node' : 'nodes'} of ${readParties.join(', ')}`, at);
   }
+  if (initial) return;
   office.pulse(moved.party);
   // Wait one frame so the new buttons have their place before a line points at them.
   requestAnimationFrame(() => {
@@ -133,6 +146,7 @@ let selectedSession = null;
 async function select(key) {
   const found = model.node(key);
   if (!found) return;
+  panels.show('evidence');
   selectedKey = key;
   selectedSession = found.entry.sessionId;
   brain.select(key);

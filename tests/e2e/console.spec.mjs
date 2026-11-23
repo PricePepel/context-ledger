@@ -329,3 +329,138 @@ test('card U4b: working agents sit at a lit desk, waiting ones stand beside it, 
   });
   expect(writes()).toEqual([]);
 });
+
+test('card U6: the pixel console loads its local fonts, shows counters instead of tiles, and the CTM band crew talks', async ({ page }) => {
+  await mkdir(shotsDir, { recursive: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const writes = watchRequests(page);
+  const hosts = new Set();
+  page.on('request', request => hosts.add(new URL(request.url()).host));
+  await page.goto('/console/?demo&speed=8');
+  await expect(page.locator('body')).toHaveAttribute('data-demo', 'finished', { timeout: 15_000 });
+  await page.evaluate(() => document.fonts.ready);
+  for (const face of ['16px "Jersey 15"', '16px "Inter Tight"', '10px "Silkscreen"']) {
+    expect(await page.evaluate(font => document.fonts.check(font), face), face).toBe(true);
+  }
+  expect(await page.locator('h1').evaluate(h => getComputedStyle(h).fontFamily)).toContain('Jersey 15');
+  expect(await page.locator('.activity li').first().evaluate(li => getComputedStyle(li).fontFamily)).toContain('Inter Tight');
+  await expect(page.locator('html')).not.toHaveClass(/ctm-dark/u);
+
+  await expect(page.locator('.numbers, .tile')).toHaveCount(0);
+  await expect(page.locator('.counters #n-handoffs')).toHaveText('6');
+  await expect(page.locator('.activity li').first()).toBeVisible();
+
+  const band = page.locator('section.band');
+  await band.scrollIntoViewIfNeeded();
+  await expect(band).toHaveClass(/play/u);
+  await page.waitForFunction(() => document.getAnimations().every(a => a.playState !== 'running' || a.effect?.getComputedTiming().iterations === Infinity));
+  const ask = await page.locator('.band-ask').boundingBox();
+  const strip = await page.locator('svg#band').boundingBox();
+  expect(ask.y, 'the reviewer question box stays inside the band').toBeGreaterThanOrEqual(strip.y);
+  await expect(page.locator('.band-letter')).toHaveCount(3);
+  await expect(page.locator('.band-char')).toHaveCount(20);
+  await expect(page.locator('.band-char[data-provider="claude"][data-role="builder"]')).toHaveCount(1);
+  await expect(page.locator('.band-char[data-provider="kimi"] path')).not.toHaveCount(0);
+  await page.locator('.band-char[data-provider="cursor"]').click();
+  await expect(page.locator('.band-bubble text')).toHaveText('CURSOR');
+  await page.locator('.band-char[data-provider="codex"][data-role="planner"]').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.band-bubble text')).toHaveText('CODEX · PLANNER');
+  await expect(page.locator('#band-said')).toHaveText('Codex · planner');
+  await page.locator('.band-char[data-provider="kimi"]').focus();
+  await page.keyboard.press(' ');
+  await expect(page.locator('#band-said')).toHaveText('Kimi Code');
+  await band.screenshot({ path: `${shotsDir}/08-ctm-band.png` });
+
+  expect([...hosts]).toEqual([new URL(page.url()).host]);
+  expect(writes()).toEqual([]);
+});
+
+test('card U6: activity sits under the evidence, and both panels switch off and on', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/console/?demo&speed=8');
+  await expect(page.locator('body')).toHaveAttribute('data-demo', 'finished', { timeout: 15_000 });
+  const evidence = page.locator('#evidence');
+  const feed = page.locator('#feed');
+  const below = (await feed.boundingBox()).y - (await evidence.boundingBox()).y;
+  expect(below, 'activity is below the evidence').toBeGreaterThan(0);
+  expect(Math.abs((await feed.boundingBox()).x - (await evidence.boundingBox()).x)).toBeLessThan(2);
+
+  const evidenceButton = page.getByRole('button', { name: 'Evidence', exact: true });
+  const activityButton = page.getByRole('button', { name: 'Activity', exact: true });
+  await activityButton.click();
+  await expect(activityButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(feed).toBeHidden();
+  await evidenceButton.click();
+  await expect(evidence).toBeHidden();
+  const wide = await page.locator('#brain').boundingBox();
+  expect(wide.width, 'the graph takes the full width with both panels off').toBeGreaterThan(1200);
+  await page.waitForFunction(() => document.querySelector('#flash-layer').childElementCount === 0);
+  await page.screenshot({ path: `${shotsDir}/09-panels-off.png` });
+
+  await page.reload();
+  await expect(page.locator('body')).toHaveAttribute('data-demo', 'finished', { timeout: 15_000 });
+  await expect(feed).toBeHidden();
+  await page.locator('#brain .node').first().click();
+  await expect(evidence).toBeVisible();
+  await expect(evidenceButton).toHaveAttribute('aria-pressed', 'true');
+  await activityButton.click();
+  await expect(feed).toBeVisible();
+});
+
+test('card U6: bad or blocked panel storage keeps both panels on, and a phone crops the band', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ctm-console-panels', '"x"'));
+  await page.goto('/console/?demo&autoplay=0');
+  await expect(page.locator('#evidence')).toBeVisible();
+  await expect(page.locator('#feed')).toBeVisible();
+  for (const name of ['evidence', 'feed']) await expect(page.locator(`button[data-panel="${name}"]`)).toHaveAttribute('aria-controls', name);
+
+  const blocked = await page.context().newPage();
+  await blocked.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', { get() { throw new Error('blocked'); } });
+  });
+  await blocked.setViewportSize({ width: 390, height: 844 });
+  await blocked.goto('/console/?demo&autoplay=0');
+  await expect(blocked.locator('#feed')).toBeVisible();
+  await blocked.getByRole('button', { name: 'Activity', exact: true }).click();
+  await expect(blocked.locator('#feed')).toBeHidden();
+  const width = Number((await blocked.locator('svg#band').getAttribute('viewBox')).split(' ')[2]);
+  expect(width, 'the narrow band crops to the word and its nearest crew').toBeLessThan(1100);
+  expect(await blocked.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('office agents appear at their spot instead of sliding in from the room corner', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('/console/?demo&speed=8');
+  const agent = page.locator('#office .office-agent').first();
+  await agent.waitFor();
+  const start = await agent.evaluate(g => getComputedStyle(g).transform);
+  await page.waitForTimeout(80);
+  const soon = await agent.evaluate(g => getComputedStyle(g).transform);
+  expect(start, 'a new agent is already at its spot on its first frame').toBe(soon);
+  expect(start).not.toBe('none');
+});
+
+test('card U6: live activity shows today\'s earlier hand-offs as soon as the page opens', async ({ page, request, baseURL }) => {
+  const marker = `console-u6-${Date.now()}`;
+  const transcript = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `For ${marker}, ship the band.` }] } });
+  const imported = await request.post('/api/import', { headers: { origin: baseURL }, data: { provider: 'codex', source: `${marker}.jsonl`, transcript } });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  const { session } = await imported.json();
+  const party = `u6-${Date.now().toString(36)}`;
+  const published = await request.post('/api/graphs', {
+    headers: { origin: baseURL },
+    data: { version: 2, sessionId: session.id, party, edges: [], nodes: [{ id: 'band', kind: 'goal', label: 'Ship the band', evidenceLines: [1] }] },
+  });
+  expect(published.ok(), await published.text()).toBe(true);
+  const { graph } = await published.json();
+
+  await page.goto('/console/');
+  await expect(page.locator('#status')).toContainText('Live: watching the ledger');
+  const entry = page.locator('#activity li', { hasText: `${party} (Codex) published: 1 new` });
+  await expect(entry).toHaveCount(1);
+  const shown = Date.parse(await entry.locator('time').getAttribute('datetime'));
+  expect(Math.abs(shown - Date.parse(graph.createdAt ?? new Date().toISOString())), 'the entry carries the publish time, not the page load time').toBeLessThan(5_000);
+  const times = await page.locator('#activity li').evaluateAll(items => items.map(item => Number(item.dataset.at)));
+  expect(times, 'newest first').toEqual([...times].sort((a, b) => b - a));
+});
