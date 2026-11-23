@@ -1,0 +1,372 @@
+{
+  "about": "Card W2: the canonical forms of text in which the gateway (runtime/latent_team/gateway.py, canon_ranges) and the ledger (src/secrets.mjs, canonicalRanges) look for copies of known values. Each case lists the parts of a text (a string, or a code point as {char}), the values looked for, and every distinct piece of the text a match covers. tests/secret-rules.test.mjs and runtime/tests/test_gateway.py both run these cases, so the two languages read the same forms. Synthetic values only.",
+  "cases": [
+    {
+      "name": "an escaped hyphen",
+      "text": [
+        "a harbor",
+        {
+          "char": 92
+        },
+        "u002dslate-42 b"
+      ],
+      "values": [
+        [
+          "harbor-slate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "u002dslate-42"
+        ]
+      ]
+    },
+    {
+      "name": "a zero-width space a display drops",
+      "text": [
+        "x harbor",
+        {
+          "char": 8203
+        },
+        "-slate-42 y"
+      ],
+      "values": [
+        [
+          "harbor-slate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 8203
+          },
+          "-slate-42"
+        ]
+      ]
+    },
+    {
+      "name": "a next-line control is invisible, not a line break",
+      "text": [
+        "harbor",
+        {
+          "char": 133
+        },
+        "slate42"
+      ],
+      "values": [
+        [
+          "harborslate42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 133
+          },
+          "slate42"
+        ]
+      ]
+    },
+    {
+      "name": "a supplementary format character",
+      "text": [
+        "harbor",
+        {
+          "char": 917505
+        },
+        "slate42"
+      ],
+      "values": [
+        [
+          "harborslate42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 917505
+          },
+          "slate42"
+        ]
+      ]
+    },
+    {
+      "name": "the same format character as an escaped surrogate pair",
+      "text": [
+        "harbor",
+        {
+          "char": 92
+        },
+        "uDB40",
+        {
+          "char": 92
+        },
+        "uDC01slate42"
+      ],
+      "values": [
+        [
+          "harborslate42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "uDB40",
+          {
+            "char": 92
+          },
+          "uDC01slate42"
+        ]
+      ]
+    },
+    {
+      "name": "an escaped emoji is the literal one",
+      "text": [
+        "k harbor",
+        {
+          "char": 92
+        },
+        "uD83D",
+        {
+          "char": 92
+        },
+        "uDE00slate42"
+      ],
+      "values": [
+        [
+          "harbor",
+          {
+            "char": 128512
+          },
+          "slate42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "uD83D",
+          {
+            "char": 92
+          },
+          "uDE00slate42"
+        ]
+      ]
+    },
+    {
+      "name": "a run of spaces and a tab is one space",
+      "text": [
+        "harbor  ",
+        {
+          "char": 9
+        },
+        "slate 42."
+      ],
+      "values": [
+        [
+          "harbor slate 42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor  ",
+          {
+            "char": 9
+          },
+          "slate 42"
+        ]
+      ]
+    },
+    {
+      "name": "a line break is a space in both forms, never dropped",
+      "text": [
+        "harbor",
+        {
+          "char": 10
+        },
+        "slate42"
+      ],
+      "values": [
+        [
+          "harborslate42"
+        ]
+      ],
+      "covered": []
+    },
+    {
+      "name": "a line separator is a space",
+      "text": [
+        "harbor",
+        {
+          "char": 8232
+        },
+        "slate 42"
+      ],
+      "values": [
+        [
+          "harbor slate 42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 8232
+          },
+          "slate 42"
+        ]
+      ]
+    },
+    {
+      "name": "a JSON-quoted copy of a value that holds a backslash",
+      "text": [
+        "say \"harbor",
+        {
+          "char": 92
+        },
+        {
+          "char": 92
+        },
+        "nslate-42\""
+      ],
+      "values": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ]
+    },
+    {
+      "name": "the same value written as it is",
+      "text": [
+        "x harbor",
+        {
+          "char": 92
+        },
+        "nslate-42 y"
+      ],
+      "values": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ]
+    },
+    {
+      "name": "a backslash split from its n by an invisible character is not an escape",
+      "text": [
+        "x harbor",
+        {
+          "char": 92
+        },
+        {
+          "char": 8203
+        },
+        "nslate-42 y"
+      ],
+      "values": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          "nslate-42"
+        ]
+      ],
+      "covered": [
+        [
+          "harbor",
+          {
+            "char": 92
+          },
+          {
+            "char": 8203
+          },
+          "nslate-42"
+        ]
+      ]
+    },
+    {
+      "name": "a short value after a non-ASCII letter is a whole token (ASCII word characters only)",
+      "text": [
+        {
+          "char": 7305
+        },
+        "ink and more"
+      ],
+      "values": [
+        [
+          "ink"
+        ]
+      ],
+      "covered": [
+        [
+          "ink"
+        ]
+      ]
+    },
+    {
+      "name": "a short value inside an ASCII word is not matched",
+      "text": [
+        "thinking"
+      ],
+      "values": [
+        [
+          "ink"
+        ]
+      ],
+      "covered": []
+    },
+    {
+      "name": "nothing to find",
+      "text": [
+        "nothing here"
+      ],
+      "values": [
+        [
+          "harbor-slate-42"
+        ]
+      ],
+      "covered": []
+    }
+  ]
+}

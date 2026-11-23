@@ -11,6 +11,8 @@
 // - Each pattern resumes after the whole value it found, so long runs are scanned once.
 // - Overlapping candidates merge into one span, labelled with the most specific kind.
 
+import secretRules from '../rules/secret-rules.json' with { type: 'json' };
+
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
 const base64url = /[A-Za-z0-9_-]/u;
@@ -87,73 +89,74 @@ function quotedEnd(text, from, quote) {
   return text.length;
 }
 
+// Card W2: the rule tables below are built from rules/secret-rules.json, which the latent
+// runtime's gateway (runtime/latent_team/secret_scan.py) reads too, so a rule changes in
+// one place. rules/secret-conformance.json holds the cases both test suites run.
+
 /**
  * Simple rules: a pattern that recognises the start of the value, the value's character
- * class, and how many leading characters are a fixed public prefix that may be shown.
+ * class (none: the start is the whole value), and an anchored pattern whose match is the
+ * fixed public prefix that may be shown. mixedAfter: the value from that index on must hold
+ * a letter and a digit, so a long hyphenated word after sk- is not a key.
  */
-const simpleRules = [
-  { kind: 'anthropic-key', start: /\bsk-ant-[A-Za-z0-9_-]{20}/gu, cls: base64url, prefix: () => 7 },
-  { kind: 'github-token', start: /\bgithub_pat_[A-Za-z0-9_]{22}/gu, cls: /[A-Za-z0-9_]/u, prefix: () => 11 },
-  { kind: 'github-token', start: /\bgh[pousr]_[A-Za-z0-9]{36}/gu, cls: /[A-Za-z0-9]/u, prefix: () => 4 },
-  { kind: 'aws-access-key-id', start: /\b(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/gu, cls: /(?!)/u, prefix: () => 4 },
-  { kind: 'slack-token', start: /\bxox[abposr]-[A-Za-z0-9-]{10}/gu, cls: /[A-Za-z0-9-]/u, prefix: () => 5 },
-  { kind: 'stripe-key', start: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16}/gu, cls: /[A-Za-z0-9]/u, prefix: value => value.indexOf('_', 3) + 1 },
-  { kind: 'openai-key', start: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20}/gu, cls: base64url, prefix: value => value.match(/^sk-(?:proj-|svcacct-|admin-)?/u)[0].length, accept: value => mixed(value.slice(3)) },
-];
+const simpleRules = secretRules.simple.rules.map(rule => {
+  const prefix = new RegExp(rule.prefix, 'u');
+  return {
+    kind: rule.kind,
+    start: new RegExp(rule.start, 'gu'),
+    cls: new RegExp(rule.cls ?? '(?!)', 'u'),
+    prefix: value => value.match(prefix)?.[0].length ?? 0,
+    accept: rule.mixedAfter === undefined ? undefined : value => mixed(value.slice(rule.mixedAfter)),
+  };
+});
 
 /**
  * Rules for a value after a name or header. The pattern ends where the value begins; the
- * value is then read whole, quoted or not.
+ * value is then read whole, quoted or not. Free-text values (a bearer header's value, or
+ * any value after a name such as password=) are handled by lineTails below (card P4c).
  */
-const valueRules = [
-  { kind: 'aws-secret-access-key', lead: /\baws_secret_access_key\b["']?\s{0,8}[:=]\s{0,8}/giu, cls: /[A-Za-z0-9/+=]/u, accept: value => /^[A-Za-z0-9/+=]{40}$/u.test(value) },
-  // Free-text values (a bearer header's value, or any value after a name such as
-  // password=) are handled by lineTails below (card P4c), not here.
-];
+const valueRules = secretRules.values.rules.map(rule => {
+  const accept = new RegExp(rule.accept, 'u');
+  return { kind: rule.kind, lead: new RegExp(rule.lead, 'giu'), cls: new RegExp(rule.cls, 'u'), accept: value => accept.test(value) };
+});
 
 // Card P4c: names whose value is treated as a secret.
-const nameKeywords = 'password|passwd|pwd|passphrase|secret|client[ _-]?secret|api[ _-]?key|access[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|token';
+const nameKeywords = secretRules.freeText.nameKeywords.join('|');
 
 /**
  * Card P4c: free-text leads. After one of these, the rest of the line is the value: the
  * scanner never guesses where a free-text value ends inside the line, so no fragment of it
  * can be left visible. The cost, other text on that line being redacted too, is bounded by
- * the false-alarm budget in docs/evals.md.
+ * the false-alarm budget in docs/evals.md. Only spaces and tabs may sit inside a lead, so a
+ * lead never runs onto the next line, and the padding after an opening quote is consumed
+ * only when the quote is there, so long runs of spaces before a non-Bearer value do not
+ * backtrack.
  */
 const freeTextLeads = [
-  // Only spaces and tabs may sit inside a lead, so a lead never runs onto the next line.
-  // The padding after an opening quote is consumed only when the quote is there, so long
-  // runs of spaces before a non-Bearer value do not backtrack.
-  { kind: 'bearer-token', lead: /\bAuthorization["']?[ \t]*:[ \t]*(?:["'][ \t]*)?Bearer[ \t]+/giu },
-  { kind: 'assigned-secret', lead: new RegExp(`\\b(?:[A-Za-z0-9]{1,32}[_.-])?(?:${nameKeywords})\\b["']?[ \\t]*[:=][ \\t]*`, 'giu') },
+  { kind: 'bearer-token', lead: new RegExp(secretRules.freeText.bearerLead, 'giu') },
+  { kind: 'assigned-secret', lead: new RegExp(secretRules.freeText.assignedLead.replace('{keywords}', nameKeywords), 'giu') },
 ];
+
+const placeholderPatterns = secretRules.placeholders.patterns.map(({ pattern, flags = '' }) => new RegExp(pattern, `${flags}u`));
 
 /**
  * A value that is only a stand-in for a secret, judged on the whole value (trailing quotes
  * and closing punctuation removed). Anything more than the stand-in is still a secret.
  */
 function isPlaceholder(value) {
-  return /^[0-9]+$/u.test(value)
-    || /^(?:x+|\*+|\.+|#+|-+)$/iu.test(value)
-    || /^(?:changeme|change[_-]?me|placeholder|redacted|null|none|nil|undefined|true|false|required|optional)$/iu.test(value)
-    || /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|\([A-Za-z_][A-Za-z0-9_]*\)|[A-Za-z_][A-Za-z0-9_]*)$/u.test(value)
-    || /^%[A-Za-z_][A-Za-z0-9_]*%$/u.test(value)
-    || isAngleStandIn(value)
-    || /^(?:process\.env|import\.meta\.env|os\.environ)\.[A-Za-z_][A-Za-z0-9_]*$/u.test(value)
-    || /^\[REDACTED [a-z-]{1,32}\]$/u.test(value)
-    || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
-    || /^[0-9a-f]{40}$/iu.test(value);
+  return placeholderPatterns.some(pattern => pattern.test(value)) || isAngleStandIn(value);
 }
 
 // Whole words that mark an angle-bracket stand-in, such as <your-key-here>.
-const standInWords = new Set(['key', 'token', 'secret', 'password', 'here', 'value']);
+const standInWords = new Set(secretRules.placeholders.standInWords);
+const angleStandIn = new RegExp(secretRules.placeholders.angleStandIn, 'u');
 
 /**
  * An angle-bracket stand-in names what goes there with a whole word, split by spaces,
  * underscores or hyphens: <your-key-here> is one, <monkey9> is not.
  */
 function isAngleStandIn(value) {
-  if (!/^<[A-Za-z0-9 _-]{1,48}>$/u.test(value)) return false;
+  if (!angleStandIn.test(value)) return false;
   return value.slice(1, -1).split(/[ _-]/u).some(word => standInWords.has(word.toLowerCase()));
 }
 
@@ -172,59 +175,211 @@ function lineEndFrom(text, from) {
  * comma or semicolon. Every scan stops at end, and the trim is a backward scan, so long
  * runs of spaces cost nothing.
  */
-function judgedValue(text, start, end, quote) {
+function judgedEnd(text, start, end, quote, trimmed) {
   if (quote) {
     let close = start;
     while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
-    if (close >= end) return text.slice(start, end);
+    if (close >= end) return end;
     let after = close + 1;
     while (after < end && (text[after] === ' ' || text[after] === '\t')) after += 1;
-    if (after < end && !',;)]}'.includes(text[after])) return text.slice(start, end);
-    return text.slice(start, close);
+    if (after < end && !',;)]}'.includes(text[after])) return end;
+    return close;
   }
-  let stop = end;
-  while (stop > start && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
-  return text.slice(start, stop);
+  return Math.max(start, trimmed);
 }
 
-/** Card P4c: one span per free-text lead, from the value's start to the end of its line. */
-function lineTails(text) {
+function trimmedEnd(text, end) {
+  let stop = end;
+  while (stop > 0 && /[ \t,;]/u.test(text[stop - 1])) stop -= 1;
+  return stop;
+}
+
+// Judging bound (rules: placeholders.maxJudged): a candidate's longer judged value is judged once its
+// line's leads are known (lineTails); a longer value collected from a finding is kept, not judged.
+const judgedMax = secretRules.placeholders.maxJudged;
+const placeholderAt = (text, start, stop) => stop - start <= judgedMax && isPlaceholder(text.slice(start, stop));
+
+/**
+ * Card P4c: one span per free-text lead, from the value's start to the end of its line.
+ * Every lead is read, in source order across all free-text rules, so every assignment on a
+ * line has its own value (review W2-11 to W2-13). A candidate keeps offsets, never a copy:
+ * valueEnd, where its judged value ends, and coreEnd, where its own assignment ends (the
+ * next lead of any kind on the line, free-text or a structured value rule's, otherLeads,
+ * for a value that is not a closed quote). The spans all end at the line end, so the merged
+ * spans do not change.
+ */
+function lineTails(text, otherLeads = []) {
   const found = [];
+  const leads = [...otherLeads];
   for (const rule of freeTextLeads) {
     const pattern = new RegExp(rule.lead.source, rule.lead.flags);
     // Leads come in order, so the line end found for one is reused for later leads on the
     // same line: rejected leads never rescan the line.
     let lineEnd = -1;
+    let trimmed = -1;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       let start = match.index + match[0].length;
       // An opening quote stays visible; the value starts after it. A quote just before
       // Bearer opens the value too, as in "Authorization": "Bearer ...".
       let quote = /["'`]/u.test(text[start] ?? '') ? text[start] : (rule.kind === 'bearer-token' ? (match[0].match(/(["'])[ \t]*Bearer/iu)?.[1] ?? '') : '');
       if (/["'`]/u.test(text[start] ?? '')) start += 1;
-      if (start > lineEnd) lineEnd = lineEndFrom(text, start);
+      if (start > lineEnd) {
+        lineEnd = lineEndFrom(text, start);
+        trimmed = trimmedEnd(text, lineEnd);
+      }
       const end = lineEnd;
-      const value = judgedValue(text, start, end, quote);
-      if (!value || isPlaceholder(value)) continue;
-      found.push({ kind: rule.kind, start, end, prefix: 0 });
-      // The rest of the line is already covered, so the next lead is looked for after it.
-      pattern.lastIndex = Math.max(pattern.lastIndex, end);
+      leads.push(match.index);
+      const valueEnd = judgedEnd(text, start, end, quote, trimmed);
+      if (valueEnd <= start) continue;
+      // A value up to maxJudged is judged now; a longer one once every lead is known, below,
+      // so a line of many assignments is still read in linear time.
+      const long = valueEnd - start > judgedMax;
+      if (!long && isPlaceholder(text.slice(start, valueEnd))) continue;
+      const closed = Boolean(quote) && valueEnd < end;
+      const candidate = { kind: rule.kind, start, end, prefix: 0, valueEnd, closed, long };
+      if (quote && !closed) {
+        // The judged value runs to the line end ("x". is not a stand-in), but what the quotes
+        // hold is a value of its own (review W2-14).
+        let close = start;
+        while (close < end && text[close] !== quote) close += text[close] === '\\' ? 2 : 1;
+        if (close < end && close > start) candidate.quotedEnd = close;
+      }
+      found.push(candidate);
+      // After a closed quote, the next lead is looked for after it; otherwise right after this lead.
+      pattern.lastIndex = Math.max(pattern.lastIndex, closed ? valueEnd + 1 : start);
     }
   }
-  return found;
+  leads.sort((a, b) => a - b);
+  const kept = [];
+  for (const candidate of found) {
+    const stop = candidate.valueEnd;
+    let low = 0;
+    let high = leads.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (leads[middle] <= candidate.start) low = middle + 1;
+      else high = middle;
+    }
+    const later = low < leads.length && leads[low] < stop ? leads[low] : null;
+    // A long value is a stand-in as P4c judged it (review W2-17), judged once: a value that
+    // holds another assignment never is one, so only the last on its line, or a quoted one,
+    // is read by the stand-in rules.
+    const long = candidate.long;
+    delete candidate.long;
+    if (long && later === null && isPlaceholder(text.slice(candidate.start, stop))) continue;
+    candidate.coreEnd = later !== null && !candidate.closed ? later : stop;
+    kept.push(candidate);
+  }
+  return kept;
 }
 
-/** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty. */
+/**
+ * The values a merged span's candidates identified, each bounded: a free-text candidate's
+ * own assignment, the first one's whole judged tail, and any other candidate's value or text.
+ */
+// Where a value's head ends in shell syntax (rules: freeText.valueHeadEnd): "x; export ..."
+// and "x && ..." name the value x (review W2-19).
+const headEnd = new RegExp(secretRules.freeText.valueHeadEnd, 'u');
+// A short value is matched only as a whole token (rules: freeText.shortValue, in code points), so
+// a head of any length is a value: "a&b" never makes every "a" inside a word a secret (review W2-22).
+const shortValue = secretRules.freeText.shortValue;
+// ASCII only, so no runtime's Unicode tables decide (review W2-23).
+const isWord = character => /^[A-Za-z0-9_]$/u.test(character);
+
+const wordStop = new Set([' ', '\t', ';', '&', '|', '<', '>', '(', ')']);
+
+/**
+ * The first shell word of text, read statically as the shell reads it (review W2-25): quoted
+ * and unquoted parts joined, single quotes literal, a backslash escaping the next character
+ * (inside double quotes only before a double quote, backslash, dollar or backtick), ending at
+ * an unquoted space, tab or operator. Nothing is expanded. null when a quote does not close.
+ * runtime/latent_team/secret_scan.py has the same reader.
+ */
+function shellWord(text) {
+  const backslash = String.fromCodePoint(92);
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (wordStop.has(c)) break;
+    if (c === backslash && i + 1 < text.length) {
+      out += text[i + 1];
+      i += 2;
+    } else if (c === "'") {
+      const close = text.indexOf("'", i + 1);
+      if (close === -1) return null;
+      out += text.slice(i + 1, close);
+      i = close + 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      let part = '';
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === backslash && j + 1 < text.length && ('"$`' + backslash).includes(text[j + 1])) {
+          part += text[j + 1];
+          j += 2;
+        } else {
+          part += text[j];
+          j += 1;
+        }
+      }
+      if (j >= text.length) return null;
+      out += part;
+      i = j + 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+function spanValues(text, members) {
+  const out = new Set();
+  let tail = true;
+  for (const candidate of members) {
+    if (candidate.coreEnd !== undefined) {
+      if (candidate.quotedEnd !== undefined) out.add(text.slice(candidate.start, candidate.quotedEnd));
+      const core = text.slice(candidate.start, candidate.coreEnd).replace(/[ \t,;]+$/u, '');
+      if (core && !placeholderAt(text, candidate.start, candidate.start + core.length)) {
+        out.add(core);
+        const cut = headEnd.exec(core);
+        const head = cut ? core.slice(0, cut.index).replace(/[ \t,;]+$/u, '') : '';
+        if (head && !isPlaceholder(head)) out.add(head);
+        // Right after "=", the first word is a value too (a shell assignment's right-hand word,
+        // review W2-24; rules: freeText.valueWordAbout).
+        if (candidate.start > 0 && text[candidate.start - 1] === '=') {
+          const word = core.split(/[ \t]/u, 1)[0].replace(/[,;]+$/u, '');
+          if (word && word !== core && !isPlaceholder(word)) out.add(word);
+          // and as the shell reads it, quotes joined (review W2-25)
+          const read = shellWord(core);
+          if (read && read !== core && !isPlaceholder(read)) out.add(read);
+        }
+      }
+      if (tail) {
+        out.add(text.slice(candidate.start, candidate.valueEnd));
+        tail = false;
+      }
+    } else {
+      out.add(candidate.value ?? text.slice(candidate.start, candidate.end));
+    }
+  }
+  return [...out].filter(Boolean);
+}
+
+/** JSON Web Tokens: two base64url segments that start eyJ and a signature that may be empty (rules: jwt). */
+const jwtRule = secretRules.jwt;
+
 function jwts(text) {
   const found = [];
-  const start = /\beyJ[A-Za-z0-9_-]{8}/gu;
+  const start = new RegExp(jwtRule.start, 'gu');
   for (let match = start.exec(text); match; match = start.exec(text)) {
     const headerEnd = runEnd(text, match.index, base64url);
     let end = headerEnd;
-    if (text[end] === '.' && text.startsWith('eyJ', end + 1)) {
+    if (text[end] === '.' && text.startsWith(jwtRule.segment, end + 1)) {
       const payloadEnd = runEnd(text, end + 1, base64url);
-      if (payloadEnd - (end + 1) >= 11 && text[payloadEnd] === '.') {
+      if (payloadEnd - (end + 1) >= jwtRule.payloadMin && text[payloadEnd] === '.') {
         end = runEnd(text, payloadEnd + 1, base64url);
-        found.push({ kind: 'jwt', start: match.index, end, prefix: 3 });
+        found.push({ kind: 'jwt', start: match.index, end, prefix: jwtRule.prefix });
       }
     }
     start.lastIndex = Math.max(start.lastIndex, end);
@@ -238,11 +393,15 @@ function jwts(text) {
  * label when it comes next. An unfinished block ends at the first line that cannot belong
  * to it, so it never swallows prose or a later block.
  */
+const keyRule = secretRules.privateKey;
+const keyHeader = new RegExp(keyRule.header, 'u');
+const keyBody = new RegExp(keyRule.body, 'u');
+
 function privateKeys(text) {
   const found = [];
-  const begin = /-----BEGIN ((?:[A-Z0-9]{1,16} ){0,3})PRIVATE KEY-----/gu;
+  const begin = new RegExp(keyRule.begin, 'gu');
   for (let match = begin.exec(text); match; match = begin.exec(text)) {
-    const endLine = `-----END ${match[1]}PRIVATE KEY-----`;
+    const endLine = keyRule.end.replace('{label}', match[1]);
     // Spaces or tabs after the BEGIN marker belong to it only when a line break follows them;
     // otherwise prose on the same line is left as it was.
     const markerEnd = match.index + match[0].length;
@@ -263,11 +422,11 @@ function privateKeys(text) {
         end = trimmed;
         break;
       }
-      if (/^[A-Za-z-]{1,32}: \S/u.test(line)) {
+      if (keyHeader.test(line)) {
         blankAllowed = true;
       } else if (line === '' && blankAllowed) {
         blankAllowed = false;
-      } else if (/^[A-Za-z0-9+/=]+$/u.test(line)) {
+      } else if (keyBody.test(line)) {
         blankAllowed = false;
       } else {
         break;
@@ -296,10 +455,12 @@ function candidates(text) {
       pattern.lastIndex = Math.max(pattern.lastIndex, end);
     }
   });
+  const valueLeads = [];   // where each named assignment begins, to cut free-text values (review W2-18)
   valueRules.forEach((rule, index) => {
     const pattern = new RegExp(rule.lead.source, rule.lead.flags);
     let cached = null;
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      valueLeads.push(match.index);
       let start = match.index + match[0].length;
       let end;
       const quote = text[start];
@@ -328,13 +489,13 @@ function candidates(text) {
       }
       const value = text.slice(start, end);
       if (value && rule.accept(inString ? decoded(value) : value)) {
-        all.push({ kind: rule.kind, start, end, rank: 2 + simpleRules.length + index, prefix: 0 });
+        all.push({ kind: rule.kind, start, end, rank: 2 + simpleRules.length + index, prefix: 0, value });
         pattern.lastIndex = Math.max(pattern.lastIndex, end);
       }
       // A rejected value is not skipped: a real secret may sit inside it, after its own name.
     }
   });
-  for (const candidate of lineTails(text)) all.push({ ...candidate, rank: 2 + simpleRules.length + valueRules.length });
+  for (const candidate of lineTails(text, valueLeads)) all.push({ ...candidate, rank: 2 + simpleRules.length + valueRules.length });
   return all;
 }
 
@@ -342,26 +503,132 @@ function candidates(text) {
  * Every span in text that looks like a credential, in text order. Overlapping candidates
  * merge into one span labelled with the most specific kind. Its prefix may be shown only
  * when that kind's match covers the whole span; otherwise the prefix would be part of an
- * enclosing value.
+ * enclosing value. With values: true each span also lists the values its candidates
+ * identified (a free-text span runs to the end of its line, but its value is the judged
+ * part), so a caller can find bare copies of them; runtime/latent_team/secret_scan.py does
+ * the same.
  */
-export function findSecrets(text) {
+export function findSecrets(text, { values = false } = {}) {
   if (typeof text !== 'string' || !text) return [];
   const spans = [];
   for (const candidate of candidates(text).sort((a, b) => a.start - b.start || a.rank - b.rank)) {
     const last = spans.at(-1);
     if (last && candidate.start < last.end) {
       last.end = Math.max(last.end, candidate.end);
+      last.members.push(candidate);
       if (candidate.rank < last.best.rank) last.best = candidate;
     } else {
-      spans.push({ start: candidate.start, end: candidate.end, best: candidate });
+      spans.push({ start: candidate.start, end: candidate.end, best: candidate, members: [candidate] });
     }
   }
-  return spans.map(({ start, end, best }) => ({
+  return spans.map(({ start, end, best, members }) => ({
     kind: best.kind,
     start,
     end,
     prefix: best.start === start && best.end === end ? best.prefix : 0,
+    // Built only when asked for (review W2-13).
+    ...(values ? { values: spanValues(text, members).sort() } : {}),
   }));
+}
+
+// Tab and the line breaks: read as a space in both canonical forms, never dropped. Every other
+// control character, and every format character, is invisible. The same policy, by Unicode
+// category and code point only, is in runtime/latent_team/gateway.py; rules/canonical-cases.json
+// holds the cases both suites run.
+const lineControls = new Set([9, 10, 11, 12, 13]);
+
+/**
+ * The character at i with an escape decoded, as a whole code point, and the index after it.
+ * A high surrogate, escaped or not, joins the low surrogate right after it, escaped or not.
+ */
+function characterAt(text, i, decode = true) {
+  const escape = decode ? escapeAt(text, i) : null;
+  let character = escape ? escape.character : text[i];
+  let next = i + (escape ? escape.length : 1);
+  const high = character.charCodeAt(0);
+  if (high >= 0xd800 && high <= 0xdbff && next < text.length) {
+    const lowEscape = decode ? escapeAt(text, next) : null;
+    const low = lowEscape ? lowEscape.character : text[next];
+    const code = low.charCodeAt(0);
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      character += low;
+      next += lowEscape ? lowEscape.length : 1;
+    }
+  }
+  return { character, next };
+}
+
+function blankOrInvisible(character) {
+  if (/^[\p{Zl}\p{Zp}\p{Zs}]$/u.test(character) || lineControls.has(character.codePointAt(0))) return 'blank';
+  if (/^[\p{Cc}\p{Cf}]$/u.test(character)) return 'invisible';
+  return null;
+}
+
+/**
+ * Text in a canonical form, with the original [start, end) of each canonical character and,
+ * for each UTF-16 unit of the canonical text, the character it belongs to. The forms are how
+ * a copy of a value can look between here and a reader: quoted-string escapes decoded, every
+ * space or separator character, tab or line break and any run of them read as one space,
+ * and each other control or format character read as a space too (drop false: what one-line
+ * printing does) or as nothing (drop true: what a display shows). The same forms as canon
+ * in runtime/latent_team/gateway.py, judged on whole code points. decode false reads a
+ * value's own backslashes as written (for values that hold one).
+ */
+function canonical(text, drop, decode = true) {
+  const chars = [];
+  const spans = [];
+  for (let i = 0; i < text.length;) {
+    const start = i;
+    const { character, next } = characterAt(text, i, decode);
+    i = next;
+    const kind = blankOrInvisible(character);
+    if (kind === 'invisible' && drop) continue;
+    if (kind && chars.at(-1) === ' ') {
+      spans[spans.length - 1] = [spans[spans.length - 1][0], i];
+      continue;
+    }
+    chars.push(kind ? ' ' : character);
+    spans.push([start, i]);
+  }
+  let flat = '';
+  const charOfUnit = [];
+  chars.forEach((character, index) => {
+    flat += character;
+    for (let unit = 0; unit < character.length; unit += 1) charOfUnit.push(index);
+  });
+  return { flat, spans, charOfUnit };
+}
+
+/**
+ * The original [start, end) ranges of text where either canonical form holds the same
+ * form of one of values: an escaped, spaced or invisibly split copy of a value. Each value
+ * is looked for with its escapes decoded and as written, so a value holding a backslash is
+ * found in a JSON-quoted copy too; the text is read both ways as well.
+ */
+export function canonicalRanges(text, values) {
+  const out = [];
+  if (typeof text !== 'string' || !text) return out;
+  for (const drop of [false, true]) {
+    const targets = new Set(values.filter(value => typeof value === 'string')
+      .flatMap(value => [canonical(value, drop).flat.trim(), canonical(value, drop, false).flat.trim()]).filter(Boolean));
+    // The text is read with its escapes decoded and as written too, so a backslash split from
+    // what follows it by an invisible character is not taken for an escape.
+    for (const decode of [true, false]) {
+      const { flat, spans, charOfUnit } = canonical(text, drop, decode);
+      for (const target of targets) {
+        const short = [...target].length < shortValue;
+        for (let at = flat.indexOf(target); at !== -1; at = flat.indexOf(target, at + 1)) {
+          if (short) {   // a short value only as a whole token
+            const before = [...flat.slice(0, at)].at(-1);
+            const after = [...flat.slice(at + target.length)][0];
+            if ((before && isWord(before)) || (after && isWord(after))) continue;
+          }
+          out.push([spans[charOfUnit[at]][0], spans[charOfUnit[at + target.length - 1]][1]]);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** text with every finding replaced by [REDACTED <kind>]; everything else is unchanged. */

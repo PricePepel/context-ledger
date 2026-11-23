@@ -15,7 +15,8 @@
     "src/",
     "public/",
     "schemas/",
-    "rules/latent-rules.json"
+    "rules/latent-rules.json",
+    "rules/secret-rules.json"
   ],
   "type": "module",
   "engines": {

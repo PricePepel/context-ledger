@@ -46,6 +46,7 @@ class Outcome:
     latent_vectors: int
     seconds: float
     extra: dict = field(default_factory=dict)
+    gateway: dict = field(default_factory=dict)  # W2: the run's label and the gateway's counts
 
 
 def agreement(a, b):
@@ -106,6 +107,7 @@ class Guard:
         self.audit_every = audit_every
         self.sample = sample or (lambda: secrets.randbelow(self.audit_every) == 0)
         self.time_cap = time_cap
+        self.clock = time.monotonic   # the run's time, the gateway's clock too
 
     def thresholds(self, steps):
         if self._thresholds == "auto":
@@ -115,15 +117,17 @@ class Guard:
         t = self._thresholds
         return t if t is not None and t.get("steps") == steps else None
 
-    def watch(self, questions, steps, max_new_tokens, thresholds=None, reference=None, **kwargs):
+    def watch(self, questions, steps, max_new_tokens, thresholds=None, reference=None, time_cap=None, **kwargs):
         from .watchdog import Watch
         return Watch(self.team, questions, steps=steps, max_new_tokens=max_new_tokens, thresholds=thresholds,
-                     reference=reference, time_cap=self.time_cap, key=secrets.token_bytes(32), pinned=self.pinned,
-                     **kwargs)
+                     reference=reference, time_cap=self.time_cap if time_cap is None else time_cap,
+                     key=secrets.token_bytes(32), pinned=self.pinned, **kwargs)
 
-    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance):
+    def audit(self, questions, steps, max_new_tokens, watch, answers, tolerance, swap=True, over=None):
         """Replay, mismatched memory and solver alone for a batch. Returns (per-row audit words,
-        solver-alone answers, measurements for the eval)."""
+        solver-alone answers, measurements for the eval). over: a check of the run's budget, made
+        before each later inference stage; a stage past it does not run (review W2-23)."""
+        over = over or (lambda: False)
         import torch
         team, rows = self.team, len(questions)
         measured = {}
@@ -164,7 +168,7 @@ class Guard:
         again.drop()
 
         mismatched = ["not-run"] * rows
-        if rows >= 2 and watch.handoff is not None:
+        if swap and rows >= 2 and watch.handoff is not None and not over():
             from .team import LATENT_PROMPTS
             started = time.perf_counter()
             with torch.no_grad():   # an audit is inference: no autograd graph through the memory
@@ -178,6 +182,10 @@ class Guard:
             mismatched = ["unchanged" if (predicted_number(o) == predicted_number(a) and predicted_number(a) is not None)
                           or o == a else "changed" for o, a in zip(other, answers)]
 
+        if over():   # no fresh solver-alone inference past the budget
+            words = [{"replay": replay[r], "mismatchedMemory": mismatched[r], "solverAlone": "not-run"}
+                     for r in range(rows)]
+            return words, None, measured
         started = time.perf_counter()
         alone, alone_receipt = team.single(questions, max_new_tokens=max_new_tokens)
         measured["aloneSeconds"] = time.perf_counter() - started
@@ -186,33 +194,97 @@ class Guard:
                  for r in range(rows)]
         return words, alone, measured
 
-    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None):
-        """One guarded batch. audit: True or False forces the audits; None samples them."""
+    def rendered(self, question):
+        """Every prompt a guarded run can give the model for one question, as the chat template
+        renders it: each role's turn, the solver's, and the solver alone's (audits, fallback)."""
+        from .chat_turns import first_turn
+        from .team import LATENT_PROMPTS, ROLES, SINGLE_PROMPT
+        tokenizer, turns = self.team.tokenizer, self.team.turns
+        texts = [first_turn(tokenizer, LATENT_PROMPTS[ROLES[0]].format(question=question))]
+        texts += [turns.later(LATENT_PROMPTS[role].format(question=question)) for role in ROLES[1:] + ("solver",)]
+        texts.append(first_turn(tokenizer, SINGLE_PROMPT.format(question=question)))
+        return texts
+
+    def run(self, questions, steps=40, max_new_tokens=512, audit=None, reference=None, gateways=None):
+        """One guarded batch. audit: True or False forces the audits; None samples them.
+
+        gateways (W2): one gateway.Gateway per question, its permissions fixed. Each admits the
+        question's spans before the squad reads anything, and the squad reads the admitted text
+        (placeholders in place of secrets); every answer released passes that gateway's output
+        gate, and a broken label rule holds the run. Without gateways the questions are read
+        as given (the eval)."""
+        if gateways is not None:
+            from .gateway import OutputGate, Span
+            if len(gateways) != len(questions):
+                raise ValueError("one gateway per question")
+            # The rows of a batch share one memory object, so one batch is one project.
+            if len({g.project for g in gateways}) > 1:
+                raise ValueError("one batch never mixes projects: their memories would share tensors")
+            # The gateway's budgets were fixed before any data was read; the run keeps to them.
+            for g in gateways:
+                p = g.permissions
+                if steps > p.max_steps or max_new_tokens > p.max_new_tokens:
+                    raise ValueError("the run asks for more than the gateway's fixed budgets")
+            admitted = [g.admission if g.admission is not None else g.admit([Span("request", "request", q)])
+                        for g, q in zip(gateways, questions)]
+            questions = [a.text for a in admitted]
+            unsafe = []
+            for row, (g, question) in enumerate(zip(gateways, questions)):
+                try:
+                    for text in self.rendered(question):
+                        g.check_rendered(text)
+                except Exception:   # noqa: BLE001 - a prompt that would carry a known value is never run
+                    unsafe.append(row)
+            if unsafe:
+                return [self._held(steps, "unsafe-render") for _ in questions]
         thresholds = self.thresholds(steps)
         reference = reference if reference is not None else self.reference
         if thresholds is None or not thresholds.get("distance"):
             reference = None
         rows = len(questions)
+        # One deadline for the whole run: the guard's own cap and the gateway's, whichever is
+        # shorter, for the watchdog's budget check, the audits, the fallback and the release.
+        cap = self.time_cap
+        if gateways is not None:
+            seconds = min(g.permissions.max_seconds for g in gateways)
+            cap = seconds if cap is None else min(cap, seconds)
         runs = [self.supervisor.open_run() for _ in range(rows)]
         watch = self.watch(questions, steps, max_new_tokens, thresholds=thresholds, reference=reference,
-                           keep_memory=True)
-        started = time.monotonic()
+                           keep_memory=True, time_cap=cap)
+        started = self.clock()
+        if gateways is not None:   # the gateway's budget counts from admission (review W2-20)
+            admitted = [g.admitted_at for g in gateways if g.admitted_at is not None]
+            if admitted:
+                started = min([started] + admitted)
+        gates = None if gateways is None else [OutputGate(g) for g in gateways]
+        if self._over(started, cap):   # the budget is spent before inference (review W2-21)
+            watch.drop()
+            return [self._held(steps, "deadline") for _ in range(rows)]
         try:
-            return self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started)
+            outcomes = self._run(questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates,
+                                 cap=cap)
         except Exception:   # noqa: BLE001 - any failure of a guarded stage is a hold, never an answer
-            return [self._held(steps, "runtime-error") for _ in range(rows)]
+            outcomes = [self._held(steps, "runtime-error") for _ in range(rows)]
         finally:
             watch.drop()
+        # The release boundary is here, after cleanup: an answer past the deadline holds.
+        if self._over(started, cap):
+            outcomes = [o if o.answer is None else self._held(steps, "deadline", o.tokens, o.latent_vectors, o.seconds)
+                        for o in outcomes]
+        if gates is not None:
+            for outcome, gateway in zip(outcomes, gateways):
+                outcome.gateway = dict(gateway.admission.receipt(), redactions=outcome.gateway.get("redactions", 0))
+        return outcomes
 
     def _held(self, steps, reason, tokens=0, vectors=0, seconds=0.0):
         return Outcome(answer=None, decision=Decision("hold", reason).as_dict(), checks={}, audits={},
                        statistical={}, scores={}, system="latent_mas", tokens=int(tokens), latent_steps=steps,
                        latent_vectors=vectors, seconds=seconds)
 
-    def _over(self, started):
-        return self.time_cap is not None and time.monotonic() - started > self.time_cap
+    def _over(self, started, cap):
+        return cap is not None and self.clock() - started > cap
 
-    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started):
+    def _run(self, questions, steps, max_new_tokens, audit, thresholds, runs, watch, started, gates=None, cap=None):
         from .watchdog import weights_state
         rows = len(questions)
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens, watch=watch)
@@ -228,11 +300,17 @@ class Guard:
                 spec = thresholds.get(name)
                 values = results["raw"][name]
                 flagged |= spec is not None and any(v is not None and v >= spec["flag"] for v in values)
-        do_audit = ((self.sample() if audit is None else audit) or flagged) and not self._over(started)
+        do_audit = ((self.sample() if audit is None else audit) or flagged) and not self._over(started, cap)
         words, alone, measured = [{}] * rows, None, {}
         if do_audit and not all(held):
             tolerance = (thresholds or {}).get("replayTolerance", REPLAY_TOLERANCE)
-            words, alone, measured = self.audit(questions, steps, max_new_tokens, watch, answers, tolerance)
+            # Another row's memory is lent only between rows of the same label, and with gateways
+            # no raw audit text is kept: only the comparison's words.
+            labels = {g.admission.label for g in gates and [gate.gateway for gate in gates] or []}
+            words, alone, measured = self.audit(questions, steps, max_new_tokens, watch, answers, tolerance,
+                                                swap=len(labels) <= 1, over=lambda: self._over(started, cap))
+            if gates is not None:
+                measured.pop("mismatchedAnswers", None)
 
         decisions = []
         for row in range(rows):
@@ -242,9 +320,15 @@ class Guard:
                 envelope = None
             if envelope is not None:
                 runs[row].submit(envelope)
-            decisions.append(runs[row].decide(calibrated=False))
+            broken = gates is not None and gates[row].label_broken()
+            decisions.append(runs[row].decide(calibrated=False, label_broken=broken))
         fallback_rows = [r for r, d in enumerate(decisions) if d.action == "fallback"]
         fallback = {}
+        if fallback_rows and alone is None and self._over(started, cap):
+            # No fresh inference past the deadline (review W2-22): the fallback fails, unrun.
+            for r in fallback_rows:
+                decisions[r] = runs[r].after_fallback(within_limits=False)
+            fallback_rows = []
         if fallback_rows:
             # Once, with tools off, inside the same fence: its budget and time are checked
             # before it may be released.
@@ -262,7 +346,7 @@ class Guard:
             same_model = weights_state(self.team.model) == watch.weight_state
             for r, text, count in zip(fallback_rows, texts, tokens):
                 within = isinstance(text, str) and 0 <= int(count) <= max_new_tokens and same_model and \
-                    (self.time_cap is None or seconds <= self.time_cap) and not self._over(started)
+                    (cap is None or seconds <= cap) and not self._over(started, cap)
                 decisions[r] = runs[r].after_fallback(within_limits=within)
 
         outcomes = []
@@ -275,8 +359,22 @@ class Guard:
                 # Only a release carries an answer: a hold, and an abstention (W3), give none.
                 answer = answers[row] if decision.action == "release" else None
                 system, tokens = "latent_mas", receipt.generated_tokens[row]
+            redactions = 0
+            if answer is not None and gates is not None:
+                # The output gate: the scanner over the final text, then placeholders put back
+                # only for a cleared output. A fallback answer passes it too.
+                released = gates[row].release(answer)
+                answer, redactions = released.text, released.redactions
+                if not released.safe:   # the output gate could not clear the text: nothing leaves
+                    answer, decision = None, Decision("hold", "output-unsafe", decision.marks, decision.quarantined)
+                elif released.marks:
+                    decision = Decision(decision.action, decision.reason, decision.marks + released.marks,
+                                        decision.quarantined)
+            # The run's budget holds until the answer leaves, output gate included (review W2-20).
+            if answer is not None and self._over(started, cap):
+                answer, decision = None, Decision("hold", "deadline", decision.marks, decision.quarantined)
             outcomes.append(Outcome(
-                answer=answer, decision=decision.as_dict(),
+                answer=answer, decision=decision.as_dict(), gateway={"redactions": redactions},
                 checks=dict(report["checks"]) if report else {n: bool(results["checks"][n][row])
                                                               for n in results["checks"]},
                 audits=dict(report["audits"]) if report else {}, statistical=dict(report["statistical"]) if report else {},

@@ -29,12 +29,12 @@ from dataclasses import dataclass
 from . import reports
 
 ACTIONS = ("hold", "fallback", "abstain", "release")
-MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated")
+MARKS = ("tool-refused", "fallback", "unverified", "unscreened", "uncalibrated", "redacted")
 REPORT_PROBLEMS = ("report-missing", "report-unsigned", "report-malformed", "report-other-run",
                    "report-unknown-squad", "report-replayed", "report-late")
 REASONS = reports.EXACT_CHECKS + ("label-rule",) + REPORT_PROBLEMS + (
     "statistical-flag", "weak-signals", "audit-disagrees", "low-confidence", "quote-failed", "uncalibrated", "passed",
-    "fallback-failed", "watchdog-error", "runtime-error")
+    "fallback-failed", "watchdog-error", "runtime-error", "output-unsafe")
 
 # A score bucket at or above WEAK_BUCKET is a weak signal (bucket 6 is the clean 95th
 # percentile, 8 the 99th: watchdog.bucket). WEAK_SUM weak signals in one run, across all

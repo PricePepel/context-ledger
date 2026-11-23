@@ -134,13 +134,14 @@ test('P5c: the package is publishable, and the tarball holds only the allowlist'
   assert.match(readFileSync(bin, 'utf8'), /^#!\/usr\/bin\/env node\n/u);
   const { stdout } = await run(process.execPath, [npmScript('npm-cli.js'), 'pack', '--dry-run', '--json'], { cwd: repo, encoding: 'utf8', timeout: 120_000 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path.replaceAll('\\', '/')).sort();
-  const allowed = path => ['LICENSE', 'README.md', 'package.json', 'rules/latent-rules.json'].includes(path)
+  const allowed = path => ['LICENSE', 'README.md', 'package.json', 'rules/latent-rules.json', 'rules/secret-rules.json'].includes(path)
     || ['bin/', 'src/', 'public/', 'schemas/'].some(prefix => path.startsWith(prefix));
   assert.deepEqual(files.filter(path => !allowed(path)), []);
   for (const path of files) {
     assert.doesNotMatch(path, /(?:^|\/)(?:tests?|fixtures|docs|demo|runtime)\/|\.(?:sqlite|env|pem|key|token)$|(?:^|\/)\.env/u, path);
   }
-  for (const needed of ['bin/context-ledger.mjs', 'src/server.mjs', 'src/mcp.mjs', 'src/cli.mjs', 'public/index.html', 'schemas/semantic-graph-v2.schema.json']) {
+  // W2: src/secrets.mjs reads rules/secret-rules.json, so the package must carry it.
+  for (const needed of ['bin/context-ledger.mjs', 'src/server.mjs', 'src/mcp.mjs', 'src/cli.mjs', 'public/index.html', 'schemas/semantic-graph-v2.schema.json', 'rules/secret-rules.json']) {
     assert.ok(files.includes(needed), needed);
   }
 });

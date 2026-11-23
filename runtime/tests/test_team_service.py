@@ -41,7 +41,10 @@ class FakeGuard:
     def __init__(self, team, action="release", reason="uncalibrated"):
         self.team, self.action, self.reason = team, action, reason
 
-    def run(self, questions, steps, max_new_tokens):
+    def run(self, questions, steps, max_new_tokens, gateways=None):
+        if gateways is not None:   # the squad reads what the gateway admitted
+            questions = [g.admission.text for g in gateways]
+        self.gateways = gateways
         answers, receipt = self.team.latent_mas(questions, steps=steps, max_new_tokens=max_new_tokens)
         checks = dict(CHECKS)
         answer, system, marks, action = answers[0], "latent_mas", ["uncalibrated"], self.action
@@ -58,7 +61,8 @@ class FakeGuard:
                         statistical={"degenerate": "measured", "distance": "measured"},
                         scores={"degenerate": 2, "distance": 3}, system=system, tokens=receipt.generated_tokens[0],
                         latent_steps=receipt.latent_steps, latent_vectors=receipt.latent_vectors,
-                        seconds=receipt.seconds)]
+                        seconds=receipt.seconds,
+                        gateway=dict(gateways[0].admission.receipt(), redactions=0) if gateways else {})]
 
 
 class TeamServiceTest(unittest.TestCase):
@@ -129,6 +133,94 @@ class TeamServiceTest(unittest.TestCase):
             for leaf in leaves(receipt[name]):
                 self.assertTrue(isinstance(leaf, (bool, str)) or (type(leaf) is int and 0 <= leaf <= 9),
                                 (name, leaf))
+
+    def test_w2_declared_secrets_never_reach_the_squad_and_labels_follow_origin(self):
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        result = service({"question": f"My code is {canary}. Repeat it.", "secrets": [canary]})
+        self.assertNotIn(canary, self.team.calls[-1][0], "the squad reads a placeholder")
+        self.assertNotIn(canary, json.dumps(result))
+        self.assertEqual(result["receipt"]["gateway"]["label"], {"trust": "user", "sensitivity": "public"})
+        self.assertEqual(result["receipt"]["gateway"]["placeholders"], 1)
+        service.chat({"model": MODEL_ID, "messages": [{"role": "system", "content": "be kind"},
+                                                      {"role": "user", "content": "2+2?"}]})
+        self.assertEqual(guard.gateways[0].admission.label.trust, "untrusted", "the chat route is untrusted as a whole")
+
+    def test_w2_a_long_chat_is_cut_after_the_gateway(self):
+        # Review W2-1 finding 5: a declared value across the cut never reaches the squad in part.
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        filler = "word " * 900
+        text = filler[:1990] + canary + filler + canary + " end"
+        service.chat({"model": MODEL_ID, "secrets": [canary], "messages": [{"role": "user", "content": text}]})
+        read = self.team.calls[-1][0]
+        self.assertLessEqual(len(read), 8000 + 64)
+        for size in (8, 12, 20, 36):
+            for start in range(0, len(canary) - size + 1, 4):
+                self.assertNotIn(canary[start:start + size], read)
+
+    def test_w2_the_guard_keeps_to_one_project_and_to_the_fixed_budgets(self):
+        from latent_team.gateway import Gateway, Permissions, Span
+        from latent_team.guard import Guard
+        gateways = []
+        for project in ("proj-a", "proj-b"):
+            g = Gateway(project)
+            g.fix_permissions(Permissions())
+            g.admit([Span("request", "request", "q")])
+            gateways.append(g)
+        guard = Guard(self.team, thresholds=None)
+        with self.assertRaises(ValueError):
+            guard.run(["q", "q"], steps=3, max_new_tokens=6, gateways=gateways)
+        tight = Gateway("proj-a")
+        tight.fix_permissions(Permissions(max_steps=2))
+        tight.admit([Span("request", "request", "q")])
+        with self.assertRaises(ValueError):
+            guard.run(["q"], steps=3, max_new_tokens=6, gateways=[tight])
+        self.assertEqual(self.team.calls, [], "nothing ran")
+
+    def test_w2_an_unknown_field_name_is_never_echoed(self):
+        # Review W2-5 finding 5: the name could be a declared secret.
+        import secrets as random_secrets
+        canary = "cnry" + random_secrets.token_hex(16)
+        with self.assertRaises(ApiError) as raised:
+            self.service({"question": "q", "secrets": [canary], canary: 1})
+        self.assertEqual(raised.exception.status, 400)
+        self.assertNotIn(canary, raised.exception.message)
+
+    def test_w2_the_chat_route_keeps_a_padded_declaration_hidden(self):
+        # Review W2-6 finding 2: the route trims messages before the gateway sees them.
+        guard = FakeGuard(self.team)
+        service = TeamService(self.team, slot_wait=0.1, guard=guard)
+        service.chat({"model": MODEL_ID, "secrets": [" harbor-slate-42 "],
+                      "messages": [{"role": "user", "content": " harbor-slate-42 "}]})
+        self.assertNotIn("harbor-slate-42", self.team.calls[-1][0])
+
+    def test_w2_the_chat_route_fixes_permissions_before_reading_messages(self):
+        # Review W2-16 finding 4: the gateway exists before the conversation is flattened, and
+        # a bad budget is refused before any message is read.
+        from unittest import mock
+        from latent_pool import team_service
+        order = []
+        service = TeamService(self.team, slot_wait=0.1, guard=FakeGuard(self.team))
+        real_gateway, real_build = service.gateway, team_service.build_question
+        with mock.patch.object(service, "gateway", lambda *a, **k: order.append("gateway") or real_gateway(*a, **k)), \
+                mock.patch.object(team_service, "build_question", lambda *a, **k: order.append("read") or real_build(*a, **k)):
+            service.chat({"model": MODEL_ID, "messages": [{"role": "user", "content": "2+2?"}]})
+            self.assertEqual(order[:2], ["gateway", "read"])
+            order.clear()
+            with self.assertRaises(ApiError):
+                service.chat({"model": MODEL_ID, "max_tokens": -1, "messages": [{"role": "user", "content": "2+2?"}]})
+            self.assertNotIn("read", order)
+
+    def test_w2_bad_declarations_are_refused(self):
+        for body in [{"question": "q", "secrets": "abcdefgh"}, {"question": "q", "secrets": ["short"]},
+                     {"question": "q", "secrets": ["x" * 513]}, {"question": "q", "secrets": ["abcdefgh"] * 17},
+                     {"question": "q", "secrets": [12345678]}, {"question": "q", "clearance": "top"}]:
+            self.assertEqual(self.status(self.service, body), 400, body)
 
     def test_bad_team_requests(self):
         for body in [{}, {"question": " "}, {"question": "q", "latentSteps": 81}, {"question": "q", "latentSteps": True},

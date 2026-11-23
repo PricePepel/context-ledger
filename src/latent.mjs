@@ -5,6 +5,7 @@ import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { InputError } from './errors.mjs';
 import latentRules from '../rules/latent-rules.json' with { type: 'json' };
+import { canonicalRanges, findSecrets } from './secrets.mjs';
 
 const maxPaths = 32;
 const maxTextBytes = 512 * 1024;
@@ -152,6 +153,54 @@ const goodLabel = label => typeof label === 'string' && label.length <= 500 && /
 // validated findings or footer that agents read after it.
 const oneLine = text => [...text.slice(0, 4000)]
   .map(character => (hiddenOrBreaking(character) ? ' ' : character)).join('').replace(/\s+/gu, ' ').trim();
+
+/**
+ * W2: an answer not cleared for sensitive data, as printed. The one-line form can make a
+ * credential the runtime's scan could not see (an invisible character between a name and
+ * its value becomes a space), so the printed answer is scanned again with the shared
+ * scanner. Every copy of each value found, and of each declared value, is redacted in any
+ * spelling the canonical forms match (escaped, spaced or invisibly split), and the result
+ * is checked again before it leaves: null when a finding or a known value survives.
+ */
+/**
+ * The text that replaces a redacted range: [REDACTED kind] unless that holds one of the
+ * values in any canonical form (a found value ACT is inside REDACTED), else a stand-in the
+ * scanner also reads as none. runtime/latent_team/gateway.py chooses the same.
+ */
+function redactionMarker(kind, values) {
+  return [`[REDACTED ${kind}]`, '***', '###', '---'].find(marker => !canonicalRanges(marker, values).length) ?? '***';
+}
+
+function redactedAnswer(text, declared) {
+  const findings = findSecrets(text, { values: true });
+  const known = new Set();
+  const add = value => {
+    for (const form of [value, oneLine(value)]) if (form.trim()) known.add(form);
+  };
+  declared.forEach(add);
+  for (const finding of findings) {
+    add(text.slice(finding.start, finding.end));
+    finding.values.forEach(add);
+  }
+  const ranges = [...findings.map(({ start, end }) => [start, end]), ...canonicalRanges(text, [...known])]
+    .filter(([start, end]) => end > start)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const [start, end] of ranges) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  let out = '';
+  let at = 0;
+  for (const [start, end] of merged) {
+    const kind = findings.find(finding => start <= finding.start && finding.end <= end)?.kind ?? 'secret';
+    out += text.slice(at, start) + redactionMarker(kind, [...known]);
+    at = end;
+  }
+  out += text.slice(at);
+  return findSecrets(out).length || canonicalRanges(out, [...known]).length ? null : out;
+}
 
 const count = value => (Number.isInteger(value) && value >= 0 && value <= 1e9 ? value : null);
 const roles = new Set(['reader', 'planner', 'worker', 'synthesizer']);
@@ -646,7 +695,10 @@ export async function latentTransfer(input, { latentUrl = 'http://127.0.0.1:4320
 // (docs/m2c-latent-team.md on leo/m2c-latent-team). Planner, critic and refiner
 // think in latent space on one open model and hand their KV working memory on; only
 // the solver writes text. The answer is model prose: one line, unverified.
-const teamFields = ['question', 'latentSteps', 'maxNewTokens'];
+// W2: secrets the caller declares, and anything the runtime's scanner finds, are replaced by
+// placeholders before the model reads any text, and come back in the answer only with
+// clearance "sensitive" (the runtime's gateway).
+const teamFields = ['question', 'latentSteps', 'maxNewTokens', 'secrets', 'clearance'];
 const teamRoles = new Set(['planner', 'critic', 'refiner', 'solver']);
 
 function checkTeam(input) {
@@ -662,6 +714,14 @@ function checkTeam(input) {
   }
   if (maxNewTokens !== undefined && (!Number.isInteger(maxNewTokens) || maxNewTokens < 1 || maxNewTokens > 1024)) {
     throw new InputError('maxNewTokens must be an integer from 1 to 1024.');
+  }
+  const { secrets, clearance } = input;
+  if (secrets !== undefined && (!Array.isArray(secrets) || secrets.length > 16
+    || !secrets.every(value => typeof value === 'string' && value.length >= 8 && value.length <= 512))) {
+    throw new InputError('secrets must be a list of at most 16 strings of 8 to 512 characters.');
+  }
+  if (clearance !== undefined && clearance !== 'public' && clearance !== 'sensitive') {
+    throw new InputError('clearance must be public or sensitive.');
   }
   return Object.fromEntries(teamFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 }
@@ -734,7 +794,15 @@ export async function latentTeam(input, { latentUrl = 'http://127.0.0.1:4320', f
   if (body?.mode !== 'latent-team' || typeof body.answer !== 'string') {
     throw new LatentError(502, 'The latent runtime returned an unexpected team response.');
   }
-  return { mode: 'latent-team', answer: oneLine(body.answer).slice(0, 4000), answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
+  // W2: the answer is printed on one line here, after the runtime's output gate, so the
+  // declared values are checked again on the text as printed (also folded to one line).
+  let answer = oneLine(body.answer).slice(0, 4000);
+  if (request.clearance !== 'sensitive') {
+    answer = redactedAnswer(answer, request.secrets ?? []);
+    // What would leave still holds a credential or a known value: no answer is passed on.
+    if (answer === null) return { mode: 'held', reason: 'output-unsafe' };
+  }
+  return { mode: 'latent-team', answer, answerVerified: false, receipt: cleanTeamReceipt(body.receipt) };
 }
 
 /**
