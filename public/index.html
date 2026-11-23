@@ -31,6 +31,10 @@
               <option value="claude">Claude Code</option>
               <option value="codex">Codex</option>
             </select>
+            <label for="import-project">Project</label>
+            <input id="import-project" name="project" list="project-names" placeholder="default" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="import-project-hint">
+            <p id="import-project-hint" class="hint">Lowercase letters, digits and single hyphens. Leave empty for the default project.</p>
+            <datalist id="project-names"></datalist>
             <label for="transcript-file">Transcript file</label>
             <input id="transcript-file" name="transcript" type="file" accept=".jsonl,application/jsonl" required>
             <button class="primary" type="submit">Import transcript</button>
@@ -48,6 +52,10 @@
               <input id="search-query" name="query" type="search" placeholder="Enter keywords">
               <button class="primary" type="submit">Search</button>
             </div>
+            <label for="filter-project">Filter by project</label>
+            <select id="filter-project" name="project">
+              <option value="">All projects</option>
+            </select>
             <label for="filter-agent">Filter by agent</label>
             <select id="filter-agent" name="provider">
               <option value="">All agents</option>

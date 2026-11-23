@@ -277,3 +277,12 @@ Next steps:
 1. A human reviews the migration to version 2 (AGENTS.md section 4, step 4); the review of PR #8's migration to version 1 is also still owed.
 2. When PR #37 lands, keep one P1b row on the board (this branch's or #37's) and set it from the PR state.
 3. Not in this card: a project picker in the browser (it imports into `default`), a `project` filter on MCP `session_search`, a project list route, and moving sessions between projects. P1c (message rows) and P1d (delete and retention) build on `projects` and `sessions.project_id`.
+
+## Current checkpoint — U5 library project picker (2026-11-18)
+
+Branch `ali/u5-project-picker`, stacked on P1b (#42).
+
+- **Library:** the import form has a Project field (empty means `default`; the slug rule is checked before sending), the archive has "Filter by project" with counts, and results and the reader name each transcript's project.
+- **Server:** one read-only route, `GET /api/projects` → `{ projects: [{ slug, sessions }] }` (`store.listProjects`). It is the only server change. The P1b PR listed a project route as out of scope, so Ruslan should confirm the shape before it merges.
+
+Next steps: a project filter on MCP `session_search` and moving sessions between projects stay out of scope, as in P1b.

@@ -109,6 +109,8 @@ const routes = [
     const packet = await readJson(request, origin, 'Graph publication');
     return { graph: store.publishGraph(packet) };
   } },
+  // Card U5: the library's project picker. Read-only, every project with its session count.
+  { method: 'GET', path: '/api/projects', handler: () => ({ projects: store.listProjects() }) },
   { method: 'GET', path: '/api/sessions', handler: ({ url }) => {
     const query = url.searchParams.get('q') ?? '';
     const provider = url.searchParams.get('provider') ?? '';
