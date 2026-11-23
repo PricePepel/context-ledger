@@ -185,3 +185,30 @@ test('the installed command does not show the node:sqlite notice', async t => {
   assert.match(output, /^Context Ledger listening at http:\/\/127\.0\.0\.1:\d+\r?\n/u);
   assert.doesNotMatch(errors, /ExperimentalWarning: SQLite/u);
 });
+
+test('review: a reader that stops after the first line does not stop the server', async t => {
+  // On Linux and macOS a write to the closed pipe is EPIPE; the server must keep running.
+  const dir = await mkdtemp(join(tmpdir(), 'ctm-u9-pipe-'));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.mjs', import.meta.url))], {
+    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(dir, 'ledger.sqlite') }, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  t.after(async () => {
+    child.kill();
+    await new Promise(resolve => { child.once('exit', resolve); if (child.exitCode !== null) resolve(); });
+    await rm(dir, { recursive: true, force: true });
+  });
+  let output = '';
+  let origin;
+  const timer = setTimeout(() => child.kill(), 15_000);
+  for await (const chunk of child.stdout) {
+    output += chunk;
+    origin = /listening at (http:\/\/127\.0\.0\.1:\d+)/u.exec(output)?.[1];
+    // Leaving the loop closes this end of the pipe, as the other tests' readers do.
+    if (origin) break;
+  }
+  clearTimeout(timer);
+  assert.ok(origin, output);
+  await new Promise(resolve => { setTimeout(resolve, 400); });
+  assert.equal(child.exitCode, null, 'the server is still running');
+  assert.equal((await fetch(origin + '/')).status, 200);
+});

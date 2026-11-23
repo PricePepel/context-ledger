@@ -86,19 +86,26 @@ export function welcomeFrames({ title, lines, depth = 24, footer }) {
 
 const sleep = ms => new Promise(resolve => { setTimeout(resolve, ms); });
 
+// The process's own output goes through console.log, as it did before this card.
+// console.log ignores a closed pipe; a bare stream.write does not, and a script that stops
+// reading after the first line would then stop the server with EPIPE (seen on Linux and
+// macOS CI). Any other stream (tests) is written to directly.
+const lineWriter = stream => (stream === process.stdout ? text => { console.log(text); } : text => { stream.write(`${text}\n`); });
+
 /**
  * Print a command's lines. At a terminal: the welcome, a line at a time. Anywhere else:
  * the same lines, plainly and at once, as before this card; a line marked terminalOnly
  * is left out there.
  */
 export async function printWelcome({ title, lines, footer }, { stream = process.stdout, env = process.env, wait = sleep } = {}) {
+  const write = lineWriter(stream);
   if (!fancyTerminal(stream, env)) {
-    for (const { text, terminalOnly } of lines) if (!terminalOnly) stream.write(`${terminalLine(String(text))}\n`);
+    for (const { text, terminalOnly } of lines) if (!terminalOnly) write(terminalLine(String(text)));
     return false;
   }
   for (const { text, waitMs } of welcomeFrames({ title, lines, footer, depth: colourDepth(stream, env) })) {
     if (waitMs) await wait(waitMs);
-    stream.write(`${text}\n`);
+    write(text);
   }
   return true;
 }
