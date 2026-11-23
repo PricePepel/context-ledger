@@ -5019,6 +5019,14 @@ Synthetic data only.
 - Playwright: the existing library, room, review and swarm journeys pass unchanged; new checks for the swarm page's dataset and task before a run and the robots after one, and for the library's fonts and frame.
 - The full suites pass, and Codex reviews the change.
 
+### U8 results (2026-11-23)
+
+- The library and the swarm page load `/console/tokens.css`, `/pixel.css` and the console's three fonts, and sit in the same framed sheet as the console. The library's structure, text and IDs are unchanged, and every existing library, room, review, delete, hand-off and auth journey passes.
+- The swarm page shows the dataset (three sample reports from `GET /api/swarm/task`, texts only) and the shared instructions before a run, then one pixel robot per agent, the states in words, the check's counts and what the run ran on. A simulated run still shows no measured speed-up.
+- The console's swarm room draws the same robots. A console test forbids literal colours in `console.css`, so the robot's colours are tokens.
+- `node:test`: the task endpoint (sample equals what agent 1 reads, no truth, needs the token), the robot's grid and its class-only drawing, and `/pixel.css` in the static routes.
+- Playwright: 3 new tests (swarm page story and look, the room's robots, the library's look and phone width).
+
 ## U9 — Terminal welcome (defined 2026-11-23, before the code)
 
 Installing and starting the ledger prints plain lines. U9 gives a person at a terminal a short welcome in the product's look, and changes nothing for scripts.
@@ -5035,3 +5043,20 @@ Installing and starting the ledger prints plain lines. U9 gives a person at a te
 
 - `node:test` for the pure frame builder (plain mode has no escape codes; colour mode only uses SGR colour codes and its own fixed cursor moves; the mark is a fixed grid), and for `start` run with piped output giving today's exact lines.
 - The full suites pass, and Codex reviews the change.
+
+### U9 results (2026-11-23)
+
+- At a terminal, `context-ledger start` shows the CTM pixel letters in violet over a lime bar, then its two lines behind coloured pixels, in about 0.8 s; `install` shows its lines the same way. Checked by eye in Windows PowerShell.
+- Piped, with `NO_COLOR`, `TERM=dumb` or `CONTEXT_LEDGER_NO_BANNER=1`, the output is the same plain lines as before: every test that waits for "listening at" passes unchanged, and one new test checks the two lines exactly with no escape codes even under `FORCE_COLOR`.
+- The welcome writes colour codes only (no cursor movement), from fixed text and the caller's own lines. A test strips the colour codes and checks no control or format character is left.
+- Found by its own test: a line state named after an object property (`constructor`) crashed the frame builder; the state lookup now uses its own keys only.
+- Under the installed command Node's SQLite experimental warning is not shown; only that warning is filtered.
+- `node:test`: 6 tests in `tests/welcome.test.mjs`.
+
+### Suites on the stacked branch (U7, U8 and U9 on Ali's U6 with main merged in)
+
+`node --test tests/*.test.mjs`: 636 pass, 10 skipped, 0 fail. Playwright: 61 pass, 1 skipped, 0 fail (run on a second port because another checkout's run held 4318; `auth.spec`, which names the port in its cookie, was run on 4318).
+
+### Live rehearsal on the stacked branch (2026-11-23)
+
+`node demo/rehearse.mjs --runs 1` (Claude Code as Leo, Codex as Ali, one ledger): Leo's agent published 8 nodes in 68 s, Ali's Codex published 4 nodes with 2 links to Leo's in 33 s, the room held 2 proposals, and the hand-off answered 6 of 6 from the transcript (16.8 s) and 6 of 6 from the graph briefing (15.8 s; 323 against 1,814 estimated tokens). A first attempt, run while the whole node suite was also running on the laptop, failed: Ali's Codex reported that the ledger could not read its access token and published nothing. Two direct Codex probes and this rerun on an idle machine all worked, so the cause was load, not the code; the token is read through PowerShell on Windows, with a 30 s limit. For a live demo, run nothing heavy beside it.

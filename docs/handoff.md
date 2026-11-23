@@ -8,6 +8,10 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
+
+Three stacked cards on Ali's U6 console with `main` merged in: `claude/u7-console-swarm` (a swarm room in the console), `claude/u8-pixel-style` (the library and the swarm page in the console's pixel look; the swarm page shows its dataset, task, pixel robots, check and answer) and `claude/u9-terminal-welcome` (a pixel welcome on `start` and `install`, plain output for scripts). The merge of `main` restored I3 code an earlier console merge had dropped from `src/store.mjs`, `src/handoff.mjs`, `src/mcp/sessions.mjs` and `public/app.js`. Suites pass on the top branch (636 node, 61 Playwright). Not done: a live swarm run from the room on vLLM (the GPU was busy), and Ali's review of the changes to his console files. Next owner: run the swarm room live, land U6 first, then these three in order.
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.
