@@ -4774,3 +4774,11 @@ What is tested: `ledger handoff --sign` and `ledger reviews verify` open the led
 - Signing an older-schema ledger fails with "older schema … then sign again", writes no bundle and leaves the file at its old version.
 - Signing a current ledger still produces a bundle that verifies, with the review head.
 - No code path in signing or `reviews verify` opens the ledger read-write: the CLI has one helper for both, and it passes `readOnly: true`.
+
+### P3c results (2026-11-22)
+
+- `tests/readonly-store.test.mjs` covers the eval: a read-only store reads a current ledger and a write through it fails with the file unchanged; an older or newer schema refused with `LEDGER_SCHEMA` and its version, the file unchanged; a missing file and folder never created; signing an older-schema ledger writes no bundle; signing a current ledger still verifies with its head; and a static check that signing and `reviews verify` open the ledger only through the one read-only helper, exactly once.
+- **Codex review, round 1:** no high; one medium and two low:
+  - (medium) Statements prepared after the open sat outside the cleanup, so a damaged file (current `user_version`, missing tables) left the connection open, which on Windows keeps the file from being replaced or deleted. The store's methods are now built in `storeOn`, and any failure there closes the connection, in both modes. Test: such a file is refused and can be removed at once. A side effect Codex noted: `reviews verify` on that damaged file now says "Cannot open the ledger database." rather than checking the chain alone; such a file is not a ledger this build wrote, so that is accepted.
+  - (low) The static test would have passed with a second, writable open in the helper. It now counts the opens and needs exactly one.
+  - (low, accepted) A read-only open of a ledger in WAL mode can need `-wal` and `-shm` files, so it fails in a read-only folder without them. The ledger uses the default rollback journal, which needs no sidecar to read; P3b's read-only check behaved the same. Left as it is.

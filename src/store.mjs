@@ -407,7 +407,18 @@ export function openStore(path, { readOnly = false } = {}) {
     database.close();
     throw error;
   }
+  // Card P3c review: a statement that fails to prepare (a damaged file, say) must not
+  // leave the connection open, which on Windows keeps the file from being replaced.
+  try {
+    return storeOn(database);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
 
+/** The store's methods over an open, current-schema connection. */
+function storeOn(database) {
   // A graph stored before G7 has no quoted or inferred marks, and a version 3 graph
   // stored before P2c no node hashes; publishing the same packet again adds them. The ID,
   // row and created_at stay as they were.

@@ -116,9 +116,24 @@ test('P3c: the CLI opens the ledger for signing and reviews verify only through 
     return source.slice(start, source.indexOf('\n}\n', start));
   };
   assert.match(body('openCurrentStore'), /openStore\(databasePath, \{ readOnly: true \}\)/u);
+  // One open, and only that one.
+  assert.equal((body('openCurrentStore').match(/openStore\(|DatabaseSync/gu) ?? []).length, 1);
   for (const name of ['readLedgerSession', 'readReviewChain']) {
     assert.match(body(name), /await openCurrentStore\(databasePath, '(sign|verify)'\)/u, name);
     assert.doesNotMatch(body(name), /openStore\(|DatabaseSync/u, name);
   }
   assert.equal((source.match(/new DatabaseSync\(/gu) ?? []).length, 0);
+});
+
+test('P3c review: a current-schema file missing its tables is refused and the connection closed', t => {
+  const folder = mkdtempSync(join(tmpdir(), 'ledger-p3c-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const database = join(folder, 'ledger.sqlite');
+  setVersion(database, schemaVersion);
+  for (const readOnly of [true, false]) {
+    assert.throws(() => openStore(database, { readOnly }));
+    // Closed: the file can be removed at once, even on Windows.
+    rmSync(database);
+    setVersion(database, schemaVersion);
+  }
 });
