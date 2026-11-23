@@ -4864,25 +4864,34 @@ A failed first agent fails its whole condition; nothing is rerun. Deviations are
 
 ### Round 3 (2026-11-22): result as run
 
-Run folder `demo/out/website/2026-11-22T23-40-17-606Z` (`--chatter 800 --interleave --builder-model haiku --reuse --runs 3`). The chat had 1,680 messages, nine `session_read` pages.
+Run folder `demo/out/website/2026-11-22T23-40-17-606Z` (`--chatter 800 --interleave --builder-model haiku --reuse --runs 3`). The chat had 1,680 messages and nine `session_read` pages, observed in the run; the definition above estimated about five before it ran.
 
-| Condition | Requirements met | Stale | Ruled out | Builder input tokens, mean | Chat pages read | Cost, whole condition (3 sites) |
+| Condition | Requirements met | Stale | Ruled out | Builder input tokens, mean | Chat read (requests and start lines) | Cost, whole condition (3 sites) |
 | --- | --- | --- | --- | --- | --- | --- |
-| `chat` | 7, 7, 7 | 12 | 3 | 106,326 | 3 of 9 in each run | $0.24 |
-| `notes` | 3, 3, 3 | 3 | 0 | 7,977 | 1 of 9 (note writer, once) | $0.21 |
-| `ledger` | 14, 15, 15 | 1 | 0 | 18,877 | 9 of 9 (publisher, once) | $0.97 |
+| `chat` | 7, 7, 7 | 12 | 3 | 106,326 | 3 requests per builder: lines 1, 204, 406 (runs 1, 3); 1, 204, 600 (run 2); none reached the end | $0.24 |
+| `notes` | 3, 3, 3 | 3 | 0 | 7,977 | 1 request by the note writer (line 1), once | $0.21 |
+| `ledger` | 14, 15, 15 | 1 | 0 | 18,877 | 9 requests by the publisher, every page, once | $0.97 |
 
-**Gates:** gate 1 passes. The ledger builders met 14.7 requirements on average against 7 (`chat`) and 3 (`notes`), with 1 stale or ruled-out item against 15 and 3. Gate 2 fails: $0.97 against $0.24. The publish cost $0.875 (843,143 input tokens across 12 steps). Each ledger build then cost about $0.03, against about $0.08 for a whole-chat build, so the publish pays for itself only after about 18 builds, and that counts the whole-chat sites even though they were wrong.
+**Gates:** gate 1 passes. The ledger builders met 14.7 requirements on average against 7 (`chat`) and 3 (`notes`), with 1 stale or ruled-out item against 15 and 3. Gate 2 fails: $0.97 against $0.24. The publish cost $0.875 (843,143 input tokens across 12 tool requests). Each ledger build then cost about $0.03, against about $0.08 for a whole-chat build, so at those observed mean costs the publish breaks even after 18.5 builds (the 19th is the first one where the ledger is cheaper). That is a projection, and it counts the whole-chat sites at full value even though they were wrong.
 
 **Why:**
 - The agents that read the chat stopped early, against the instruction to read every turn.
-- Every whole-chat Haiku builder read pages 1 to 3 and built from them, so it used the forest green, the old hours and the $5.00 oat latte, and kept the wholesale page or the order button.
-- The Sonnet note writer read page 1, wrote "The remaining turns are the same loop repeating", and wrote a note with the green colour, no hours, no prices and no menu, so every note builder started from that note.
+- All three whole-chat Haiku builders stopped early. Each made three requests and built from them (run 2 jumped from line 204 to line 600 and skipped a page), so it used the forest green, the old hours and the $5.00 oat latte, and kept the wholesale page or the order button.
+- The Sonnet note writer also stopped early: it read page 1, wrote "The remaining turns are the same loop repeating", and wrote a note with the green colour, no hours, no prices and no menu, so every note builder started from that note.
 - The Sonnet publisher, with the same instruction to read the chat, read all nine pages.
-- So the ledger's gain here is that one complete read was published and reused, not that the builder did better with the same information.
+- So what the run shows is an association: the one complete read was published and reused, and its builders scored higher. It does not isolate the cause, because how much of the chat was read and the form of the hand-off changed together. The looping chatter may have made stopping early more likely.
 
 **Limits:**
 - Our chatter cycles through 16 exchanges, which makes stopping early tempting; a real chat does not repeat, so this round probably overstates how often readers stop.
 - `notes` and `ledger` each rest on a single first-agent run, reused three times. One stopped early and one did not, and two runs cannot show which first agent stops more often.
 - One ledger site (run 2) used the old green `#2F5D50` as one stop of a background gradient, counted as stale. The one ledger miss (run 1) was "Closed on Tuesdays".
-- The whole-chat and note builders also invented contact details the client never gave: an email at `tidewaterroast.com` and the phone `+1234567890`.
+- Builders also invented contact details the client never gave: `hello@tidewaterroast.com` in notes runs 2 and 3, and the phone `+1234567890` in chat run 3.
+
+### Codex review of round 3 (2026-11-22)
+
+A read-only Codex review confirmed the gate verdicts against `report.json`: the means were 14.67 requirements met (`ledger`), 7 (`chat`) and 3 (`notes`), with stale and ruled-out totals of 1/0, 12/3 and 3/0. The cost totals were $0.974 against $0.242, counting the publisher once. It also confirmed that interleaving keeps every requirement turn in order. Its findings, all fixed (regression tests in `tests/website-build.test.mjs`):
+
+1. *(medium)* The runner counted `session_read` requests but did not flag readers who stopped early or skipped a page, so every deviation list was empty although all three chat builders and the note writer stopped early. It now records what each page said comes next, reports coverage (`chatRead`: requests, start lines, skipped cursors, whether the end was reached), and flags early stops and skipped pages for builders and first agents alike. Tool results from round 3 were not saved, so its rows keep request counts only; the table above gives the start lines.
+2. *(medium)* A graph ID the ledger rejected would throw before the row was saved, aborting the run and losing the publisher's cost. That row now fails with the error recorded, and the run goes on.
+3. *(medium)* Time and cost could be understated after failures. The summary now reports setup time and build time separately, counting failed rows, and marks the whole-condition cost incomplete when an agent reported no cost. Round 3 had complete cost data.
+4. *(low)* The write-up corrections above: page count observed against estimated, the request start lines, "tool requests" instead of "steps", break-even as a projection (18.5, so the 19th build), the cause stated as an association, and the invented contact details attributed to their sites.
