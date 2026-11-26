@@ -60,8 +60,8 @@ const browserFile = /^public\/|\.html$/u;
 // and only when the 0 or 1 stands alone (not `< 1 + MAX`): length < 1, length > 0,
 // length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
 // labelParts) are lists and are left out.
-const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|\[[^\]\n]*\])*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*([\w$.]*)\s*(\S?)/u;
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+(?:\([^()\n]*\)|\[[^\]\n]*\])*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|\[[^\]\n]*\])*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*\(*\s*([\w$.]*)\s*(\S?)/u;
 // Not the ">" of an arrow function (`label => label.length`).
 const comparisonBefore = /(\S?)\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);

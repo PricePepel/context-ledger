@@ -456,3 +456,10 @@ test('card H10 review 2: a member chain, parentheses and a lone 0 or 1', () => {
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
 });
+
+test('card H10 review 3: indexed and call receivers, and a parenthesized 0', () => {
+  for (const line of ['if (500 < graph.nodes[0].label.length) reject();', 'if (500 < getNode().label.length) reject();', 'if (label.length < (1 + MAX)) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length > (0)) show();')), []);
+});
