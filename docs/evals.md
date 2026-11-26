@@ -3668,6 +3668,40 @@ Terms used below. A **party** is the `party` of a version 2 graph (the session I
   - (medium) The new flash assertion sampled the opacity once and could catch the fade-in. It now waits up to 2 s for an opacity above 0.5. The console spec then passed three runs in a row.
   - Accepted: an answer still closes a question reused with the same ID, words, recipient and cited lines from another transcript (that is the same question as far as the graph can tell). The pop kept after a meter reply and the proof following a transcript switch have no browser test.
 - **Suites (Windows):** `npm run -s test:graph` 9/9; node 214/215 (one skipped), was 191/192 on `main`; Python runtime 192 run, 50 skipped, OK; Playwright 17/17 (4 new).
+## G7 — Quoted or inferred nodes (defined 2026-11-17, before the code)
+
+When an agent publishes a graph, each node is marked **quoted** or **inferred**. Quoted means the transcript lines the node cites hold what its label claims, by the same floor the latent findings use (`isGrounded` in `src/latent.mjs`): every number and quoted literal in the label appears in the cited lines, at least one code name does when the label has any, and otherwise at least one content word does. Inferred means they do not, so a reader should open the cited lines before trusting the node. A label with nothing to compare (only short or common words) is inferred too: a node needs positive evidence to be quoted. It is a floor, not proof that a label is true.
+
+### What is tested (synthetic transcripts only)
+
+- **Publish:** a graph with a node whose label repeats its cited line ("Use port 4317", citing "the ledger stays on port 4317") and a node whose label adds a number the line does not hold ("Retry 5 times", citing "retry a few times") is stored with `quotedNodeIds` naming the first and `inferredNodeIds` naming the second, in the graph's canonical node order. Both v1 and v2 graphs are marked.
+- **Cited text:** only the cited lines count. A label whose facts are on another line of the same transcript is inferred.
+- **Graphs from before G7:** a stored graph without marks gets them when the same packet is published again; its ID and creation time do not change. A graph that is never republished stays unmarked, and every reader treats it as unmarked rather than as inferred.
+- **`context_for`:** an inferred node's line ends its citation with `, inferred`, and the briefing then says once what inferred means, in its last section so that the stable prefix does not move. A graph with only quoted nodes reads byte for byte as it did before G7.
+- **Browser:** the room view shows "quoted" or "inferred" next to each node's kind, as text, and nothing for an unmarked node. A Playwright check covers a room with one node of each.
+- **Read API:** `GET /api/graphs/:id` and `graph_read` return the two lists with the graph; the room API puts the mark on each node.
+
+### Acceptance
+
+- The four suites pass (`npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and the Python runtime checks).
+- No new runtime dependency and no schema version change.
+- Codex reviews the change read-only; findings are fixed with tests or recorded here.
+
+### G7 results (2026-11-17)
+
+- **Built:** `src/grounding.mjs` marks each node at publish time with `isGrounded` from `src/latent.mjs`. A node is quoted only with positive evidence. The payload gains `quotedNodeIds` and `inferredNodeIds`; the packet and graph ID do not change. Graphs stored before G7 get their marks when the same packet is published again (`ON CONFLICT DO UPDATE` only when the stored payload has none; ID, row, `created_at` and `party` unchanged). `context_for` ends an inferred node's citation with `, inferred` and explains the mark once, in the state section. The room API puts `grounding` on each node, and the room view shows it beside the kind. MCP paging pages the two lists after the links.
+- **Tests:** `tests/grounding.test.mjs` (11), three new `isGrounded` cases in `tests/latent.test.mjs`, the room spec (one new test, three new assertions), and the graph paging test with marks.
+- **Codex review, round 1** (of 983b8a4). Five findings, all fixed in e9d625f:
+  - (medium) The mark lists were paged before the nodes, so a backfill renumbered items under a client part way through reading. They are paged last now.
+  - (medium) The floor was too loose: `4317` matched `4317.5`, `retryCount` matched `retryCounter`, and an all-Han label passed on unrelated English. Numbers and code names must now stand alone, other scripts match by letter pairs, and a label with nothing to compare is inferred.
+  - (medium) The legend sat above the stable sections, so the first inferred action moved the cached prefix. It is in the state section now, and a test checks the prefix.
+  - (low) The all-quoted test only checked that "inferred" was absent. It now compares the whole briefing with main's output byte for byte.
+  - (low) There was no browser test for unmarked nodes, and the room paging fixture had no marks. Both are added.
+- **Round 2** (of e9d625f): all five fixes hold. Three more findings, fixed in 6137a8c: `café` passed on the `ca` of `cache` (a letter pair must now hold a non-ASCII letter); number and name boundaries ignored accented letters and Arabic-Indic digits; and the legend overstated what "inferred" means.
+- **Round 3** (of 6137a8c): those fixes hold, and Codex found nothing looser than `main` for ASCII labels, in either G7 or the latent check. Two more Unicode cases were fixed in the next commit: a Unicode suffix on the label's own token (`4317٥`, `retryCounté`), and combining marks (a name followed by U+0301, and Devanagari vowel signs). A new test also caught a regression from round 2, which the same commit fixes: a cited `$retry_limit` had stopped matching `retry_limit`.
+  - Accepted, not changed: the header line "Labels are quoted data from the source" stays, even when some nodes are inferred. Changing it when the first inferred node appears would move the cached prefix (round 1, third finding). Changing it for every briefing would break the byte-for-byte promise for all-quoted graphs. The state section's legend says what inferred means.
+- **Suites (Windows):** `npm run -s test:graph` 9/9; node 204/205 (one skipped), was 191/192 on `main`; Playwright 14/14 (one new); Python runtime 192 run, 50 skipped, OK.
+
 
 ## U3 — 60-second demo video (defined 2026-11-17)
 
@@ -3705,6 +3739,10 @@ A brand guide for the console (U1), the video (U3) and other pages, built on the
 ### What is tested
 
 `tests/brand.test.mjs` checks the site's colours (Soft Violet included), contrast for every pair the guide names in both sets, that the dark set sets every one of those variables itself, that the ratios the guide prints are the computed ones, the SVG rules above with an allowlist of elements, attributes and colours, and that the guide's file links exist. It does not check the CTM site's stylesheet itself, or how Pip looks. The poses were also rendered with Playwright on Paper and on Charcoal and checked by eye.
+
+### Acceptance
+
+- The four suites pass.
 
 ## D1 — T3 Code integration (defined 2026-11-17)
 
@@ -3792,6 +3830,124 @@ A guide, `docs/integrations/capy.md`, for adding Context Ledger as an MCP server
   - (low) Codex saw low resemblance to Capy's capybara, but a plausible one to Tinky Winky (purple round body, pale belly, head ornament, carried item). Pip is now an index card with a folded corner and ruled lines, which ties it to the ledger and drops the round body and belly. The guide says to avoid both. The human sign-off stays, with a side-by-side check.
 - **Codex, round 2** (of 9bc136c): the CSP, dark-set, ID, small-size, tag, cheek and wording fixes hold, all 19 printed ratios are correct, and Codex saw no close resemblance between the redrawn Pip and Tinky Winky or Capy. Fixed in the next commit: (medium) the SVG test now checks every fill and stroke value and the root's required attributes; (medium) the ratio test checks each table cell against its own pair and the three lime figures one by one; (low) the colour list names White and the two extra illustration colours; (low) the round 1 count is four medium findings, not five.
 - **Still owed:** a person on the team signs off on Pip's look.
+## U4 — Console polish (defined 2026-11-18, before implementation)
+
+Source: issue #48 and Ali's choices (2026-11-18): the vendor pixel sprites instead of Pip, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34). The console stays read-only and CSP-safe. Synthetic data only: the demo recording from the Orbit transcripts.
+
+| Eval | Expected |
+| --- | --- |
+| Brand tokens | The console loads `docs/brand/tokens.css` (one source, served at `/console/tokens.css`), and `console.css` and `office.css` take their colours and type from `--ctm-*` variables. The only colour literals left are the Claude room's two sprite colours in `office.css`. A node test checks that every `var(--ctm-…)` the console uses is defined in `tokens.css`. |
+| Vendor sprites | Each agent in the office is a pixel sprite on a 16 × 20 grid of SVG `rect`s: Clawd for Claude Code, the purple pet for Codex, and a neutral bot for any other provider. The sprite is chosen by the party's provider. No image file and no style attribute. |
+| Poses | Working: the sprite sits at a laptop. Waiting: a "?" bubble over it. Idle: dimmed. The state is also text under the name and in the `aria-label`, so it never relies on colour or shape alone. |
+| Quoted and inferred | A node is quoted when its graph's `quotedNodeIds` names it and inferred when `inferredNodeIds` does; the console reads the lists from `GET /api/graphs/:id`. A graph without the lists leaves its nodes unmarked (neutral), never inferred. The word "quoted" or "inferred" shows beside the kind, so the mark is text as well as colour. In the demo, the rebuilt recording carries the lists (every demo node is quoted). A live e2e test publishes one quoted and one inferred node and checks both. |
+| Codex agent turns | In the evidence pane, an I3 agent turn is labelled "Agent /root/worker to /root", with control and format characters in the paths shown as escapes, the same rule as the library view. |
+| Unchanged | Read-only (every request a GET), the U1 screenshots, the 375 px phone layout with no sideways scroll, and the 300 KB page budget all still hold. |
+| Screenshots | The console spec saves the finished demo and the evidence pane with the new look into `docs/console/`. |
+| Trademark note | The sprites are vendor trademarks drawn for a local build; the PR says so and says to swap them for the neutral bot before anything public. |
+
+### U4 results (2026-11-18, macOS)
+
+- **Brand tokens: pass.** `/console/tokens.css` serves `docs/brand/tokens.css` byte for byte; nearby paths are 404. A node test checks that every `--ctm-*` variable the console uses is in `tokens.css`, that every `var()` in the console CSS is defined somewhere, and that the only colour literals left are the Claude room's two sprite colours.
+- **Vendor sprites and poses: pass.** Unit test: each sprite stays on the 16 × 20 grid, and unknown sources (including `constructor` and `__proto__`) get the bot. E2E: one Claude and one Codex sprite in the finished demo, made of `rect`s, with no style attribute.
+- **Quoted and inferred: pass.** The demo's 11 nodes are all quoted. The live e2e test publishes "Use port 4317" (quoted) and "Retry 5 times" (inferred) and checks the mark, the word and the `aria-label`. A unit test checks that a graph without the lists stays unmarked.
+- **Codex agent turns: pass.** The live e2e test cites an I3 `agent_message` and sees "Agent /root/worker to /root". A unit test checks that a bidi override and a newline in a path are escaped.
+- **Unchanged: pass.** The page is read-only, renders at 375 px, and stays under 300 KB. Screenshots 01 to 06 and `perf.json` are in [docs/console/](console/).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only; Codex CLI was not installed on this machine). One medium, one eval gap and two low findings, all fixed:
+  - (medium) The desk legs used `--office-dark`, which the token change had removed, so they drew nothing. They are fixed, and a new test fails on any undefined `var()`; it fails on the old CSS.
+  - (eval gap) The first wording promised both marks in the demo. The eval now says the live test covers inferred, which is the honest case: the demo transcripts cite their own words.
+  - (low) The laptop hid the sprite's face. It sits lower now.
+  - (low) A JSDoc comment was in the wrong place after the move. It is fixed.
+- **Suites (macOS, Node 26):** node 248/249. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, which fails the same way on `ruslan/console-v0`. Playwright 21/21. `npm run -s test:graph` passes.
+
+## P3 — Reviewer UI prototype (defined 2026-11-18, before implementation)
+
+Source: issue #48. A person can approve, edit or reject a node beside its evidence. It is a prototype: Ruslan decides what each action means (who may approve, whether an edit makes a new version, what a reject keeps), so nothing here writes to the ledger. It is shown only in the console's demo mode (`/console/?demo`), on the synthetic recording.
+
+Terms: a **review** is one person's decision on one node of one graph snapshot, keyed by graph ID and node ID. A new publish of the party is a new graph ID and so starts unreviewed. That is the simplest reading, and it is Ruslan's to change.
+
+| Eval | Expected |
+| --- | --- |
+| Demo only | In demo mode the evidence panel shows a Review block once a node is open: **Approve**, **Edit**, **Reject**, and a line saying the decision stays in this browser and is a prototype. In live mode there is no Review block and no review code runs. |
+| Approve and reject | Approve or Reject marks the node: the word "approved" or "rejected" in the node's meta and its `aria-label`, plus a class for the colour. The panel says what was decided, with an **Undo** button that clears it. A rejected node keeps its label, struck through. |
+| Edit | Edit opens a text box holding the current label. Save keeps the new text (trimmed, 1 to 300 characters, no control or format characters) as the node's shown label, with "edited" in its meta. The evidence panel shows the original label too. Cancel or an empty save changes nothing. The new label is set with `textContent`. |
+| Browser only | Reviews are kept in `localStorage` under one key, and the page still sends only GET requests. A stored value that is not valid JSON, has the wrong shape, or names an unknown decision is ignored, not thrown. If `localStorage` throws (private mode), reviewing still works for the session. |
+| Survives a replay and a reload | Reviews stay after **Replay demo** and after a page reload, because the recording's graph IDs do not change. |
+| Keyboard | Every review control is a button reachable by Tab. After a decision, focus stays in the Review block. |
+| Tests | Node tests for the store (save, undo, edit rules, bad stored data, a throwing storage). A Playwright test approves, edits and rejects three demo nodes, reloads, sees all three, undoes one, checks that live mode has no Review block, and saves a screenshot. |
+
+### P3 results (2026-11-18, macOS)
+
+- **Demo only: pass.** In demo mode the Review block appears once a node is open. Live mode has no Review block and never fetches `review.mjs`, because the demo loads it with a dynamic import.
+- **Approve and reject: pass.** The decision shows in the node's meta, its `aria-label` and its class. A rejected label is struck through. Undo clears the decision.
+- **Edit: pass.** An empty save is refused with a message. `Pair with Ali <b>tonight</b>` is kept and shown as text, with no `b` element created. The evidence heading keeps the original label.
+- **Browser only: pass.** Every request is a GET. Bad stored data, a throwing storage and `null` storage are covered by the node tests, and the e2e test covers invalid JSON in `localStorage`.
+- **Survives a replay and a reload: pass.** **Keyboard: pass.** Approve, Reject and Save move focus to Undo; Undo and Cancel move it to Edit.
+- Screenshot: [docs/console/07-review.png](console/07-review.png).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only). One medium and two low findings, all fixed with tests:
+  - (medium) After a republish under a new graph ID with the node unchanged, the panel kept the old graph ID. It still said "approved", and a new decision was saved to the old snapshot. The panel now follows every republish. A Playwright test approves Leo's goal mid-demo and sees the review start fresh after his next publish; the test fails on the old code.
+  - (low) An open edit form lost its text when the same node was picked again. Showing the same snapshot again is now a no-op, and there is a test for it.
+  - (low) Live mode loaded `review.mjs` although none of it ran. It is now imported only in demo mode, and the live test checks that no request for it is made.
+- **Suites (macOS, Node 26):** node 253/254 (the one failure is the same `tests/mcp.test.mjs` test that fails on `ruslan/console-v0`); Playwright 26/26; `npm run -s test:graph` passes.
+
+## U4b — Furnished pixel office (defined 2026-11-19, before implementation)
+
+Source: Ali's lookbook pick "pixel sprites at desks" (`refs/virtual-office.png`) and his preview choices of 2026-11-19: a top-down office with the mood of his isometric reference (navy walls, windows with daylight, lamps, a whiteboard), his blue cloud Codex character, and a hat or prop per agent role. Stacked on U4 (#51). Synthetic data only: the demo recording and the live e2e graphs.
+
+| Eval | Expected |
+| --- | --- |
+| Furnished rooms | Each room (Claude Code: wood floor; Codex: tiled floor) has 6 desks with a monitor and chair, bookshelves, plants, windows with daylight on the floor, ceiling lamps, a whiteboard, a kitchen with a water cooler, and a lounge with a sofa and rug. |
+| Seated when working | A working agent sits at its desk: its feet are at `seatAt(desk)`, it is drawn behind the desk, and that desk's monitor is lit. A unit test checks the position for each desk. |
+| Beside when waiting | A waiting agent stands at `besideDesk(desk)` with a "?" bubble, and its monitor is off. A unit test checks the position stays inside the work area and clear of the next desk. |
+| Lounge when idle | An idle agent stands at `loungeSpot(n)` in the lounge, in the order the idle agents arrive. A unit test checks every lounge spot is inside the lounge. |
+| Same API and limits | `createOffice(svg)` still returns `{update, anchor, pulse}`; at most 6 agents per room, picked by the same `RANK` order, with a "+n" chip for the rest. The state word and the `aria-label` stay on each agent. |
+| Roles | An agent label with a role word (plan, build, test, review, doc, scout and close words) gets that role's accessory: notebook, hard hat, flask, glasses (a magnifier on Codex), pencil or safari hat. No match, no accessory. Unit tests cover the words and that `constructor` or `__proto__` match nothing harmful. |
+| CSP-safe and read-only | Built with `createElementNS`, positions through CSSOM `style.setProperty`, text through `textContent`, no style attribute in the office, every request a GET. |
+| Colours | `office.css` takes every colour from `--ctm-*` tokens; the office materials are new tokens in `docs/brand/tokens.css`. The only literals in `office.css` stay the Claude room's two colours. Every `var()` is defined. |
+| Logo and favicon | The header shows the CTM logo instead of the "CTM" text, and the page has a favicon. Until Ali sends the logo file, both are the Pip SVG, marked as a placeholder. The new static path is on the server's fixed list. |
+| Budget and phone | Added assets stay under 300 KB; at 375 px there is no sideways scroll. |
+| Screenshots | `docs/console/` gets the empty, mid-run, finished (`/console/?demo`) and phone views. |
+
+### U4b results (2026-11-19, macOS)
+
+- **Preview approved** by Ali on 2026-11-19 after three rounds: his Codex character, role props, and the mood of his isometric reference on the top-down layout (`docs/console/preview/approved-*.png`).
+- **Furnished rooms, seated, beside and lounge: pass.** Unit tests check every seat, beside-desk spot and lounge spot against the work area and lounge bounds. An e2e test drives every state and role in both rooms, and checks the spots, layers, lit monitors, state words and `aria-label`s. Screenshot `07-office-states.png`.
+- **Same API and limits: pass.** The e2e test checks that desks stay put when others leave, that a seventh and eighth Codex agent show "+2", that removed agents leave no label behind, and that the existing demo, live and pulse tests still pass.
+- **Roles: pass.** Unit tests cover the role words, whole words only, and `constructor` and `__proto__`.
+- **CSP-safe and read-only, colours, budget and phone: pass.** No style attribute inside an agent. Every request is a GET. `office.css` keeps only the two Claude colours. The added assets are about 36 KB. At 375 px there is no sideways scroll.
+- **Logo and favicon: pass, with a placeholder.** `/console/logo.svg` serves Pip byte for byte. The CSP gained `img-src 'self'`, and the pinned header test is updated. A human should check this change.
+- **Independent review** (Claude Sonnet as `code-reviewer`, read-only). It found no high-severity issues, two medium and three low. The fixes:
+  - (medium) An agent jumped instead of walking when it changed layer between desk and lounge. It now moves to the new layer first, then animates. The e2e test checks for a running transform transition and fails on the old code.
+  - (medium) Role words matched inside other words, so "codex" and "claude-code" got a hard hat. Roles now match whole words only, with regression cases in the unit table.
+  - (low) A second `createOffice` on the same SVG left the old `ResizeObserver` running. It is now disconnected.
+  - (low) No test covered `update()` over time. The e2e test above now does.
+- **Suites (macOS, Node 26):**
+  - node: 252/253. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, the known failure on every branch.
+  - Playwright: 22/22.
+  - `npm run -s test:graph` passes.
+
+## U6 — Pixel console and agent crew (defined 2026-11-20, before implementation)
+
+Card U6 on `ali/u6-pixel-console`, stacked on U4b (#55). Ali approved the light pixel lookbook (option 1, fonts pick A) and the Mark bot crew (each agent's official logo on a robot's screen face) on 2026-11-20. Synthetic demo data only.
+
+| Eval | Expected |
+| --- | --- |
+| Local fonts | `/console/fonts/{jersey-15,inter-tight,silkscreen}.woff2` are on the server's fixed list, served as `font/woff2` from `docs/brand/fonts` with their OFL licences beside them. The CSP adds only `font-src 'self'`. The page uses them (`document.fonts.check` is true once loaded) and no request leaves the loopback host. |
+| Light pixel look | No `ctm-dark` class. Headings and buttons use Jersey 15, reading text uses Inter Tight, one-word tags use Silkscreen. Frames and buttons have stepped corners. |
+| Activity replaces the tiles | The three number tiles are gone. Hand-offs, tokens saved and superseded decisions are counters on the activity heading, with the same values and IDs as before; the activity list keeps its items. |
+| Panel switches (added by Ali mid-card) | Activity sits under the evidence in the right column. Header buttons switch Evidence and Activity off and on (`aria-pressed`), the choice survives a reload, both off gives the graph the full width, and selecting a node turns Evidence back on. |
+| Mark bots | `sprites.mjs` has a sprite for 14 more agents (Cursor, OpenCode, Gemini CLI, GitHub Copilot, Windsurf, Kimi Code, DeepSeek, Qwen Code, Mistral Vibe, Cline, Warp, Zed, MiniMax, Ollama): one robot body in the vendor's brand colour, with the vendor's official mark (Simple Icons path, brand hex) on its screen. Every pixel stays on the 16 x 20 grid, role props still fit, and the office draws the mark for any agent whose provider has one. Claude Code and Codex are unchanged. |
+| CTM band | A short strip at the bottom: the letters C, T and M as 5 x 7 pixel blocks, the Claude and Codex crew with their role props, and the Mark bots on the ground. It is built with `createElementNS` and CSSOM only. Clicking or pressing Enter on a crew member shows a speech bubble with its name. The letters stamp in once when the band scrolls into view, and nothing moves under `prefers-reduced-motion`. |
+| Nothing else changes | The office API, the evidence panel and the demo behave as before. No raw control or format characters, no `innerHTML` in console modules, no sideways scroll at 375 px, and every suite passes. |
+
+
+### U6 results (2026-11-20)
+
+- Node tests: 415 pass; the 3 failures are the known local ones that also fail on the base (malformed transport input, relative CODEX_HOME, wide rowids and UTF-16). Playwright: every console journey passes, including the new U6 ones (fonts, counters, band crew and bubble, panel switches, bad or blocked storage, phone crop); 1 skipped (the I3 agent-turn `fixme`). Runtime Python: 2 timing failures (`test_four_worker_reads_release_their_slots`, `test_parallel_reads_all_succeed`) that also fail on the untouched base.
+- Independent review: Codex CLI was not installed on this machine, so a separate reviewer subagent (not the implementing session) reviewed the commit. No high or medium findings; font routes, CSP, `innerHTML` and inline styles all clean. Fixed with regression tests: stored panel state is validated (a non-object is ignored); the band's name is announced through a persistent `role="status"` node; tests now cover corrupt and blocked storage, the Space key and the phone crop. Accepted: the counters hide with the Activity panel (that is the switch's point), and the band's observers live for the page's lifetime.
+- Still needs a human review: the CSP `font-src 'self'` change and the trademark note (ADR 15).
+- Live check on a scratch ledger (2026-11-20), with two of Ali's own transcripts (one Claude Code, one Codex) and graphs citing their lines; nothing from them is committed. The console showed both agents in the right rooms. A new publish appeared within one poll. Evidence opened the cited real line, and a paraphrased fact was marked inferred. Nothing loaded from outside the loopback host, and the phone layout had no sideways scroll. Security probes all held. The server listens on 127.0.0.1 only. Without a token the API returns 401. A spoofed or DNS-rebinding Host returns 403. A cross-site POST with a valid token returns 403. Font path traversal, OFL text files and the folder return 404. The CSP adds only `font-src 'self'`. HTML in a fact renders as text, and a label with a bidi override is refused at publish. Found and fixed one bug, from U4b: newly added office agents slid in from the room's top-left corner, which was most visible on a phone. They now appear at their spot, covered by a regression test that fails without the fix.
+- Ali's follow-up from the live check: the live Activity list was empty until a new publish arrived after the page opened. Graphs read on first load are now listed too, each with its own publish time (with a date when it is not today), newest first, without flashes or pulses. Covered by an e2e test that fails without the change.
+
 
 - Codex reviews the guide read-only against T3's documentation; findings are fixed or recorded here.
 - A person who runs T3 follows the guide once and records the result here.
@@ -4627,6 +4783,19 @@ The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divid
 
 Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
 
+**Live check** (2026-11-22, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, 64 at once, 100 agents, synthetic reports; aggregates only):
+
+| Run | Baseline | Wall time | One after another | Speed-up | Old ratio (agents' own times) | KV peak | KV last sample |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | measured, 0.80 s alone | 5.32 s | 79.9 s | 15.0× | 55.8× | 5.1% | 0% |
+| 2 | reused | 3.56 s | 79.9 s | 22.4× | 50.9× | 5.5% | 0% |
+| 3 | reused | 3.66 s | 79.9 s | 21.8× | 51.5× | 5.2% | 0% |
+| 4 | reused | 3.85 s | 79.9 s | 20.8× | 53.2× | 5.6% | 0% |
+| 5 | reused | 3.66 s | 79.9 s | 21.8× | 51.3× | 5.3% | 0% |
+| page | reused | 3.60 s | 79.9 s | 22.2× | not shown | 5% | not shown |
+
+All 100 agents answered in every run, with 100/100 quotes verified and answers correct on the page run. The first run after a server start is slower (the server is still warming up), so quote a warm run: **about 21–22× faster**. That is a little below the earlier 23–30× estimate because the warm solo time with a shared prefix is 0.80 s, not the 1.05 s mean of the earlier cold single-agent runs. The old figure was 51–56×, more than twice the honest one. The last KV sample was 0% every time, so without the peak the tile would still read 0%; the peak is about 5%. All gates pass.
+
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
 Found while rehearsing the investor demo from a clean install of a08c6e9: Ali's agent (Claude Sonnet) called `context_for` on Leo's graph with the question "port ledger uses, video recording date, what Leo needs from me". The question did not match Leo's open question to Ali ("Who owns the GPU box?"), so the briefing left that node out, as G9 intends, but its state section then said `open questions: none`. The agent answered that Leo needed nothing from Ali. G9 made every derived list name only shown nodes so that no ID points at a node the reader cannot see; it did not say that some were left out.
@@ -4824,6 +4993,207 @@ What is tested: `ledger handoff --sign` and `ledger reviews verify` open the led
   - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
   - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.
+
+## U7 — Swarm room in the console (defined 2026-11-23, before the code)
+
+The investor demo shows the swarm on its own page and the Claude Code and Codex agents on the console. U7 puts the swarm on the console too, so one screen shows the offices, the swarm and the ledger facts. It reads the same `/api/swarm` endpoints as `/swarm/` and adds no server behaviour beyond serving one more fixed console file.
+
+### What is tested and the expected result
+
+1. **The room is there.** `/console/` shows a "Local swarm" room with a Run button, a mode badge and a link to `/swarm/`. Without `SWARM_URLS` the badge says Simulated and the room explains that a simulated run's timings are made up.
+2. **A run fills the room.** Pressing Run starts 100 agents (POST `/api/swarm/runs`, the mode the server offers) and the room shows 100 pixel agents. Each takes the state the server reports: queued, running, done and verified, done but its quote not found (dropped), or failed. When the run ends the room shows agents finished, quotes verified and answers correct.
+3. **Honest numbers.** The room shows the speed-up only for a live run that has one, as "about N×" from the server's `speedup` (one agent alone, then all together); a simulated run shows "not measured" for speed-up and marks its wall time simulated. The room never computes a speed-up of its own.
+4. **Safe rendering.** Every model or report string reaches the page through `textContent`; the room builds no HTML from data. A failed or lost run re-enables Run and says why.
+5. **Nothing else changes.** The console's graph, evidence, activity and band keep working, in live and demo mode. The room makes no requests until Run is pressed except `GET /api/swarm`. In demo mode (`/console/?demo`, the recorded replay that makes no requests) the room is hidden. Starting a run is the console's only POST, and only to `/api/swarm/runs`; it writes nothing to the ledger, and a unit test pins that exception.
+
+Synthetic data only: the swarm's generated incident reports.
+
+### Acceptance for the code
+
+- `node:test` for the room's pure summary (state buckets, dropped versus verified, the speed-up text for live and simulated runs, unknown states).
+- Playwright: open `/console/`, run the simulated swarm from the room, wait for it to finish, check 100 agents, the Simulated badge, "not measured" for the speed-up, the counts, the `/swarm/` link and that the graph still renders.
+- The full suites pass, and Codex reviews the change.
+
+### U7 results (2026-11-23)
+
+Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path was checked afterwards, once the GPU was free (see the live check below).
+
+- `node:test`: 6 tests in `tests/console-swarm.test.mjs`, and the console's read-only check now pins the one POST to `/api/swarm/runs`.
+- Playwright: 4 U7 tests in `tests/e2e/swarm.spec.mjs` (run and counts, the lost run, the recorded demo, the mode race), 12 of 12 over two repeats in one worker.
+
+**Live check from the room** (2026-11-23, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, `SWARM_CONCURRENCY=64`, 100 agents, synthetic reports; aggregates only). The room's badge read "Live: Qwen/Qwen2.5-7B-Instruct-AWQ". Every run finished 100 of 100 agents, with 100/100 quotes verified and 100/100 answers correct.
+
+| Run | Started from | Wall time | Speed-up shown |
+| --- | --- | --- | --- |
+| 1 (first after the server start) | room | 5.29 s | about 15× |
+| 2 | room | 3.92 s | about 20× |
+| 3 | room | 3.63 s | about 22× |
+| 4 | room | 3.60 s | about 22× (22.2× on `/swarm/`) |
+| 5 | room, while a second browser took screenshots | 4.10 s | about 20× |
+| 6 | `/swarm/`, while a second browser took screenshots | 3.96 s | 20.2× |
+
+The room's "Open the swarm page" link opened run 4 on `/swarm/` with the same numbers: one after another 80.0 s (100 × 0.80 s alone, baseline reused), KV peak 5%, prefix-cache hits 98%, combined answer matching the truth. Together with the S1b check (20.8–22.4× on warm runs) the figure to quote is **about 20–22×** on a warm server; the first run after a server start shows about 15×.
+
+### Codex review of U7 (2026-11-23)
+
+A read-only Codex review found four medium and three low issues, all fixed with tests:
+
+1. *(medium)* Run could be pressed before the server said which mode it offers, starting a simulated run on a live server. Run is now off until that answer arrives.
+2. *(medium)* A malformed poll answer counted as success, so Run could stay off for good. A snapshot must now be an object with an agents array and a known state; anything else goes through the bounded retry.
+3. *(medium)* The "open the swarm page" link opened an empty page. The link now carries the run (`/swarm/#run=<id>`) and the swarm page opens that run.
+4. *(medium)* The read-only exception checked the method and the path separately. The unit test now binds the POST to its path, and the browser test records every write the console makes: one, `POST /api/swarm/runs`.
+5. *(low)* The room no longer draws the POST acknowledgement as an empty run.
+6. *(low)* A speed-up below 10× keeps one decimal, so a slowdown such as 0.4× is not shown as 0×.
+7. *(low)* On a narrow screen the grid uses ten columns, the state counts are also written in words under the grid, and a long model name wraps.
+
+Test gaps it named are closed: the recorded demo asserts zero API requests and a hidden room; the run test seeds a real graph node and checks the counts against the run's snapshot; the console's own lost-run recovery has a test.
+
+## U8 — One pixel style: library and swarm page (defined 2026-11-23, before the code)
+
+The console has Ali's pixel look (card U6); the library and the swarm page still have their first styles, so the demo looks like three products. U8 gives both the console's look and makes the swarm page explain itself in the order a person would ask: what is the data, what is the task, who does it, who checks it, what does it run on, what came out.
+
+### What is tested and the expected result
+
+1. **One look.** The library (`/`) and the swarm page (`/swarm/`) load the brand tokens and the three local fonts the console uses, sit on the same dotted page in a framed sheet, and use the same pixel buttons and tags. Nothing is fetched from another host.
+2. **The library works as before.** Every library, room, review, delete, hand-off and auth journey passes unchanged: same text, same roles, same IDs. Only the look changes. On a phone the page has no sideways scroll.
+3. **The swarm page tells the story, in order.**
+   - *Dataset:* before any run, the page shows how many reports there are, that they are synthetic, and the first three reports as text (`GET /api/swarm/task`, which returns the report texts only, never the generator's truth).
+   - *Task:* the instructions every agent shares, as text, with the four facts an answer must hold.
+   - *Agents:* one pixel robot per agent, with its state in its colour and in words; working robots move unless the person asked for reduced motion.
+   - *Check:* how an answer is checked (the quote must be in the report and state the downtime; the facts are compared with the generator), said as a rule of the ledger and not as a model, with the verified, left-out and failed counts.
+   - *Runs on:* the model, the server and how many agents run at once, or "Simulated" with no measured numbers.
+   - *Answer:* the combined answer beside the truth, as today.
+4. **Honest numbers and safe text, as before.** A simulated run shows no measured speed-up, and every report, model and error string is set with `textContent`.
+5. **The console's swarm room shows the same pixel robots.**
+
+Synthetic data only.
+
+### Acceptance for the code
+
+- `node:test`: `GET /api/swarm/task` returns the sample and the instructions and no truth; the pixel robot's drawing is a fixed grid with no script or style attribute; route and CSP checks pass with the new files.
+- Playwright: the existing library, room, review and swarm journeys pass unchanged; new checks for the swarm page's dataset and task before a run and the robots after one, and for the library's fonts and frame.
+- The full suites pass, and Codex reviews the change.
+
+### U8 results (2026-11-23)
+
+- The library and the swarm page load `/console/tokens.css`, `/pixel.css` and the console's three fonts, and sit in the same framed sheet as the console. The library's structure, text and IDs are unchanged, and every existing library, room, review, delete, hand-off and auth journey passes.
+- The swarm page shows the dataset (three sample reports from `GET /api/swarm/task`, texts only) and the shared instructions before a run, then one pixel robot per agent, the states in words, the check's counts and what the run ran on. A simulated run still shows no measured speed-up.
+- The console's swarm room draws the same robots. A console test forbids literal colours in `console.css`, so the robot's colours are tokens.
+- `node:test`: the task endpoint (sample equals what agent 1 reads, no truth, needs the token), the robot's grid and its class-only drawing, and `/pixel.css` in the static routes.
+- Playwright: 3 new tests (swarm page story and look, the room's robots, the library's look and phone width).
+
+## U9 — Terminal welcome (defined 2026-11-23, before the code)
+
+Installing and starting the ledger prints plain lines. U9 gives a person at a terminal a short welcome in the product's look, and changes nothing for scripts.
+
+### What is tested and the expected result
+
+1. **At a terminal:** `context-ledger start` draws the CTM pixel mark in the brand colours, then shows its steps (database opened, listening, sign-in link) one after another; `context-ledger install` shows each agent it connects as a step with a tick or a cross.
+2. **Not at a terminal:** when output is piped, or `NO_COLOR` is set, or `TERM` is `dumb`, the output is exactly the plain lines of today: no colour codes, no cursor movement, no delay. Scripts that wait for "listening at" keep working.
+3. **Safe:** the welcome prints only fixed text and values the ledger made (port, link). Anything else printed to the terminal still goes through the existing escaping. The animation never delays the server starting to listen.
+4. **Short:** the whole welcome takes under 1.5 seconds, and `CONTEXT_LEDGER_NO_BANNER=1` turns it off.
+5. **One warning less:** under the installed command (`context-ledger ...`), Node's "SQLite is an experimental feature" warning is not shown above every command. Only that warning is filtered; a checkout's `npm start` is unchanged.
+
+### Acceptance for the code
+
+- `node:test` for the pure frame builder (plain mode has no escape codes; colour mode only uses SGR colour codes and its own fixed cursor moves; the mark is a fixed grid), and for `start` run with piped output giving today's exact lines.
+- The full suites pass, and Codex reviews the change.
+
+### U9 results (2026-11-23)
+
+- At a terminal, `context-ledger start` shows the CTM pixel letters in violet over a lime bar, then its two lines behind coloured pixels, in about 0.8 s; `install` shows its lines the same way. Checked by eye in Windows PowerShell.
+- Piped, with `NO_COLOR`, `TERM=dumb` or `CONTEXT_LEDGER_NO_BANNER=1`, the output is the same plain lines as before: every test that waits for "listening at" passes unchanged, and one new test checks the two lines exactly with no escape codes even under `FORCE_COLOR`.
+- The welcome writes colour codes only (no cursor movement), from fixed text and the caller's own lines. A test strips the colour codes and checks no control or format character is left.
+- Found by its own test: a line state named after an object property (`constructor`) crashed the frame builder; the state lookup now uses its own keys only.
+- Under the installed command Node's SQLite experimental warning is not shown; only that warning is filtered.
+- `node:test`: 6 tests in `tests/welcome.test.mjs`.
+
+### Suites on the stacked branch (U7, U8 and U9 on Ali's U6 with main merged in)
+
+`node --test tests/*.test.mjs`: 636 pass, 10 skipped, 0 fail. Playwright: 61 pass, 1 skipped, 0 fail (run on a second port because another checkout's run held 4318; `auth.spec`, which names the port in its cookie, was run on 4318).
+
+### Live rehearsal on the stacked branch (2026-11-23)
+
+`node demo/rehearse.mjs --runs 1` (Claude Code as Leo, Codex as Ali, one ledger): Leo's agent published 8 nodes in 68 s, Ali's Codex published 4 nodes with 2 links to Leo's in 33 s, the room held 2 proposals, and the hand-off answered 6 of 6 from the transcript (16.8 s) and 6 of 6 from the graph briefing (15.8 s; 323 against 1,814 estimated tokens). A first attempt, run while the whole node suite was also running on the laptop, failed: Ali's Codex reported that the ledger could not read its access token and published nothing. Two direct Codex probes and this rerun on an idle machine all worked, so the cause was load, not the code; the token is read through PowerShell on Windows, with a 30 s limit. For a live demo, run nothing heavy beside it.
+
+### Codex review of U8 and U9 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, four medium and four low. All are fixed with tests. It confirmed that the task endpoint needs the token and omits the truth, that pages and model requests stay on this machine, that report, model and error strings are set as text, that the library's markup, IDs and script are unchanged, and that the welcome writes only colour codes and never delays listening.
+
+1. *(medium, U9)* Install lines were printed as given, and the installer's own escaping keeps U+200C and U+200D. Every caller line now goes through `terminalLine` in both modes; a test sends a line with zero-width, bidi and escape characters through the pipe and the terminal paths.
+2. *(medium, U8)* Each robot on the swarm page was a button with a list-item role, which can hide that it is a button. Each is now a real button inside a list item, named "Agent N, working" (or checked, left out, failed), and a test opens a report from the keyboard.
+3. *(medium, U8)* "Runs on" claimed vLLM, this machine's GPU and that the instructions are stored once. It now says only what the ledger knows: the model names, an OpenAI-compatible server at a loopback address and how many agents run at once. Cache reuse is shown only when the server reported it for that run.
+4. *(medium, U9)* The warning filter matched any experimental warning that mentions SQLite. It now matches Node's exact notice and type, lives in `src/quiet.mjs`, and a subprocess test shows a different SQLite warning and a deprecation warning still print.
+5. *(low, U9)* The install welcome gave every line the same mark, and start had no database step. The installer now returns each agent's own result, so a terminal shows `ok` or `!!` (letters as well as colour) on each agent's line with its details under it; start shows "Database opened" at a terminal only.
+6. *(low, U8)* "What it runs on" moved to its own section after the check and before the answer, and a test asserts the order of the seven sections.
+7. *(low, U8)* The pale swatches of the colour key (queued, working) now have an ink outline.
+8. *(low, U8)* The library's page links are direct children of the masthead again; the extra `nav` landmark is gone.
+
+## U10 — An installed copy has the pixel look (defined 2026-11-23, before the code)
+
+Found while installing the stacked branch as the `context-ledger` command. The terminal welcome appeared, but the console in the browser had no colours, no fonts and no logo. The server reads five files from `docs/brand/` (the colour tokens, the logo and three fonts; cards U4, U4b and U6), and the package list from card P5c ships nothing from `docs/`. A checkout has the folder, so every test passed. The two met when `main` was merged into the U6 console, and the install path in the README (`npm install --global github:PricePepel/context-ledger`) would have shown this to every new user once the console reached `main`.
+
+Seen on the installed copy (a synthetic ledger): the pages loaded, the requests for the logo and the fonts answered 500, the tokens never arrived, and the text fell back to the browser's default font.
+
+### What is tested and the expected result
+
+1. **Everything served ships:** every file on the server's fixed list is in the tarball `npm pack` makes. A file added to the list later without being packaged fails this test.
+2. **Installed copy, real requests:** from a packed tarball in an empty folder, started through npx, every path on the fixed list answers 200 with its content type and a body that is not empty. That includes `/console/tokens.css`, `/console/logo.svg` and the three fonts.
+3. **Nothing else from `docs/` ships:** the tarball gains exactly `docs/brand/tokens.css`, `docs/brand/ctm-logo.svg` and `docs/brand/fonts/` (three fonts and their three Open Font License texts, which must travel with the fonts). No other document, test, fixture or runtime file is added.
+4. **The fixed list stays fixed:** the list moves to a module of its own so a test can read it. Its paths, files and content types do not change, every file on it is inside `public/` or is one of the five brand files, and no other path is served.
+
+### Acceptance for the code
+
+- `node:test` for 1, 3 and 4, and the existing packed-tarball test extended for 2.
+- The full suites pass, Codex reviews the change, and the installed command is checked by eye in a browser.
+
+### U10 results (2026-11-23)
+
+- **Installed copy, by eye:** the build was packed, installed with `npm install --global` from the tarball and started with `context-ledger start` on a synthetic ledger. Before the fix the console's logo and font requests answered 500, the tokens never arrived and the text was the browser's default font. After it, every request answers 200, the three fonts (Jersey 15, Inter Tight, Silkscreen) load and the console, its swarm room and the demo replay look as they do from a checkout.
+- **The tests catch it:** with the package change removed, the new manifest test fails (`docs/brand/tokens.css is served but not packaged`) and the packed-tarball test fails on the first brand file (500 instead of 200). With it, both pass.
+- `node:test`: 3 tests in `tests/package-files.test.mjs`, and the P5c packed-tarball test now requests all 32 paths on the list from the installed copy.
+- Suites on this branch: `node --test tests/*.test.mjs` 644 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After the review fixes below, the two changed test files were run again: 8 pass. Nothing in `runtime/` changed, so the Python checks were not run.
+
+### Codex review of U10 (2026-11-23)
+
+A read-only Codex review found no high or medium issue and two low ones, both in the tests and both fixed. It confirmed with npm's own file list that all 32 paths on the list are packaged and that exactly eight files from `docs/` ship (the five brand files and the three font licences), and that the move keeps exact-path matching, the loopback bind, the Host and Origin checks and the token check, with no new prefix or traversal path.
+
+1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
+2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
+
+## U11 — First start: sign-in steps and the live GPU (defined 2026-11-23, before the code)
+
+Ruslan's first run of the installed command (2026-11-23) raised two questions. The sign-in line gave a link and a time limit, but not what to do with it, and in a terminal 80 columns wide the link broke over two lines. And the swarm room offered only a simulated run while a model server was running on the GPU: the ledger looks for one only when `SWARM_URLS` names it, and the room said "No model server is running" whatever the reason.
+
+### What is tested and the expected result
+
+1. **Sign-in at a terminal:** after "listening at", the welcome shows the steps: open the link in a browser within 60 seconds; the link on a line of its own that fits in 80 columns for any port; Ctrl+click it or copy it into the address bar; where the console is; that the link works once and which command prints a new one (`context-ledger login` under the installed command, `npm run ledger -- login` in a checkout).
+2. **Piped output unchanged:** when output is not a terminal, `start` prints exactly the two plain lines it prints today ("listening at" and the sign-in line), so scripts and tests that read them keep working. Each mode mints one sign-in code.
+3. **The GPU is found on its own:** with `SWARM_URLS` unset or empty, the swarm asks the usual local vLLM address, `http://127.0.0.1:8000/v1`, when a page asks whether live runs are offered. If a model server answers there, the room and the swarm page offer live runs without a restart; if not, a run is simulated. `SWARM_URLS=off` turns live runs off and makes no request at all. A `SWARM_URLS` that names servers works as before, loopback only.
+4. **The reason is shown:** when a run would be simulated, the console's swarm room shows the server's reason, which names the address it tried and how to make runs live, as the swarm page already does. The reason is set as text.
+5. **Tests stay deterministic:** tests that expect a simulated run set `SWARM_URLS=off`, so a model server running on the developer's machine cannot change their result.
+
+### Acceptance for the code
+
+- `node:test` for the start lines in both modes (exact piped lines, terminal lines, the link's width, the login command) and for the swarm setting (unset, empty and `off`, the address asked, the reasons, no request when off).
+- Playwright: the room shows the server's reason for a simulated run.
+- The full suites pass, and Codex reviews the change.
+
+### U11 results (2026-11-23)
+
+- **At a terminal**, `context-ledger start` now shows the steps after "listening at": open the link within 60 seconds, the link on a line of its own two spaces in, Ctrl+click it or copy it, it opens the library, where the console is, and the command for a new link. Checked by eye in Windows Terminal; the link fits in 80 columns for every port (79 at most). The installed command names `context-ledger login`, a checkout `npm run ledger -- login`.
+- **Piped**, the output is the same two plain lines as before, byte for byte; the existing start-up tests in `tests/routes.test.mjs` and `tests/token.test.mjs` pass unchanged, and a new test checks both lines.
+- **Live GPU found on its own:** a ledger started from this branch with `SWARM_URLS` unset, while vLLM ran on the laptop, answered `/api/swarm` with `{"live":true,"models":["Qwen/Qwen2.5-7B-Instruct-AWQ"],"concurrency":32}`. With `SWARM_URLS=off` the room shows "Live runs are turned off (SWARM_URLS=off)." and no request is made.
+- **Deterministic tests:** before the swarm test helper was pinned to `SWARM_URLS=off`, one route test saw live runs on this laptop (vLLM on port 8000). The helper and the browser evals now set it.
+- `node:test`: 5 tests in `tests/welcome.test.mjs` and 5 in `tests/swarm.test.mjs`; the swarm room and page evals in `tests/e2e/swarm.spec.mjs` check the shown reason.
+- Suites before the review fixes: `node --test tests/*.test.mjs` 663 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After them: see below.
+
+### Codex review of U11 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, one medium and one low, both fixed with tests that fail without the fix. It confirmed that the probe is a bodyless GET to loopback, that live runs send only the generated synthetic prompts, that redirects are refused, that the room sets the reason as text, that piped output is unchanged, that one code is minted per start and that every test reading the swarm setting now disables live runs, names a server or injects a fake fetch. It noted that any local program on port 8000 can pose as a model server and see the synthetic prompts; that was already true of a server named in `SWARM_URLS`, and nothing else is sent.
+
+1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
+2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
 
 ## W1 — Latent team watchdogs: integrity and audits (defined 2026-11-22, before the code)
 

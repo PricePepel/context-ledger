@@ -325,6 +325,7 @@ Each is accepted once P1's owner approves this design (see the note at the top).
 12. Team sync by event-log replication [CRDT libraries merge silently; a central database means cloud custody].
 13. Apache-2.0 core plus Pro; offline signed licenses and packet-bound tokens [AGPL, online activation].
 14. Hosted tier on Postgres and object storage behind the same port, ingest stays local [SQLite per tenant].
+15. Console fonts and agent marks ship as local static files (card U6, 2026-11-20): Jersey 15, Inter Tight and Silkscreen as WOFF2 under `docs/brand/fonts` with their SIL OFL 1.1 licences, served from the server's fixed list, with the CSP gaining only `font-src 'self'`; vendor marks are Simple Icons 16.38.0 path data (CC0) in `public/console/agent-marks.mjs`. The marks stay their owners' trademarks and are used only to name the agent shown, never to imply endorsement. No runtime dependency is added. Needs a human review because it changes the CSP [Google Fonts CDN, which breaks the no-egress rule; an icon package as a dependency].
 
 ## 10. Wave mapping
 
