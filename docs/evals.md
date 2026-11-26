@@ -5194,3 +5194,18 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## U12 — `start` says plainly when the port is taken (defined 2026-11-26, before the code)
+
+On 2026-11-23 Ruslan ran `context-ledger start` while a ledger was already running on 127.0.0.1:4317. The server had no handler for a listen error, so Node printed an unhandled `EADDRINUSE` stack trace. Nothing was damaged, because the token file is written only after the port is ours, but the message did not say what happened or what to do.
+
+**Expected:**
+
+1. A start on a port another program holds exits with status 1 and prints no stack trace. Its stderr names the address (`127.0.0.1:<port>`), says a ledger may already be running there and that it can be opened at `http://127.0.0.1:<port>` or stopped with Ctrl-C in its window, and says how to pick another port (`PORT`).
+2. The first ledger keeps working: its token file is unchanged, and a request with its token still answers.
+3. Any other listen error (for example `EACCES`) also exits with status 1 and one plain line, without a stack trace and without echoing an unescaped system message.
+4. Piped and terminal output both follow the AGENTS.md section 6 escaping rules.
+
+**Synthetic data:** temporary databases and ports chosen at test time; one port is held by a plain `net` server, the other by a first ledger.
+
+**Tests:** `node:test` cases that spawn `src/server.mjs` and the installed-style bin on a held port and check the exit status, stderr and the first ledger's token file.
