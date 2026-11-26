@@ -5194,3 +5194,36 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
+
+Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.
+
+### The rule in use before this card (rule 1)
+
+Read from `align.py`, `batch.py`, `pair.py`, `train.py` and `evaluate.py` on `main` at 6fa6249.
+
+- **Alignment is by character offsets, not by token index.** `batch.spans` tokenizes the same text with each tokenizer (`add_special_tokens=False`, so no BOS or EOS is added on either side) and takes each token's half-open `[start, end)` character span from the fast tokenizer's offset mapping. Each side is truncated to `max_tokens` (384) on its own.
+- **Position.** `align.sender_positions` gives each sender token a fractional position on the receiver's token axis: with `m` the midpoint of the sender token and `j` the last receiver token that starts at or before `m`, the position is `max(0, j + clip((m - a_j) / (b_j - a_j), 0, 1) - 0.5)`. The mapper uses it as the rotary position of that sender token in cross-attention.
+- **Visibility.** Receiver token `j` may read sender token `i` when `end_i <= end_j` (`align.causal_mask`, vectorized in `batch.make_pair`).
+- **When tokens do not line up:**
+  - One sender token over several receiver tokens: the receiver tokens before the last one cannot read it; a receiver token with no visible sender token reads only the mapper's learned "sink" slot.
+  - Several sender tokens inside one receiver token: all are visible to it, at positions inside that token.
+  - After truncation, `cut_to_common_end` keeps, on each side, the tokens ending at or before the smaller of the two last offsets. A token that crosses that offset is dropped without a record, and the tokens of the other side that sit over its characters stay.
+  - A sender token that no receiver token can read stays in the batch and is never used; nothing counts it.
+  - A document with no tokens on one side raises `ValueError`.
+- `train.py` and `evaluate.py` only keep items that fit `max_tokens` on both sides for stage 2, dev F1 and the SQuAD eval, so truncation happens only in stage 1 batches and the held-out NMSE batches.
+
+### What is tested and the expected result
+
+1. **Audit set.** A fixed, synthetic edge-case set in `runtime/latent_transfer/align_audit.py`: leading and repeated white space, CRLF, tabs, emoji and other astral characters (with a joined emoji sequence), combining marks, CJK, Arabic, very long words, numbers, code, special and chat-template token strings, an empty string, and texts where one side's token covers several of the other's and the reverse. Plus a natural-text column: 200 SQuAD validation passages (public data; only counts are recorded).
+2. **Pairs.** At least four of Phi-3.5-mini, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1, with Phi-3.5 to Qwen2.5 (the M2b-S pair) among them. Tokenizers only, on CPU.
+3. **Reported per pair:** Jaccard overlap of the two vocabularies (tokens compared as the bytes they stand for, special tokens left out); the share of texts split at identical boundaries (exact match); the share of sender positions that are one-to-one (same span as a receiver token), one-to-many (the sender token covers several receiver tokens), many-to-one, crossing, and unaligned (no receiver token over its characters, or no receiver token may read it); and, per tokenizer, tokens whose reported span is not the characters the token stands for.
+4. **Expected after the fixes (rule 2):** on every audit text and pair, (a) the two sides cover exactly the same characters, (b) no token of either side is dropped unless the text was truncated, and then both sides stop at a boundary they share, (c) with the same tokenizer on both sides every position is the token's own index and the mask is lower-triangular, including texts with emoji, (d) no sender token is unreadable, and (e) the number of receiver tokens that see no sender token is carried in the batch. An empty document still raises `ValueError`.
+5. **Norm calibration.** Off by default; with the flag off, outputs are bit-identical to before. The arithmetic (scale = target norm / observed norm, per group or per token, padding left out, an optional cap) is unit-tested without torch, and the tensor version is tested against it when torch is present.
+
+### Acceptance for the code
+
+- Rule 1 stays available and is what a checkpoint without a recorded rule loads with, so the M2b-S numbers can be reproduced; new mappers train with rule 2 and record it.
+- Regression tests for each defect, standard library only for `align.py`; checks that need torch or tokenizers skip when those are absent.
+- The four suites pass; Codex review recorded here.
