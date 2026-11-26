@@ -240,7 +240,26 @@ test('round 6: write on a variable that holds a document is an HTML sink', () =>
   for (const line of ['const doc = iframe.contentDocument; doc.write(transcript.text);', 'frame.contentDocument.writeln(text);', 'frameDoc?.write(text);']) {
     assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
   }
-  assert.deepEqual(checkFile('public/a.mjs', utf8('stream.write(chunk);')), []);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('stream.write(chunk);')), [], 'a stream in server code');
+});
+
+test('round 7: in browser code any write() call is a sink; setHTMLUnsafe and friends are sinks', () => {
+  const browser = ['const preview = iframe.contentDocument; preview.write(transcript.text);', 'target.writeln(text);', "preview['write'](text);", 'preview.setHTMLUnsafe(transcript.text);', 'preview.setHTML(text);', 'Document.parseHTMLUnsafe(text);'];
+  for (const line of browser) assert.deepEqual(rules(checkFile('public/console/a.mjs', utf8(line))), ['html-sink'], line);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('response.write(chunk); stream.write(line);')), [], 'server code writes streams');
+});
+
+test('round 7: a tracked file replaced by a folder before staging is skipped, not a crash', async () => {
+  const folder = await gitFolder({ 'src/preview.mjs': 'export const a = 1;\n', 'src/b.mjs': `const x = '${char(0x202e)}';\n` });
+  try {
+    await rm(join(folder, 'src', 'preview.mjs'));
+    await mkdir(join(folder, 'src', 'preview.mjs', 'parts'), { recursive: true });
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^src\/b\.mjs:1:12 {2}raw-character/mu);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 });
 
 test('round 5: the ledger server itself listens through a written-out options object', async () => {

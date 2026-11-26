@@ -43,8 +43,13 @@ const htmlSinks = [
   [new RegExp(String.raw`\b[\w$]*[Dd]oc[\w$]*${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
+  [/\b(?:setHTMLUnsafe|setHTML|parseHTMLUnsafe)\b/gu, 'setHTMLUnsafe'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
+// Browser code has no streams, so there any write() call is document.write under some
+// name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
+const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
+const browserFile = /^public\//u;
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
@@ -223,7 +228,9 @@ export function checkFile(path, bytes) {
   if (codeFile.test(path) && !testFile.test(path) && !vendored.test(path) && path !== selfPath) {
     const html = path.endsWith('.html');
     const code = text;
-    for (const [pattern, name] of htmlSinks) {
+    // In browser code the broader write() rule replaces the document-name one.
+    const sinks = browserFile.test(path) ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
+    for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
@@ -270,7 +277,8 @@ export function checkTree(root) {
     try {
       bytes = readFileSync(Buffer.concat([Buffer.from(root + '/', 'utf8'), raw]));
     } catch (error) {
-      if (error.code === 'ENOENT') continue; // deleted in the working tree, not yet staged
+      // Deleted, or replaced by a folder, in the working tree and not yet staged.
+      if (error.code === 'ENOENT' || error.code === 'EISDIR') continue;
       throw error;
     }
     for (const finding of checkFile(path, bytes)) findings.push(finding);
