@@ -492,3 +492,12 @@ test('card H10 review 3: indexed and call receivers, and a parenthesized 0', () 
   }
   assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length > (0)) show();')), []);
 });
+
+test('card H10 review 4: nested receivers, a parenthesized 1 in a sum, and a keyword before 0', () => {
+  for (const line of ['if (label.length < (1) + MAX_LABEL_LENGTH) keep();', 'if (500 < getNode(getId()).label.length) reject();', "if (500 < getNode()['label'].length) reject();"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['return 0 < label.length;', 'if (label.length < 1) refuse();', 'const ok = (label.length > 0) ? a : b;']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});

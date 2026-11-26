@@ -65,15 +65,18 @@ const browserFile = /^public\/|\.html$/u;
 // and only when the 0 or 1 stands alone (not `< 1 + MAX`): length < 1, length > 0,
 // length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
 // labelParts) are lists and are left out.
-const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+(?:\([^()\n]*\)|\[[^\]\n]*\])*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|\[[^\]\n]*\])*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*\(*\s*([\w$.]*)\s*(\S?)/u;
+// Call arguments and indexes in a member chain, one level of nesting (round 4).
+const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[[^\]\n]*\])`;
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+${callOrIndex}*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*\(*\s*([\w$.]*)\s*\)*\s*(\S?)/u;
 // Not the ">" of an arrow function (`label => label.length`).
-const comparisonBefore = /(\S?)\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
+const comparisonBefore = /(\S?)\s*\(*\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
 const emptyBefore = new Set(['1>', '0<', '1<=']);
-// What may follow or precede a lone 0 or 1 for it to be the whole other side.
-const aloneAfter = new Set(['', ')', ';', '&', '|', '?', ',', '}', ':']);
-const aloneBefore = new Set(['', '(', ';', '&', '|', '?', ',', '{', '!', ':', '=']);
+// A 0 or 1 is the whole other side unless arithmetic or a member access touches it
+// (`< (1) + MAX`); a keyword before it (`return 0 < length`) leaves it alone.
+const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[']);
+const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 // listen named but not called, as in promisify(server.listen.bind(server)): the host it
@@ -273,8 +276,8 @@ export function checkFile(path, bytes, { browser = false } = {}) {
       const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
       const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
       if (!after && !before) continue;
-      if (after && !before && emptyAfter.has(after[1] + after[2]) && aloneAfter.has(after[3])) continue;
-      if (before && !after && emptyBefore.has(before[2] + before[3]) && aloneBefore.has(before[1])) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[2]) && !notAloneAfter.has(after[3])) continue;
+      if (before && !after && emptyBefore.has(before[2] + before[3]) && !notAloneBefore.has(before[1])) continue;
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
     if (!html) {
