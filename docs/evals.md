@@ -5194,3 +5194,26 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## L1 — Serving levers measured (defined 2026-11-26, before the code)
+
+Card L1. `docs/latent-gpu-plan.md` ranks the levers for running 100 agents on one 16 GB RTX 4090 Laptop GPU, but every number in it is computed or estimated. This card measures them on the laptop (vLLM 0.33.0, WSL2 Ubuntu 24.04), with synthetic data only. The GPU is shared with other sessions through a lock folder, so each run is short and the server is stopped before the lock is released.
+
+### What is measured
+
+A driver, `evals/latent/serving-levers.mjs` (pure helpers in `serving-lib.mjs`), fires N agents at once at one vLLM server. Each agent sends the same system prompt and shared context (the swarm's incident instructions, `src/swarm-task.mjs`, plus an optional shared handbook of K tokens) followed by its own incident report, and asks for the swarm's JSON answer. It reports, per run: wall time until the last agent finishes, agents answered, correct and verified answers (the swarm's own checks), completion tokens per second (aggregate), prompt tokens per second, the prefix-cache hit rate (vLLM `prefix_cache_hits / queries`, delta over the run), peak KV-cache use (polled from `/metrics`), peak GPU memory (`nvidia-smi`, polled), and preemptions. From the server's startup log it reads weights memory, CUDA-graph memory, KV-cache tokens and the maximum concurrency vLLM states. The swarm in `src/swarm.mjs` is also run once at 100 agents (`SWARM_CONCURRENCY=100`) as a cross-check of the driver.
+
+### Rows
+
+1. Baseline, Qwen2.5-7B-Instruct-AWQ, 25, 50 and 100 agents.
+2. vLLM native KV offload (`--kv-offloading-backend native --kv-offloading-size`), same counts. If this version lacks it, the row says so.
+3. FP8 KV: whether Qwen2.5-7B AWQ can run it (calibrated or per-token-head scales), and otherwise the 14B AWQ, with memory and accuracy on the latent dev set (`perf.mjs`, 8 questions × 3).
+4. `--max-num-seqs` 32, 64 and 100 at 100 agents.
+5. Edge cases: more agents than the KV cache holds, a very long shared prefix, a cold start (first request after the server starts).
+
+### Acceptance
+
+- Unit tests (`node:test`) for the pure helpers: startup-log parsing, run summary and the server-argument builder. They run without a GPU.
+- Every row has measured numbers or a stated reason why it cannot be measured here; nothing is estimated and every figure is marked measured.
+- A lever is recommended for the default setup only if it helps its target metric (time to finish, KV capacity or peak GPU memory) without losing correct answers against the baseline in the same session.
+- The figures are for one laptop GPU, one 7B model and one synthetic task, and the doc says so.
