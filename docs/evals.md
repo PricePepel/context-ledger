@@ -5246,3 +5246,18 @@ Graph labels are limited to 500 characters by JSON Schema `maxLength`, which cou
 - **First run on `main`:** one finding, a real bug: `src/latent.mjs` capped latent finding labels at 500 UTF-16 units, so a finding whose label was 500 emoji (valid as a graph label) was dropped. It counts code points now; `tests/latent.test.mjs` "card H10" fails on the old code and passes on the fix.
 - **Codex review, round 1:** no high; two medium and two low. Fixed with tests: other spellings of the limit (`<= (500)`, `node['label'].length`, `getMaxLabel() >= label.length`) were missed, and the blanket exemption for 0 and 1 hid `label.length <= 1` and `1 < label.length`; the rule now flags any comparison next to a label length except the exact emptiness tests. Fixed: `labelParts.length > 3` (an array) was flagged; names must now end in `label` or `labelText`. Accepted (fail-safe): `label.length >= 1.0` and a comparison spelt in a comment are reported. Noted, not changed: the demo console's own label editor (`public/console/review.mjs`) allows 300 code points, a product choice for the demo below the graph limit, not a units mismatch.
 - `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.
+
+## H11 — Feature map and screenshot driver (defined 2026-11-26, before the code)
+
+The talk behind H9 gives agents a feature map (the app's features as a person names them, and how to reach each) and one reusable command that drives the running app and saves a screenshot, so a change carries proof of what it does and agents stop working out how to operate the app each time. H11 adds both for the browser app. Synthetic data only: the demo transcripts in `demo/`.
+
+### What is tested and the expected result
+
+- **The map.** `docs/features.json` (version 1) lists every user-facing feature of the library, room, review, console and swarm pages: an id, a name, one line on what it does, a path, and steps (select, upload, fill, click, waitFor) that reach it on an empty ledger, with an optional element to photograph. `loadFeatures` refuses a map with a bad id, a repeated id, a path not starting with `/`, an unknown step or a missing field, naming the entry.
+- **The command.** `node scripts/drive.mjs --list` prints the features. `node scripts/drive.mjs <id> [--out file.png]` starts its own ledger on an empty temporary database (loopback only, live swarm off), signs in with the one-time link the server prints, runs the steps and saves a screenshot, then stops the ledger and removes the folder. `--url` drives a running loopback ledger with the token in `CONTEXT_LEDGER_TOKEN`; a non-loopback URL is refused. An unknown feature is refused with a pointer to `--list`. Output is escaped.
+- **Kept honest.** `tests/e2e/features.spec.mjs` opens every feature in the map against the e2e ledger and photographs it, so a renamed element breaks the build, not the agent.
+
+### Acceptance for the code
+
+- `tests/drive.test.mjs` (map checks, the command's refusals, its own ledger signing in once and stopping) and `tests/e2e/features.spec.mjs` pass; `node scripts/check.mjs` has no findings; no new dependency (Playwright is already a devDependency).
+
