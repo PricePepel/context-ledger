@@ -114,6 +114,8 @@ def long_items(rows, count=LONG_COUNT, chars=LONG_CHARS):
                 continue
             if other["context"].strip() in filler:
                 continue  # SQuAD asks several questions per paragraph
+            if any(answer.lower() in other["context"].lower() for answer in target["answers"]):
+                continue  # the answer must sit in one place only, first or last
             filler.append(other["context"].strip())
             size += len(filler[-1]) + 2
             if size >= chars:
@@ -171,7 +173,7 @@ def build(rows, fits, seed=0):
     """Every group, from SQuAD validation rows and a `fits(passage)` test."""
     rows = shuffled(rows, seed)
     main, used = main_items(rows, fits)
-    rest = [row for row in rows[used:] if fits(row["context"].strip())]
+    rest = rows[used:]
     return {
         "main": main,
         "long_passage": long_items(rest),

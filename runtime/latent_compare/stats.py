@@ -55,7 +55,7 @@ def mean_interval(values, rounds=BOOTSTRAP_ROUNDS, seed=0):
     if n == 0:
         return None
     rng = random.Random(seed)
-    return _percentiles(sum(values[rng.randrange(n)] for _ in range(n)) / n for _ in range(rounds))
+    return _percentiles(sum(rng.choices(values, k=n)) / n for _ in range(rounds))
 
 
 def paired_interval(values_a, values_b, rounds=BOOTSTRAP_ROUNDS, seed=0):
