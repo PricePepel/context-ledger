@@ -130,7 +130,7 @@ test('the command prints one line per finding and exits 1, or exits 0 when clean
     assert.equal(failure.code, 1);
     const lines = failure.stdout.trim().split(/\r?\n/u);
     assert.deepEqual(lines.slice(0, -1).sort(), [
-      'public/b.mjs:1:5  html-sink  assigning HTML parses text as HTML; build nodes with createElement and set textContent instead (AGENTS.md section 6)',
+      'public/b.mjs:1:5  html-sink  assigning HTML parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)',
       'src/a.mjs:1:12  raw-character  raw U+202E; write it as an escape (\\u{...} in JavaScript, \\u.... in Python, the escape as text in Markdown) or String.fromCodePoint (AGENTS.md section 6)',
     ]);
     assert.equal(lines.at(-1), 'check: 3 files, 2 findings');
@@ -167,16 +167,58 @@ test('round 1 medium: computed keys, logical assignment and any-case srcdoc are 
   assert.deepEqual(rules(checkFile('public/a.html', utf8('<iframe SRCDOC="x"></iframe>'))), ['html-sink']);
 });
 
-test('round 1 medium: comments neither fire a rule nor hide a loopback host', () => {
-  const pass = [
-    '// Avoid document.write(text) here.',
-    '/* node.innerHTML = x */ node.textContent = x;',
-    "server.listen(0, /* local only */ '127.0.0.1');",
-    "const pattern = /\\/\\/ not a comment/u; node.textContent = 'a';",
+test('round 1 medium: a comment inside listen arguments does not hide a loopback host', () => {
+  for (const line of ["server.listen(0, /* local only */ '127.0.0.1');", "server.listen(\n  0, // any port\n  '127.0.0.1',\n);"]) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8("server.listen(0, /* '127.0.0.1' */ '0.0.0.0');"))), ['loopback-only']);
+});
+
+// Round 2 showed that masking comments across a file can hide code (a regex, a template
+// or an HTML attribute that looks like a comment). The code rules now read the text as
+// it is, so a sink spelt in a comment or string is reported too; the message says to reword it.
+test('round 2 medium: comments and strings are read as they are, so nothing can hide a sink', () => {
+  const hidden = [
+    'if (ok) /[//]/.test(text); el.innerHTML = value;',
+    'const ratio = { valueOf: () => 6 } / 2; el.innerHTML = value;',
+    'const s = `outer ${`https://example.test`}`; el.innerHTML = value;',
   ];
-  for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
-  assert.deepEqual(checkFile('public/a.html', utf8('<!-- no srcdoc here --><p>x</p>')), []);
-  assert.deepEqual(rules(checkFile('src/a.mjs', utf8("const note = 'see /* x */'; node.innerHTML = note;"))), ['html-sink'], 'a comment opener inside a string is not a comment');
+  for (const line of hidden) assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
+  for (const html of ['<iframe title="<!--" srcdoc="hello"></iframe>', "<script>const start = '<!--'; el.innerHTML = value;</script>"]) {
+    assert.deepEqual(rules(checkFile('public/a.html', utf8(html))), ['html-sink'], html);
+  }
+  const [comment] = checkFile('src/a.mjs', utf8('// Avoid document.write(text) here.'));
+  assert.equal(comment.rule, 'html-sink');
+  assert.match(comment.message, /in a comment or string, reword it/u);
+});
+
+test('round 2 high: a computed host key or an options object with a second argument is checked as Node reads it', () => {
+  const fail = [
+    "server.listen({ port: 0, host: '127.0.0.1', ['host']: '0.0.0.0' });",
+    "server.listen({ port: 0, host: '127.0.0.1', [key]: value });",
+    "server.listen({ port: 0, host: '0.0.0.0' }, '127.0.0.1');",
+    "server.listen({ port: 0, host: '127.0.0.1', get host() { return '0.0.0.0'; } });",
+  ];
+  for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen({ ['host']: '127.0.0.1', port: 0 });")), []);
+});
+
+test('round 2 medium: an optional call is checked', () => {
+  for (const line of ['server.listen?.(0);', 'server?.listen(0);', "server['listen']?.(0);"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+  assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen?.(0, '127.0.0.1');")), []);
+});
+
+test('round 2 low: a file name that starts with U+FEFF is valid UTF-8', async () => {
+  const folder = await gitFolder({ [`${char(0xfeff)}a.mjs`]: 'const x = 1;\n' });
+  try {
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.ok(failure, 'the name itself holds a raw format character');
+    assert.doesNotMatch(failure.stdout, /file name is not UTF-8/u);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 });
 
 test('round 1 low: vendored files and test files beside the code are exempt from the code rules', () => {

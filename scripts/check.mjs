@@ -32,7 +32,8 @@ const htmlSinks = [
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
-const listenCall = new RegExp(String.raw`${property('listen')}\s*\(`, 'gu');
+// Comments and an optional call (`?.`) may sit between the name and its arguments.
+const listenCall = new RegExp(String.raw`${property('listen')}(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*(?:\?\.)?(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*\(`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -56,65 +57,34 @@ function position(starts, index) {
   return { line: low + 1, column: index - starts[low] + 1 };
 }
 
-// Comments (and regular expression bodies) turned into spaces, same length and lines,
-// so a rule neither fires on a comment nor misses a call with a comment inside it.
-// Strings are kept: a sink spelt inside a string is still reported.
-function maskComments(text, html) {
-  const out = text.split('');
-  const blank = (from, to) => {
-    for (let index = from; index < to; index += 1) if (out[index] !== '\n' && out[index] !== '\r') out[index] = ' ';
-  };
-  if (html) {
-    for (const match of text.matchAll(/<!--[\s\S]*?(?:-->|$)/gu)) blank(match.index, match.index + match[0].length);
-    return out.join('');
-  }
+// Comments removed from a call's argument text (strings kept), for the loopback rule only.
+// The code rules otherwise read the text as it is: a rule spelt in a comment or a string
+// is reported too, which is safer than a lexer that a regex or template could fool (H9,
+// Codex round 2).
+function stripComments(text) {
+  let out = '';
   let quote = null;
-  let last = '';
-  for (let index = 0; index < text.length;) {
+  for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
-    const next = text[index + 1];
     if (quote) {
-      if (character === '\\') index += 2;
-      else {
-        if (character === quote) quote = null;
+      out += character;
+      if (character === '\\') {
+        out += text[index + 1] ?? '';
         index += 1;
-      }
-      continue;
-    }
-    if (character === '"' || character === "'" || character === '`') {
+      } else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'" || character === '`') {
       quote = character;
-      last = character;
-      index += 1;
-    } else if (character === '/' && next === '/') {
-      let end = index;
-      while (end < text.length && text[end] !== '\n' && text[end] !== '\r') end += 1;
-      blank(index, end);
-      index = end;
-    } else if (character === '/' && next === '*') {
+      out += character;
+    } else if (character === '/' && text[index + 1] === '*') {
       const close = text.indexOf('*/', index + 2);
-      const end = close === -1 ? text.length : close + 2;
-      blank(index, end);
-      index = end;
-    } else if (character === '/' && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last))) {
-      let end = index + 1;
-      let inClass = false;
-      while (end < text.length && text[end] !== '\n') {
-        const inner = text[end];
-        if (inner === '\\') end += 1;
-        else if (inner === '[') inClass = true;
-        else if (inner === ']') inClass = false;
-        else if (inner === '/' && !inClass) break;
-        end += 1;
-      }
-      blank(index + 1, end);
-      last = '/';
-      index = end + 1;
-    } else {
-      if (!/\s/u.test(character)) last = character;
-      index += 1;
-    }
+      index = close === -1 ? text.length : close + 1;
+      out += ' ';
+    } else if (character === '/' && text[index + 1] === '/') {
+      while (index + 1 < text.length && !/[\n\r]/u.test(text[index + 1])) index += 1;
+      out += ' ';
+    } else out += character;
   }
-  return out.join('');
+  return out;
 }
 
 // The argument text of a call whose "(" is at `open`, up to its matching ")".
@@ -160,24 +130,25 @@ function topLevelParts(text) {
 
 const loopbackLiteral = /^(['"`])127\.0\.0\.1\1$/u;
 
-// An options object listens on loopback when its last top-level host is the literal,
-// with no spread after it that could replace it.
+// An options object listens on loopback when its last host key is the literal. A spread,
+// a computed key or a property the check cannot read may set host, so it counts as not.
 function optionsOnLoopback(text) {
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   let host = null;
   for (const part of topLevelParts(text.slice(1, -1))) {
-    if (part.startsWith('...')) host = null;
-    const match = /^(?:host|(['"`])host\1)\s*:\s*([\s\S]*)$/u.exec(part);
-    if (match) host = match[2].trim();
-    else if (part === 'host') host = null;
+    const match = /^(?:host|(['"`])host\1|\[\s*(['"`])host\2\s*\])\s*:\s*([\s\S]*)$/u.exec(part);
+    if (match) host = match[3].trim();
+    else if (part.startsWith('...') || part.startsWith('[') || part === 'host') host = null;
+    else if (!/^(?:[$\w]+|(['"`])[^'"`]*\1)\s*:/u.test(part) && !/^[$\w]+$/u.test(part)) host = null;
   }
   return host !== null && loopbackLiteral.test(host);
 }
 
+// Node reads an options object first, so then only its host counts.
 function listensOnLoopback(args) {
-  const parts = topLevelParts(args);
-  if (parts.length >= 2 && loopbackLiteral.test(parts[1])) return true;
-  return optionsOnLoopback(parts[0] ?? '');
+  const parts = topLevelParts(stripComments(args));
+  if ((parts[0] ?? '').startsWith('{')) return optionsOnLoopback(parts[0]);
+  return parts.length >= 2 && loopbackLiteral.test(parts[1]);
 }
 
 // Findings for one file, given its path relative to the repository (with "/") and bytes.
@@ -200,10 +171,10 @@ export function checkFile(path, bytes) {
 
   if (codeFile.test(path) && !testFile.test(path) && !vendored.test(path) && path !== selfPath) {
     const html = path.endsWith('.html');
-    const code = maskComments(text, html);
+    const code = text;
     for (const [pattern, name] of htmlSinks) {
       for (const match of code.matchAll(pattern)) {
-        add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead (AGENTS.md section 6)`);
+        add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
     }
     if (!html) {
@@ -237,9 +208,12 @@ export function checkTree(root) {
   const files = trackedFiles(root);
   const findings = [];
   for (const raw of files) {
-    const path = new TextDecoder('utf-8').decode(raw);
+    const path = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw);
     if (!Buffer.from(path, 'utf8').equals(raw)) {
       findings.push({ path, line: 1, column: 1, rule: 'utf8', message: 'file name is not UTF-8; rename it' });
+    }
+    for (const match of path.matchAll(rawCharacter)) {
+      findings.push({ path, line: 1, column: 1, rule: 'raw-character', message: `file name holds raw ${codePoint(match[0])}; rename it` });
     }
     let bytes;
     try {
