@@ -280,6 +280,35 @@ test('round 8: a parent folder replaced by a file before staging is skipped, not
   }
 });
 
+test('round 9: a module an HTML page loads, and what it imports, is browser code wherever it lives', async () => {
+  const folder = await gitFolder({
+    'demo/preview.html': '<script type="module" src="./preview.mjs"></script>\n',
+    'demo/preview.mjs': "import { show } from './show.mjs';\nshow();\n",
+    'demo/show.mjs': 'export function show() { const preview = iframe.contentDocument; preview.write(transcript.text); }\n',
+    'demo/server.mjs': 'process.stdout.write(line);\n',
+  });
+  try {
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^demo\/show\.mjs:1:\d+ {2}html-sink {2}write\(\) in browser code/mu);
+    assert.doesNotMatch(failure.stdout, /demo\/server\.mjs/u, 'a Node script beside it still writes streams');
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test("round 9: execCommand('insertHTML') is an HTML sink", () => {
+  assert.deepEqual(rules(checkFile('public/app.js', utf8("editor.focus(); document.execCommand('insertHTML', false, transcript.text);"))), ['html-sink']);
+});
+
+test('round 10: an HTML property name as a string in browser code, and listen passed along, are findings', () => {
+  assert.deepEqual(rules(checkFile('public/swarm/a.mjs', utf8("const key = rich ? 'innerHTML' : 'textContent'; el('div', { [key]: text });"))), ['html-sink']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8("const key = 'innerHTML';")), [], 'server code may name it, for example in a check');
+  for (const line of ['const listen = promisify(server.listen.bind(server)); await listen(port);', 'start(server.listen);']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+});
+
 test('round 5: the ledger server itself listens through a written-out options object', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(join(repo, 'src', 'server.mjs'), 'utf8');

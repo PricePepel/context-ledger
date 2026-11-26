@@ -4,7 +4,7 @@
 // Node built-ins and `git ls-files` only; not part of the package.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { extname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { terminalLabel } from '../src/text.mjs';
 
@@ -44,11 +44,16 @@ const htmlSinks = [
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\b(?:setHTMLUnsafe|setHTML|parseHTMLUnsafe)\b/gu, 'setHTMLUnsafe'],
+  // document.execCommand('insertHTML', ...) inserts HTML at the caret (Codex round 9).
+  [/['"\x60]insertHTML['"\x60]/gu, "execCommand('insertHTML')"],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
 // Browser code has no streams, so there any write() call is document.write under some
 // name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
 const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
+// The HTML property names as strings, as in el('div', { [key]: text }) with key set to
+// 'innerHTML': browser code has no other reason to spell them (Codex round 10).
+const browserHtmlName = [/['"\x60](?:innerHTML|outerHTML)['"\x60]/gu, 'an HTML property name in browser code'];
 // The browser app, and any HTML page with an inline script (Codex round 8).
 const browserFile = /^public\/|\.html$/u;
 
@@ -71,6 +76,9 @@ const aloneAfter = new Set(['', ')', ';', '&', '|', '?', ',', '}', ':']);
 const aloneBefore = new Set(['', '(', ';', '&', '|', '?', ',', '{', '!', ':', '=']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
+// listen named but not called, as in promisify(server.listen.bind(server)): the host it
+// is called with cannot be checked here (Codex round 10).
+const listenReference = new RegExp(String.raw`${property('listen')}(?!${gap}(?:\?\.)?${gap}\()`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -227,7 +235,7 @@ function listensOnLoopback(args) {
 }
 
 // Findings for one file, given its path relative to the repository (with "/") and bytes.
-export function checkFile(path, bytes) {
+export function checkFile(path, bytes, { browser = false } = {}) {
   if (binaryExtensions.has(extname(path).toLowerCase())) return [];
   let text;
   try {
@@ -248,9 +256,16 @@ export function checkFile(path, bytes) {
     const html = path.endsWith('.html');
     const code = text;
     // In browser code the broader write() rule replaces the document-name one.
-    const sinks = browserFile.test(path) ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
+    const sinks = browser || browserFile.test(path)
+      ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite, browserHtmlName]
+      : htmlSinks;
+    // One HTML sink finding per line: several rules can match the same write.
+    const sinkLines = new Set();
     for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
+        const { line } = position(starts, match.index);
+        if (sinkLines.has(line)) continue;
+        sinkLines.add(line);
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
     }
@@ -268,6 +283,9 @@ export function checkFile(path, bytes) {
         if (!listensOnLoopback(args)) {
           add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen({ port, host: '127.0.0.1' }) with the object written out, or listen(0, '127.0.0.1') with a literal port (AGENTS.md section 6: loopback only)");
         }
+      }
+      for (const match of code.matchAll(listenReference)) {
+        add(match.index, 'loopback-only', "listen passed along instead of called, so its host cannot be checked; call listen({ port, host: '127.0.0.1' }) directly (AGENTS.md section 6: loopback only)");
       }
     }
   }
@@ -289,9 +307,38 @@ export function trackedFiles(root) {
   return [...new Map(files.map(path => [path.toString('latin1'), path])).values()];
 }
 
+// Modules that a tracked HTML page loads with <script src>, and the relative imports of
+// those, run in the browser wherever they live (Codex round 9).
+const scriptSource = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/giu;
+const relativeImport = /(?:\bimport\b[^'"]*?\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/gu;
+
+function resolveRelative(from, target) {
+  if (/^[a-z][a-z0-9+.-]*:|^\/\//iu.test(target)) return null;
+  const parts = (target.startsWith('/') ? target.slice(1) : posix.join(posix.dirname(from), target)).split('?')[0];
+  return posix.normalize(parts);
+}
+
+export function browserModules(texts) {
+  const found = new Set();
+  const queue = [];
+  for (const [path, text] of texts) {
+    if (!path.endsWith('.html')) continue;
+    for (const match of text.matchAll(scriptSource)) queue.push(resolveRelative(path, match[1]));
+  }
+  for (const [path] of texts) if (browserFile.test(path) && !path.endsWith('.html')) queue.push(path);
+  while (queue.length > 0) {
+    const path = queue.pop();
+    if (!path || found.has(path) || !texts.has(path)) continue;
+    found.add(path);
+    for (const match of texts.get(path).matchAll(relativeImport)) queue.push(resolveRelative(path, match[1]));
+  }
+  return found;
+}
+
 export function checkTree(root) {
   const files = trackedFiles(root);
   const findings = [];
+  const loaded = [];
   for (const raw of files) {
     const path = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw);
     if (!Buffer.from(path, 'utf8').equals(raw)) {
@@ -307,9 +354,19 @@ export function checkTree(root) {
       // Deleted, or replaced by a folder, in the working tree and not yet staged.
       // ENOTDIR: a parent folder was replaced by a file (Codex round 8).
       if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
-      throw error;
+      // Anything else (EACCES, say) is reported and the scan goes on (Codex round 10).
+      findings.push({ path, line: 1, column: 1, rule: 'unreadable', message: `could not read this tracked file (${error.code ?? 'error'}); fix its permissions` });
+      continue;
     }
-    for (const finding of checkFile(path, bytes)) findings.push(finding);
+    loaded.push([path, bytes]);
+  }
+  const texts = new Map();
+  for (const [path, bytes] of loaded) {
+    if (codeFile.test(path)) texts.set(path, new TextDecoder('utf-8').decode(bytes));
+  }
+  const browser = browserModules(texts);
+  for (const [path, bytes] of loaded) {
+    for (const finding of checkFile(path, bytes, { browser: browser.has(path) })) findings.push(finding);
   }
   return { files: files.length, findings };
 }
