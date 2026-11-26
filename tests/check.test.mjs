@@ -354,3 +354,30 @@ test('the repository itself has no findings', async () => {
   const { stdout } = await run(process.execPath, [script, repo]);
   assert.match(stdout.trim(), /^check: \d+ files, no findings$/u);
 });
+
+// Card H10: label lengths count code points.
+test('card H10: a label length compared with a limit is a finding unless it counts code points', () => {
+  const fail = [
+    'if (label.length > 500) refuse();',
+    'const ok = node.label.length <= maxLabel;',
+    'if (maxLabel < editLabel.length) refuse();',
+    'return finding?.label?.length >= 64;',
+  ];
+  for (const line of fail) {
+    const findings = checkFile('src/a.mjs', utf8(line));
+    assert.deepEqual(rules(findings), ['label-length'], line);
+    assert.match(findings[0].message, /\[\.\.\.label\]\.length/u);
+  }
+  const pass = [
+    'if ([...label].length > 500) refuse();',
+    'if (Array.from(label).length > maxLabel) refuse();',
+    'if (label.length < 1) refuse();',
+    'if (label.length > 0) show();',
+    'const width = labels.length * 8;',
+    'if (labels.length > 3) more();',
+    'if (node.edgeLabels.length >= 10) page();',
+    'if (text.length > 500) cut();',
+  ];
+  for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  assert.deepEqual(checkFile('tests/a.test.mjs', utf8('assert.ok(label.length > 500);')), [], 'tests may count units');
+});

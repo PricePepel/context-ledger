@@ -45,6 +45,17 @@ const htmlSinks = [
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
+
+// Card H10: a label's .length counts UTF-16 units; JSON Schema maxLength and the graph
+// schemas count code points. A name with "label" in it, right before .length, compared
+// with a limit. 0 and 1 ask whether it is empty, where both counts agree.
+// "labels" is a list, so a plural name is left out.
+const labelLength = String.raw`[\w$]*label(?!s)[\w$]*\??\.length\b`;
+const labelLimit = [
+  new RegExp(String.raw`${labelLength}\s*([<>]=?)\s*([\w$.]+)`, 'giu'),
+  new RegExp(String.raw`([\w$.]+)\s*([<>]=?)\s*(?:[\w$]+\??\.)*${labelLength}`, 'giu'),
+];
+const emptiness = /^[01]$/u;
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
@@ -226,6 +237,15 @@ export function checkFile(path, bytes) {
     for (const [pattern, name] of htmlSinks) {
       for (const match of code.matchAll(pattern)) {
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
+      }
+    }
+    const seen = new Set();
+    for (const pattern of labelLimit) {
+      for (const match of code.matchAll(pattern)) {
+        const other = pattern === labelLimit[0] ? match[2] : match[1];
+        if (emptiness.test(other) || seen.has(match.index)) continue;
+        seen.add(match.index);
+        add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
       }
     }
     if (!html) {

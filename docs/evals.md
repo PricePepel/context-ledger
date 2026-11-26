@@ -5226,3 +5226,17 @@ Codex reviews of earlier cards came back to the same AGENTS.md section 6 rules a
 - **Codex review, round 5:** no high; two medium and one low, fixed with tests. A variable named `port` may hold options too, so the check stops guessing from names: only a literal port number goes with a host argument, and `src/server.mjs` now calls `listen({ port, host: '127.0.0.1' })`, which Node treats the same way (the talk's "change the API so the mistake cannot be written"). `document?.write(...)` and an HTML property as a `for...of` or `for...in` target are sinks now. `tests/check.test.mjs` 30/30.
 - **Codex review, round 6:** no high; one medium and one low, fixed with tests. An options object with `fd` (or `path` or `handle`) binds there and ignores `host`, so the keys of an options object are now checked against an allowlist (`port`, `backlog`, `exclusive`, `ipv6Only`, `reusePort`, `readableAll`, `writableAll`, `signal`), and anything else, a spread included, counts as not loopback. `write` on a variable holding a document (`doc.write`) is a sink. `tests/check.test.mjs` 32/32.
 - `tests/check.test.mjs` 28/28 on Windows (one Linux-only test skipped). Full suites on Windows (2026-11-26): `node scripts/check.mjs` no findings, `npm run -s test:graph` passes, runtime Python OK (66 skipped); `node --test tests/*.test.mjs` 669 pass and `npx playwright test` 59/60 under heavy load from other sessions on this machine. The two that did not pass were time-outs outside H9's files: `tests/paging.test.mjs` hangs here on unchanged code in both checkouts, and the console demo spec passed on its own rerun. An earlier full run on this branch passed everything (673 node, 61 browser). CI on clean runners is the record.
+
+## H10 — Label lengths in code points (defined 2026-11-26, before the code)
+
+Graph labels are limited to 500 characters by JSON Schema `maxLength`, which counts code points. Code that checks a label with `label.length` counts UTF-16 units, so a label of emoji or other astral characters can be valid in the graph and refused elsewhere. Reviews found this kind of mismatch several times (code point or UTF-16 is mentioned 30 times in this file, for example the P3 edit-label finding). H10 makes it a `scripts/check.mjs` rule. Synthetic inputs only.
+
+### What is tested and the expected result
+
+- **Rule `label-length`.** In code outside tests, a `.length` of a name containing `label` (any case, also as a property such as `node.label.length`) compared with `<`, `<=`, `>` or `>=` to anything other than 0 or 1 is a finding. The message says to count code points with `[...label].length` or `Array.from(label).length`. Comparing with 0 or 1 asks whether the label is empty, where both counts agree, so it passes. `[...label].length` and `Array.from(label).length` pass.
+- **Today's tree.** Whatever the rule finds on `main` is fixed to count code points, with a test that a label of 500 astral characters is accepted wherever a graph label of that size is.
+- **Dropped candidate.** The H9 handoff also named "a store connection closed twice". It has no pattern a check can find without understanding the control flow, and `tests/projects.test.mjs` and `tests/readonly-store.test.mjs` already cover it, so H10 leaves it out.
+
+### Acceptance for the code
+
+- `tests/check.test.mjs` covers the rule's failing and passing forms; the repository has no findings; the four suites pass; no new dependency.
