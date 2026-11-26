@@ -4,7 +4,7 @@
 // Node built-ins and `git ls-files` only; not part of the package.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { extname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { terminalLabel } from '../src/text.mjs';
 
@@ -44,6 +44,8 @@ const htmlSinks = [
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\b(?:setHTMLUnsafe|setHTML|parseHTMLUnsafe)\b/gu, 'setHTMLUnsafe'],
+  // document.execCommand('insertHTML', ...) inserts HTML at the caret (Codex round 9).
+  [/['"\x60]insertHTML['"\x60]/gu, "execCommand('insertHTML')"],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
 // Browser code has no streams, so there any write() call is document.write under some
@@ -209,7 +211,7 @@ function listensOnLoopback(args) {
 }
 
 // Findings for one file, given its path relative to the repository (with "/") and bytes.
-export function checkFile(path, bytes) {
+export function checkFile(path, bytes, { browser = false } = {}) {
   if (binaryExtensions.has(extname(path).toLowerCase())) return [];
   let text;
   try {
@@ -230,7 +232,7 @@ export function checkFile(path, bytes) {
     const html = path.endsWith('.html');
     const code = text;
     // In browser code the broader write() rule replaces the document-name one.
-    const sinks = browserFile.test(path) ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
+    const sinks = browser || browserFile.test(path) ?[...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
     for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
@@ -263,9 +265,38 @@ export function trackedFiles(root) {
   return [...new Map(files.map(path => [path.toString('latin1'), path])).values()];
 }
 
+// Modules that a tracked HTML page loads with <script src>, and the relative imports of
+// those, run in the browser wherever they live (Codex round 9).
+const scriptSource = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/giu;
+const relativeImport = /(?:\bimport\b[^'"]*?\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/gu;
+
+function resolveRelative(from, target) {
+  if (/^[a-z][a-z0-9+.-]*:|^\/\//iu.test(target)) return null;
+  const parts = (target.startsWith('/') ? target.slice(1) : posix.join(posix.dirname(from), target)).split('?')[0];
+  return posix.normalize(parts);
+}
+
+export function browserModules(texts) {
+  const found = new Set();
+  const queue = [];
+  for (const [path, text] of texts) {
+    if (!path.endsWith('.html')) continue;
+    for (const match of text.matchAll(scriptSource)) queue.push(resolveRelative(path, match[1]));
+  }
+  for (const [path] of texts) if (browserFile.test(path) && !path.endsWith('.html')) queue.push(path);
+  while (queue.length > 0) {
+    const path = queue.pop();
+    if (!path || found.has(path) || !texts.has(path)) continue;
+    found.add(path);
+    for (const match of texts.get(path).matchAll(relativeImport)) queue.push(resolveRelative(path, match[1]));
+  }
+  return found;
+}
+
 export function checkTree(root) {
   const files = trackedFiles(root);
   const findings = [];
+  const loaded = [];
   for (const raw of files) {
     const path = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw);
     if (!Buffer.from(path, 'utf8').equals(raw)) {
@@ -283,7 +314,15 @@ export function checkTree(root) {
       if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
       throw error;
     }
-    for (const finding of checkFile(path, bytes)) findings.push(finding);
+    loaded.push([path, bytes]);
+  }
+  const texts = new Map();
+  for (const [path, bytes] of loaded) {
+    if (codeFile.test(path)) texts.set(path, new TextDecoder('utf-8').decode(bytes));
+  }
+  const browser = browserModules(texts);
+  for (const [path, bytes] of loaded) {
+    for (const finding of checkFile(path, bytes, { browser: browser.has(path) })) findings.push(finding);
   }
   return { files: files.length, findings };
 }
