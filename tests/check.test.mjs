@@ -381,3 +381,27 @@ test('card H10: a label length compared with a limit is a finding unless it coun
   for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   assert.deepEqual(checkFile('tests/a.test.mjs', utf8('assert.ok(label.length > 500);')), [], 'tests may count units');
 });
+
+test('card H10 review: any comparison spelling is caught; only exact emptiness tests pass', () => {
+  const fail = [
+    'if (label.length <= (500)) keep();',
+    "if (node['label'].length <= 500) keep();",
+    'if (getMaxLabel() >= label.length) keep();',
+    'if (label.length <= 1) one();',
+    'if (1 < label.length) many();',
+    'if (labelText.length > limit) cut();',
+  ];
+  for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  const pass = [
+    'if (label.length < 1) refuse();',
+    'if (label.length > 0) show();',
+    'if (label.length >= 1) show();',
+    'if (0 < label.length) show();',
+    'if (1 > label.length) refuse();',
+    'if (1 <= label.length) show();',
+    'const sizes = items.map(label => label.length);',
+    "const labelParts = ['a', 'b', 'c', 'd']; if (labelParts.length > 3) trimParts();",
+    'const width = label.length * 8;',
+  ];
+  for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+});

@@ -47,15 +47,17 @@ const htmlSinks = [
 ];
 
 // Card H10: a label's .length counts UTF-16 units; JSON Schema maxLength and the graph
-// schemas count code points. A name with "label" in it, right before .length, compared
-// with a limit. 0 and 1 ask whether it is empty, where both counts agree.
-// "labels" is a list, so a plural name is left out.
-const labelLength = String.raw`[\w$]*label(?!s)[\w$]*\??\.length\b`;
-const labelLimit = [
-  new RegExp(String.raw`${labelLength}\s*([<>]=?)\s*([\w$.]+)`, 'giu'),
-  new RegExp(String.raw`([\w$.]+)\s*([<>]=?)\s*(?:[\w$]+\??\.)*${labelLength}`, 'giu'),
-];
-const emptiness = /^[01]$/u;
+// schemas count code points. The length of a name that ends in "label" (or "labelText"),
+// or of a ['label'] key, next to any comparison is a finding, however the other side is
+// written. Only the exact emptiness tests pass, where both counts agree:
+// length < 1, length > 0, length >= 1, and 1 > length, 0 < length, 1 <= length.
+// Plural names (labels, labelParts) are lists and are left out.
+const labelLength = new RegExp(String.raw`(?:\b[\w$]*[Ll]abel(?:Text)?\b|\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
+const comparisonAfter = /^\s*([<>]=?)(?!=)\s*([\w$.]*)/u;
+// Not the ">" of an arrow function (`label => label.length`).
+const comparisonBefore = /([\w$.]*)\s*(?<!=)([<>]=?)\s*$/u;
+const emptyAfter = new Set(['<1', '>0', '>=1']);
+const emptyBefore = new Set(['1>', '0<', '1<=']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
@@ -239,14 +241,13 @@ export function checkFile(path, bytes) {
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
     }
-    const seen = new Set();
-    for (const pattern of labelLimit) {
-      for (const match of code.matchAll(pattern)) {
-        const other = pattern === labelLimit[0] ? match[2] : match[1];
-        if (emptiness.test(other) || seen.has(match.index)) continue;
-        seen.add(match.index);
-        add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
-      }
+    for (const match of code.matchAll(labelLength)) {
+      const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
+      const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
+      if (!after && !before) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[2])) continue;
+      if (before && !after && emptyBefore.has(before[1] + before[2])) continue;
+      add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
     if (!html) {
       for (const match of code.matchAll(listenCall)) {

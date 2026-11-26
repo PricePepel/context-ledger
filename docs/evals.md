@@ -5233,10 +5233,16 @@ Graph labels are limited to 500 characters by JSON Schema `maxLength`, which cou
 
 ### What is tested and the expected result
 
-- **Rule `label-length`.** In code outside tests, a `.length` of a name containing `label` (any case, also as a property such as `node.label.length`) compared with `<`, `<=`, `>` or `>=` to anything other than 0 or 1 is a finding. The message says to count code points with `[...label].length` or `Array.from(label).length`. Comparing with 0 or 1 asks whether the label is empty, where both counts agree, so it passes. `[...label].length` and `Array.from(label).length` pass.
+- **Rule `label-length`.** In code outside tests, the `.length` of a name ending in `label` or `labelText` (also as a property such as `node.label.length`, or a `['label']` key) next to `<`, `<=`, `>` or `>=` is a finding, however the other side is written. Only the exact emptiness tests pass (`length < 1`, `length > 0`, `length >= 1` and their mirror images), where both counts agree. Plural names such as `labels` or `labelParts` are lists and are left out. The message says to count code points with `[...label].length` or `Array.from(label).length`. `[...label].length` and `Array.from(label).length` pass.
 - **Today's tree.** Whatever the rule finds on `main` is fixed to count code points, with a test that a label of 500 astral characters is accepted wherever a graph label of that size is.
 - **Dropped candidate.** The H9 handoff also named "a store connection closed twice". It has no pattern a check can find without understanding the control flow, and `tests/projects.test.mjs` and `tests/readonly-store.test.mjs` already cover it, so H10 leaves it out.
 
 ### Acceptance for the code
 
 - `tests/check.test.mjs` covers the rule's failing and passing forms; the repository has no findings; the four suites pass; no new dependency.
+
+### H10 results (2026-11-26)
+
+- **First run on `main`:** one finding, a real bug: `src/latent.mjs` capped latent finding labels at 500 UTF-16 units, so a finding whose label was 500 emoji (valid as a graph label) was dropped. It counts code points now; `tests/latent.test.mjs` "card H10" fails on the old code and passes on the fix.
+- **Codex review, round 1:** no high; two medium and two low. Fixed with tests: other spellings of the limit (`<= (500)`, `node['label'].length`, `getMaxLabel() >= label.length`) were missed, and the blanket exemption for 0 and 1 hid `label.length <= 1` and `1 < label.length`; the rule now flags any comparison next to a label length except the exact emptiness tests. Fixed: `labelParts.length > 3` (an array) was flagged; names must now end in `label` or `labelText`. Accepted (fail-safe): `label.length >= 1.0` and a comparison spelt in a comment are reported. Noted, not changed: the demo console's own label editor (`public/console/review.mjs`) allows 300 code points, a product choice for the demo below the graph limit, not a units mismatch.
+- `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.
