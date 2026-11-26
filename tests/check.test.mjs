@@ -80,10 +80,10 @@ test('safe DOM code, comparisons, reads, tests and docs pass the HTML rule', () 
 
 test('listen must name the loopback host', () => {
   const pass = [
-    "server.listen(port, '127.0.0.1', () => {});",
+    "server.listen({ port, host: '127.0.0.1' }, () => {});",
     'server.listen(0, "127.0.0.1");',
     "server.listen({ port: 0, host: '127.0.0.1' }, ready);",
-    "server.listen(\n  port,\n  '127.0.0.1',\n  () => console.log('up (ready)'),\n);",
+    "server.listen(\n  0,\n  '127.0.0.1',\n  () => console.log('up (ready)'),\n);",
   ];
   for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   const fail = [
@@ -211,13 +211,26 @@ test('round 2 medium: an optional call is checked', () => {
 });
 
 // Codex review, round 3 (H9).
-test('round 3 high: the (port, host) form counts only when the first argument is plainly a port', () => {
-  for (const line of ["server.listen(options, '127.0.0.1');", "server.listen(makeOptions(), '127.0.0.1');", "server.listen(handle, '127.0.0.1');"]) {
+// Round 5 tightened this: any variable may hold options, so only a literal port counts.
+test('rounds 3 to 5: the (port, host) form counts only with a literal port number', () => {
+  for (const line of ["server.listen(options, '127.0.0.1');", "server.listen(makeOptions(), '127.0.0.1');", "server.listen(handle, '127.0.0.1');", "server.listen(port, '127.0.0.1');", "server.listen(config.port, '127.0.0.1');"]) {
     assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
   }
-  for (const line of ["server.listen(0, '127.0.0.1');", "server.listen(port, '127.0.0.1');", "server.listen(PORT, '127.0.0.1');", "server.listen(config.port, '127.0.0.1');"]) {
+  for (const line of ["server.listen(0, '127.0.0.1');", "server.listen(4317, '127.0.0.1');", "server.listen({ port, host: '127.0.0.1' });"]) {
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
+});
+
+test('round 5: optional chaining before write, and a loop target, are HTML sinks', () => {
+  for (const line of ['iframe.contentWindow.document?.write(transcript.text);', "frame.document?.['write'](text);", 'for (preview.innerHTML of messages) capture();', "for (preview['outerHTML'] in table) capture();"]) {
+    assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
+  }
+});
+
+test('round 5: the ledger server itself listens through a written-out options object', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(join(repo, 'src', 'server.mjs'), 'utf8');
+  assert.match(source, /server\.listen\(\{ port, host: '127\.0\.0\.1' \}/u);
 });
 
 test('round 3 high: a regular expression in the arguments is not taken for a comment', () => {
