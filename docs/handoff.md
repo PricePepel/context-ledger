@@ -8,6 +8,27 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — L3 tokenizer alignment audit (2026-11-26)
+
+Card L3, branch `claude/l3-tokenizer-align-cc0178`. The alignment between two models' tokens (`runtime/latent_transfer/align.py`) was already by character offsets, not token index. The audit ran five tokenizers (Phi-3.5, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), all 20 ordered pairs, on 35 hard synthetic texts and 200 SQuAD passages; tables in [evals](evals.md) under L3. No GPU, no training.
+
+What it found: real tokenizers do not return a clean split of the text. The byte tokens of one emoji all report the emoji's span, Granite reports a whole character for a token that ends inside it, Phi-3.5 and Mistral give their word marker the span of the next character, and Qwen leaves a combining accent under no token. With those offsets the same tokenizer on both sides did not map token i to position i, a piece could read later pieces, and after truncation one side's last tokens sat over text the other side had dropped.
+
+What changed:
+
+- **Rule 2** (`align.ALIGNMENT_RULE`, the default for new work): positions come from offsets refined into spans that tile the text; a sender token is readable once the receiver has finished every character the sender had touched (taken from the raw offsets, `align.ownership`); truncation stops both sides where each has finished exactly what it has touched.
+- **Rule 1** is the old behaviour, kept exactly. A checkpoint without a recorded rule (every checkpoint so far, `~/m2b-scale/run1/best.pt` included) loads with rule 1, so **no recorded M2b or M2b-S number changes**. A mapper trained from now on uses rule 2 and records it; for Phi-3.5 to Qwen2.5 that changes 3 of 200 SQuAD passages (0.03% of sender tokens). Not retrained, so its effect on F1 is unknown.
+- The batch (`batch.Pair`) says what does not line up: `sender_unread`, `receiver_blind`, `dropped`.
+- `python -m latent_transfer.align_audit` measures any tokenizer pair (`--tokenizers` takes Hugging Face ids, `--pairs a:b`).
+
+For the `cross-model` and `statebridge` sessions:
+
+- **Alignment for a new pair:** `make_pair(sender_tok, receiver_tok, texts, max_tokens)` gives rule 2. For your own code, `align.align_document(sender_raw_spans, receiver_raw_spans, len(text), max_tokens)` returns an `Aligned` with the kept token indexes (`sender_keep`, `receiver_keep`), the refined spans, and `.positions()`, `.mask()`, `.unread()` and `.blind()`. Pass raw offsets of the whole text (no tokenizer truncation); `align.classify` takes refined spans. To add a BOS, give it the span `(0, 0)` on the side that has one.
+- **Norm calibration is off unless you turn it on.** For a mapped KV cache: `TransferPair(..., norm_calibration=True)`, or `python -m latent_transfer.evaluate --checkpoint ... --norm-calibration` (add `--norm-max-scale 4` to keep each scale within 1/4 to 4). It rescales each document's keys and values to the receiver's own RMS per layer and head, from `sigma` in the checkpoint. For hidden states fed in as embeddings (training-free alignment): `from latent_transfer.norm import calibrate_states, embedding_norm_stats`, then `calibrate_states(states, embedding_norm_stats(receiver)["mean"], mask, per_token=True)`. Compare with the flag off on the same items; no result with it on exists yet. Stage 2 training (`train.stage2_loss`) does not apply it. The cache scale is taken over the whole document, so it suits one-shot passage transfer and not a cache that must stay valid as a prefix.
+- **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
+
+Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 
 The pixel console line is in `ruslan/console-v0` and goes to `main` with the release PR #88. Ali's U4, U4b and U6 (#51, #55, #56) and U7 to U10 (#82 to #85, #87) were merged on 2026-11-23, with Ali's approval in #56 (he also reviewed the console changes in #83 and #84) and Ruslan's for the release. Once #88 is merged, a fresh install from GitHub gets the pixel console with its swarm room, the library and the swarm page in the same pixel look, the terminal welcome on `start` and `install`, and the brand files in the package (U10: an installed copy used to come up without its colours, fonts and logo).
