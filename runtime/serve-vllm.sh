@@ -9,6 +9,9 @@
 # against `vllm serve --help` for vLLM 0.33.0 in ~/venvs/latent.
 #
 # Overrides: LATENT_MODEL, VLLM_VENV, VLLM_PORT, VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL.
+# Card L1 levers, all off unless set: VLLM_MAX_NUM_SEQS (--max-num-seqs), VLLM_KV_OFFLOAD_GIB
+# (--kv-offloading-backend native --kv-offloading-size N, a CPU buffer in GiB), VLLM_KV_DTYPE
+# (--kv-cache-dtype, with --attention-backend TRITON_ATTN for the fp8 and per-token-head types).
 #
 # Opt-in speed settings measured in cycle 11 (docs/evals.md), both off by default:
 # - VLLM_NGRAM=1: n-gram (prompt lookup) speculative decoding, 4 draft tokens.
@@ -45,6 +48,16 @@ if [ "${VLLM_NGRAM:-0}" = "1" ]; then
 fi
 if [ "${VLLM_KV_FP8:-0}" = "1" ]; then
   OPTIONAL+=(--kv-cache-dtype fp8 --attention-backend TRITON_ATTN)
+fi
+
+if [ -n "${VLLM_MAX_NUM_SEQS:-}" ]; then
+  OPTIONAL+=(--max-num-seqs "$VLLM_MAX_NUM_SEQS")
+fi
+if [ -n "${VLLM_KV_OFFLOAD_GIB:-}" ]; then
+  OPTIONAL+=(--kv-offloading-backend native --kv-offloading-size "$VLLM_KV_OFFLOAD_GIB")
+fi
+if [ -n "${VLLM_KV_DTYPE:-}" ] && [ "${VLLM_KV_FP8:-0}" != "1" ]; then
+  OPTIONAL+=(--kv-cache-dtype "$VLLM_KV_DTYPE" --attention-backend TRITON_ATTN)
 fi
 
 exec "$VENV/bin/vllm" serve "$MODEL" \
