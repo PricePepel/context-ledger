@@ -5194,3 +5194,46 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## L2 — Cross-model comparison harness (defined 2026-11-26, before the code)
+
+The latent transfer (M2b-S) is measured on one pair, and the reading pool on four families one at a time. This card adds one harness that asks the same questions of N open-weight models with the same arms, so every later mapper lands in a table that already holds its text baselines. No mapper is trained here.
+
+**Harness:** `runtime/latent_compare/`, torch and transformers in the WSL venv, one model on the GPU at a time (two for the mapper pair). `python -m latent_compare.run all --out <dir>` from `runtime/` reproduces the table; each phase saves its file, so a stopped run resumes.
+
+**Models (candidates):** Qwen2.5-1.5B, Qwen2.5-3B and Phi-3.5-mini in bf16; Qwen2.5-7B (FP8), Llama-3.1-8B, Mistral-7B v0.3 and Granite-3.1-8B (4-bit, compressed-tensors) from the checkpoints already on this machine. A checkpoint that does not load in torch is dropped and named in the result; at least five must run. Licence, tokenizer family and KV shape are recorded per model.
+
+**Arms, for every (sender, receiver) pair, on the same items, greedy, 24 new tokens:**
+
+| Arm | What the receiver gets | Bytes handed over |
+| --- | --- | --- |
+| `text` | The passage, in its own chat template (upper reference; no sender) | UTF-8 passage |
+| `closed` | No passage (floor) | 0 |
+| `t2t` | The sender's summary (at most 40 words, 96 new tokens, the M2b-S request) in place of the passage | UTF-8 summary |
+| `self_cache` | Same model only: the sender prefills the prompt up to the end of the passage, its KV cache is serialized, read back and continued by the receiver with the question. No mapper | Serialized cache |
+| `swat`, `mismatched`, `zeroed` | Only where a mapper exists (Phi-3.5-mini to Qwen2.5-1.5B, checkpoint `ade79c34041fd529`): the mapped sender cache, the cache of another item's passage, and a zeroed sender cache, in M2b-S's own prompt format, with that format's `text` beside them | Sender cache and mapped cache, both reported |
+
+Every other cross-model cell of the latent table reads "no mapper yet".
+
+**Main set:** 200 SQuAD v1.1 validation questions, seed 0, passages of at most 384 tokens on every tokenizer in the registry. Token F1 and exact match (SQuAD normalization), each difference with a paired bootstrap 95% interval (10,000 resamples), mean time end to end per item (sender work plus receiver work, CUDA synchronized, after a warm-up) and mean bytes handed over.
+
+**Edge-case groups** (arms `text`, `t2t` from the model's own summary and `self_cache`; the mapper pair also runs `swat` where its prompt format allows):
+
+| Group | Items | Expected |
+| --- | --- | --- |
+| `long_passage` | 20 passages of about 3,000 tokens built from SQuAD paragraphs, the answer's paragraph first (10) or last (10), at a context of 2,048 tokens (an emulated serving limit, since a real 32k to 128k context does not fit beside the weights) | No prompt exceeds the limit; every record says it was truncated and how many passage tokens were kept; answer-first items score near the main set, answer-last items near the `closed` floor |
+| `tiny_passage` | 6 one-word passages and 4 empty passages, with an abstain instruction | Every arm returns a record with no error, including a cache hand-off whose passage adds no tokens; one-word items are answered; empty items should abstain |
+| `non_english_emoji` | 12 synthetic passages (Russian, Chinese, Japanese, Arabic, Hindi, Uzbek, Spanish, German, and English with emoji including joined sequences) | No error; bytes are counted in UTF-8; scored by containment without whitespace, because token F1 treats an unspaced sentence as one token |
+| `unanswerable` | 20 SQuAD questions with a passage from another article and 20 answerable controls, same abstain instruction | Abstain rate on the first half and F1 on the second, per model and arm |
+| `no_system_role` | The first 40 main items asked with a system instruction | A template with no system role (it raises, or drops the text) is detected, and the instruction opens the user turn instead; F1 is compared with the same items without it |
+
+**Checks decided before the run:**
+
+| Check | Pass when |
+| --- | --- |
+| Hand-off is faithful | For every model, `self_cache` gives the same answer text as `text` on at least 95% of main items, and the paired F1 interval contains zero. Both arms feed the same tokens; only where the prefix cache was computed differs. |
+| The mapper result holds on this set | In the Phi-3.5-mini to Qwen2.5-1.5B cell, `swat` beats `mismatched`, `zeroed` and that pair's `t2t`, each interval above zero. Its F1 is reported beside M2b-S's 0.872 (300 items, another sample). |
+| Coverage | At least five models complete every arm and group, and the table marks every pair without a mapper. |
+| Edge cases | Every item of every group has a record or a named, expected refusal; none stops the run. |
+
+Not covered, by decision: new mappers, budget-matched compaction, vLLM serving of these arms (the hand-off needs direct access to the cache), more than one task, and batch sizes above one.
