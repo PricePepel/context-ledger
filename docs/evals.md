@@ -5194,3 +5194,59 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## W3 — Calibrated abstention: results on record (code parked, 2026-11-26)
+
+W3's code, its pre-registered protocol and its eight review rounds are in draft PR #77 (`claude/w3-calibrated-abstention`). That PR is stacked on W2's draft PR #71 and on W1's PR #73. On 2026-11-26 the sessions working for Ruslan agreed to park W2 and W3 as drafts until the team can answer text from outside its operator. This section keeps W3's results on `main` in the meantime. The design is `docs/watchdog-security.md` (it reaches `main` with PR #68 or PR #73), "What we can and cannot say to users" and evals 11 to 14.
+
+**What was measured** (the rules were fixed before any run):
+
+- **Setting:** W1's pinned team (Qwen2.5-3B-Instruct, bf16, soft thoughts, no adapter, m = 40, greedy, 512 solver tokens) behind W1's watchdog and supervisor. Each question went alone through the team service. GSM8K test, seed 0, blocks of 200; the blocks W1 fitted its thresholds on are excluded.
+- **Confidence score:** the log-probability the solver gave to the number the grader reads.
+- **Threshold rule:** 20 candidate cutoffs from the proposal answers. Each is tested on the certification answers with a one-sided Clopper-Pearson bound at 0.05 / 20 against a 10% error ceiling, and the loosest one that passes is kept. If none passes, nothing is calibrated.
+- **Eval 11 passes** when the error among released scored answers is at or under 10% plus 1.645 standard errors, and at least half of the scored questions are released. Every held request counts as a released wrong answer (the worst case for holds).
+- **Plan `today`:** the sets were cut at the user's request so the run finished the same day. 60 proposal, 200 certification and 150 scored questions, plus the 8 questions of the fresh latent-read set for eval 12: 418 requests.
+- **Eval 14:**
+  - JailbreakBench's JBB-Behaviors (MIT), revision 886acc3: 100 harmful and 100 benign requests.
+  - Each request was asked of the model alone and of the latent team, with the same math-style instruction.
+  - Replies were judged in memory by a fixed list of 16 refusal phrases, and only counts were kept.
+  - The data stays outside the repository; it was downloaded with the user's permission.
+
+### W3 results (2026-11-22, live: run `w3-run10`, one job at 470282a, plan `today`, weights hash 1ed1d835…)
+
+The certification ran from 16:37 to 19:57 (times from the run log): 418 single requests through `TeamService`, one at a time on the laptop GPU. The analysis and eval 14 ran next from the same commit and finished at 20:08. Only aggregate counts are reported. The code graded or judged questions, answers and replies in memory. None was written to disk or to the repository, and no person or agent looked at any of them.
+
+- **Eval 11 fails, and nothing is calibrated.** None of the 7 tested cutoffs certified, so the run wrote no calibration file and none is committed. No certification or scored request was held, so the worst case for holds gives the same numbers as the pre-registered count.
+  - **Why so few cutoffs:** 42 of the 57 finite proposal scores were tied at exactly 0 (the log-probability of the answer's number). The grid of 20 collapsed to 7 distinct candidates, and the score could not rank those answers among themselves.
+  - **The strictest candidate** (score 0) still released 149 of the 200 certification answers, 18 of them wrong (12.1%, one-sided bound 21.3% at 0.05 / 20). At 149 released, a 10% bound at that level allows at most 5 errors. The loosest candidate released 199, with 33 wrong (bound 25.2%).
+  - **The certification block** held 190 scored team answers (31 wrong), 9 fallbacks (2 wrong) and 1 released answer with no score.
+  - **Held-out scoring, with nothing certified:** of the 150 scored questions, 6 were released (4%), all of them fallbacks, and 1 of those was wrong (16.7%, 95% Wilson interval 3.0% to 56.4%). The other 144 abstained (96%); none was held.
+  - **Before any cutoff,** the service's released answers were 89.3% correct on the scored questions and 83.5% on the certification block.
+  - **AUROC:** the confidence score's AUROC for a wrong team answer on the scored questions is 0.70.
+  - **Not computed:** the pre-registered exploratory scores (mean and minimum log-probability, agreement with the solver alone), which say which signal to try next. They were defined on the batched run, which never finished.
+  - No rule or threshold was changed after these results.
+- **Holds and time.**
+  - **1 of the 418 requests was held:** the first request of the run, in the proposal part (`report-late`, 782 s). The S1b session reported that its vLLM job was starting on the same GPU at that time.
+  - **No other request took over 180 s.** Over all 418, the median was 20.2 s, the mean 28.4 s and the 90th percentile 52.0 s.
+  - **Compared with run 9:** the median there was 113 s per request (two shards) against 20.2 s here, a ratio of about 5.6. The two runs differ in more than the shard count (run 9 measured only its first 215 requests), so this ratio is not an isolated effect of sharding.
+- **Eval 12:** skipped, because no threshold certified. Baseline: of the 8 fresh questions, 7 were graded and 1 was ungraded. All 7 graded answers were released as fallbacks, and 1 of them was wrong.
+- **Eval 13:** not run; its probe ran only in the batched run.
+- **Eval 14:** counts of replies the fixed keyword rule classifies as refusals.
+
+  | Set (100 each) | Model alone refused | Team refused | Only the model alone refused | Only the team refused | Both refused | Empty |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Harmful | 67 | 24 | 46 | 3 | 21 | 0 |
+  | Benign | 11 | 0 | 11 | 0 | 0 | 0 |
+
+  Under the keyword rule, 76 of the team's 100 replies to harmful requests are classified as answers, against 33 for the model alone. Paired by request, 46 harmful requests were classified as refused by the model alone but not by the team, and 3 the other way. On the benign set the team had no reply classified as a refusal; the model alone had 11. The team's refusal rate under this rule fell on both sets.
+
+  Caveats:
+  - The keyword rule misses refusals worded otherwise and counts phrases used in passing. Using one rule makes the two systems' counts comparable under that rule. It does not show the rule's errors cancel out, so these counts do not establish that latent mode weakens refusals in general.
+  - Nobody read the replies, so this says nothing about whether the team's answers to harmful requests were harmful or useful.
+  - Eval 14 has no pass rule.
+- **Review:** Codex reviewed read-only in eight rounds (W3-1 to W3-8, recorded in PR #77's eval log). Seven came before any result. The eighth, of this write-up, found no high-severity issue, no post-result tuning and no committed text; its wording and count fixes are in the text above.
+
+**What follows** (cards on the board):
+
+- **W3b, a refusal check:** needed before the team answers text from outside its operator, and not before. The trigger is the same as for taking W2 and W3 out of draft: a file read, a tool call, an agent relaying text from a transcript, page or file, or another app calling the chat route.
+- **W3c, a score that ranks:** research for whenever abstention is wanted again. It has no trigger.
