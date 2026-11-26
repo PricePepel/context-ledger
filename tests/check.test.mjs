@@ -215,7 +215,7 @@ test('round 3 high: the (port, host) form counts only when the first argument is
   for (const line of ["server.listen(options, '127.0.0.1');", "server.listen(makeOptions(), '127.0.0.1');", "server.listen(handle, '127.0.0.1');"]) {
     assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
   }
-  for (const line of ["server.listen(0, '127.0.0.1');", "server.listen(port, '127.0.0.1');", "server.listen(PORT, '127.0.0.1');", "server.listen(config.port, '127.0.0.1');", "server.listen(defaultPort, '127.0.0.1');"]) {
+  for (const line of ["server.listen(0, '127.0.0.1');", "server.listen(port, '127.0.0.1');", "server.listen(PORT, '127.0.0.1');", "server.listen(config.port, '127.0.0.1');"]) {
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
 });
@@ -245,6 +245,25 @@ test('round 3 low: a file with very many findings is reported, not a crash', asy
     assert.match(failure.stdout, /check: 1 file, 200000 findings/u);
   } finally {
     await rm(folder, { recursive: true, force: true });
+  }
+});
+
+// Codex review, round 4 (H9).
+test('round 4 medium: a name that only ends in "port" may hold options, so it does not count', () => {
+  for (const line of ["server.listen(listenPort, '127.0.0.1');", "server.listen(defaultPort, '127.0.0.1');", "server.listen(report, '127.0.0.1');"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+});
+
+test('round 4 medium: quoted computed keys are HTML writes too', () => {
+  for (const line of ["Object.assign(preview, { ['innerHTML']: transcript.text });", "({ html: preview['innerHTML'] } = result);"]) {
+    assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))).slice(0, 1), ['html-sink'], line);
+  }
+});
+
+test('round 4 low: line and block comments between any two tokens do not hide a sink', () => {
+  for (const text of ['document /* Render the transcript */ .write(transcript.text);', 'preview.innerHTML // Render the transcript preview\n  = transcript.text;']) {
+    assert.deepEqual(rules(checkFile('public/a.mjs', utf8(text))), ['html-sink'], text);
   }
 });
 

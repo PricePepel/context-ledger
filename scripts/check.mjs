@@ -21,8 +21,9 @@ const selfPath = 'scripts/check.mjs';
 const rawCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const allowedRaw = new Set(['\t', '\n', '\r']);
 
-// Space or block comments, which may sit between any two tokens (Codex round 3).
-const gap = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+// Space, block comments and line comments, which may sit between any two tokens (Codex
+// rounds 3 and 4).
+const gap = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*`;
 // A property by dot or by a quoted computed key: `.name` or `['name']`.
 const property = name => String.raw`(?:\.${gap}${name}\b|\[${gap}(['"\x60])${name}\1${gap}\])`;
 const assignment = String.raw`${gap}(?:\+|\?\?|\|\||&&)?=(?!=)`;
@@ -32,17 +33,16 @@ const htmlSinks = [
   // A key in an object literal, as in Object.assign(node, { innerHTML }), and a
   // destructuring target, as in ({ html: node.innerHTML } = data). A plain read inside an
   // object literal is reported too; write it on a line of its own.
-  [new RegExp(String.raw`[{,]${gap}(?:${htmlProperty}|(['"\x60])${htmlProperty}\1)${gap}[:,}]`, 'gu'), 'an HTML property key'],
-  [new RegExp(String.raw`\.${gap}${htmlProperty}${gap}[,}\]]`, 'gu'), 'an HTML property in a pattern'],
+  [new RegExp(String.raw`[{,]${gap}(?:${htmlProperty}|(['"\x60])${htmlProperty}\1|\[${gap}(['"\x60])${htmlProperty}\2${gap}\])${gap}[:,}]`, 'gu'), 'an HTML property key'],
+  [new RegExp(String.raw`(?:\.${gap}${htmlProperty}|\[${gap}(['"\x60])${htmlProperty}\1${gap}\])${gap}[,}\]]`, 'gu'), 'an HTML property in a pattern'],
   [/\binsertAdjacentHTML\b/gu, 'insertAdjacentHTML'],
-  [new RegExp(String.raw`\bdocument\s*${property('write(?:ln)?')}`, 'gu'), 'document.write'],
+  [new RegExp(String.raw`\bdocument${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
-const lineGap = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*`;
-const listenCall = new RegExp(String.raw`${property('listen')}${lineGap}(?:\?\.)?${lineGap}\(`, 'gu');
+const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -177,10 +177,10 @@ function optionsOnLoopback(text) {
 }
 
 // Node reads an options object first, so then only its host counts. The (port, host) form
-// counts only when the first argument is plainly a port: a number, or a name ending in
-// "port" (`port`, `PORT`, `config.port`). A variable holding options would make Node
-// ignore the host (Codex round 3).
-const portArgument = /^(?:\d+|(?:[$\w]+\.)*[$\w]*port)$/iu;
+// counts only when the first argument is plainly a port: a number, `port` or `PORT`, or a
+// `.port` property (`config.port`). A variable holding options would make Node ignore
+// the host (Codex rounds 3 and 4: `listenPort` may hold an options object).
+const portArgument = /^(?:\d+|(?:[$\w]+\.)*(?:port|PORT))$/u;
 
 function listensOnLoopback(args) {
   const parts = topLevelParts(stripComments(args));
