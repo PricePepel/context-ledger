@@ -39,7 +39,8 @@ const htmlSinks = [
   // The target of for...of or for...in is assigned on every pass (Codex round 5).
   [new RegExp(String.raw`(?:\.${gap}${htmlProperty}|\[${gap}(['"\x60])${htmlProperty}\1${gap}\])${gap}(?:of|in)\b`, 'gu'), 'an HTML property as a loop target'],
   [/\binsertAdjacentHTML\b/gu, 'insertAdjacentHTML'],
-  [new RegExp(String.raw`\bdocument${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
+  // `document`, `doc`, `contentDocument`, `frameDoc`: any name with "doc" in it (round 6).
+  [new RegExp(String.raw`\b[\w$]*[Dd]oc[\w$]*${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
@@ -165,18 +166,28 @@ function topLevelParts(text) {
 
 const loopbackLiteral = /^(['"`])127\.0\.0\.1\1$/u;
 
-// An options object listens on loopback when its last host key is the literal. A spread,
-// a computed key or a property the check cannot read may set host, so it counts as not.
+// Keys of net.Server listen options that do not change where it binds. Any other key
+// (fd, path, handle, a spread, a computed key, an accessor) may bind elsewhere and makes
+// the call count as not loopback (Codex round 6: an inherited fd wins over host).
+const harmlessOption = new Set(['port', 'backlog', 'exclusive', 'ipv6Only', 'reusePort', 'readableAll', 'writableAll', 'signal']);
+
+// An options object listens on loopback when its last host key is the literal and every
+// other key is one of the harmless ones.
 function optionsOnLoopback(text) {
   if (!text.startsWith('{') || !text.endsWith('}')) return false;
   let host = null;
+  let unknown = false;
   for (const part of topLevelParts(text.slice(1, -1))) {
     const match = /^(?:host|(['"`])host\1|\[\s*(['"`])host\2\s*\])\s*:\s*([\s\S]*)$/u.exec(part);
-    if (match) host = match[3].trim();
-    else if (part.startsWith('...') || part.startsWith('[') || part === 'host') host = null;
-    else if (!/^(?:[$\w]+|(['"`])[^'"`]*\1)\s*:/u.test(part) && !/^[$\w]+$/u.test(part)) host = null;
+    if (match) {
+      host = match[3].trim();
+      continue;
+    }
+    const key = /^(?:([$\w]+)|(['"`])([^'"`]*)\2)\s*:/u.exec(part) ?? /^([$\w]+)$/u.exec(part);
+    const name = key ? (key[1] ?? key[3]) : null;
+    if (!harmlessOption.has(name)) unknown = true;
   }
-  return host !== null && loopbackLiteral.test(host);
+  return !unknown && host !== null && loopbackLiteral.test(host);
 }
 
 // Node reads an options object first, so then only its host counts. The (port, host) form
