@@ -43,21 +43,32 @@ const htmlSinks = [
   [new RegExp(String.raw`\b[\w$]*[Dd]oc[\w$]*${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
+  [/\b(?:setHTMLUnsafe|setHTML|parseHTMLUnsafe)\b/gu, 'setHTMLUnsafe'],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
+// Browser code has no streams, so there any write() call is document.write under some
+// name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
+const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
+// The browser app, and any HTML page with an inline script (Codex round 8).
+const browserFile = /^public\/|\.html$/u;
 
 // Card H10: a label's .length counts UTF-16 units; JSON Schema maxLength and the graph
 // schemas count code points. The length of a name that ends in "label" (or "labelText"),
-// or of a ['label'] key, next to any comparison is a finding, however the other side is
-// written. Only the exact emptiness tests pass, where both counts agree:
-// length < 1, length > 0, length >= 1, and 1 > length, 0 < length, 1 <= length.
-// Plural names (labels, labelParts) are lists and are left out.
-const labelLength = new RegExp(String.raw`(?:\b[\w$]*[Ll]abel(?:Text)?\b|\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*([<>]=?)(?!=)\s*([\w$.]*)/u;
+// or of a ['label'] key, with any member chain before it (`node.label`), next to any
+// comparison is a finding, however the other side is written. Parentheses around the
+// length do not hide it. Only the exact emptiness tests pass, where both counts agree,
+// and only when the 0 or 1 stands alone (not `< 1 + MAX`): length < 1, length > 0,
+// length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
+// labelParts) are lists and are left out.
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|\[[^\]\n]*\])*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*([\w$.]*)\s*(\S?)/u;
 // Not the ">" of an arrow function (`label => label.length`).
-const comparisonBefore = /([\w$.]*)\s*(?<!=)([<>]=?)\s*$/u;
+const comparisonBefore = /(\S?)\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
 const emptyBefore = new Set(['1>', '0<', '1<=']);
+// What may follow or precede a lone 0 or 1 for it to be the whole other side.
+const aloneAfter = new Set(['', ')', ';', '&', '|', '?', ',', '}', ':']);
+const aloneBefore = new Set(['', '(', ';', '&', '|', '?', ',', '{', '!', ':', '=']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
@@ -236,7 +247,9 @@ export function checkFile(path, bytes) {
   if (codeFile.test(path) && !testFile.test(path) && !vendored.test(path) && path !== selfPath) {
     const html = path.endsWith('.html');
     const code = text;
-    for (const [pattern, name] of htmlSinks) {
+    // In browser code the broader write() rule replaces the document-name one.
+    const sinks = browserFile.test(path) ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
+    for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
@@ -245,8 +258,8 @@ export function checkFile(path, bytes) {
       const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
       const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
       if (!after && !before) continue;
-      if (after && !before && emptyAfter.has(after[1] + after[2])) continue;
-      if (before && !after && emptyBefore.has(before[1] + before[2])) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[2]) && aloneAfter.has(after[3])) continue;
+      if (before && !after && emptyBefore.has(before[2] + before[3]) && aloneBefore.has(before[1])) continue;
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
     if (!html) {
@@ -291,7 +304,9 @@ export function checkTree(root) {
     try {
       bytes = readFileSync(Buffer.concat([Buffer.from(root + '/', 'utf8'), raw]));
     } catch (error) {
-      if (error.code === 'ENOENT') continue; // deleted in the working tree, not yet staged
+      // Deleted, or replaced by a folder, in the working tree and not yet staged.
+      // ENOTDIR: a parent folder was replaced by a file (Codex round 8).
+      if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
       throw error;
     }
     for (const finding of checkFile(path, bytes)) findings.push(finding);
