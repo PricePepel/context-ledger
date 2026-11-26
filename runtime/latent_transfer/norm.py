@@ -13,7 +13,14 @@ Off by default everywhere. Nothing here is trained.
   mean norm of its real tokens; relative lengths between tokens are kept.
 - per token: every real token is rescaled to the target on its own.
 
-Padding (mask 0) is left out of the statistics and is not rescaled.
+Padding (mask 0) is left out of the statistics and is not rescaled. A NaN or infinity
+in a real token is not hidden: it comes out as NaN.
+
+One limit to know: the per-group scale is taken over the whole document, so an early
+token's calibrated state depends on later tokens. That is fine when a whole passage is
+transferred at once, which is all this repository does today. Where a cache prefix must
+equal the cache of the prefix (streaming, prefix reuse), use per-token scaling for
+states, and leave cache calibration off.
 
 The list functions are the reference arithmetic and need no torch; the tensor functions
 do the same on batches.
@@ -60,7 +67,7 @@ def calibrate_rows(rows, target, mask=None, per_token=False, max_scale=None):
 
 def norm_stats(vectors, mask=None):
     """Mean, standard deviation and median of the L2 norms of [..., D] vectors (mask [...])."""
-    norms = vectors.float().norm(dim=-1)
+    norms = _work(vectors).norm(dim=-1)
     norms = norms[mask.bool()] if mask is not None else norms.reshape(-1)
     return {"mean": float(norms.mean()), "std": float(norms.std()) if norms.numel() > 1 else 0.0,
             "median": float(norms.median()), "count": int(norms.numel())}
@@ -72,24 +79,30 @@ def embedding_norm_stats(model):
     return norm_stats(model.get_input_embeddings().weight.detach())
 
 
+def _work(tensor):
+    """Arithmetic runs in fp32, or in fp64 when the input is fp64 (bf16 would lose the norms)."""
+    import torch
+    return tensor if tensor.dtype == torch.float64 else tensor.float()
+
+
 def _scale(observed, target, max_scale):
-    """target / observed where observed > 0, else 1; safe to differentiate at zero."""
+    """target / observed, and 1 where observed is exactly 0; safe to differentiate at zero.
+    A NaN observed norm stays NaN."""
     import torch
     if max_scale is not None and max_scale < 1:
         raise ValueError("max_scale must be at least 1.")
-    positive = observed > 0
-    scale = target / torch.where(positive, observed, torch.ones_like(observed))
+    zero = observed == 0
+    scale = target / torch.where(zero, torch.ones_like(observed), observed)
     if max_scale is not None:
         scale = scale.clamp(min=1.0 / max_scale, max=max_scale)
-    return torch.where(positive, scale, torch.ones_like(scale))
+    return torch.where(zero, torch.ones_like(scale), scale)
 
 
 def _root(energy):
-    """sqrt that is 0 with a zero gradient at 0 (plain sqrt gives an infinite one)."""
+    """sqrt that is 0 with a zero gradient at exactly 0 (plain sqrt gives an infinite one)."""
     import torch
-    positive = energy > 0
-    return torch.where(positive, torch.where(positive, energy, torch.ones_like(energy)).sqrt(),
-                       torch.zeros_like(energy))
+    zero = energy == 0
+    return torch.where(zero, torch.zeros_like(energy), torch.where(zero, torch.ones_like(energy), energy).sqrt())
 
 
 def calibrate_states(states, target, mask=None, per_token=False, max_scale=None):
@@ -102,7 +115,8 @@ def calibrate_states(states, target, mask=None, per_token=False, max_scale=None)
     import torch
     real = torch.ones(states.shape[:-1], dtype=torch.bool, device=states.device) if mask is None \
         else mask.to(states.device).bool()
-    values = torch.where(real[..., None], states.float(), torch.zeros((), device=states.device))
+    work = _work(states)
+    values = torch.where(real[..., None], work, torch.zeros((), dtype=work.dtype, device=states.device))
     norms = _root((values ** 2).sum(-1))                         # [B, T], 0 on padding
     if per_token:
         observed = norms
@@ -122,13 +136,15 @@ def calibrate_cache(keys, values, sigma, mask, max_scale=None):
     and never enters the statistics.
     """
     import torch
-    real = mask.to(keys[0].device).bool()[:, None, :, None]      # [B, 1, T, 1]
-    count = (real.sum((2, 3)).clamp(min=1) * keys[0].shape[-1]).float()        # [B, 1]
     out = ([], [])
     for kind, tensors in enumerate((keys, values)):
         for layer, tensor in enumerate(tensors):
-            inside = torch.where(real, tensor.float(), torch.zeros((), device=tensor.device))
+            real = mask.to(tensor.device).bool()[:, None, :, None]             # [B, 1, T, 1]
+            work = _work(tensor)
+            count = (real.sum((2, 3)).clamp(min=1) * tensor.shape[-1]).to(work.dtype)   # [B, 1]
+            inside = torch.where(real, work, torch.zeros((), dtype=work.dtype, device=tensor.device))
             observed = _root((inside ** 2).sum((2, 3)) / count)                # [B, H]
-            scale = _scale(observed, sigma[layer, :, kind].float().to(observed.device)[None], max_scale)
+            target = sigma[layer, :, kind].to(device=tensor.device, dtype=work.dtype)[None]
+            scale = _scale(observed, target, max_scale)
             out[kind].append(torch.where(real, (inside * scale[:, :, None, None]).to(tensor.dtype), tensor))
     return out

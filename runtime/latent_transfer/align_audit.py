@@ -17,8 +17,8 @@ import json
 import math
 import re
 
-from .align import (KINDS, RULE_RAW, RULE_REFINED, align_document, blind_receiver, causal_mask, classify,
-                    refine_spans, sender_positions, unread_sender)
+from .align import (KINDS, RULE_RAW, RULE_REFINED, align_document, causal_mask, classify, refine_spans,
+                    sender_positions)
 
 TOKENIZERS = {
     "phi": "microsoft/Phi-3.5-mini-instruct",
@@ -143,7 +143,8 @@ class Audited:
                 continue
             got = text[start:end].encode("utf-8")
             want = token.encode("utf-8") if token in self.special else surface(token, self.byte_level)
-            if want == got or (not self.byte_level and want[:1] == b" " and want[1:] == got):
+            marked = not self.byte_level and token not in self.special and token.startswith(c(0x2581))
+            if want == got or (marked and want[1:] == got):
                 counts["exact"] += 1          # the second form is SentencePiece's word marker
             elif want and want in got:
                 counts["piece"] += 1          # part of a character, or a span rounded out to one
@@ -155,11 +156,13 @@ class Audited:
         return counts
 
 
-def identity_ok(spans, rule):
+def identity_ok(raw, length, rule):
     """With the same tokenizer on both sides: position i for token i, and no token reads a later one."""
-    size = len(spans)
-    mask = causal_mask(spans, spans, rule)
-    return sender_positions(spans, spans, rule) == [float(i) for i in range(size)] and         not any(mask[j][i] for j in range(size) for i in range(j + 1, size))
+    size = len(raw)
+    spans = raw if rule == RULE_RAW else refine_spans(raw, length)
+    mask = causal_mask(raw, raw, rule, length)
+    return sender_positions(spans, spans, rule) == [float(i) for i in range(size)] and \
+        not any(mask[j][i] for j in range(size) for i in range(j + 1, size))
 
 
 def covered(spans):
@@ -174,7 +177,8 @@ def pair_stats(sender, receiver, texts, max_tokens=None):
     dropped = tokens within the budget that the cut removed; unreadSender = kept sender
     tokens no kept receiver token may read; blindReceiver = kept receiver tokens that read
     no sender token; lostCoverageChars = characters under one side's kept tokens and not
-    under the other's; emptyTexts = texts where a side kept nothing (make_pair refuses them).
+    under the other's; emptyTexts = texts where a side kept nothing (make_pair refuses
+    them), a side with no tokens at all included (also counted in noTokens).
     """
     def rule_stats():
         return {"dropped": 0, "unreadSender": 0, "blindReceiver": 0, "lostCoverageChars": 0, "emptyTexts": 0}
@@ -184,10 +188,10 @@ def pair_stats(sender, receiver, texts, max_tokens=None):
         (_, s_raw), (_, r_raw) = sender.encode(text), receiver.encode(text)
         if not s_raw or not r_raw:
             out["noTokens"] += 1
-            continue
-        out["texts"] += 1
-        s_ref, r_ref = refine_spans(s_raw, len(text)), refine_spans(r_raw, len(text))
-        if max_tokens is None:
+        else:
+            out["texts"] += 1
+        if s_raw and r_raw and max_tokens is None:
+            s_ref, r_ref = refine_spans(s_raw, len(text)), refine_spans(r_raw, len(text))
             out["sameBoundaries"] += s_ref == r_ref
             out["senderTokens"] += len(s_ref)
             for kind in classify(s_ref, r_ref):
@@ -196,18 +200,18 @@ def pair_stats(sender, receiver, texts, max_tokens=None):
         for rule, key in ((RULE_RAW, "rule1"), (RULE_REFINED, "rule2")):
             s_in = s_raw[:max_tokens] if rule == RULE_RAW else s_raw
             r_in = r_raw[:max_tokens] if rule == RULE_RAW else r_raw
-            keep_s, s_spans, keep_r, r_spans = align_document(s_in, r_in, len(text), max_tokens, rule)
-            limit_s, limit_r = (min(len(s_raw), max_tokens or len(s_raw)), min(len(r_raw), max_tokens or len(r_raw)))
+            aligned = align_document(s_in, r_in, len(text), max_tokens, rule)
+            limit_s = len(s_raw) if max_tokens is None else min(len(s_raw), max_tokens)
+            limit_r = len(r_raw) if max_tokens is None else min(len(r_raw), max_tokens)
             stats = out[key]
-            stats["dropped"] += limit_s - len(keep_s) + limit_r - len(keep_r)
-            stats["unreadSender"] += sum(unread_sender(s_spans, r_spans, rule))
-            stats["blindReceiver"] += sum(blind_receiver(s_spans, r_spans, rule))
-            stats["lostCoverageChars"] += len(covered(s_spans) ^ covered(r_spans))
-            if not keep_s or not keep_r:
+            stats["dropped"] += limit_s - len(aligned.sender_keep) + limit_r - len(aligned.receiver_keep)
+            stats["unreadSender"] += sum(aligned.unread())
+            stats["blindReceiver"] += sum(aligned.blind())
+            stats["lostCoverageChars"] += len(covered(aligned.sender_spans) ^ covered(aligned.receiver_spans))
+            if not aligned.sender_keep or not aligned.receiver_keep:
                 stats["emptyTexts"] += 1
                 continue
-            results[rule] = (keep_s, keep_r, sender_positions(s_spans, r_spans, rule),
-                             causal_mask(s_spans, r_spans, rule))
+            results[rule] = (aligned.sender_keep, aligned.receiver_keep, aligned.positions(), aligned.mask())
         if len(results) == 2:
             a, b = results[RULE_RAW], results[RULE_REFINED]
             if a[:2] != b[:2]:
@@ -260,8 +264,8 @@ def run(names, pairs, natural, truncate):
                     total[key] += check[key]
                 total["examples"] = (total["examples"] + check["examples"])[:6]
                 raw = item.encode(text)[1]
-                total["identityFailsRule1"] += not identity_ok(raw, RULE_RAW)
-                total["identityFailsRule2"] += not identity_ok(refine_spans(raw, len(text)), RULE_REFINED)
+                total["identityFailsRule1"] += not identity_ok(raw, len(text), RULE_RAW)
+                total["identityFailsRule2"] += not identity_ok(raw, len(text), RULE_REFINED)
             entry[label] = total
         entry["emptyText"] = len(item.encode("")[1])
         report["tokenizers"][name] = entry

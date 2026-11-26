@@ -4,14 +4,15 @@ The span arithmetic and the calibration reference need only the standard library
 batch and tensor checks skip without torch; the real-tokenizer check skips unless
 transformers and locally cached tokenizers are present.
 
-Span fixtures are the offsets real tokenizers returned in the audit (docs/evals.md, L3).
+Span fixtures are the offsets real tokenizers returned in the audit (docs/evals.md, L3),
+plus the counterexamples from the two Codex review rounds.
 """
 import json
 import unittest
 from fractions import Fraction
 
 from latent_transfer.align import (ALIGNMENT_RULE, RULE_RAW, RULE_REFINED, align_document, blind_receiver,
-                                   causal_mask, classify, common_cut, reading_keys, refine_spans,
+                                   causal_mask, classify, common_cut, ownership, reading_keys, refine_spans,
                                    sender_positions, unread_sender, visible_counts)
 from latent_transfer.norm import calibrate_rows, l2, mean_norm, scale_factor
 
@@ -32,7 +33,12 @@ PHI_COMBINING = [(0, 1), (1, 2), (2, 3)]
 # A CJK character behind SentencePiece's word marker: both report the character.
 PHI_CJK = [(0, 1), (0, 1), (1, 2), (2, 3), (3, 4)]
 FIXTURES = [(PHI_EMOJI, 7), (GRANITE_EMOJI, 7), (QWEN_EMOJI, 7), (QWEN_COMBINING, 3), (PHI_COMBINING, 3),
-            (PHI_CJK, 4), ([(0, 1), (1, 2), (1, 2), (1, 2)], 2)]
+            (PHI_CJK, 4), ([(0, 1), (1, 2), (1, 2), (1, 2)], 2),
+            # Shapes no cached tokenizer returns but the rules must still handle (review rounds):
+            ([(0, 3), (0, 3)], 3), ([(0, 2), (2, 3)], 3), ([(0, 1), (1, 3)], 3), ([(2, 2), (2, 3)], 3),
+            ([(0, 2), (0, 2)], 2), ([(0, 1), (1, 2)], 2), ([(0, 1), (0, 0), (1, 2)], 2), ([(0, 0), (0, 2)], 2),
+            ([(0, 3), (1, 4)], 4), ([(0, 4), (0, 4), (0, 0), (0, 4)], 4), ([(0, 1), (1, 1), (2, 4)], 4),
+            ([(0, 3), (2, 2), (3, 4)], 4), ([(0, 2), (0, 2), (0, 3), (0, 3), (0, 3)], 3), ([(0, 1), (2, 3), (0, 0)], 3)]
 
 
 def owners(raw, length):
@@ -46,25 +52,45 @@ def owners(raw, length):
     return table
 
 
+def oracle(raw, length):
+    """(touched, finished) per token, counted character by character from `owners`."""
+    table = owners(raw, length)
+    touched = [max((char + 1 for char in range(length) if any(k <= i for k in table[char])), default=0)
+               for i in range(len(raw))]
+    finished = [next((char for char in range(length) if any(k > i for k in table[char])), length)
+                for i in range(len(raw))]
+    return touched, finished
+
+
 def leak(sender_raw, receiver_raw, length, mask, sender_kept=None, receiver_kept=None):
     """A (receiver, sender) pair where the receiver reads a sender token that has touched a
     character the receiver has not finished; None when the mask is causal."""
-    s_owner, r_owner = owners(sender_raw, length), owners(receiver_raw, length)
-    sender_kept = len(sender_raw) if sender_kept is None else sender_kept
-    receiver_kept = len(receiver_raw) if receiver_kept is None else receiver_kept
-    for j in range(receiver_kept):
-        finished = next((char for char in range(length) if any(k > j for k in r_owner[char])), length)
-        for i in range(sender_kept):
-            touched = max((char + 1 for char in range(length) if any(k <= i for k in s_owner[char])), default=0)
-            if mask[j][i] and touched > finished:
+    touched, _ = oracle(sender_raw, length)
+    _, finished = oracle(receiver_raw, length)
+    for j in range(len(receiver_raw) if receiver_kept is None else receiver_kept):
+        for i in range(len(sender_raw) if sender_kept is None else sender_kept):
+            if mask[j][i] and touched[i] > finished[j]:
                 return j, i
     return None
 
 
-def identity(spans):
+def withheld(sender_raw, receiver_raw, length, mask):
+    """A (receiver, sender) pair of tokens with characters where the read is safe by the oracle
+    and the mask refuses it; None when the mask allows everything it safely can."""
+    touched, _ = oracle(sender_raw, length)
+    _, finished = oracle(receiver_raw, length)
+    for j, (r_start, r_end) in enumerate(receiver_raw):
+        for i, (s_start, s_end) in enumerate(sender_raw):
+            if r_end > r_start and s_end > s_start and touched[i] <= finished[j] and not mask[j][i]:
+                return j, i
+    return None
+
+
+def identity(raw, length):
     """Same tokenizer on both sides: position i for token i; no token reads a later one."""
-    size = len(spans)
-    mask = causal_mask(spans, spans)
+    size = len(raw)
+    spans = refine_spans(raw, length)
+    mask = causal_mask(raw, raw, text_length=length)
     return (sender_positions(spans, spans) == [float(i) for i in range(size)] and
             not any(mask[j][i] for j in range(size) for i in range(j + 1, size)))
 
@@ -99,21 +125,26 @@ class RefineSpansTest(unittest.TestCase):
         self.assertEqual(refine_spans([(2, 4), (4, 6)], 9), [(0, 4), (4, 9)])
         self.assertEqual(refine_spans([(2, 4), (4, 6)]), [(0, 4), (4, 6)], "without the length the end stays")
 
-    def test_zero_width_tokens_stay_zero_width(self):
+    def test_zero_width_tokens_stay_as_they_are(self):
         self.assertEqual(refine_spans([(0, 0), (0, 3), (3, 5), (5, 5)], 5), [(0, 0), (0, 3), (3, 5), (5, 5)])
         self.assertEqual(refine_spans([(0, 0), (4, 4)], 9), [(0, 0), (4, 4)])
+        # Review round 2: a sentinel offset after the text is not an ordering error.
+        self.assertEqual(refine_spans([(0, 1), (2, 3), (0, 0)]), [(0, 2), (2, 3), (0, 0)])
 
     def test_overlaps_longer_than_one_character_still_tile(self):
         # Review round 1: these came back overlapping, or with decreasing ends.
         self.assertEqual(refine_spans([(0, 3), (1, 4)]), [(0, 2), (2, 4)])
         self.assertEqual(refine_spans([(0, 2), (0, 2)]), [(0, 1), (1, 2)])
         self.assertEqual(refine_spans([(0, 4), (1, 2)]), [(0, Fraction(5, 2)), (Fraction(5, 2), 4)])
+        # Review round 2: neighbouring overlaps of different lengths raised.
+        fifth = Fraction(3, 5)
+        self.assertEqual(refine_spans([(0, 2), (0, 2), (0, 3), (0, 3), (0, 3)]),
+                         [(0, fifth), (fifth, 2 * fifth), (2 * fifth, 3 * fifth), (3 * fifth, 4 * fifth), (4 * fifth, 3)])
 
     def test_refined_spans_tile_the_text(self):
-        extra = [([(0, 3), (1, 4)], 4), ([(0, 2), (0, 2)], 2), ([(0, 4), (1, 2)], 4), ([(1, 2), (1, 2), (4, 6)], 8)]
-        for raw, length in FIXTURES + extra:
+        for raw, length in FIXTURES:
             refined = [span for span in refine_spans(raw, length) if span[1] > span[0]]
-            self.assertEqual(len(refined), len(raw))
+            self.assertEqual(len(refined), sum(1 for start, end in raw if end > start))
             self.assertEqual(refined[0][0], 0)
             self.assertEqual(refined[-1][1], length)
             for (start, end), (following, _) in zip(refined, refined[1:]):
@@ -140,45 +171,67 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(sender_positions(PHI_EMOJI, PHI_EMOJI, RULE_RAW), [0.0, 1.0, 5.0, 5.0, 5.0, 5.0, 6.0])
         self.assertTrue(causal_mask(PHI_EMOJI, PHI_EMOJI, RULE_RAW)[2][5])
 
-    def test_refined_spans_restore_identity(self):
+    def test_rule_2_restores_identity(self):
         for raw, length in FIXTURES:
-            self.assertTrue(identity(refine_spans(raw, length)), raw)
+            self.assertTrue(identity(raw, length), raw)
 
     def test_whole_character_tokens_read_themselves(self):
-        spans = refine_spans(PHI_EMOJI, 7)
-        mask = causal_mask(spans, spans)
+        mask = causal_mask(PHI_EMOJI, PHI_EMOJI, text_length=7)
         self.assertEqual([mask[i][i] for i in range(7)], [True, True, False, False, False, True, True])
         # The piece that completes the character reads all four pieces.
         self.assertEqual(mask[5], [True] * 6 + [False])
-        self.assertEqual(blind_receiver(spans, spans), [False] * 7)
+        self.assertEqual(blind_receiver(PHI_EMOJI, PHI_EMOJI, text_length=7), [False] * 7)
 
     def test_bos_on_both_sides_keeps_identity(self):
         spans = [(0, 0), (0, 3), (3, 5)]
-        self.assertTrue(identity(spans))
-        self.assertEqual(causal_mask(spans, spans), [[True, False, False], [True, True, False], [True, True, True]])
+        self.assertTrue(identity(spans, 5))
+        self.assertEqual(causal_mask(spans, spans, text_length=5),
+                         [[True, False, False], [True, True, False], [True, True, True]])
 
     def test_several_tokens_without_characters_keep_their_order(self):
         # Review round 1: both took position 0 and the first read the second.
         spans = [(0, 0), (0, 0), (0, 1), (1, 1)]
         self.assertEqual(sender_positions(spans, spans), [0.0, 1.0, 2.0, 3.0])
-        self.assertEqual(causal_mask(spans, spans), [[i <= j for i in range(4)] for j in range(4)])
+        self.assertEqual(causal_mask(spans, spans, text_length=1), [[i <= j for i in range(4)] for j in range(4)])
+
+    def test_a_token_without_characters_never_takes_a_neighbours_position(self):
+        # Review round 2: after the gap was closed the first token's midpoint hit the empty token.
+        raw = [(0, 1), (1, 1), (2, 3)]
+        spans = refine_spans(raw, 3)
+        self.assertEqual(sender_positions(spans, spans), [0.0, 1.0, 2.0])
+        raw = [(0, 4), (0, 4), (0, 0), (0, 4)]
+        spans = refine_spans(raw, 4)
+        self.assertEqual(sender_positions(spans, spans), [0.0, 1.0, 2.0, 3.0])
+        self.assertEqual(sender_positions([(2, 2)], [(0, 4), (4, 6)]), [0.0], "no match: where the offset falls")
+        self.assertEqual(sender_positions([(0, 2)], [(0, 0)]), [0.0], "no receiver token with characters")
 
     def test_bos_on_one_side_only(self):
         sender, receiver = [(0, 0), (0, 3), (3, 5)], [(0, 3), (3, 5)]
         self.assertEqual(sender_positions(sender, receiver), [0.0, 0.0, 1.0])
-        self.assertEqual(causal_mask(sender, receiver), [[True, True, False], [True, True, True]])
+        self.assertEqual(causal_mask(sender, receiver, text_length=5), [[True, True, False], [True, True, True]])
         # A receiver BOS reads nothing from a sender without one: it is blind, and counted.
-        self.assertEqual(blind_receiver(receiver, sender), [True, False, False])
+        self.assertEqual(blind_receiver(receiver, sender, text_length=5), [True, False, False])
 
 
 class CausalityTest(unittest.TestCase):
+    def test_ownership(self):
+        self.assertEqual(ownership(PHI_EMOJI, 7), ([2, 3, 4, 4, 4, 4, 7], [2, 3, 3, 3, 3, 4, 7]))
+        self.assertEqual(ownership(GRANITE_EMOJI, 7), ([2, 4, 4, 7], [2, 3, 4, 7]))
+        self.assertEqual(ownership(QWEN_COMBINING, 3), ([2, 3], [2, 3]), "the uncovered accent is the first token's")
+        self.assertEqual(ownership([(2, 2), (2, 3)], 3), ([0, 3], [0, 3]), "a leading gap is the first token's")
+        self.assertEqual(ownership([(0, 3), (0, 3)], 3), ([3, 3], [0, 3]))
+        self.assertEqual(ownership([], 4), ([], []))
+
+    def test_ownership_matches_the_oracle(self):
+        for raw, length in FIXTURES:
+            self.assertEqual(ownership(raw, length), oracle(raw, length), raw)
+
     def test_a_piece_of_a_character_reads_no_piece_of_it_until_the_character_is_complete(self):
-        sender, receiver = refine_spans(PHI_EMOJI, 7), refine_spans(GRANITE_EMOJI, 7)
-        mask = causal_mask(sender, receiver)
+        mask = causal_mask(PHI_EMOJI, GRANITE_EMOJI, text_length=7)
         # Granite's " + three bytes" token has not finished the emoji: it reads none of Phi's bytes.
         self.assertEqual(mask[1], [True, True, False, False, False, False, False])
         self.assertEqual(mask[2], [True, True, True, True, True, True, False])
-        positions = sender_positions(sender, receiver)
+        positions = sender_positions(refine_spans(PHI_EMOJI, 7), refine_spans(GRANITE_EMOJI, 7))
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(len(set(positions)), len(positions), "no two sender tokens share a position")
 
@@ -186,56 +239,95 @@ class CausalityTest(unittest.TestCase):
         # Review round 1: one emoji as 3 + 1 bytes (sender) and 1 + 1 + 2 bytes (receiver), every
         # token reporting (0, 1). By token count the receiver's second piece (two bytes read)
         # would read the sender's first (three bytes read).
-        sender, receiver = refine_spans([(0, 1), (0, 1)], 1), refine_spans([(0, 1), (0, 1), (0, 1)], 1)
-        self.assertEqual(causal_mask(sender, receiver), [[False, False], [False, False], [True, True]])
+        self.assertEqual(causal_mask([(0, 1), (0, 1)], [(0, 1), (0, 1), (0, 1)], text_length=1),
+                         [[False, False], [False, False], [True, True]])
+
+    def test_overlaps_longer_than_one_character_never_leak(self):
+        # Review round 2: the refined end said two characters where the raw span touches three,
+        # and the other way round a receiver token got credit for a character a later one touches.
+        self.assertEqual(causal_mask([(0, 3), (0, 3)], [(0, 2), (2, 3)], text_length=3),
+                         [[False, False], [True, True]])
+        self.assertEqual(causal_mask([(0, 1), (1, 3)], [(0, 3), (0, 3)], text_length=3),
+                         [[False, False], [True, True]])
 
     def test_a_token_without_characters_carries_what_came_before_it(self):
         # Review round 1: the sender's zero-width token was written after it read character 0,
         # so a receiver BOS must not read it.
         sender, receiver = [(0, 1), (0, 0), (1, 2)], [(0, 0), (0, 2)]
-        self.assertEqual(causal_mask(sender, receiver), [[False, False, False], [True, True, True]])
-        self.assertEqual(blind_receiver(sender, receiver), [True, False])
+        self.assertEqual(causal_mask(sender, receiver, text_length=2), [[False, False, False], [True, True, True]])
+        self.assertEqual(blind_receiver(sender, receiver, text_length=2), [True, False])
+
+    def test_an_empty_token_between_the_pieces_of_a_character_belongs_to_that_run(self):
+        # Found by the fixtures after review round 2: counted like a token at a clean boundary,
+        # it stopped the piece that completes the character from reading its own run.
+        spans = [(0, 4), (0, 4), (0, 0), (0, 4)]
+        self.assertEqual(causal_mask(spans, spans, text_length=4),
+                         [[False] * 4, [False] * 4, [False] * 4, [True] * 4])
+        self.assertEqual(causal_mask(spans, [(0, 4)], text_length=4), [[True] * 4])
+        # At a clean boundary the count still orders them: A, then two empty tokens.
+        clean = [(0, 3), (3, 3), (3, 3)]
+        self.assertEqual(causal_mask(clean, clean, text_length=3), [[i <= j for i in range(3)] for j in range(3)])
+
+    def test_a_token_without_characters_finishes_nothing(self):
+        # Review round 2: a receiver's empty token at offset 2, ahead of its first real token,
+        # read a sender token over characters 0 and 1.
+        self.assertEqual(causal_mask([(0, 2), (2, 3)], [(2, 2), (2, 3)], text_length=3),
+                         [[False, False], [True, True]])
+
+    def test_a_sender_only_trailing_empty_token_is_reported_unread(self):
+        # Review round 2. It is kept, in order, and counted; nothing on the receiver comes after it.
+        aligned = align_document([(0, 1), (1, 1)], [(0, 1)], 1)
+        self.assertEqual((aligned.sender_keep, aligned.unread()), ([0, 1], [False, True]))
+        self.assertEqual(unread_sender([(0, 1), (1, 1)], [(0, 1)], text_length=1), [False, True])
 
     def test_the_composed_token_reads_the_combining_mark(self):
         raw = causal_mask(PHI_COMBINING, QWEN_COMBINING, RULE_RAW)
         self.assertFalse(raw[0][1], "rule 1: Qwen's composed token cannot read the accent it contains")
-        refined = causal_mask(refine_spans(PHI_COMBINING, 3), refine_spans(QWEN_COMBINING, 3))
-        self.assertEqual(refined, [[True, True, False], [True, True, True]])
+        self.assertEqual(causal_mask(PHI_COMBINING, QWEN_COMBINING, text_length=3),
+                         [[True, True, False], [True, True, True]])
         # And the other way: Phi's bare "e" must not read Qwen's composed token.
-        back = causal_mask(refine_spans(QWEN_COMBINING, 3), refine_spans(PHI_COMBINING, 3))
-        self.assertEqual(back, [[False, False], [True, False], [True, True]])
+        self.assertEqual(causal_mask(QWEN_COMBINING, PHI_COMBINING, text_length=3),
+                         [[False, False], [True, False], [True, True]])
 
-    def test_no_fixture_pair_leaks_under_rule_2(self):
+    def test_no_fixture_pair_leaks_and_none_is_refused_a_safe_read(self):
         for sender, s_length in FIXTURES:
             for receiver, r_length in FIXTURES:
                 if s_length != r_length:
                     continue
-                s_spans, r_spans = refine_spans(sender, s_length), refine_spans(receiver, r_length)
-                mask = causal_mask(s_spans, r_spans)
+                mask = causal_mask(sender, receiver, text_length=s_length)
                 self.assertIsNone(leak(sender, receiver, s_length, mask), (sender, receiver))
-                self.assertFalse(any(unread_sender(s_spans, r_spans)), (sender, receiver))
+                self.assertIsNone(withheld(sender, receiver, s_length, mask), (sender, receiver))
+                unread = unread_sender(sender, receiver, text_length=s_length)
+                self.assertFalse(any(flag for flag, (start, end) in zip(unread, sender) if end > start),
+                                 "a sender token with characters is always read by the end of the text")
 
     def test_the_oracle_catches_rule_1_leaks(self):
         self.assertIsNotNone(leak(PHI_EMOJI, PHI_EMOJI, 7, causal_mask(PHI_EMOJI, PHI_EMOJI, RULE_RAW)))
         self.assertIsNotNone(leak(QWEN_COMBINING, PHI_COMBINING, 3,
                                   causal_mask(QWEN_COMBINING, PHI_COMBINING, RULE_RAW)))
+        self.assertIsNotNone(withheld(PHI_COMBINING, QWEN_COMBINING, 3,
+                                      causal_mask(PHI_COMBINING, QWEN_COMBINING, RULE_RAW)))
 
     def test_keys_are_ordered_integers(self):
         for raw, length in FIXTURES:
-            spans = refine_spans(raw, length)
-            for keys in reading_keys(spans, spans):
+            for keys in reading_keys(raw, raw, text_length=length):
                 self.assertEqual(keys, sorted(keys))
                 self.assertTrue(all(type(key) is int for key in keys))
         with self.assertRaises(ValueError):
             reading_keys([(0, 1)], [(0, 1)], rule=3)
+        with self.assertRaises(ValueError):
+            sender_positions([(0, 1)], [(0, 1)], rule=3)
 
-    def test_positions_stay_in_range_and_ordered(self):
+    def test_clean_spans_give_the_same_mask_under_both_rules(self):
         sender = [(0, 2), (2, 7), (7, 8), (8, 12), (12, 13)]
         receiver = [(0, 4), (4, 6), (6, 12), (12, 13)]
         for rule in (RULE_RAW, RULE_REFINED):
             positions = sender_positions(sender, receiver, rule)
-            self.assertEqual(positions, sorted(positions))
-            self.assertTrue(all(0 <= p <= len(receiver) - 0.5 for p in positions))
+            self.assertEqual(positions, [0.0, 0.75, 1.75, 2.1666666666666665, 3.0])
+            # Found by the audit after review round 2: exact fractions gave rule 2 a different
+            # last digit than rule 1 on clean text (thirds and sevenths show it).
+            odd_s, odd_r = [(0, 1), (1, 3), (3, 10), (10, 21)], [(0, 3), (3, 6), (6, 13), (13, 21)]
+            self.assertEqual(sender_positions(odd_s, odd_r, rule), sender_positions(odd_s, odd_r, RULE_RAW))
             self.assertEqual(visible_counts(sender, receiver, rule), [1, 1, 4, 5])
             self.assertEqual(causal_mask(sender, receiver, rule),
                              [[s_end <= r_end for _, s_end in sender] for _, r_end in receiver])
@@ -286,80 +378,89 @@ class CutTest(unittest.TestCase):
     SENDER = [(0, 3), (3, 6), (6, 9), (9, 12)]
     RECEIVER = [(0, 2), (2, 7), (7, 9), (9, 12)]
 
+    def kept(self, *arguments, **options):
+        aligned = align_document(*arguments, **options)
+        return aligned.sender_keep, aligned.receiver_keep
+
     def test_rule_1_leaves_a_tail_nobody_reads(self):
         # Receiver truncated to two tokens (ends at 7), sender to three (ends at 9).
-        keep_s, s_spans, keep_r, r_spans = align_document(self.SENDER[:3], self.RECEIVER[:2], rule=RULE_RAW)
-        self.assertEqual((keep_s, keep_r), ([0, 1], [0, 1]))
+        self.assertEqual(self.kept(self.SENDER[:3], self.RECEIVER[:2], rule=RULE_RAW), ([0, 1], [0, 1]))
         # Sender covers 0..6, receiver 0..7: the receiver's last token sits over a character
         # (6) whose sender token was dropped. The mirror case leaves a sender token unread:
-        keep_s, s_spans, keep_r, r_spans = align_document(self.RECEIVER[:2], self.SENDER[:3], rule=RULE_RAW)
-        self.assertEqual(unread_sender(s_spans, r_spans, RULE_RAW), [False, True])
+        aligned = align_document(self.RECEIVER[:2], self.SENDER[:3], rule=RULE_RAW)
+        self.assertEqual(aligned.unread(), [False, True])
 
     def test_rule_2_cuts_where_both_sides_can_stop(self):
-        self.assertEqual(common_cut(self.SENDER[:3], self.RECEIVER[:2]), (0, 0))
-        self.assertEqual(common_cut(self.SENDER, self.RECEIVER), (4, 4))
-        keep_s, s_spans, keep_r, r_spans = align_document(self.SENDER, self.RECEIVER, 12, 3, RULE_REFINED)
-        self.assertEqual((keep_s, keep_r), ([0, 1, 2], [0, 1, 2]))
-        self.assertEqual(s_spans[-1][1], r_spans[-1][1])
-        self.assertEqual(unread_sender(s_spans, r_spans), [False] * 3)
-
-    def test_rule_2_without_a_shared_cut_keeps_nothing(self):
-        keep_s, _, keep_r, _ = align_document(self.SENDER, self.RECEIVER, 12, 2, RULE_REFINED)
-        self.assertEqual((keep_s, keep_r), ([], []))
+        self.assertEqual(common_cut(self.SENDER, self.RECEIVER, 12, 2), (0, 0))
+        self.assertEqual(common_cut(self.SENDER, self.RECEIVER, 12, 3), (3, 3))
+        self.assertEqual(common_cut(self.SENDER, self.RECEIVER, 12), (4, 4))
+        aligned = align_document(self.SENDER, self.RECEIVER, 12, 3)
+        self.assertEqual((aligned.sender_keep, aligned.receiver_keep), ([0, 1, 2], [0, 1, 2]))
+        self.assertEqual(aligned.sender_spans[-1][1], aligned.receiver_spans[-1][1])
+        self.assertEqual(aligned.unread(), [False] * 3)
+        self.assertEqual(aligned.mask(), [[False, False, False], [True, True, False], [True, True, True]])
+        self.assertEqual(self.kept(self.SENDER, self.RECEIVER, 12, 2), ([], []))
 
     def test_a_cut_never_falls_inside_a_character(self):
         # Both sides cut to four tokens end inside the emoji (Phi after two of its four bytes).
-        keep_s, s_spans, keep_r, r_spans = align_document(PHI_EMOJI, PHI_EMOJI, 7, 4, RULE_REFINED)
-        self.assertEqual((keep_s, keep_r), ([0, 1], [0, 1]))
-        keep_s, _, keep_r, _ = align_document(PHI_EMOJI, GRANITE_EMOJI, 7, 2, RULE_REFINED)
-        self.assertEqual((keep_s, keep_r), ([0], [0]))
+        self.assertEqual(self.kept(PHI_EMOJI, PHI_EMOJI, 7, 4), ([0, 1], [0, 1]))
+        self.assertEqual(self.kept(PHI_EMOJI, GRANITE_EMOJI, 7, 2), ([0], [0]))
+        # Review round 2: a boundary the refinement placed inside an overlap is no cut either.
+        self.assertEqual(self.kept([(0, 2), (0, 2)], [(0, 1), (1, 2)], 2, 1), ([], []))
 
     def test_a_token_without_characters_is_not_a_place_to_cut(self):
         # Review round 1: both sides share the offset 2 of a zero-width token, yet their kept
         # tokens cover 0..3 and 0..4.
-        cut = align_document([(0, 3), (2, 2), (3, 5)], [(0, 4), (2, 2), (4, 5)], 5, 2, RULE_REFINED)
-        self.assertEqual(cut, ([], [], [], []))
+        self.assertEqual(self.kept([(0, 3), (2, 2), (3, 5)], [(0, 4), (2, 2), (4, 5)], 5, 2), ([], []))
+        # Review round 2: an empty token ahead of the receiver's first real token.
+        self.assertEqual(self.kept([(0, 2), (2, 3)], [(2, 2), (2, 3)], 3, 1), ([], []))
         # Tokens without characters right after the cut stay with it; a lone BOS is no cut.
         self.assertEqual(common_cut([(0, 3), (3, 3), (3, 5)], [(0, 3), (3, 4)]), (2, 1))
         self.assertEqual(common_cut([(0, 0), (0, 3)], [(0, 0), (0, 2)]), (0, 0))
 
     def test_text_ending_in_a_combining_mark(self):
         # "e" + accent: Qwen's last offset is 1, Phi's is 2.
-        keep_s, _, keep_r, _ = align_document([(0, 1), (1, 2)], [(0, 1)], rule=RULE_RAW)
-        self.assertEqual(keep_s, [0], "rule 1 drops the sender's accent token without a record")
-        keep_s, s_spans, keep_r, r_spans = align_document([(0, 1), (1, 2)], [(0, 1)], 2, 384, RULE_REFINED)
-        self.assertEqual((keep_s, keep_r), ([0, 1], [0]))
-        self.assertEqual(unread_sender(s_spans, r_spans), [False, False])
+        self.assertEqual(self.kept([(0, 1), (1, 2)], [(0, 1)], rule=RULE_RAW)[0], [0],
+                         "rule 1 drops the sender's accent token without a record")
+        aligned = align_document([(0, 1), (1, 2)], [(0, 1)], 2, 384)
+        self.assertEqual((aligned.sender_keep, aligned.receiver_keep), ([0, 1], [0]))
+        self.assertEqual(aligned.unread(), [False, False])
 
-    def test_untruncated_text_drops_nothing_and_leaves_nothing_unread(self):
+    def test_untruncated_text_drops_nothing(self):
         for sender, s_length in FIXTURES:
             for receiver, r_length in FIXTURES:
                 if s_length != r_length:
                     continue
                 for budget in (384, None):
-                    keep_s, s_spans, keep_r, r_spans = align_document(sender, receiver, s_length, budget)
-                    self.assertEqual((len(keep_s), len(keep_r)), (len(sender), len(receiver)))
-                    self.assertFalse(any(unread_sender(s_spans, r_spans)))
-                    self.assertEqual(s_spans[-1][1], r_spans[-1][1])
+                    aligned = align_document(sender, receiver, s_length, budget)
+                    self.assertEqual((len(aligned.sender_keep), len(aligned.receiver_keep)),
+                                     (len(sender), len(receiver)), (sender, receiver))
+                    self.assertEqual(aligned.mask(), causal_mask(sender, receiver, text_length=s_length))
 
     def test_every_truncation_of_every_fixture_pair_is_causal_and_fully_read(self):
         for sender, s_length in FIXTURES:
             for receiver, r_length in FIXTURES:
                 if s_length != r_length:
                     continue
-                for budget in range(1, 8):
-                    keep_s, s_spans, keep_r, r_spans = align_document(sender, receiver, s_length, budget)
-                    if not keep_s:
-                        self.assertEqual(keep_r, [])
+                for budget in range(0, 8):
+                    aligned = align_document(sender, receiver, s_length, budget)
+                    where = (sender, receiver, budget)
+                    self.assertLessEqual(max(len(aligned.sender_keep), len(aligned.receiver_keep)), budget, where)
+                    if not aligned.sender_keep or not aligned.receiver_keep:
+                        self.assertEqual((aligned.sender_keep, aligned.receiver_keep), ([], []), where)
                         continue
-                    self.assertEqual(max(end for _, end in s_spans), max(end for _, end in r_spans))
-                    self.assertFalse(any(unread_sender(s_spans, r_spans)))
-                    mask = causal_mask(s_spans, r_spans)
-                    self.assertIsNone(leak(sender, receiver, s_length, mask, len(keep_s), len(keep_r)))
+                    kept_s, kept_r = len(aligned.sender_keep), len(aligned.receiver_keep)
+                    # Both sides have touched and finished exactly the same text.
+                    self.assertEqual(oracle(sender, s_length)[0][kept_s - 1], oracle(receiver, s_length)[1][kept_r - 1])
+                    self.assertEqual(oracle(sender, s_length)[1][kept_s - 1], oracle(receiver, s_length)[0][kept_r - 1])
+                    unread = aligned.unread()
+                    self.assertFalse(any(flag for flag, (start, end) in zip(unread, sender) if end > start), where)
+                    self.assertIsNone(leak(sender, receiver, s_length, aligned.mask(), kept_s, kept_r), where)
 
     def test_empty_side_and_unknown_rule(self):
-        self.assertEqual(align_document([], [(0, 2)], 2, 384, RULE_REFINED), ([], [], [], []))
-        self.assertEqual(align_document([], [(0, 2)], rule=RULE_RAW), ([], [], [], []))
+        self.assertEqual(self.kept([], [(0, 2)], 2, 384), ([], []))
+        self.assertEqual(self.kept([], [(0, 2)], rule=RULE_RAW), ([], []))
+        self.assertEqual(align_document([], [(0, 2)], rule=RULE_RAW).unread(), [])
         with self.assertRaises(ValueError):
             align_document([(0, 2)], [(0, 2)], 2, 384, rule=3)
 
@@ -412,9 +513,9 @@ class NormTensorTest(unittest.TestCase):
                 got = calibrate_states(states, 3.0, mask, per_token=per_token, max_scale=cap)
                 for row in range(2):
                     want = calibrate_rows(states[row].tolist(), 3.0, mask[row].tolist(), per_token, cap)
-                    self.assertTrue(torch.allclose(got[row], torch.tensor(want, dtype=torch.float64), atol=1e-6))
+                    self.assertTrue(torch.allclose(got[row], torch.tensor(want, dtype=torch.float64), atol=1e-12))
         stats = norm_stats(calibrate_states(states, 3.0, mask, per_token=True), mask)
-        self.assertAlmostEqual(stats["mean"], 3.0, places=5)
+        self.assertAlmostEqual(stats["mean"], 3.0, places=9)
         self.assertEqual(stats["count"], 8)
 
     def test_a_padded_row_matches_the_row_alone(self):
@@ -442,6 +543,28 @@ class NormTensorTest(unittest.TestCase):
             out = calibrate_states(states, 10.0, mask, per_token=per_token)
             self.assertEqual(out[0, 0].tolist(), [6.0, 8.0])
             self.assertEqual(float(out[0, 1, 1]), 1.0)
+
+    def test_a_nan_in_a_real_token_is_not_hidden(self):
+        # Review round 2: a NaN energy counted as zero, so the other tokens were scaled by a
+        # wrong mean and nothing showed.
+        from latent_transfer.norm import calibrate_cache, calibrate_states
+        states = torch.tensor([[[float("nan")], [2.0]]])
+        self.assertTrue(torch.isnan(calibrate_states(states, 2.0)).all())
+        per_token = calibrate_states(states, 2.0, per_token=True)
+        self.assertTrue(torch.isnan(per_token[0, 0, 0]))
+        self.assertEqual(float(per_token[0, 1, 0]), 2.0)
+        keys = [torch.tensor([[[[float("nan")], [2.0]]]])]
+        out_keys, _ = calibrate_cache(keys, keys, torch.ones(1, 1, 2), torch.tensor([[1, 1]]))
+        self.assertTrue(torch.isnan(out_keys[0]).all())
+
+    def test_double_precision_input_stays_double(self):
+        # Review round 2: fp64 states went through fp32 and a large finite value became infinite.
+        from latent_transfer.norm import calibrate_cache, calibrate_states
+        out = calibrate_states(torch.tensor([[[1e100]]], dtype=torch.float64), 1.0)
+        self.assertEqual((out.dtype, float(out)), (torch.float64, 1.0))
+        keys = [torch.tensor([[[[1e100]]]], dtype=torch.float64)]
+        out_keys, _ = calibrate_cache(keys, keys, torch.ones(1, 1, 2), torch.tensor([[1]]))
+        self.assertEqual((out_keys[0].dtype, float(out_keys[0])), (torch.float64, 1.0))
 
     def test_zero_energy_gives_finite_gradients(self):
         # Review round 1: sqrt(0) sent NaN gradients back for an all-zero head or an all-padding row.
@@ -529,6 +652,7 @@ class MakePairTest(unittest.TestCase):
                          [[[True, False, False, False, False, False], [True, False, False, False, False, False],
                            [True, True, True, True, False, False], [True, True, True, True, False, False],
                            [True, True, True, True, True, True]]])
+        self.assertEqual((batch.sender_pos.dtype, batch.cross_allowed.dtype), (torch.float32, torch.bool))
 
     def test_rule_1_truncation_and_padding_as_on_main(self):
         from latent_transfer.batch import make_pair
@@ -542,6 +666,16 @@ class MakePairTest(unittest.TestCase):
                          [[[False, False], [True, False], [True, True]],
                           [[True, False], [True, True], [False, False]]])
         self.assertEqual(batch.dropped.tolist(), [[1, 0], [0, 0]])
+
+    def test_the_mask_compares_integers_not_floats(self):
+        # Offsets one apart above 2**53 are the same float64; the mask must still tell them apart.
+        from latent_transfer.batch import make_pair
+        big = 2 ** 53
+        sender = FakeTokenizer(lambda text: [(0, big), (big, big + 1), (big + 1, big + 2)])
+        receiver = FakeTokenizer(lambda text: [(0, big), (big, big + 2)])
+        for rule in (RULE_RAW, RULE_REFINED):
+            batch = make_pair(sender, receiver, ["x"], max_tokens=384, rule=rule)
+            self.assertEqual(batch.cross_allowed.tolist(), [[[True, False, False], [True, True, True]]], rule)
 
     def test_rule_2_reports_what_does_not_line_up(self):
         from latent_transfer.batch import make_pair
@@ -576,12 +710,16 @@ class MakePairTest(unittest.TestCase):
         emoji = FakeTokenizer(lambda text: list(PHI_EMOJI))
         batch = make_pair(emoji, emoji, ["hi X ok"], max_tokens=384)
         self.assertEqual(batch.sender_pos[0].tolist(), [float(i) for i in range(7)])
-        spans = refine_spans(PHI_EMOJI, 7)
-        self.assertEqual(batch.cross_allowed[0].tolist(), causal_mask(spans, spans))
+        self.assertEqual(batch.cross_allowed[0].tolist(), causal_mask(PHI_EMOJI, PHI_EMOJI, text_length=7))
         self.assertFalse(batch.cross_allowed[0].triu(1).any(), "nothing above the diagonal")
         self.assertEqual(batch.receiver_blind[0].tolist(), [False] * 7)
         raw = make_pair(emoji, emoji, ["hi X ok"], max_tokens=384, rule=RULE_RAW)
         self.assertTrue(raw.cross_allowed[0].triu(1).any(), "rule 1 lets a piece read later pieces")
+
+    def test_a_sender_only_trailing_empty_token_shows_as_unread(self):
+        from latent_transfer.batch import make_pair
+        batch = make_pair(FakeTokenizer(lambda text: [(0, 1), (1, 1)]), FakeTokenizer(lambda text: [(0, 1)]), ["a"])
+        self.assertEqual(batch.sender_unread.tolist(), [[False, True]])
 
     def test_an_empty_document_is_refused_under_both_rules(self):
         from latent_transfer.batch import make_pair
@@ -625,10 +763,15 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(refused["rule1"]["unreadSender"], 1)
         self.assertEqual(refused["rule2"]["emptyTexts"], 1)
         shared = FakeAudited(lambda text: [(0, 1), (0, 1), (1, 2)])
-        for budget in (None, 1, 2):
+        for budget in (None, 0, 1, 2):
             json.dumps(pair_stats(shared, shared, ["ab"], max_tokens=budget))
+        # Review round 2: a side with no tokens is a refusal under both rules, and a budget of
+        # zero drops nothing because nothing entered it.
         none = pair_stats(FakeAudited(lambda text: []), shared, ["ab"])
         self.assertEqual((none["texts"], none["noTokens"]), (0, 1))
+        self.assertEqual((none["rule1"]["emptyTexts"], none["rule2"]["emptyTexts"]), (1, 1))
+        zero = pair_stats(shared, shared, ["ab"], max_tokens=0)
+        self.assertEqual((zero["rule1"]["dropped"], zero["rule2"]["dropped"]), (0, 0))
 
 
 def cached_tokenizers():
@@ -656,26 +799,28 @@ class RealTokenizerTest(unittest.TestCase):
         from latent_transfer.batch import spans
         names = sorted(tokenizers)
         for label, text in EDGE_CASES:
+            size = len(text)
             raw = {name: spans(tokenizers[name], text, 384, RULE_REFINED)[1] for name in names}
             for name in names:
                 self.assertTrue(raw[name], (label, name))
-                self.assertTrue(identity(refine_spans(raw[name], len(text))), (label, name))
+                self.assertTrue(identity(raw[name], size), (label, name))
+                self.assertEqual(ownership(raw[name], size), oracle(raw[name], size), (label, name))
             for sender in names:
                 for receiver in names:
                     where = (label, sender, receiver)
-                    keep_s, s_spans, keep_r, r_spans = align_document(raw[sender], raw[receiver], len(text), 384)
-                    self.assertEqual((len(keep_s), len(keep_r)), (len(raw[sender]), len(raw[receiver])), where)
-                    self.assertEqual((s_spans[-1][1], r_spans[-1][1]), (len(text), len(text)), where)
-                    self.assertFalse(any(unread_sender(s_spans, r_spans)), where)
-                    mask = causal_mask(s_spans, r_spans)
-                    self.assertIsNone(leak(raw[sender], raw[receiver], len(text), mask), where)
+                    aligned = align_document(raw[sender], raw[receiver], size, 384)
+                    self.assertEqual((len(aligned.sender_keep), len(aligned.receiver_keep)),
+                                     (len(raw[sender]), len(raw[receiver])), where)
+                    self.assertEqual((aligned.sender_spans[-1][1], aligned.receiver_spans[-1][1]), (size, size), where)
+                    self.assertFalse(any(aligned.unread()), where)
+                    self.assertIsNone(leak(raw[sender], raw[receiver], size, aligned.mask()), where)
+                    self.assertIsNone(withheld(raw[sender], raw[receiver], size, aligned.mask()), where)
                     for budget in (3, 9):
-                        keep_s, s_cut, keep_r, r_cut = align_document(raw[sender], raw[receiver], len(text), budget)
-                        if keep_s:
-                            self.assertEqual(max(e for _, e in s_cut), max(e for _, e in r_cut), where)
-                            self.assertFalse(any(unread_sender(s_cut, r_cut)), where)
-                            self.assertIsNone(leak(raw[sender], raw[receiver], len(text),
-                                                   causal_mask(s_cut, r_cut), len(keep_s), len(keep_r)), where)
+                        cut = align_document(raw[sender], raw[receiver], size, budget)
+                        if cut.sender_keep:
+                            self.assertFalse(any(cut.unread()), where)
+                            self.assertIsNone(leak(raw[sender], raw[receiver], size, cut.mask(),
+                                                   len(cut.sender_keep), len(cut.receiver_keep)), where)
         for name in names:
             self.assertEqual(spans(tokenizers[name], "", 384, RULE_REFINED)[1], [], name)
 
