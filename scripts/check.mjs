@@ -21,11 +21,19 @@ const selfPath = 'scripts/check.mjs';
 const rawCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const allowedRaw = new Set(['\t', '\n', '\r']);
 
+// Space or block comments, which may sit between any two tokens (Codex round 3).
+const gap = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
 // A property by dot or by a quoted computed key: `.name` or `['name']`.
-const property = name => String.raw`(?:\.\s*${name}\b|\[\s*(['"\x60])${name}\1\s*\])`;
-const assignment = String.raw`\s*(?:\+|\?\?|\|\||&&)?=(?!=)`;
+const property = name => String.raw`(?:\.${gap}${name}\b|\[${gap}(['"\x60])${name}\1${gap}\])`;
+const assignment = String.raw`${gap}(?:\+|\?\?|\|\||&&)?=(?!=)`;
+const htmlProperty = String.raw`(?:innerHTML|outerHTML)`;
 const htmlSinks = [
-  [new RegExp(String.raw`(?:\.\s*(?:innerHTML|outerHTML)\b|\[\s*(['"\x60])(?:innerHTML|outerHTML)\1\s*\])${assignment}`, 'gu'), 'assigning HTML'],
+  [new RegExp(String.raw`(?:\.${gap}${htmlProperty}\b|\[${gap}(['"\x60])${htmlProperty}\1${gap}\])${assignment}`, 'gu'), 'assigning HTML'],
+  // A key in an object literal, as in Object.assign(node, { innerHTML }), and a
+  // destructuring target, as in ({ html: node.innerHTML } = data). A plain read inside an
+  // object literal is reported too; write it on a line of its own.
+  [new RegExp(String.raw`[{,]${gap}(?:${htmlProperty}|(['"\x60])${htmlProperty}\1)${gap}[:,}]`, 'gu'), 'an HTML property key'],
+  [new RegExp(String.raw`\.${gap}${htmlProperty}${gap}[,}\]]`, 'gu'), 'an HTML property in a pattern'],
   [/\binsertAdjacentHTML\b/gu, 'insertAdjacentHTML'],
   [new RegExp(String.raw`\bdocument\s*${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
@@ -33,7 +41,8 @@ const htmlSinks = [
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
-const listenCall = new RegExp(String.raw`${property('listen')}(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*(?:\?\.)?(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*\(`, 'gu');
+const lineGap = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*`;
+const listenCall = new RegExp(String.raw`${property('listen')}${lineGap}(?:\?\.)?${lineGap}\(`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -61,11 +70,34 @@ function position(starts, index) {
 // The code rules otherwise read the text as it is: a rule spelt in a comment or a string
 // is reported too, which is safer than a lexer that a regex or template could fool (H9,
 // Codex round 2).
+// A "/" where a value may start begins a regular expression, which is kept whole, so a
+// "//" inside it is not taken for a comment (Codex round 3). Misreading a division as a
+// regular expression only keeps more text, never less.
 function stripComments(text) {
   let out = '';
   let quote = null;
+  let last = '';
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
+    if (!quote && !/\s/u.test(character) && !(character === '/' && (text[index + 1] === '/' || text[index + 1] === '*'))) {
+      if (character === '/' && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last))) {
+        let end = index + 1;
+        let inClass = false;
+        while (end < text.length && text[end] !== '\n') {
+          const inner = text[end];
+          if (inner === '\\') end += 1;
+          else if (inner === '[') inClass = true;
+          else if (inner === ']') inClass = false;
+          else if (inner === '/' && !inClass) break;
+          end += 1;
+        }
+        out += text.slice(index, end + 1);
+        index = end;
+        last = '/';
+        continue;
+      }
+      last = character;
+    }
     if (quote) {
       out += character;
       if (character === '\\') {
@@ -144,11 +176,16 @@ function optionsOnLoopback(text) {
   return host !== null && loopbackLiteral.test(host);
 }
 
-// Node reads an options object first, so then only its host counts.
+// Node reads an options object first, so then only its host counts. The (port, host) form
+// counts only when the first argument is plainly a port: a number, or a name ending in
+// "port" (`port`, `PORT`, `config.port`). A variable holding options would make Node
+// ignore the host (Codex round 3).
+const portArgument = /^(?:\d+|(?:[$\w]+\.)*[$\w]*port)$/iu;
+
 function listensOnLoopback(args) {
   const parts = topLevelParts(stripComments(args));
   if ((parts[0] ?? '').startsWith('{')) return optionsOnLoopback(parts[0]);
-  return parts.length >= 2 && loopbackLiteral.test(parts[1]);
+  return parts.length >= 2 && portArgument.test(parts[0]) && loopbackLiteral.test(parts[1]);
 }
 
 // Findings for one file, given its path relative to the repository (with "/") and bytes.
@@ -181,7 +218,7 @@ export function checkFile(path, bytes) {
       for (const match of code.matchAll(listenCall)) {
         const args = callArguments(code, match.index + match[0].length - 1);
         if (!listensOnLoopback(args)) {
-          add(match.index, 'loopback-only', "listen without host '127.0.0.1'; pass it as the second argument or as host in the options (AGENTS.md section 6: loopback only)");
+          add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen(port, '127.0.0.1') or listen({ port, host: '127.0.0.1' }) with the object written out (AGENTS.md section 6: loopback only)");
         }
       }
     }
@@ -222,7 +259,7 @@ export function checkTree(root) {
       if (error.code === 'ENOENT') continue; // deleted in the working tree, not yet staged
       throw error;
     }
-    findings.push(...checkFile(path, bytes));
+    for (const finding of checkFile(path, bytes)) findings.push(finding);
   }
   return { files: files.length, findings };
 }

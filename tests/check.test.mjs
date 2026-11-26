@@ -210,6 +210,44 @@ test('round 2 medium: an optional call is checked', () => {
   assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen?.(0, '127.0.0.1');")), []);
 });
 
+// Codex review, round 3 (H9).
+test('round 3 high: the (port, host) form counts only when the first argument is plainly a port', () => {
+  for (const line of ["server.listen(options, '127.0.0.1');", "server.listen(makeOptions(), '127.0.0.1');", "server.listen(handle, '127.0.0.1');"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+  for (const line of ["server.listen(0, '127.0.0.1');", "server.listen(port, '127.0.0.1');", "server.listen(PORT, '127.0.0.1');", "server.listen(config.port, '127.0.0.1');", "server.listen(defaultPort, '127.0.0.1');"]) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('round 3 high: a regular expression in the arguments is not taken for a comment', () => {
+  const line = "server.listen({\n  host: '127.0.0.1',\n  port: /x\\//.test(input) ? 3000 : 3001, ...config\n});";
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only']);
+});
+
+test('round 3 medium: a block comment between tokens does not hide a sink or a listen call', () => {
+  assert.deepEqual(rules(checkFile('public/a.mjs', utf8('element.innerHTML /* replace preview */ = transcript;'))), ['html-sink']);
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8('server. /* HTTP */ listen(3000);'))), ['loopback-only']);
+});
+
+test('round 3 medium: Object.assign and destructuring into an HTML property are sinks', () => {
+  for (const line of ['Object.assign(element, { innerHTML: transcript });', "Object.assign(element, { 'outerHTML': transcript });", 'Object.assign(element, { innerHTML });', '({ html: element.innerHTML } = preview);', '[element.innerHTML] = parts;']) {
+    assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))).slice(0, 1), ['html-sink'], line);
+  }
+  assert.deepEqual(checkFile('public/a.mjs', utf8('const old = element.innerHTML;\nconst size = old.length;')), []);
+});
+
+test('round 3 low: a file with very many findings is reported, not a crash', async () => {
+  const folder = await gitFolder({ 'sample.log': '\0'.repeat(200000) });
+  try {
+    const failure = await run(process.execPath, [script, folder], { maxBuffer: 256 * 1024 * 1024 }).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /check: 1 file, 200000 findings/u);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
 test('round 2 low: a file name that starts with U+FEFF is valid UTF-8', async () => {
   const folder = await gitFolder({ [`${char(0xfeff)}a.mjs`]: 'const x = 1;\n' });
   try {
