@@ -51,10 +51,16 @@ const htmlSinks = [
 // Browser code has no streams, so there any write() call is document.write under some
 // name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
 const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
+// The HTML property names as strings, as in el('div', { [key]: text }) with key set to
+// 'innerHTML': browser code has no other reason to spell them (Codex round 10).
+const browserHtmlName = [/['"\x60](?:innerHTML|outerHTML)['"\x60]/gu, 'an HTML property name in browser code'];
 // The browser app, and any HTML page with an inline script (Codex round 8).
 const browserFile = /^public\/|\.html$/u;
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
+// listen named but not called, as in promisify(server.listen.bind(server)): the host it
+// is called with cannot be checked here (Codex round 10).
+const listenReference = new RegExp(String.raw`${property('listen')}(?!${gap}(?:\?\.)?${gap}\()`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -232,9 +238,16 @@ export function checkFile(path, bytes, { browser = false } = {}) {
     const html = path.endsWith('.html');
     const code = text;
     // In browser code the broader write() rule replaces the document-name one.
-    const sinks = browser || browserFile.test(path) ?[...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite] : htmlSinks;
+    const sinks = browser || browserFile.test(path)
+      ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite, browserHtmlName]
+      : htmlSinks;
+    // One HTML sink finding per line: several rules can match the same write.
+    const sinkLines = new Set();
     for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
+        const { line } = position(starts, match.index);
+        if (sinkLines.has(line)) continue;
+        sinkLines.add(line);
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
     }
@@ -244,6 +257,9 @@ export function checkFile(path, bytes, { browser = false } = {}) {
         if (!listensOnLoopback(args)) {
           add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen({ port, host: '127.0.0.1' }) with the object written out, or listen(0, '127.0.0.1') with a literal port (AGENTS.md section 6: loopback only)");
         }
+      }
+      for (const match of code.matchAll(listenReference)) {
+        add(match.index, 'loopback-only', "listen passed along instead of called, so its host cannot be checked; call listen({ port, host: '127.0.0.1' }) directly (AGENTS.md section 6: loopback only)");
       }
     }
   }
@@ -312,7 +328,9 @@ export function checkTree(root) {
       // Deleted, or replaced by a folder, in the working tree and not yet staged.
       // ENOTDIR: a parent folder was replaced by a file (Codex round 8).
       if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
-      throw error;
+      // Anything else (EACCES, say) is reported and the scan goes on (Codex round 10).
+      findings.push({ path, line: 1, column: 1, rule: 'unreadable', message: `could not read this tracked file (${error.code ?? 'error'}); fix its permissions` });
+      continue;
     }
     loaded.push([path, bytes]);
   }

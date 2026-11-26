@@ -301,6 +301,14 @@ test("round 9: execCommand('insertHTML') is an HTML sink", () => {
   assert.deepEqual(rules(checkFile('public/app.js', utf8("editor.focus(); document.execCommand('insertHTML', false, transcript.text);"))), ['html-sink']);
 });
 
+test('round 10: an HTML property name as a string in browser code, and listen passed along, are findings', () => {
+  assert.deepEqual(rules(checkFile('public/swarm/a.mjs', utf8("const key = rich ? 'innerHTML' : 'textContent'; el('div', { [key]: text });"))), ['html-sink']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8("const key = 'innerHTML';")), [], 'server code may name it, for example in a check');
+  for (const line of ['const listen = promisify(server.listen.bind(server)); await listen(port);', 'start(server.listen);']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+});
+
 test('round 5: the ledger server itself listens through a written-out options object', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(join(repo, 'src', 'server.mjs'), 'utf8');
