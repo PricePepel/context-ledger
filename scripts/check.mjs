@@ -49,7 +49,8 @@ const htmlSinks = [
 // Browser code has no streams, so there any write() call is document.write under some
 // name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
 const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
-const browserFile = /^public\//u;
+// The browser app, and any HTML page with an inline script (Codex round 8).
+const browserFile = /^public\/|\.html$/u;
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 
@@ -278,7 +279,8 @@ export function checkTree(root) {
       bytes = readFileSync(Buffer.concat([Buffer.from(root + '/', 'utf8'), raw]));
     } catch (error) {
       // Deleted, or replaced by a folder, in the working tree and not yet staged.
-      if (error.code === 'ENOENT' || error.code === 'EISDIR') continue;
+      // ENOTDIR: a parent folder was replaced by a file (Codex round 8).
+      if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
       throw error;
     }
     for (const finding of checkFile(path, bytes)) findings.push(finding);

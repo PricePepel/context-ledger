@@ -262,6 +262,24 @@ test('round 7: a tracked file replaced by a folder before staging is skipped, no
   }
 });
 
+test('round 8: write() in an HTML page outside public/ is a sink too', () => {
+  const page = '<script>const preview = iframe.contentDocument; preview.write(transcript.text);</script>';
+  assert.deepEqual(rules(checkFile('demo/preview.html', utf8(page))), ['html-sink']);
+});
+
+test('round 8: a parent folder replaced by a file before staging is skipped, not a crash', async () => {
+  const folder = await gitFolder({ 'src/preview/index.mjs': 'export const a = 1;\n', 'src/b.mjs': `const x = '${char(0x202e)}';\n` });
+  try {
+    await rm(join(folder, 'src', 'preview'), { recursive: true, force: true });
+    await writeFile(join(folder, 'src', 'preview'), 'now a file\n');
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^src\/b\.mjs:1:12 {2}raw-character/mu);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
 test('round 5: the ledger server itself listens through a written-out options object', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(join(repo, 'src', 'server.mjs'), 'utf8');
