@@ -24,8 +24,9 @@ const allowedRaw = new Set(['\t', '\n', '\r']);
 // Space, block comments and line comments, which may sit between any two tokens (Codex
 // rounds 3 and 4).
 const gap = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n\r]*)*`;
-// A property by dot or by a quoted computed key: `.name` or `['name']`.
-const property = name => String.raw`(?:\.${gap}${name}\b|\[${gap}(['"\x60])${name}\1${gap}\])`;
+// A property by dot or by a quoted computed key, optional chaining included: `.name`,
+// `?.name`, `['name']` or `?.['name']` (Codex round 5).
+const property = name => String.raw`(?:\??\.${gap}${name}\b|(?:\?\.)?${gap}\[${gap}(['"\x60])${name}\1${gap}\])`;
 const assignment = String.raw`${gap}(?:\+|\?\?|\|\||&&)?=(?!=)`;
 const htmlProperty = String.raw`(?:innerHTML|outerHTML)`;
 const htmlSinks = [
@@ -35,6 +36,8 @@ const htmlSinks = [
   // object literal is reported too; write it on a line of its own.
   [new RegExp(String.raw`[{,]${gap}(?:${htmlProperty}|(['"\x60])${htmlProperty}\1|\[${gap}(['"\x60])${htmlProperty}\2${gap}\])${gap}[:,}]`, 'gu'), 'an HTML property key'],
   [new RegExp(String.raw`(?:\.${gap}${htmlProperty}|\[${gap}(['"\x60])${htmlProperty}\1${gap}\])${gap}[,}\]]`, 'gu'), 'an HTML property in a pattern'],
+  // The target of for...of or for...in is assigned on every pass (Codex round 5).
+  [new RegExp(String.raw`(?:\.${gap}${htmlProperty}|\[${gap}(['"\x60])${htmlProperty}\1${gap}\])${gap}(?:of|in)\b`, 'gu'), 'an HTML property as a loop target'],
   [/\binsertAdjacentHTML\b/gu, 'insertAdjacentHTML'],
   [new RegExp(String.raw`\bdocument${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
@@ -177,10 +180,10 @@ function optionsOnLoopback(text) {
 }
 
 // Node reads an options object first, so then only its host counts. The (port, host) form
-// counts only when the first argument is plainly a port: a number, `port` or `PORT`, or a
-// `.port` property (`config.port`). A variable holding options would make Node ignore
-// the host (Codex rounds 3 and 4: `listenPort` may hold an options object).
-const portArgument = /^(?:\d+|(?:[$\w]+\.)*(?:port|PORT))$/u;
+// counts only with a literal port number: any variable may hold an options object, and
+// Node would then ignore the host (Codex rounds 3 to 5). With a port in a variable, write
+// listen({ port, host: '127.0.0.1' }).
+const portArgument = /^\d+$/u;
 
 function listensOnLoopback(args) {
   const parts = topLevelParts(stripComments(args));
@@ -218,7 +221,7 @@ export function checkFile(path, bytes) {
       for (const match of code.matchAll(listenCall)) {
         const args = callArguments(code, match.index + match[0].length - 1);
         if (!listensOnLoopback(args)) {
-          add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen(port, '127.0.0.1') or listen({ port, host: '127.0.0.1' }) with the object written out (AGENTS.md section 6: loopback only)");
+          add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen({ port, host: '127.0.0.1' }) with the object written out, or listen(0, '127.0.0.1') with a literal port (AGENTS.md section 6: loopback only)");
         }
       }
     }
