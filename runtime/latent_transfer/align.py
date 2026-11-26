@@ -73,9 +73,10 @@ def refine_spans(spans, text_length=None):
     it. The boundary between two neighbours is:
     - where the later one starts, when that is at or after everything before it ends,
       so characters no token covers join the token before them;
-    - otherwise the two overlap. A run of n such boundaries in a row is spread evenly
-      over the stretch from the first overlap's start to the last overlap's end: four
-      byte pieces of one character get a quarter each, in token order.
+    - otherwise the two overlap, and the boundary falls inside their overlap. n
+      boundaries in a row over the same overlap divide it into n + 1 equal parts: four
+      byte pieces of one character get a quarter each, in token order. A boundary never
+      comes before the one ahead of it.
     The first boundary is 0. The last is text_length when given (pass it only when the
     spans are the whole text), else the furthest end.
 
@@ -102,9 +103,9 @@ def refine_spans(spans, text_length=None):
             index += 1
             continue
         run = 1
-        while index + run < len(limits) and limits[index + run][0] < limits[index + run][1]:
+        while index + run < len(limits) and limits[index + run] == (low, high):
             run += 1
-        high = limits[index + run - 1][1]
+        low = max(low, bounds[-1])       # an earlier, longer overlap may already reach past `low`
         for step in range(1, run + 1):
             bounds.append(_whole(low + Fraction((high - low) * step, run + 1)))
         index += run
@@ -125,16 +126,28 @@ def ownership(spans, text_length=None):
     """
     wide = _wide(spans)
     end_of_text = max([spans[i][1] for i in wide] + [text_length or 0])
+    # How far each token with characters reaches once the unreported characters after it
+    # are counted in. Those belong to the last token over the character before them,
+    # which after a nested overlap is not the token just before the gap.
+    extent, reach, holder = {}, 0, None
+    for i in wide:
+        start, end = spans[i]
+        if holder is not None and start > reach:
+            extent[holder] = math.floor(start)
+        extent[i] = math.ceil(end)
+        if holder is None or end >= reach:
+            reach, holder = max(reach, end), i
+    if holder is not None:
+        extent[holder] = max(extent[holder], end_of_text)
     touched, finished = [], []
-    reach, slot = None, 0            # slot: index into `wide` of the next token with characters
-    for index, (start, end) in enumerate(spans):
+    far, slot = 0, 0                 # slot: index into `wide` of the next token with characters
+    for index in range(len(spans)):
         if slot < len(wide) and wide[slot] == index:
-            reach = end if reach is None else max(reach, end)
+            far = max(far, extent[index])
             slot += 1
-        following = math.floor(spans[wide[slot]][0]) if slot < len(wide) else end_of_text
-        if slot == 0:
-            following = 0            # nothing with characters yet: a leading gap is the first token's
-        touched.append(0 if reach is None else max(math.ceil(reach), following))
+        # Nothing with characters yet: a leading gap is the first such token's, so nothing is finished.
+        following = 0 if slot == 0 else (math.floor(spans[wide[slot]][0]) if slot < len(wide) else end_of_text)
+        touched.append(far)
         finished.append(following)
     return touched, finished
 
@@ -216,18 +229,20 @@ def sender_positions(sender_spans, receiver_spans, rule=ALIGNMENT_RULE):
             used[start] = seen + 1
             positions.append(float(empty[start][min(seen, len(empty[start]) - 1)]))
             continue
-        middle = Fraction(start + end) / 2
+        # Whole-character spans use rule 1's own float arithmetic from the midpoint on, so
+        # text that needs no refinement gets bit-identical positions under both rules.
+        whole = type(start) is int and type(end) is int
+        middle = (start + end) / 2 if whole else Fraction(start + end) / 2
         slot = bisect.bisect_right(starts, middle) - 1
         if slot < 0:
             positions.append(0.0)
             continue
         a, b = receiver_spans[wide[slot]]
-        if all(type(value) is int for value in (start, end, a, b)):
-            # Whole-character spans: rule 1's own float arithmetic, so text that needs no
-            # refinement gets bit-identical positions under both rules.
-            fraction = min(1.0, max(0.0, ((start + end) / 2 - a) / (b - a)))
+        if whole and type(a) is int and type(b) is int:
+            fraction = min(1.0, max(0.0, (middle - a) / (b - a)))
             positions.append(max(0.0, wide[slot] + fraction - 0.5))
             continue
+        middle = Fraction(start + end) / 2
         fraction = min(Fraction(1), max(Fraction(0), (middle - a) / (b - a)))
         positions.append(float(max(Fraction(0), wide[slot] + fraction - Fraction(1, 2))))
     return positions

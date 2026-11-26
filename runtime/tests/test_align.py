@@ -38,7 +38,9 @@ FIXTURES = [(PHI_EMOJI, 7), (GRANITE_EMOJI, 7), (QWEN_EMOJI, 7), (QWEN_COMBINING
             ([(0, 3), (0, 3)], 3), ([(0, 2), (2, 3)], 3), ([(0, 1), (1, 3)], 3), ([(2, 2), (2, 3)], 3),
             ([(0, 2), (0, 2)], 2), ([(0, 1), (1, 2)], 2), ([(0, 1), (0, 0), (1, 2)], 2), ([(0, 0), (0, 2)], 2),
             ([(0, 3), (1, 4)], 4), ([(0, 4), (0, 4), (0, 0), (0, 4)], 4), ([(0, 1), (1, 1), (2, 4)], 4),
-            ([(0, 3), (2, 2), (3, 4)], 4), ([(0, 2), (0, 2), (0, 3), (0, 3), (0, 3)], 3), ([(0, 1), (2, 3), (0, 0)], 3)]
+            ([(0, 3), (2, 2), (3, 4)], 4), ([(0, 2), (0, 2), (0, 3), (0, 3), (0, 3)], 3), ([(0, 1), (2, 3), (0, 0)], 3),
+            ([(0, 4), (1, 2), (6, 7)], 7), ([(0, 4), (4, 7)], 7), ([(0, 4), (1, 2)], 7), ([(0, 2), (0, 6), (5, 7)], 7),
+            ([(0, 4), (1, 2), (6, 7), (7, 7)], 7), ([(0, 3)], 3)]
 
 
 def owners(raw, length):
@@ -59,6 +61,8 @@ def oracle(raw, length):
                for i in range(len(raw))]
     finished = [next((char for char in range(length) if any(k > i for k in table[char])), length)
                 for i in range(len(raw))]
+    if not any(end > start for start, end in raw):
+        finished = [0] * len(raw)     # tokens without characters only: nothing is ever finished
     return touched, finished
 
 
@@ -137,9 +141,12 @@ class RefineSpansTest(unittest.TestCase):
         self.assertEqual(refine_spans([(0, 2), (0, 2)]), [(0, 1), (1, 2)])
         self.assertEqual(refine_spans([(0, 4), (1, 2)]), [(0, Fraction(5, 2)), (Fraction(5, 2), 4)])
         # Review round 2: neighbouring overlaps of different lengths raised.
-        fifth = Fraction(3, 5)
+        third, ninth = Fraction(1, 3), Fraction(1, 9)
         self.assertEqual(refine_spans([(0, 2), (0, 2), (0, 3), (0, 3), (0, 3)]),
-                         [(0, fifth), (fifth, 2 * fifth), (2 * fifth, 3 * fifth), (3 * fifth, 4 * fifth), (4 * fifth, 3)])
+                         [(0, 2 * third), (2 * third, 4 * third), (4 * third, 17 * ninth), (17 * ninth, 22 * ninth),
+                          (22 * ninth, 3)])
+        # Review round 3: every boundary stays inside the overlap it divides.
+        self.assertEqual(refine_spans([(0, 2), (0, 100), (99, 101)]), [(0, 1), (1, Fraction(199, 2)), (Fraction(199, 2), 101)])
 
     def test_refined_spans_tile_the_text(self):
         for raw, length in FIXTURES:
@@ -221,6 +228,11 @@ class CausalityTest(unittest.TestCase):
         self.assertEqual(ownership([(2, 2), (2, 3)], 3), ([0, 3], [0, 3]), "a leading gap is the first token's")
         self.assertEqual(ownership([(0, 3), (0, 3)], 3), ([3, 3], [0, 3]))
         self.assertEqual(ownership([], 4), ([], []))
+        # Tokens without characters only: nothing touched, nothing finished, nothing to keep.
+        self.assertEqual(ownership([(3, 3)], 3), oracle([(3, 3)], 3))
+        self.assertEqual(ownership([(3, 3)], 3), ([0], [0]))
+        aligned = align_document([(0, 3)], [(3, 3)], 3)
+        self.assertEqual((aligned.sender_keep, aligned.receiver_keep), ([], []))
 
     def test_ownership_matches_the_oracle(self):
         for raw, length in FIXTURES:
@@ -249,6 +261,20 @@ class CausalityTest(unittest.TestCase):
                          [[False, False], [True, True]])
         self.assertEqual(causal_mask([(0, 1), (1, 3)], [(0, 3), (0, 3)], text_length=3),
                          [[False, False], [True, True]])
+
+    def test_a_gap_after_a_nested_overlap_belongs_to_the_token_that_reaches_it(self):
+        # Review round 3: characters 4 and 5 are reported by no sender token. They follow
+        # character 3, which token 0 covers, not the nested token 1; token 0 was credited with
+        # four characters and a receiver token ending at 4 read it.
+        sender, receiver = [(0, 4), (1, 2), (6, 7)], [(0, 4), (4, 7)]
+        self.assertEqual(ownership(sender, 7), ([6, 6, 7], [1, 6, 7]))
+        self.assertEqual(ownership(sender), ([6, 6, 7], [1, 6, 7]))
+        self.assertEqual(causal_mask(sender, receiver, text_length=7), [[False, False, False], [True, True, True]])
+        self.assertEqual(ownership([(0, 4), (1, 2)], 7), ([7, 7], [1, 7]), "and a trailing gap")
+        # The read must not survive truncation either.
+        aligned = align_document(sender + [(7, 8)], receiver + [(7, 8)], 8, 3)
+        self.assertEqual((aligned.sender_keep, aligned.receiver_keep), ([0, 1, 2], [0, 1]))
+        self.assertEqual(aligned.mask(), [[False, False, False], [True, True, True]])
 
     def test_a_token_without_characters_carries_what_came_before_it(self):
         # Review round 1: the sender's zero-width token was written after it read character 0,
@@ -328,6 +354,10 @@ class CausalityTest(unittest.TestCase):
             # last digit than rule 1 on clean text (thirds and sevenths show it).
             odd_s, odd_r = [(0, 1), (1, 3), (3, 10), (10, 21)], [(0, 3), (3, 6), (6, 13), (13, 21)]
             self.assertEqual(sender_positions(odd_s, odd_r, rule), sender_positions(odd_s, odd_r, RULE_RAW))
+            # Review round 3: offsets too large for a float midpoint chose a different token.
+            far = 2 ** 55
+            huge = [(0, far)] + [(far + i, far + i + 1) for i in range(8)]
+            self.assertEqual(sender_positions(huge, huge, rule), sender_positions(huge, huge, RULE_RAW))
             self.assertEqual(visible_counts(sender, receiver, rule), [1, 1, 4, 5])
             self.assertEqual(causal_mask(sender, receiver, rule),
                              [[s_end <= r_end for _, s_end in sender] for _, r_end in receiver])
