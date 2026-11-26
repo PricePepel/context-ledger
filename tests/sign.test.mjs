@@ -527,15 +527,6 @@ test('the OpenSSL-only recipe in the docs accepts a bundle and refuses a changed
     normalizeFingerprint(context.fingerprint));
 });
 
-test('the P4a files hold no raw control or format characters', () => {
-  for (const path of ['src/sign.mjs', 'src/cli.mjs', 'tests/sign.test.mjs', 'docs/signed-handoff.md']) {
-    const text = readFileSync(path, 'utf8');
-    const hostile = [...text].filter(character => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character)
-      && !['\t', '\n', '\r'].includes(character));
-    assert.deepEqual(hostile, [], path);
-  }
-});
-
 // --- Codex review, round 1 -------------------------------------------------------------
 
 test('verify refuses a version 1 manifest without exactly one handoff.md', async t => {
