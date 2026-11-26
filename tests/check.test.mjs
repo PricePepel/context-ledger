@@ -149,9 +149,11 @@ test('round 1 high: only a top-level host that is not overridden counts as loopb
     "server.listen({ port: 0, host: '127.0.0.1', host: '0.0.0.0' });",
     "server.listen({ host: '127.0.0.1', ...options });",
     'server.listen({ port: 0, host });',
+    // Since round 6 a spread anywhere counts as not loopback: it may carry fd or path.
+    "server.listen({ ...options, host: '127.0.0.1' });",
   ];
   for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
-  const pass = ["server.listen({ ...options, host: '127.0.0.1' });", "server.listen({ 'host': '127.0.0.1', port });"];
+  const pass = ["server.listen({ 'host': '127.0.0.1', port });"];
   for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
 });
 
@@ -225,6 +227,20 @@ test('round 5: optional chaining before write, and a loop target, are HTML sinks
   for (const line of ['iframe.contentWindow.document?.write(transcript.text);', "frame.document?.['write'](text);", 'for (preview.innerHTML of messages) capture();', "for (preview['outerHTML'] in table) capture();"]) {
     assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
   }
+});
+
+test('round 6: an options key that may bind elsewhere makes listen count as not loopback', () => {
+  for (const line of ["server.listen({ port: 4317, host: '127.0.0.1', fd: inheritedSocket });", "server.listen({ host: '127.0.0.1', path: socketPath });", "server.listen({ host: '127.0.0.1', handle });", "server.listen({ host: '127.0.0.1', [key]: value });", "server.listen({ host: '127.0.0.1', ...rest });"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
+  assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen({ port, host: '127.0.0.1', backlog: 64, exclusive: true, signal });")), []);
+});
+
+test('round 6: write on a variable that holds a document is an HTML sink', () => {
+  for (const line of ['const doc = iframe.contentDocument; doc.write(transcript.text);', 'frame.contentDocument.writeln(text);', 'frameDoc?.write(text);']) {
+    assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
+  }
+  assert.deepEqual(checkFile('public/a.mjs', utf8('stream.write(chunk);')), []);
 });
 
 test('round 5: the ledger server itself listens through a written-out options object', async () => {
