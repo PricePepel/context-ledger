@@ -358,7 +358,7 @@ class ReportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.groups = item_sets.build(squad_rows(), lambda passage: True)
-        cls.keys = ["qwen1.5", "qwen3", "phi3.5", "llama8", "mistral7"]
+        cls.keys = ["qwen1.5", "qwen3", "phi3.5", "granite2", "mistral7"]
         cls.receive = {key: fake_receive(cls.groups, key, cls.keys, system_ok=key != "mistral7") for key in cls.keys}
         cls.summaries = {key: {"summaries": {item["id"]: {"summary": "s", "ms": 800.0, "bytes": 200, "newTokens": 50}
                                              for item in cls.groups["main"]}} for key in cls.keys}

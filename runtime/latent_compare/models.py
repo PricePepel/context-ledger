@@ -3,6 +3,11 @@
 Licence and tokenizer family are facts about the published checkpoints, written here so the
 report can print them without a network call. The KV shape is read from each model's config
 when it loads and saved with the run, so the table shows what was measured.
+
+Only checkpoints that load in torch with the venv as it is are listed. The 4-bit Llama-3.1-8B
+and Mistral-7B checkpoints on this machine are GPTQ format and need `optimum`, and the 4-bit
+Granite-3.1-8B decompresses to 16 GB of dense weights, so those three are not here
+(docs/evals.md, L2). Llama-3.2-3B is gated and needs a Hugging Face token.
 """
 
 MODELS = {
@@ -17,27 +22,20 @@ MODELS = {
     },
     "qwen7": {
         "id": "RedHatAI/Qwen2.5-7B-Instruct-FP8-dynamic", "family": "Qwen2.5", "params": "7B",
-        "weights": "FP8 (compressed-tensors)", "licence": "Apache-2.0",
+        "weights": "FP8 checkpoint, decompressed to bf16 in torch", "licence": "Apache-2.0",
         "tokenizer": "byte-level BPE, 151k (Qwen2)", "template": "ChatML", "dtype": "auto",
     },
     "phi3.5": {
         "id": "microsoft/Phi-3.5-mini-instruct", "family": "Phi-3", "params": "3.8B", "weights": "bf16",
         "licence": "MIT", "tokenizer": "SentencePiece BPE, 32k (Llama-2 style)", "template": "Phi-3",
     },
-    "llama8": {
-        "id": "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16", "family": "Llama 3.1", "params": "8B",
-        "weights": "4-bit (compressed-tensors)", "licence": "Llama 3.1 Community",
-        "tokenizer": "byte-level BPE, 128k (tiktoken style)", "template": "Llama 3", "dtype": "auto",
+    "granite2": {
+        "id": "ibm-granite/granite-3.1-2b-instruct", "family": "Granite 3.1", "params": "2.5B", "weights": "bf16",
+        "licence": "Apache-2.0", "tokenizer": "byte-level BPE, 49k (GPT-2 style)", "template": "Granite 3",
     },
     "mistral7": {
-        "id": "RedHatAI/Mistral-7B-Instruct-v0.3-quantized.w4a16", "family": "Mistral", "params": "7B",
-        "weights": "4-bit (compressed-tensors)", "licence": "Apache-2.0",
-        "tokenizer": "SentencePiece BPE, 32.8k (Mistral v3)", "template": "Mistral [INST]", "dtype": "auto",
-    },
-    "granite8": {
-        "id": "RedHatAI/granite-3.1-8b-instruct-quantized.w4a16", "family": "Granite 3.1", "params": "8B",
-        "weights": "4-bit (compressed-tensors)", "licence": "Apache-2.0",
-        "tokenizer": "byte-level BPE, 49k (GPT-2 style)", "template": "Granite 3", "dtype": "auto",
+        "id": "mistralai/Mistral-7B-Instruct-v0.3", "family": "Mistral", "params": "7.2B", "weights": "bf16",
+        "licence": "Apache-2.0", "tokenizer": "SentencePiece BPE, 32.8k (Mistral v3)", "template": "Mistral [INST]",
     },
 }
 
