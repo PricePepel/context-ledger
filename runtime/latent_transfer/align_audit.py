@@ -14,6 +14,7 @@ ChatML header that M2b documents start with. Only counts leave this program.
 """
 import argparse
 import json
+import math
 import re
 
 from .align import (KINDS, RULE_RAW, RULE_REFINED, align_document, blind_receiver, causal_mask, classify,
@@ -142,7 +143,7 @@ class Audited:
                 continue
             got = text[start:end].encode("utf-8")
             want = token.encode("utf-8") if token in self.special else surface(token, self.byte_level)
-            if want == got or (want[:1] == b" " and want[1:] == got):
+            if want == got or (not self.byte_level and want[:1] == b" " and want[1:] == got):
                 counts["exact"] += 1          # the second form is SentencePiece's word marker
             elif want and want in got:
                 counts["piece"] += 1          # part of a character, or a span rounded out to one
@@ -154,22 +155,35 @@ class Audited:
         return counts
 
 
-def identity_ok(spans):
-    """With the same tokenizer on both sides: position i for token i, lower-triangular mask."""
+def identity_ok(spans, rule):
+    """With the same tokenizer on both sides: position i for token i, and no token reads a later one."""
     size = len(spans)
-    return sender_positions(spans, spans) == [float(i) for i in range(size)] and \
-        causal_mask(spans, spans) == [[i <= j for i in range(size)] for j in range(size)]
+    mask = causal_mask(spans, spans, rule)
+    return sender_positions(spans, spans, rule) == [float(i) for i in range(size)] and         not any(mask[j][i] for j in range(size) for i in range(j + 1, size))
+
+
+def covered(spans):
+    """The characters under the tokens (a character shared with a neighbour counts)."""
+    return {char for start, end in spans for char in range(math.floor(start), math.ceil(end))}
 
 
 def pair_stats(sender, receiver, texts, max_tokens=None):
-    """Counts over the texts for one ordered pair. Without max_tokens nothing is truncated."""
-    out = {"texts": 0, "sameBoundaries": 0, "senderTokens": 0, **{kind: 0 for kind in KINDS},
-           "rule1": {"dropped": 0, "unreadSender": 0, "blindReceiver": 0, "lostCoverageChars": 0},
-           "rule2": {"dropped": 0, "unreadSender": 0, "blindReceiver": 0, "lostCoverageChars": 0, "emptyTexts": 0},
-           "changedTexts": 0, "changedSenderTokens": 0}
+    """Counts over the texts for one ordered pair. Without max_tokens nothing is truncated.
+
+    sameBoundaries and the five kinds are measured on refined spans (rule 2). Per rule:
+    dropped = tokens within the budget that the cut removed; unreadSender = kept sender
+    tokens no kept receiver token may read; blindReceiver = kept receiver tokens that read
+    no sender token; lostCoverageChars = characters under one side's kept tokens and not
+    under the other's; emptyTexts = texts where a side kept nothing (make_pair refuses them).
+    """
+    def rule_stats():
+        return {"dropped": 0, "unreadSender": 0, "blindReceiver": 0, "lostCoverageChars": 0, "emptyTexts": 0}
+    out = {"texts": 0, "noTokens": 0, "sameBoundaries": 0, "senderTokens": 0, **{kind: 0 for kind in KINDS},
+           "rule1": rule_stats(), "rule2": rule_stats(), "changedTexts": 0, "changedSenderTokens": 0}
     for text in texts:
         (_, s_raw), (_, r_raw) = sender.encode(text), receiver.encode(text)
         if not s_raw or not r_raw:
+            out["noTokens"] += 1
             continue
         out["texts"] += 1
         s_ref, r_ref = refine_spans(s_raw, len(text)), refine_spans(r_raw, len(text))
@@ -186,14 +200,14 @@ def pair_stats(sender, receiver, texts, max_tokens=None):
             limit_s, limit_r = (min(len(s_raw), max_tokens or len(s_raw)), min(len(r_raw), max_tokens or len(r_raw)))
             stats = out[key]
             stats["dropped"] += limit_s - len(keep_s) + limit_r - len(keep_r)
+            stats["unreadSender"] += sum(unread_sender(s_spans, r_spans, rule))
+            stats["blindReceiver"] += sum(blind_receiver(s_spans, r_spans, rule))
+            stats["lostCoverageChars"] += len(covered(s_spans) ^ covered(r_spans))
             if not keep_s or not keep_r:
-                stats["emptyTexts"] = stats.get("emptyTexts", 0) + 1
+                stats["emptyTexts"] += 1
                 continue
-            stats["unreadSender"] += sum(unread_sender(s_spans, r_spans))
-            stats["blindReceiver"] += sum(blind_receiver(s_spans, r_spans))
-            # Characters under one side's kept tokens that the other side's kept tokens do not reach.
-            stats["lostCoverageChars"] += abs(max(end for _, end in s_spans) - max(end for _, end in r_spans))
-            results[rule] = (keep_s, keep_r, sender_positions(s_spans, r_spans), causal_mask(s_spans, r_spans))
+            results[rule] = (keep_s, keep_r, sender_positions(s_spans, r_spans, rule),
+                             causal_mask(s_spans, r_spans, rule))
         if len(results) == 2:
             a, b = results[RULE_RAW], results[RULE_REFINED]
             if a[:2] != b[:2]:
@@ -211,6 +225,13 @@ def pair_stats(sender, receiver, texts, max_tokens=None):
 
 def jaccard(a, b):
     return len(a.surfaces & b.surfaces) / len(a.surfaces | b.surfaces)
+
+
+def containment(a, b):
+    """Share of the smaller vocabulary that the larger one also has. Jaccard cannot exceed
+    the ratio of the two sizes, so a 32k and a 150k vocabulary score low even when one
+    holds most of the other."""
+    return len(a.surfaces & b.surfaces) / min(len(a.surfaces), len(b.surfaces))
 
 
 def natural_texts(count, seed=0):
@@ -239,14 +260,15 @@ def run(names, pairs, natural, truncate):
                     total[key] += check[key]
                 total["examples"] = (total["examples"] + check["examples"])[:6]
                 raw = item.encode(text)[1]
-                total["identityFailsRule1"] += not identity_ok(raw)
-                total["identityFailsRule2"] += not identity_ok(refine_spans(raw, len(text)))
+                total["identityFailsRule1"] += not identity_ok(raw, RULE_RAW)
+                total["identityFailsRule2"] += not identity_ok(refine_spans(raw, len(text)), RULE_REFINED)
             entry[label] = total
         entry["emptyText"] = len(item.encode("")[1])
         report["tokenizers"][name] = entry
     for sender, receiver in pairs:
         a, b = audited[sender], audited[receiver]
         entry = {"sender": sender, "receiver": receiver, "vocabularyJaccard": round(jaccard(a, b), 4),
+                 "vocabularyContainment": round(containment(a, b), 4),
                  "edge": pair_stats(a, b, edge), "natural": pair_stats(a, b, natural),
                  # The texts the M2b pipeline aligns: the passage behind its ChatML header.
                  "pipeline": pair_stats(a, b, pipeline),
@@ -256,15 +278,16 @@ def run(names, pairs, natural, truncate):
 
 
 def table(report):
-    lines = ["| Sender to receiver | Vocabulary Jaccard | Same boundaries (edge / natural texts) | One-to-one "
-             "(edge / natural) | One-to-many | Many-to-one | Crossing | Unaligned |",
-             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    lines = ["| Sender to receiver | Vocabulary Jaccard | Smaller vocabulary found in the larger | Same boundaries "
+             "(edge / natural texts) | One-to-one (edge / natural) | One-to-many | Many-to-one | Crossing | Unaligned |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for entry in report["pairs"]:
         edge, natural = entry["edge"], entry["natural"]
 
         def both(key, whole):
             return f"{share(edge[key], edge[whole])} / {share(natural[key], natural[whole])}"
         lines.append(f"| {entry['sender']} to {entry['receiver']} | {entry['vocabularyJaccard']} | "
+                     f"{entry['vocabularyContainment']} | "
                      f"{both('sameBoundaries', 'texts')} | {both('one_to_one', 'senderTokens')} | "
                      f"{both('one_to_many', 'senderTokens')} | {both('many_to_one', 'senderTokens')} | "
                      f"{both('crossing', 'senderTokens')} | {both('unaligned', 'senderTokens')} |")

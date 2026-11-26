@@ -3,7 +3,8 @@ from dataclasses import dataclass
 
 import torch
 
-from .align import ALIGNMENT_RULE, RULE_RAW, align_document, blind_receiver, sender_positions, unread_sender
+from .align import (ALIGNMENT_RULE, RULE_RAW, align_document, blind_receiver, reading_keys, sender_positions,
+                    unread_sender)
 
 
 @dataclass
@@ -51,7 +52,8 @@ def make_pair(sender_tokenizer, receiver_tokenizer, texts, max_tokens=384, rule=
             raise ValueError("A document produced no tokens on one side.")
         sender_rows.append(([s_ids[i] for i in keep_s], s_spans))
         receiver_rows.append(([r_ids[i] for i in keep_r], r_spans))
-        dropped.append([min(len(s_ids), max_tokens) - len(keep_s), min(len(r_ids), max_tokens) - len(keep_r)])
+        budget = max(len(s_ids), len(r_ids)) if max_tokens is None else max_tokens
+        dropped.append([min(len(s_ids), budget) - len(keep_s), min(len(r_ids), budget) - len(keep_r)])
     sender_ids = pad([ids for ids, _ in sender_rows], 0)
     receiver_ids = pad([ids for ids, _ in receiver_rows], 0)
     sender_mask = pad([[1] * len(ids) for ids, _ in sender_rows], 0)
@@ -63,13 +65,12 @@ def make_pair(sender_tokenizer, receiver_tokenizer, texts, max_tokens=384, rule=
     unread = torch.zeros(batch, s_len, dtype=torch.bool)
     blind = torch.zeros(batch, r_len, dtype=torch.bool)
     for row, ((_, s_spans), (_, r_spans)) in enumerate(zip(sender_rows, receiver_rows)):
-        positions[row, :len(s_spans)] = torch.tensor(sender_positions(s_spans, r_spans))
-        # align.causal_mask, vectorized: sender token end <= receiver token end. Refined
-        # spans can be exact fractions; equal fractions give equal float64 values.
-        s_ends = torch.tensor([float(end) for _, end in s_spans], dtype=torch.float64)
-        r_ends = torch.tensor([float(end) for _, end in r_spans], dtype=torch.float64)
-        allowed[row, :len(r_spans), :len(s_spans)] = s_ends[None, :] <= r_ends[:, None]
-        unread[row, :len(s_spans)] = torch.tensor(unread_sender(s_spans, r_spans))
-        blind[row, :len(r_spans)] = torch.tensor(blind_receiver(s_spans, r_spans))
+        positions[row, :len(s_spans)] = torch.tensor(sender_positions(s_spans, r_spans, rule))
+        # align.causal_mask, vectorized over integer keys (rule 1: the raw span ends), so
+        # the comparison is exact whatever fractions the refined spans hold.
+        s_keys, r_keys = reading_keys(s_spans, r_spans, rule)
+        allowed[row, :len(r_spans), :len(s_spans)] = torch.tensor(s_keys)[None, :] <= torch.tensor(r_keys)[:, None]
+        unread[row, :len(s_spans)] = torch.tensor(unread_sender(s_spans, r_spans, rule))
+        blind[row, :len(r_spans)] = torch.tensor(blind_receiver(s_spans, r_spans, rule))
     return Pair(sender_ids, sender_mask, receiver_ids, receiver_mask, positions, allowed,
                 unread, blind, torch.tensor(dropped))

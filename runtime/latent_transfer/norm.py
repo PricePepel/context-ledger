@@ -73,32 +73,43 @@ def embedding_norm_stats(model):
 
 
 def _scale(observed, target, max_scale):
+    """target / observed where observed > 0, else 1; safe to differentiate at zero."""
     import torch
     if max_scale is not None and max_scale < 1:
         raise ValueError("max_scale must be at least 1.")
-    scale = target / observed.clamp(min=1e-30)
+    positive = observed > 0
+    scale = target / torch.where(positive, observed, torch.ones_like(observed))
     if max_scale is not None:
         scale = scale.clamp(min=1.0 / max_scale, max=max_scale)
-    return torch.where(observed > 0, scale, torch.ones_like(scale))
+    return torch.where(positive, scale, torch.ones_like(scale))
+
+
+def _root(energy):
+    """sqrt that is 0 with a zero gradient at 0 (plain sqrt gives an infinite one)."""
+    import torch
+    positive = energy > 0
+    return torch.where(positive, torch.where(positive, energy, torch.ones_like(energy)).sqrt(),
+                       torch.zeros_like(energy))
 
 
 def calibrate_states(states, target, mask=None, per_token=False, max_scale=None):
     """states [B, T, D] -> the same shape with norms moved to `target` (a number).
 
     mask [B, T] marks real tokens. Each row of the batch is calibrated on its own, so a
-    row gives the same result alone and inside a padded batch.
+    row gives the same result alone and inside a padded batch. Padding is returned as it
+    came in and never enters the statistics, whatever it holds.
     """
     import torch
-    values = states.float()
-    norms = values.norm(dim=-1)                                  # [B, T]
-    real = torch.ones_like(norms) if mask is None else mask.to(norms.dtype)
+    real = torch.ones(states.shape[:-1], dtype=torch.bool, device=states.device) if mask is None \
+        else mask.to(states.device).bool()
+    values = torch.where(real[..., None], states.float(), torch.zeros((), device=states.device))
+    norms = _root((values ** 2).sum(-1))                         # [B, T], 0 on padding
     if per_token:
         observed = norms
     else:
-        observed = ((norms * real).sum(-1) / real.sum(-1).clamp(min=1))[:, None].expand_as(norms)
+        observed = (norms.sum(-1) / real.sum(-1).clamp(min=1))[:, None].expand_as(norms)
     scale = _scale(observed, target, max_scale)
-    scale = torch.where(real > 0, scale, torch.ones_like(scale))
-    return (values * scale[..., None]).to(states.dtype)
+    return torch.where(real[..., None], (values * scale[..., None]).to(states.dtype), states)
 
 
 def calibrate_cache(keys, values, sigma, mask, max_scale=None):
@@ -107,16 +118,17 @@ def calibrate_cache(keys, values, sigma, mask, max_scale=None):
 
     keys/values: L x [B, H, T, d] at receiver scale, keys before RoPE; mask [B, T].
     `sigma` is the RMS per element, as `mapper.calibrate_sigma` measures it on real
-    receiver caches, so no new statistics are needed. Padding is not rescaled apart
-    from its row's scale; it is masked out downstream.
+    receiver caches, so no new statistics are needed. Padding is returned as it came in
+    and never enters the statistics.
     """
-    weight = mask.float()[:, None, :, None]                      # [B, 1, T, 1]
-    count = (mask.float().sum(-1).clamp(min=1) * keys[0].shape[-1])[:, None]   # [B, 1]
+    import torch
+    real = mask.to(keys[0].device).bool()[:, None, :, None]      # [B, 1, T, 1]
+    count = (real.sum((2, 3)).clamp(min=1) * keys[0].shape[-1]).float()        # [B, 1]
     out = ([], [])
     for kind, tensors in enumerate((keys, values)):
         for layer, tensor in enumerate(tensors):
-            observed = ((tensor.float() ** 2 * weight).sum((2, 3)) / count).sqrt()     # [B, H]
-            target = sigma[layer, :, kind].float().to(observed.device)[None]
-            scale = _scale(observed, target, max_scale)
-            out[kind].append((tensor.float() * scale[:, :, None, None]).to(tensor.dtype))
+            inside = torch.where(real, tensor.float(), torch.zeros((), device=tensor.device))
+            observed = _root((inside ** 2).sum((2, 3)) / count)                # [B, H]
+            scale = _scale(observed, sigma[layer, :, kind].float().to(observed.device)[None], max_scale)
+            out[kind].append(torch.where(real, (inside * scale[:, :, None, None]).to(tensor.dtype), tensor))
     return out
