@@ -28,6 +28,12 @@ For the `cross-model` and `statebridge` sessions:
 - **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
 
 Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+## Current checkpoint: H14 Windows-only browser test flakes (2026-11-27)
+
+Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
+
+Next owner: H15. The Node suite on #100 failed because the server's Windows token-file write (PowerShell, 30 s timeout, `src/token.mjs`) did not finish under load, so the server exited. That code guards the token file, so Ruslan approves its merge.
+
 ## Current checkpoint: H10 label lengths in code points (2026-11-26)
 
 `scripts/check.mjs` has a fourth rule, `label-length`: a label's `.length` next to a comparison must count code points (`[...label].length`), as JSON Schema `maxLength` and the graph schemas do. Its first run found that latent findings dropped labels of 500 emoji; fixed with a test. The store double-close candidate was dropped: no pattern finds it without understanding control flow, and its tests cover it. Next owner: add a rule the next time a review finding repeats a kind already seen (H13 writes that into AGENTS.md).
@@ -56,6 +62,19 @@ PR #76: before a live run the ledger times each server alone (one untimed warm-u
 
 100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
 
+
+## Current checkpoint — L4 training-free alignment does not replace the mapper (2026-11-27)
+
+Card L4 tested whether a closed-form alignment in the style of StateBridge (arXiv 2608.13317) can stand in for the trained M2b-S mapper, so that 5 to 8 models would not each need a trained pair. It cannot, on this evidence. On the 300 M2b-S SQuAD questions and seven model pairs, no pair and no variant passes the rule fixed before the runs (beat a mismatched prefix with a 95% interval above zero, and be at least as good as the sender's text summary): 0 of 28. Phi-3.5-mini to Qwen2.5-1.5B: best aligned prefix F1 0.192, text summary 0.461, no passage 0.191, trained mapper 0.872. Tables, intervals, timings and the edge cases are in evals (L4).
+
+Two things worth keeping from the card:
+
+- **The paper does not do what its abstract suggests for us.** It only ever uses one model for all agents, and its map is fitted on each message against that message's own token embeddings. With 64 rows in a space of thousands of dimensions, and tokens that do not repeat, that fit returns the token embeddings whatever the hidden states were (unit tests show it and its two conditions). On real Qwen2.5-3B summaries, where tokens do repeat, swapping in another passage's hidden states changes the prefix by 7% and leaves 280 of 300 answers unchanged, and the prefix scores like the plain token embeddings (0.447 against 0.448, difference within 0.01) and slightly below the summary as text. We did not rerun the paper's benchmarks, so where its reported gains come from is untested.
+- **Why the cross-model version fails.** Two models' vocabulary tables do line up under one rotation (81% to 100% of held-out entries land on their own row), but final-layer hidden states are not vocabulary rows: mapped states land on the right row 0% to 23% of the time, and a map fitted on real states reaches 29% to 47%, which carries a trace of the passage (0.045 to 0.172 F1 over a mismatched prefix, in 11 of 14 checks) but stays 0.22 to 0.38 F1 below the text summary and is not reliably above no passage at all. These diagnostics describe the failure; they do not isolate its cause.
+
+Code, all in new files: `runtime/latent_transfer/statebridge.py` (the arithmetic), `statebridge_anchors.py`, `statebridge_stats.py`, `statebridge_eval.py` (one command per pair), `statebridge_edge.json`, `runtime/tests/test_statebridge.py` (36 tests). `align.py` is untouched.
+
+Next owner: keep the trained mapper for cross-model hand-offs and text where no mapper exists. If someone wants to push this line further, the open question is not another closed-form map but whether one small trained piece can be shared across pairs (a common space with one adapter per model, trained once per model rather than once per pair); that would be a new card with the same mismatched control. Not done here: a multi-step reasoning task like the paper's, a Llama pair (gated, not on the machine), and any search over `K`, `α` and `λ`.
 
 ## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
 
