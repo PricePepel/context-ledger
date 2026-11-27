@@ -1,6 +1,6 @@
 # Many agents on one small GPU: research and plan
 
-Written 2026-11-21 from three research passes (KV memory, weights and serving, latent communication at scale). The full reports, with every source, were kept outside the repository; this page keeps the decisions and the numbers we rely on. Each number is marked **measured** (by the cited source), **computed** (from model configs) or **estimated** (our arithmetic). Nothing here was measured on our laptop yet; the checks at the end turn the estimates into measurements.
+Written 2026-11-21 from three research passes (KV memory, weights and serving, latent communication at scale). The full reports, with every source, were kept outside the repository; this page keeps the decisions and the numbers we rely on. Each number is marked **measured** (by the cited source), **computed** (from model configs) or **estimated** (our arithmetic). The levers were measured on our laptop in card L1 (2026-11-26 and 27); the section "What to turn on" below gives the measured result, and the rest of this page still marks which numbers are computed or estimated.
 
 ## The question
 
@@ -36,7 +36,7 @@ Qwen2.5-7B is unusually cheap per token for its size; newer Qwen3 4B–8B models
 - **Personas, not adapters:** a rank-16 LoRA on Qwen2.5-7B is about 81 MB (computed). Give 100 agents system prompts and memory; keep 2–4 skill adapters at most.
 - **Small models are weak at multi-turn tool use** (BFCL V4, measured: Llama-3.2-3B 4.0, Gemma-3-4B 0.4, Qwen3-1.7B 11). Workers below 7B need a tool-tuned model, and its licence must be checked before customer use.
 - **Speculative decoding:** n-gram only (no extra memory). No draft models on 16 GB. Never offload weights to CPU.
-- **Starting configuration:** Qwen2.5-7B-AWQ, `--gpu-memory-utilization 0.90`, prefix caching and chunked prefill on, KV offload on, `--max-num-seqs 32` then raise.
+- **Starting configuration (before L1, superseded by "What to turn on"):** Qwen2.5-7B-AWQ, `--gpu-memory-utilization 0.90`, prefix caching and chunked prefill on, KV offload on, `--max-num-seqs 32` then raise.
 
 ## Latent hand-offs at this scale
 
@@ -66,7 +66,7 @@ Qwen2.5-7B is unusually cheap per token for its size; newer Qwen3 4B–8B models
 
 ## Measure first
 
-Before building on the estimates: read vLLM's startup log (weights, CUDA graph memory, KV tokens), run 25, 50 and 100 agents with n-gram speculation on and off, record the prefix-cache hit rate, and run a short multi-turn tool eval comparing the 7B with a 3B.
+Done in L1 for the startup log (weights 5.29 GiB, CUDA graphs 0.61 GiB, KV pool 7.32 GiB = 137,136 tokens) and for 25, 50 and 100 agents with the prefix-cache hit rate. Still to do: 100 agents with n-gram speculation on and off, and a short multi-turn tool eval comparing the 7B with a 3B.
 
 ## Closed models
 
