@@ -592,6 +592,27 @@ class PhaseTest(unittest.TestCase):
         self.assertEqual(set(data["results"][self.groups["no_system_role"][0]["id"]]), {"text", "self_cache"})
         self.assertEqual(len(data["results"]), sum(len(rows) for rows in self.groups.values()))
 
+    def test_an_engine_is_closed_when_a_phase_fails(self):
+        # Codex review, round 3: a failure after the model (or a vLLM server) was up left it running.
+        closed = []
+
+        class Breaking(FakeEngine):
+            def summarize(self, passage, limit=None, max_new_tokens=96):
+                raise KeyboardInterrupt()
+
+            def prepare(self, *args, **kwargs):
+                raise OSError("warm-up timed out")
+
+            def close(self):
+                closed.append(self.key)
+
+        with self.assertRaises(KeyboardInterrupt):
+            run.phase_summaries(self.out, "qwen3", self.groups, engine_factory=Breaking)
+        with self.assertRaises(OSError):
+            run.phase_receive(self.out, "qwen3", self.groups, ["qwen3"], engine_factory=Breaking)
+        self.assertEqual(closed, ["qwen3", "qwen3"])
+        self.assertFalse(os.path.exists(os.path.join(self.out, "receive", "qwen3.json")))
+
     def test_a_finished_phase_is_not_run_again(self):
         self.summaries("qwen1.5")
         self.receive("qwen1.5", ["qwen1.5"])
@@ -707,12 +728,20 @@ class FakeVllm(http.server.BaseHTTPRequestHandler):
 
     requests = []
 
+    def do_GET(self):
+        self.do_POST()
+
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length)) if length else {}
         FakeVllm.requests.append((self.path, body))
-        prompt = "".join(chr(token) for token in body["prompt"])
-        reply = json.dumps({"choices": [{"text": " " + "".join(ch for ch in prompt if ch.isdigit()) + " "}],
-                            "usage": {"completion_tokens": 3}}).encode()
+        prompt = "".join(chr(token) for token in body.get("prompt", []))
+        if self.path.endswith("/models"):
+            reply = json.dumps({"data": [{"id": "some/other-model"}]}).encode()
+        else:
+            reply = json.dumps({"choices": [{"text": " " + "".join(ch for ch in prompt if ch.isdigit()) + " \u00e9",
+                                             "finish_reason": "stop"}],
+                                "usage": {"completion_tokens": 4}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(reply)))
@@ -750,8 +779,10 @@ class VllmEngineTest(unittest.TestCase):
         self.assertEqual(path, "/v1/completions")
         self.assertEqual(body["prompt"], prepared["ids"])
         self.assertEqual((body["temperature"], body["max_tokens"], body["add_special_tokens"]), (0, 24, False))
+        self.assertEqual(body["repetition_penalty"], 1.0)     # the checkpoint's 1.05 must not apply
         self.assertEqual(body["model"], "Qwen/Qwen2.5-7B-Instruct-AWQ")
-        self.assertEqual((result["answer"], result["newTokens"]), ("412", 3))
+        # The reply's count includes the end-of-turn token; the torch engine's does not.
+        self.assertEqual((result["answer"], result["newTokens"]), ("412 \u00e9", 3))
         self.assertGreater(result["ms"], 0)
 
     def test_the_prefix_ends_with_the_passage_and_the_rest_is_the_question(self):
@@ -791,7 +822,7 @@ class VllmEngineTest(unittest.TestCase):
 
     def test_a_summary_is_timed_and_measured_in_utf8_bytes(self):
         record = self.engine.summarize("Boxes: 412 \u00e9.")
-        self.assertEqual((record["summary"], record["bytes"], record["truncated"]), ("40412", 5, False))
+        self.assertEqual((record["summary"], record["bytes"], record["truncated"]), ("40412 \u00e9", 8, False))
         self.assertEqual(FakeVllm.requests[0][1]["max_tokens"], 96)
 
     def test_the_cache_arm_is_a_named_refusal_not_an_error(self):
@@ -803,6 +834,44 @@ class VllmEngineTest(unittest.TestCase):
         command = vllm_engine.serve_command("/venv/bin/vllm", "some/model")
         self.assertIn("127.0.0.1", command)
         self.assertNotIn("--kv-cache-dtype", command)      # FP8 KV breaks the AWQ checkpoints here
+        self.assertIn("--no-enable-prefix-caching", command)
+
+    def test_token_counts_leave_out_the_end_of_turn_token_only_when_there_was_one(self):
+        def reply(reason, count):
+            return {"choices": [{"text": "x", "finish_reason": reason}], "usage": {"completion_tokens": count}}
+        self.assertEqual(vllm_engine.new_tokens(reply("stop", 1)), 0)      # an empty answer
+        self.assertEqual(vllm_engine.new_tokens(reply("stop", 5)), 4)
+        self.assertEqual(vllm_engine.new_tokens(reply("length", 24)), 24)
+
+    def test_a_server_already_on_the_port_is_never_taken_for_ours(self):
+        # Codex review, round 3: readiness accepted any server that answered /v1/models.
+        base = self.engine.base_url
+        self.assertEqual(vllm_engine.served_models(base), ["some/other-model"])
+        self.assertIsNone(vllm_engine.served_models("http://127.0.0.1:9/v1", timeout=1))
+        port, vllm_engine.PORT = vllm_engine.PORT, self.server.server_address[1]
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config())
+            self.assertIn("already served", str(raised.exception))
+        finally:
+            vllm_engine.PORT = port
+
+    def engine_config(self):
+        return {"num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "hidden_size": 3584}
+
+    def test_closing_reaps_a_server_whose_leader_already_exited(self):
+        class Gone:
+            pid, waited = 2 ** 22 + 12345, 0
+
+            def wait(self, timeout=None):
+                Gone.waited += 1
+
+        engine = vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config(),
+                                        base_url=self.engine.base_url)
+        engine.process = Gone()
+        engine.close()                     # no ProcessLookupError, and the child is waited for
+        self.assertEqual((engine.process, Gone.waited), (None, 1))
+        engine.close()                     # closing twice is harmless
 
     def test_a_vllm_receiver_records_the_refusal_and_stays_complete(self):
         groups = item_sets.build(squad_rows(), lambda passage: True)
@@ -851,6 +920,10 @@ class LatentResumeTest(unittest.TestCase):
         self.assertEqual(run.mapper_cut(document, sender, receiver, cap=60),
                          {"docTokens": 50, "truncated": True, "keptBytes": 60})
         self.assertEqual(run.mapper_cut("", [], [])["keptBytes"], 0)
+        # Codex review, round 3: the sender ends at character 3, the receiver's tokens end at 2
+        # and 4. The receiver keeps through character 2 only, and bytes are UTF-8 bytes.
+        self.assertEqual(run.mapper_cut("\u00e9bcd", [(0, 3)], [(0, 2), (2, 4)], cap=1)["keptBytes"], 3)
+        self.assertEqual(run.mapper_cut("abcd", [(0, 1)], [(0, 2), (2, 4)], cap=5)["keptBytes"], 0)
 
     def test_a_saved_result_is_reused_only_for_the_registered_checkpoint(self):
         good = {"checkpoint": self.spec["id"], "senderSummaries": True}
@@ -887,6 +960,11 @@ class LatentResumeTest(unittest.TestCase):
             run.note(out, "phi3.5>qwen1.5", None)
             run.save(run.path(out, "latent", "phi3.5__qwen1.5.json"), {**saved, "checkpoint": "0000"})
             self.assertIn("0000", run.collect(out, groups, keys)[2][("phi3.5", "qwen1.5")]["skipped"])
+            # Round 3: a recorded failure wins even when the older file is from another item set.
+            run.note(out, "phi3.5>qwen1.5", "The mapper checkpoint is not on this machine.")
+            run.save(run.path(out, "latent", "phi3.5__qwen1.5.json"), {**saved, "itemsId": "another"})
+            self.assertEqual(run.collect(out, groups, keys)[2][("phi3.5", "qwen1.5")],
+                             {"skipped": "The mapper checkpoint is not on this machine."})
 
 
 class CheckTest(unittest.TestCase):
@@ -933,6 +1011,17 @@ class CheckTest(unittest.TestCase):
         latent["results"][self.groups["long_passage"][0]["id"]]["swat"] = {"error": "ValueError: no tokens"}
         checks = self.build(latent={("phi3.5", "qwen1.5"): latent})["checks"]
         self.assertEqual(checks["edgeCases"]["latent"], {"phi3.5>qwen1.5": 1})
+        self.assertFalse(checks["edgeCases"]["passed"])
+
+    def test_a_refusal_outside_the_vllm_cache_arm_is_missing_work(self):
+        # Codex review, round 3: any refused record was excused, whatever the arm or the backend.
+        receive = {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        for record in receive["qwen3"]["results"].values():          # a torch model
+            record["self_cache"] = {"refused": "unexpected"}
+        checks = self.build(receive)["checks"]
+        self.assertFalse(checks["handoffFaithful"]["models"]["qwen3"])
+        self.assertEqual(checks["coverage"]["complete"], 4)
+        self.assertGreaterEqual(checks["edgeCases"]["missing"]["qwen3"], 200)
         self.assertFalse(checks["edgeCases"]["passed"])
 
     def test_a_model_with_a_failed_arm_is_not_complete(self):

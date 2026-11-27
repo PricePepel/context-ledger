@@ -154,6 +154,9 @@ def edge_section(groups, receive):
         def errors(group):
             return sum(1 for _, record in rows_of(groups, results, group) for value in record.values() if "error" in value)
 
+        def refused(group):
+            return sum(1 for _, record in rows_of(groups, results, group) for value in record.values() if "refused" in value)
+
         def missing(group):
             """Arms a record should hold and does not: an item with no record counts in full."""
             expected = ("text", "self_cache") if group == "no_system_role" else arms
@@ -174,22 +177,22 @@ def edge_section(groups, receive):
                 "passageTokens": round(mean(v["passageTokens"] for v in long_text)) if long_text else None,
                 "keptTokens": round(mean(v["keptTokens"] for v in long_text)) if long_text else None,
                 "maxPromptTokens": max((v["promptTokens"] for v in long_text), default=None),
-                "errors": errors("long_passage"), "missing": missing("long_passage"),
+                "errors": errors("long_passage"), "missing": missing("long_passage"), "refused": refused("long_passage"),
             },
             "tiny_passage": {
                 "one_word": {arm.split(":")[0]: part("tiny_passage", lambda i: i["kind"] == "one_word", arm) for arm in arms},
                 "empty": {arm.split(":")[0]: part("tiny_passage", lambda i: i["kind"] == "empty", arm) for arm in arms},
-                "errors": errors("tiny_passage"), "missing": missing("tiny_passage"),
+                "errors": errors("tiny_passage"), "missing": missing("tiny_passage"), "refused": refused("tiny_passage"),
             },
             "non_english_emoji": {**{arm.split(":")[0]: part("non_english_emoji", lambda i: True, arm) for arm in arms},
-                                  "errors": errors("non_english_emoji"), "missing": missing("non_english_emoji")},
+                                  "errors": errors("non_english_emoji"), "missing": missing("non_english_emoji"), "refused": refused("non_english_emoji")},
             "unanswerable": {
                 "unanswerable": {arm.split(":")[0]: part("unanswerable", lambda i: not i["answerable"], arm) for arm in arms},
                 "control": {arm.split(":")[0]: part("unanswerable", lambda i: i["answerable"], arm,) for arm in arms},
                 "controlAbstained": {arm.split(":")[0]: aggregate(
                     [record for item, record in rows_of(groups, results, "unanswerable") if item["answerable"]],
                     arm, metrics=("abstained",)).get("abstained") for arm in arms},
-                "errors": errors("unanswerable"), "missing": missing("unanswerable"),
+                "errors": errors("unanswerable"), "missing": missing("unanswerable"), "refused": refused("unanswerable"),
             },
             "no_system_role": {
                 "systemRole": data["model"]["systemRole"],
@@ -197,7 +200,7 @@ def edge_section(groups, receive):
                 "self_cache": aggregate([record for _, record in system_rows], "self_cache"),
                 "sameAnswer": same_answer([record for _, record in system_rows], "self_cache", "text"),
                 "vsPlain": paired(joined, "system", "plain"),
-                "errors": errors("no_system_role"), "missing": missing("no_system_role"),
+                "errors": errors("no_system_role"), "missing": missing("no_system_role"), "refused": refused("no_system_role"),
             },
         }
     return edge
@@ -211,10 +214,17 @@ def checks(summary):
     def whole(cell):
         return bool(cell) and cell.get("n") == count
 
+    # The one expected refusal: the cache hand-over arm of a model served by vLLM. A refusal
+    # anywhere else is work that did not happen, and counts as missing.
+    served = {row["key"] for row in summary["models"] if row.get("backend") == "vllm"}
+
+    def excused(key, arm, cell):
+        return cell.get("refused", 0) if key in served and arm == "self_cache" else 0
+
     faithful = {}
     for key, row in main.items():
         cache = row["self_cache"]
-        if cache.get("refused") == count:
+        if key in served and cache.get("refused") == count:
             continue   # served by vLLM: the arm cannot run, which the table says
         interval = (cache.get("vsText") or {}).get("f1")
         faithful[key] = bool(whole(cache) and whole(row["text"]) and cache.get("sameAnswer") is not None
@@ -238,11 +248,12 @@ def checks(summary):
     problems = {}
     for key in order:
         edge = summary["edge"][key]
-        cells = [main[key][arm] for arm in ("text", "closed", "self_cache")]
-        cells += [summary["main"]["t2t"].get(sender, {}).get(key, {}) for sender in order]
-        errors = sum(cell.get("errors", 0) for cell in cells) + sum(group["errors"] for group in edge.values())
-        absent = sum(count - cell.get("n", 0) - cell.get("errors", 0) - cell.get("refused", 0) for cell in cells) \
-            + sum(group["missing"] for group in edge.values())
+        cells = [(arm, main[key][arm]) for arm in ("text", "closed", "self_cache")]
+        cells += [("t2t", summary["main"]["t2t"].get(sender, {}).get(key, {})) for sender in order]
+        errors = sum(cell.get("errors", 0) for _, cell in cells) + sum(group["errors"] for group in edge.values())
+        absent = sum(count - cell.get("n", 0) - cell.get("errors", 0) - excused(key, arm, cell) for arm, cell in cells) \
+            + sum(group["missing"] for group in edge.values()) \
+            + (0 if key in served else sum(group.get("refused", 0) for group in edge.values()))
         problems[key] = {"errors": errors, "missing": absent}
     complete = [key for key, value in problems.items() if not value["missing"] and not value["errors"]]
     result["coverage"] = {"passed": len(complete) >= 5, "complete": len(complete), "models": len(order),
@@ -337,7 +348,7 @@ def render_markdown(summary):
     for key in order:
         r = main["receivers"][key]
         text, closed, cache = r["text"], r["closed"], r["self_cache"]
-        if cache.get("refused"):
+        if cache.get("refused") and not cache.get("n"):
             rows.append([key, f"{num(text.get('f1'))} / {num(text.get('em'))}", num(closed.get("f1")),
                          "not possible through vLLM", "—", "—", num(text.get("ms"), 0), "—", "—",
                          size(text.get("bytes")), "—"])

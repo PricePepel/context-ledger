@@ -105,14 +105,15 @@ def mismatch_index(rows, index):
 
 
 def mapper_cut(document, sender_offsets, receiver_offsets, cap=MAPPER_TOKENS):
-    """What latent_transfer keeps of a document: each side is cut to `cap` tokens, then both
-    are cut to the earlier of the two ends (batch.cut_to_common_end). Returns
-    {docTokens, truncated, keptBytes}; docTokens counts the receiver's tokens."""
+    """What latent_transfer keeps of a document on the receiver's side: each side is cut to
+    `cap` tokens, then both keep only the tokens that end within the earlier of the two ends
+    (batch.cut_to_common_end). Returns {docTokens, truncated, keptBytes}."""
     ends = [offsets[min(len(offsets), cap) - 1][1] if offsets else 0 for offsets in (sender_offsets, receiver_offsets)]
     limit = min(ends)
+    kept = max((end for _, end in receiver_offsets[:cap] if end <= limit), default=0)
     return {"docTokens": len(receiver_offsets),
             "truncated": len(sender_offsets) > cap or len(receiver_offsets) > cap,
-            "keptBytes": len(document[:limit].encode("utf-8"))}
+            "keptBytes": len(document[:kept].encode("utf-8"))}
 
 
 def default_engine(key):
@@ -148,17 +149,19 @@ def phase_summaries(out, key, groups, force=False, engine_factory=default_engine
     if existing(target, items_id, force):
         return
     engine = engine_factory(key)
-    engine.summarize("Warm-up passage.", None, 4)
-    records, started = {}, time.time()
-    for group in SUMMARY_GROUPS:
-        for item in groups[group]:
-            record = {}
-            guarded(record, "summary", lambda item=item: engine.summarize(item["passage"], limit_for(item)),
-                    engine.recover)
-            records[item["id"]] = record["summary"]
-        print(f"summaries {key} {group} done {time.time() - started:.0f}s", flush=True)
-    save(target, {"itemsId": items_id, "model": engine.describe(), "summaries": records})
-    engine.close()
+    try:
+        engine.summarize("Warm-up passage.", None, 4)
+        records, started = {}, time.time()
+        for group in SUMMARY_GROUPS:
+            for item in groups[group]:
+                record = {}
+                guarded(record, "summary", lambda item=item: engine.summarize(item["passage"], limit_for(item)),
+                        engine.recover)
+                records[item["id"]] = record["summary"]
+            print(f"summaries {key} {group} done {time.time() - started:.0f}s", flush=True)
+        save(target, {"itemsId": items_id, "model": engine.describe(), "summaries": records})
+    finally:
+        engine.close()   # also on a failure: a model or a vLLM server must not stay on the GPU
 
 
 def answer_record(item, prepared, result):
@@ -185,62 +188,64 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
     # A file that lacks a sender whose summaries now exist is run again as a whole, so every
     # arm of a receiver comes from one load of the model.
     engine = engine_factory(key)
-    warm = engine.prepare("Warm-up passage.", "Warm-up?")
-    engine.timed(warm["ids"], 2)
-    if engine.hands_over_cache:
-        engine.answer_from_cache(warm)
-    results, started = {}, time.time()
-    for group, rows in groups.items():
-        system = SYSTEM_TEXT if group == "no_system_role" else None
-        for item in rows:
-            record = {}
-            abstain, limit = item_sets.uses_abstain(item), limit_for(item)
+    try:
+        warm = engine.prepare("Warm-up passage.", "Warm-up?")
+        engine.timed(warm["ids"], 2)
+        if engine.hands_over_cache:
+            engine.answer_from_cache(warm)
+        results, started = {}, time.time()
+        for group, rows in groups.items():
+            system = SYSTEM_TEXT if group == "no_system_role" else None
+            for item in rows:
+                record = {}
+                abstain, limit = item_sets.uses_abstain(item), limit_for(item)
 
-            def read(passage, item=item, abstain=abstain, limit=limit, system=system):
-                return engine.prepare(passage, item["question"], abstain, system, limit)
+                def read(passage, item=item, abstain=abstain, limit=limit, system=system):
+                    return engine.prepare(passage, item["question"], abstain, system, limit)
 
-            def text(read=read, item=item):
-                prepared = read(item["passage"])
-                return {**answer_record(item, prepared, engine.timed(prepared["ids"])),
-                        "bytes": prepared["passageBytes"]}
+                def text(read=read, item=item):
+                    prepared = read(item["passage"])
+                    return {**answer_record(item, prepared, engine.timed(prepared["ids"])),
+                            "bytes": prepared["passageBytes"]}
 
-            def self_cache(read=read, item=item):
-                prepared = read(item["passage"])
-                return answer_record(item, prepared, engine.answer_from_cache(prepared))
+                def self_cache(read=read, item=item):
+                    prepared = read(item["passage"])
+                    return answer_record(item, prepared, engine.answer_from_cache(prepared))
 
-            guarded(record, "text", text, engine.recover)
-            if engine.hands_over_cache:
-                guarded(record, "self_cache", self_cache, engine.recover)
-            else:
-                # A named, expected refusal: not an error and not a missing record.
-                record["self_cache"] = {"refused": CACHE_REFUSAL}
-            if group == "main":
-                def closed(item=item):
-                    start = time.perf_counter()
-                    ids = engine.closed_ids(item["question"])
-                    prepare_ms = (time.perf_counter() - start) * 1000
-                    result = engine.timed(ids)
-                    return {**result, **score(result["answer"], item), "bytes": 0, "ms": result["ms"] + prepare_ms}
-                guarded(record, "closed", closed, engine.recover)
-            if group != "no_system_role":
-                for sender in (senders if group == "main" else [key]):
-                    summary = summaries.get(sender, {}).get(item["id"])
-                    if summary is None:
-                        continue
+                guarded(record, "text", text, engine.recover)
+                if engine.hands_over_cache:
+                    guarded(record, "self_cache", self_cache, engine.recover)
+                else:
+                    # A named, expected refusal: not an error and not a missing record.
+                    record["self_cache"] = {"refused": CACHE_REFUSAL}
+                if group == "main":
+                    def closed(item=item):
+                        start = time.perf_counter()
+                        ids = engine.closed_ids(item["question"])
+                        prepare_ms = (time.perf_counter() - start) * 1000
+                        result = engine.timed(ids)
+                        return {**result, **score(result["answer"], item), "bytes": 0, "ms": result["ms"] + prepare_ms}
+                    guarded(record, "closed", closed, engine.recover)
+                if group != "no_system_role":
+                    for sender in (senders if group == "main" else [key]):
+                        summary = summaries.get(sender, {}).get(item["id"])
+                        if summary is None:
+                            continue
 
-                    def t2t(summary=summary, read=read, item=item):
-                        if "error" in summary:
-                            raise ValueError(f"The sender's summary failed: {summary['error']}")
-                        prepared = read(summary["summary"])
-                        answered = answer_record(item, prepared, engine.timed(prepared["ids"]))
-                        # End to end: the sender writes the summary, then the receiver answers.
-                        return {**answered, "bytes": summary["bytes"], "receiverMs": answered["ms"],
-                                "ms": answered["ms"] + summary["ms"], "senderTruncated": summary["truncated"]}
-                    guarded(record, f"t2t:{sender}", t2t, engine.recover)
-            results[item["id"]] = record
-        print(f"receive {key} {group} done {time.time() - started:.0f}s", flush=True)
-    save(target, {"itemsId": items_id, "model": engine.describe(), "senders": sorted(summaries), "results": results})
-    engine.close()
+                        def t2t(summary=summary, read=read, item=item):
+                            if "error" in summary:
+                                raise ValueError(f"The sender's summary failed: {summary['error']}")
+                            prepared = read(summary["summary"])
+                            answered = answer_record(item, prepared, engine.timed(prepared["ids"]))
+                            # End to end: the sender writes the summary, then the receiver answers.
+                            return {**answered, "bytes": summary["bytes"], "receiverMs": answered["ms"],
+                                    "ms": answered["ms"] + summary["ms"], "senderTruncated": summary["truncated"]}
+                        guarded(record, f"t2t:{sender}", t2t, engine.recover)
+                results[item["id"]] = record
+            print(f"receive {key} {group} done {time.time() - started:.0f}s", flush=True)
+        save(target, {"itemsId": items_id, "model": engine.describe(), "senders": sorted(summaries), "results": results})
+    finally:
+        engine.close()
 
 
 def phase_latent(out, sender, receiver, groups, force=False):
@@ -311,8 +316,11 @@ def phase_latent(out, sender, receiver, groups, force=False):
                         start = time.perf_counter()
                         answer = pair.answer_from_text(doc_text(summary["summary"]), suffix)
                         receiver_ms = sync_ms(start)
+                        # bytes: the whole summary is what crosses; truncated says whether the
+                        # mapper path's cap cut what the receiver read of it.
                         return {"answer": answer, "ms": receiver_ms + summary["ms"], "receiverMs": receiver_ms,
-                                **score(answer, item), "bytes": summary["bytes"]}
+                                **score(answer, item), "bytes": summary["bytes"],
+                                "truncated": cut(doc_text(summary["summary"]))["truncated"]}
                 guarded(record, "t2t_m2b", t2t)
             results[item["id"]] = record
         print(f"latent {sender}->{receiver} {group} done {time.time() - started:.0f}s", flush=True)
@@ -341,10 +349,12 @@ def collect(out, groups, wanted):
                 store[key] = data
     for (sender, receiver), spec in MAPPERS.items():
         name = f"{sender}>{receiver}"
-        data = existing(os.path.join(out, "latent", f"{sender}__{receiver}.json"), items_id)
         if name in notes:
+            # Before the file is even read: its last attempt failed, whatever an older file holds.
             latent[(sender, receiver)] = {"skipped": notes[name]}
-        elif data and data.get("checkpoint") != spec["id"]:
+            continue
+        data = existing(os.path.join(out, "latent", f"{sender}__{receiver}.json"), items_id)
+        if data and data.get("checkpoint") != spec["id"]:
             latent[(sender, receiver)] = {"skipped": f"The saved result is from checkpoint {data.get('checkpoint')}, "
                                                      f"not the registered {spec['id']}."}
         elif data:
