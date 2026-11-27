@@ -388,7 +388,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '127.0.0.1', () => {
+server.listen({ port, host: '127.0.0.1' }, () => {
   const localPort = server.address().port;
   // The plain token lives only in this callback and in the file; auth keeps its digest.
   const token = newToken();
