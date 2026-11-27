@@ -28,6 +28,11 @@ For the `cross-model` and `statebridge` sessions:
 - **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
 
 Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+## Current checkpoint: H9 repo-wide invariant checks (2026-11-26)
+
+`node scripts/check.mjs` checks every tracked file for the AGENTS.md section 6 rules that Codex reviews kept finding: raw control, format, bidi and separator characters (files and file names); HTML sinks in code outside tests; and `listen` calls that do not name `'127.0.0.1'`. It runs first in the node CI job on all three systems and is in the AGENTS.md section 4 local run list. Each message says what to write instead. On its first run it found three real bugs on `main`, now fixed. Design choice from Codex round 2: the code rules read comments and strings as they are, so a sink spelt in a comment is reported (reword it); a whole-file comment skipper could be fooled into skipping code. Review rounds and results are in [evals](evals.md) under H9.
+
+Next owner: when a review finding repeats a kind already seen, add a rule here instead of another per-card test. Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
 
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 
