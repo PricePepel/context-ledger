@@ -56,11 +56,13 @@ const model = values.model ?? JSON.parse(await text('/v1/models')).data[0].id;
 function gpuUsed() {
   return new Promise(resolve => {
     const child = spawn(values['nvidia-smi'], ['--query-gpu=memory.used', '--format=csv,noheader,nounits', '--id=0']);
-    const timer = setTimeout(() => child.kill(), 3000);
+    let settled = false;
+    const done = value => { if (!settled) { settled = true; clearTimeout(timer); child.kill('SIGKILL'); resolve(value); } };
+    const timer = setTimeout(() => done(Number.NaN), 3000);
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
-    child.on('error', () => { clearTimeout(timer); resolve(Number.NaN); });
-    child.on('close', () => { clearTimeout(timer); resolve(Number.parseInt(out, 10)); });
+    child.on('error', () => done(Number.NaN));
+    child.on('close', () => done(Number.parseInt(out, 10)));
   });
 }
 

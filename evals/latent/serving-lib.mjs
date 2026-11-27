@@ -77,7 +77,10 @@ export function agentMessages({ system, report, salt, handbookWords = 0, uniqueW
 /** Counter and gauge values from two metric samples: change in the counters, the sample's gauges. */
 export function metricsDelta(before, after) {
   // A counter that went down (the server restarted) or is missing gives null, never a made-up zero.
-  const diff = name => (Number.isFinite(before?.[name]) && Number.isFinite(after?.[name]) && after[name] >= before[name] ? after[name] - before[name] : null);
+  // Any tracked counter going down means the server restarted: no delta of this run can be trusted.
+  const names = ['vllm:prefix_cache_queries_total', 'vllm:prefix_cache_hits_total', 'vllm:num_preemptions_total', 'vllm:prompt_tokens_total', 'vllm:generation_tokens_total'];
+  const restarted = names.some(name => Number.isFinite(before?.[name]) && Number.isFinite(after?.[name]) && after[name] < before[name]);
+  const diff = name => restarted ? null : (Number.isFinite(before?.[name]) && Number.isFinite(after?.[name]) && after[name] >= before[name] ? after[name] - before[name] : null);
   const queries = diff('vllm:prefix_cache_queries_total');
   const hits = diff('vllm:prefix_cache_hits_total');
   return {

@@ -61,6 +61,11 @@ test('metrics delta: hit rate from counters, null when a counter is missing', ()
   // A counter that went down (restart), or a missing hit counter, is not a hit rate.
   assert.equal(metricsDelta({ 'vllm:prefix_cache_queries_total': 100, 'vllm:prefix_cache_hits_total': 50 },
     { 'vllm:prefix_cache_queries_total': 20, 'vllm:prefix_cache_hits_total': 5 }).prefixHitRate, null);
+  // One counter dropping voids the others too (a restart, even if the prefix counters climbed back).
+  const restart = metricsDelta({ 'vllm:prefix_cache_queries_total': 10, 'vllm:prefix_cache_hits_total': 5, 'vllm:prompt_tokens_total': 900 },
+    { 'vllm:prefix_cache_queries_total': 50, 'vllm:prefix_cache_hits_total': 30, 'vllm:prompt_tokens_total': 100 });
+  assert.equal(restart.prefixHitRate, null);
+  assert.equal(restart.promptTokens, null);
   assert.equal(metricsDelta({ 'vllm:prefix_cache_queries_total': 1 }, { 'vllm:prefix_cache_queries_total': 9 }).prefixHitRate, null);
 });
 
