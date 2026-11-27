@@ -118,8 +118,9 @@ const emptyAfter = new Set(['<1', '>0', '>=1']);
 const emptyBefore = new Set(['1>', '0<', '1<=']);
 // A 0 or 1 is the whole other side unless arithmetic or a member access touches it
 // (`< (1) + MAX`); a keyword before it (`return 0 < length`) leaves it alone.
-const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[']);
-const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']']);
+// A shift binds tighter than a comparison too (round 8: `< 1 << 9`).
+const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[', '<', '>']);
+const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']', '<', '>']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 // listen named but not called, as in promisify(server.listen.bind(server)): the host it

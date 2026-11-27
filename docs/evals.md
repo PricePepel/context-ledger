@@ -5259,4 +5259,5 @@ Graph labels are limited to 500 characters by JSON Schema `maxLength`, which cou
 - **Codex review, round 7:** no high; one medium, fixed with tests: a reversed limit was missed when the receiver call spanned lines or started with a parenthesized group (`500 < getNode(
  graph,
 ).label.length`, `500 < (node ?? fallback).label.length`). Instead of a longer pattern, the rule now walks left over the whole member chain (names, dots, optional chaining and balanced brackets of any length) before looking for the comparison.
+- **Codex review, round 8:** no high or medium, so the review stops here. `chainStart` always moves left and stops at an unmatched bracket (100,000 extra closing parentheses finish without a hang). One low, fixed with a test: `label.length < 1 << 9` was read as a lone 1; a shift after the number now counts as part of the limit.
 - `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.

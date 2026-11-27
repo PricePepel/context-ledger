@@ -528,3 +528,8 @@ test('card H10 review 7: the whole member chain before the label, across lines a
     assert.deepEqual(checkFile('src/a.mjs', utf8(text)), [], text);
   }
 });
+
+test('card H10 review 8: a shifted limit is not a lone 1', () => {
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8('if (label.length < 1 << 9) reject();'))), ['label-length']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length < 1) refuse();')), []);
+});
