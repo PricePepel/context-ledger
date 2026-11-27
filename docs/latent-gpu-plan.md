@@ -64,6 +64,17 @@ Qwen2.5-7B is unusually cheap per token for its size; newer Qwen3 4B–8B models
 | 4 | 100 agents on one GPU, latent vs text | Peak memory at most 15 GB, at least 2× faster, accuracy at least equal to text |
 | 5 | Combining 1–8 messages, plus tampering | At 4 messages at least 90% of single-message accuracy; the manifest rejects all tampering |
 
+## What to turn on (measured, card L1)
+
+Measured on one RTX 4090 Laptop (16 GB), vLLM 0.33.0, Qwen2.5-7B-AWQ at `--gpu-memory-utilization 0.85`, one synthetic task; every number is in [docs/evals.md](evals.md), section "L1".
+
+- **Prefix caching: on (it already is).** 100 agents with about 4K tokens each (3K shared) all fit with peak KV use at 82% of a 137,136-token pool, in 42.6 s; a 23.5K-token shared prefix served 100 agents in 29.9 s at a 98.7% hit rate.
+- **Native KV offload (`--kv-offloading-backend native`): leave off.** It exists in 0.33 but cost 10% of the KV pool, took about 4.5 minutes from process start to ready (the other starts took 45 to 125 s), and made 100 agents 2.1× slower (90.8 s against 42.6 s); the same prompts a second time gained nothing (hit rate 54.1% against 53.5%). The buffer is capped by `/dev/shm` (7.8 GiB free here).
+- **FP8 KV: only for the 14B, plain `fp8`.** On the 14B AWQ it doubled the KV pool (17,104 to 34,112 tokens) with no answer lost on the dev set (22 against 21 of 24, one round each) and reads 17% faster at p50. On the 7B AWQ it is not usable: `fp8_per_token_head` gave 1.74× the pool but garbled every answer (0 of 100 on the swarm task). Calibrated scales were not produced, so the estimate that they "should fix" the 7B is unproven.
+- **`--max-num-seqs`: leave at the default.** 32, 64 and 100 were all slower than the default at 100 agents (swarm task 7.3, 6.2, 5.7 s against 4.8 s) and only freed about 0.7 GiB of GPU memory.
+- **Edge cases:** more agents than KV capacity queue and finish (100 × 5.4K tokens: 104 s, no preemption); a 23.5K shared prefix costs 11.5 s once, then is shared; the first request after startup took 1.07 s and the next 0.98 s (one pair, not a repeated test).
+- **Still open:** calibrated or per-channel KV scales for the 7B, and agent counts above 100.
+
 ## Measure first
 
 Done in L1 for the startup log (weights 5.29 GiB, CUDA graphs 0.61 GiB, KV pool 7.32 GiB = 137,136 tokens) and for 25, 50 and 100 agents with the prefix-cache hit rate. Still to do: 100 agents with n-gram speculation on and off, and a short multi-turn tool eval comparing the 7B with a 3B.

@@ -56,8 +56,10 @@ fi
 if [ -n "${VLLM_KV_OFFLOAD_GIB:-}" ]; then
   OPTIONAL+=(--kv-offloading-backend native --kv-offloading-size "$VLLM_KV_OFFLOAD_GIB")
 fi
+# VLLM_KV_FP8=1 wins over VLLM_KV_DTYPE; "auto" leaves the attention backend alone.
 if [ -n "${VLLM_KV_DTYPE:-}" ] && [ "${VLLM_KV_FP8:-0}" != "1" ]; then
-  OPTIONAL+=(--kv-cache-dtype "$VLLM_KV_DTYPE" --attention-backend TRITON_ATTN)
+  OPTIONAL+=(--kv-cache-dtype "$VLLM_KV_DTYPE")
+  if [ "$VLLM_KV_DTYPE" != "auto" ]; then OPTIONAL+=(--attention-backend TRITON_ATTN); fi
 fi
 
 exec "$VENV/bin/vllm" serve "$MODEL" \

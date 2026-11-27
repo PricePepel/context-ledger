@@ -44,18 +44,23 @@ const base = new URL(values.base);
 if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(base.hostname)) throw new Error('--base must be a loopback http URL.');
 const root = base.href.replace(/\/+$/u, '');
 
-const text = async path => (await fetch(`${root}${path}`, { signal: AbortSignal.timeout(5000) })).text();
+const text = async path => {
+  const response = await fetch(`${root}${path}`, { signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error(`${path}: status ${response.status}`);
+  return response.text();
+};
 const sample = async () => parseMetrics(await text('/metrics').catch(() => ''));
-const model = values.model ?? (await (await fetch(`${root}/v1/models`)).json()).data[0].id;
+const model = values.model ?? JSON.parse(await text('/v1/models')).data[0].id;
 
 /** GPU memory used, in MiB, from nvidia-smi; NaN when the command fails. */
 function gpuUsed() {
   return new Promise(resolve => {
     const child = spawn(values['nvidia-smi'], ['--query-gpu=memory.used', '--format=csv,noheader,nounits', '--id=0']);
+    const timer = setTimeout(() => child.kill(), 3000);
     let out = '';
     child.stdout.on('data', chunk => { out += chunk; });
-    child.on('error', () => resolve(Number.NaN));
-    child.on('close', () => resolve(Number.parseInt(out, 10)));
+    child.on('error', () => { clearTimeout(timer); resolve(Number.NaN); });
+    child.on('close', () => { clearTimeout(timer); resolve(Number.parseInt(out, 10)); });
   });
 }
 
@@ -63,14 +68,14 @@ const reports = incidents(agentCount, seed);
 // --salt repeats an earlier run's prompts exactly, so a second wave can find the first one's cache.
 const salt = values.salt ?? randomBytes(4).toString('hex');
 const gpuSamples = [];
-let kvPeak = 0;
+let kvPeak = null;
 let running = true;
-const poll = (async () => {
+const startPoll = () => (async () => {
   while (running) {
     const [gpu, metrics] = await Promise.all([gpuUsed(), sample()]);
     gpuSamples.push(gpu);
     const usage = metrics['vllm:kv_cache_usage_perc'];
-    if (Number.isFinite(usage)) kvPeak = Math.max(kvPeak, usage);
+    if (Number.isFinite(usage)) kvPeak = Math.max(kvPeak ?? 0, usage);
     await new Promise(resolve => setTimeout(resolve, 300));
   }
 })();
@@ -83,10 +88,10 @@ async function agent(report, index) {
       body: JSON.stringify({ model, temperature: 0, max_tokens: maxTokens,
         messages: agentMessages({ system: systemPrompt, report: report.text, salt, handbookWords, uniqueWords, index }) }),
     });
-    if (!response.ok) return { ok: false, ms: performance.now() - started, error: `status ${response.status}` };
+    if (!response.ok) return { ok: false, responded: false, ms: performance.now() - started, error: `status ${response.status}` };
     const body = await response.json();
     const answer = parseAnswer(body?.choices?.[0]?.message?.content ?? '');
-    return { ok: Boolean(answer), ms: performance.now() - started, correct: isCorrect(answer, report.truth),
+    return { ok: Boolean(answer), responded: true, ms: performance.now() - started, correct: isCorrect(answer, report.truth),
       verified: isVerified(answer, report.text), promptTokens: body?.usage?.prompt_tokens ?? 0,
       completionTokens: body?.usage?.completion_tokens ?? 0, cachedTokens: body?.usage?.prompt_tokens_details?.cached_tokens ?? 0 };
   } catch (error) {
@@ -95,6 +100,7 @@ async function agent(report, index) {
 }
 
 const before = await sample();
+const poll = startPoll();
 const started = performance.now();
 const results = await Promise.all(reports.map(agent));
 const wallMs = performance.now() - started;
@@ -105,7 +111,7 @@ await poll;
 const report = {
   label: values.label, model, salt, handbookWords, uniqueWords, maxTokens, measured: true,
   ...summarizeRun({ agents: results, wallMs, delta: metricsDelta(before, after), kvPeak, gpuSamplesMiB: gpuSamples }),
-  promptTokensPerAgent: Math.round(results.reduce((total, item) => total + (item.promptTokens ?? 0), 0) / Math.max(1, results.filter(item => item.ok).length)),
+  promptTokensPerAgent: Math.round(results.reduce((total, item) => total + (item.promptTokens ?? 0), 0) / Math.max(1, results.filter(item => item.responded).length)),
   cachedTokensShare: Number((results.reduce((total, item) => total + (item.cachedTokens ?? 0), 0)
     / Math.max(1, results.reduce((total, item) => total + (item.promptTokens ?? 0), 0))).toFixed(3)),
   errors: [...new Set(results.filter(item => !item.ok && item.error).map(item => item.error))],

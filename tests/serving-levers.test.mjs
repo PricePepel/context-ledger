@@ -58,13 +58,17 @@ test('metrics delta: hit rate from counters, null when a counter is missing', ()
   assert.equal(delta.prefixHitRate, 0.5);
   assert.equal(delta.preemptions, null);
   assert.equal(metricsDelta({}, {}).prefixHitRate, null);
+  // A counter that went down (restart), or a missing hit counter, is not a hit rate.
+  assert.equal(metricsDelta({ 'vllm:prefix_cache_queries_total': 100, 'vllm:prefix_cache_hits_total': 50 },
+    { 'vllm:prefix_cache_queries_total': 20, 'vllm:prefix_cache_hits_total': 5 }).prefixHitRate, null);
+  assert.equal(metricsDelta({ 'vllm:prefix_cache_queries_total': 1 }, { 'vllm:prefix_cache_queries_total': 9 }).prefixHitRate, null);
 });
 
 test('run summary: counts, rates and the GPU peak', () => {
   const agents = [
-    { ok: true, ms: 1000, correct: true, verified: true, promptTokens: 400, completionTokens: 40 },
-    { ok: true, ms: 3000, correct: false, verified: true, promptTokens: 400, completionTokens: 60 },
-    { ok: false, ms: 5000 },
+    { ok: true, responded: true, ms: 1000, correct: true, verified: true, promptTokens: 400, completionTokens: 40 },
+    { ok: true, responded: true, ms: 3000, correct: false, verified: true, promptTokens: 400, completionTokens: 60 },
+    { ok: false, responded: false, ms: 5000 },
   ];
   const run = summarizeRun({ agents, wallMs: 4000, delta: { prefixHitRate: 0.8123, preemptions: 0 }, kvPeak: 0.4567, gpuSamplesMiB: [100, Number.NaN, 900] });
   assert.equal(run.answered, 2);
@@ -83,6 +87,16 @@ test('serve environment names only what is set', () => {
   assert.deepEqual(serveEnv({}), {});
   assert.deepEqual(serveEnv({ maxNumSeqs: 64, kvOffloadGiB: 8, kvDtype: 'fp8_per_token_head', gpuUtil: 0.9 }),
     { VLLM_MAX_NUM_SEQS: '64', VLLM_KV_OFFLOAD_GIB: '8', VLLM_KV_DTYPE: 'fp8_per_token_head', VLLM_GPU_UTIL: '0.9' });
+});
+
+test('run summary: tokens of unusable replies still count, a missing KV sample is null', () => {
+  const agents = [{ ok: false, responded: true, ms: 100, promptTokens: 400, completionTokens: 160 }];
+  const run = summarizeRun({ agents, wallMs: 1000, delta: { prefixHitRate: null, preemptions: null }, kvPeak: null, gpuSamplesMiB: [] });
+  assert.equal(run.responded, 1);
+  assert.equal(run.answered, 0);
+  assert.equal(run.promptTokens, 400);
+  assert.equal(run.kvPeakShare, null);
+  assert.equal(run.gpuPeakMiB, null);
 });
 
 test('KV GiB from tokens and bytes per token', () => {

@@ -76,13 +76,14 @@ export function agentMessages({ system, report, salt, handbookWords = 0, uniqueW
 
 /** Counter and gauge values from two metric samples: change in the counters, the sample's gauges. */
 export function metricsDelta(before, after) {
-  const diff = name => (Number.isFinite(before?.[name]) && Number.isFinite(after?.[name]) ? Math.max(0, after[name] - before[name]) : null);
+  // A counter that went down (the server restarted) or is missing gives null, never a made-up zero.
+  const diff = name => (Number.isFinite(before?.[name]) && Number.isFinite(after?.[name]) && after[name] >= before[name] ? after[name] - before[name] : null);
   const queries = diff('vllm:prefix_cache_queries_total');
   const hits = diff('vllm:prefix_cache_hits_total');
   return {
     prefixQueries: queries,
     prefixHits: hits,
-    prefixHitRate: queries ? hits / queries : null,
+    prefixHitRate: queries && hits !== null ? hits / queries : null,
     preemptions: diff('vllm:num_preemptions_total'),
     promptTokens: diff('vllm:prompt_tokens_total'),
     generationTokens: diff('vllm:generation_tokens_total'),
@@ -92,16 +93,18 @@ export function metricsDelta(before, after) {
 export { parseMetrics };
 
 /**
- * One run's report. `agents` are { ok, ms, correct, verified, promptTokens, completionTokens }
- * for each agent; `wallMs` is the time until the last agent returned.
+ * One run's report. `agents` are { ok, responded, ms, correct, verified, promptTokens, completionTokens }
+ * for each agent (`ok` = a usable answer, `responded` = the server replied at all; token totals count every reply); `wallMs` is the time until the last agent returned.
  */
 export function summarizeRun({ agents, wallMs, delta, kvPeak, gpuSamplesMiB }) {
   const ok = agents.filter(agent => agent.ok);
-  const sum = key => ok.reduce((total, agent) => total + (agent[key] ?? 0), 0);
+  const responded = agents.filter(agent => agent.responded);
+  const sum = key => responded.reduce((total, agent) => total + (agent[key] ?? 0), 0);
   const seconds = wallMs / 1000;
   const gpu = gpuSamplesMiB.filter(Number.isFinite);
   return {
     agents: agents.length,
+    responded: responded.length,
     answered: ok.length,
     failed: agents.length - ok.length,
     correct: ok.filter(agent => agent.correct).length,
@@ -115,7 +118,7 @@ export function summarizeRun({ agents, wallMs, delta, kvPeak, gpuSamplesMiB }) {
     promptTokensPerSecond: seconds > 0 ? Number((sum('promptTokens') / seconds).toFixed(0)) : null,
     prefixHitRate: delta.prefixHitRate === null ? null : Number(delta.prefixHitRate.toFixed(3)),
     preemptions: delta.preemptions,
-    kvPeakShare: Number.isFinite(kvPeak) ? Number(kvPeak.toFixed(3)) : null,
+    kvPeakShare: kvPeak !== null && Number.isFinite(kvPeak) ? Number(kvPeak.toFixed(3)) : null,
     gpuPeakMiB: gpu.length ? Math.max(...gpu) : null,
     gpuMinMiB: gpu.length ? Math.min(...gpu) : null,
   };
