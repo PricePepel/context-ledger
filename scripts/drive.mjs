@@ -146,7 +146,7 @@ function parse(argv) {
     const argument = argv[index];
     if (argument === '--list') options.list = true;
     else if (argument === '--out' || argument === '--url') {
-      if (argv[index + 1] === undefined) throw new Error(`${argument} needs a value.`);
+      if (argv[index + 1] === undefined || argv[index + 1].startsWith('--')) throw new Error(`${argument} needs a value.`);
       options[argument.slice(2)] = argv[index += 1];
     } else if (argument.startsWith('--')) throw new Error(`Unknown option ${terminalLabel(argument)}.`);
     else if (options.feature === undefined) options.feature = argument;

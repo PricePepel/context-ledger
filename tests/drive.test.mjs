@@ -166,3 +166,11 @@ test('review 2 and 3: a ledger that stops before it is ready fails at once and l
     await rm(notAFile, { recursive: true, force: true });
   }
 });
+
+test('review 5: an option given where a value belongs is refused', async () => {
+  for (const args of [['swarm', '--url', '--list'], ['swarm', '--out', '--list']]) {
+    const failure = await run(process.execPath, [script, ...args]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stderr, /needs a value/u, args.join(' '));
+  }
+});
