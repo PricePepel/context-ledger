@@ -374,6 +374,7 @@ def collect(out, groups, wanted):
                 store[key] = data
     # Codex review, round 6: a report must not pair a sender's new summaries with answers that
     # read its earlier ones. Such a receiver or pair is left out and named, until it is run again.
+    failed = set(notes)   # recorded failures, before the stale receivers below are added
     stamps = summary_stamps({key: data["summaries"] for key, data in summaries.items()})
     for key in list(receive):
         read = {sender: stamps[sender] for sender in receive[key].get("senders", []) if sender in stamps}
@@ -384,6 +385,7 @@ def collect(out, groups, wanted):
         name = f"{sender}>{receiver}"
         if sender not in wanted or receiver not in wanted:
             continue   # a report on a subset is not graded on a pair outside it (Codex review, round 5)
+        gone = [key for key in (sender, receiver) if key in failed]
         if name in notes:
             # Before the file is even read: its last attempt failed, whatever an older file holds.
             latent[(sender, receiver)] = {"skipped": notes[name]}
@@ -395,6 +397,9 @@ def collect(out, groups, wanted):
         elif data and sender in stamps and data.get("summaryStamp") not in (None, stamps[sender]):
             latent[(sender, receiver)] = {"skipped": f"Its summary arm read {sender}'s summaries before they were "
                                                      f"written again; run `latent --pair {sender}:{receiver}`."}
+        elif data and gone:
+            # Codex review, round 8: an older mapper file must not pass for a pair whose model failed.
+            latent[(sender, receiver)] = {"skipped": f"{gone[0]} has no current result: {notes[gone[0]]}"}
         elif data:
             latent[(sender, receiver)] = data
     return receive, summaries, latent, notes
@@ -494,10 +499,18 @@ def run_one(out, phase, key, groups, wanted, force=False, summaries=None, receiv
     phase has succeeded: a cached summaries phase must not bring older receive results back
     into the report (Codex review, round 7)."""
     failed = key in load_notes(out)
-    if phase == "summaries":
-        (summaries or phase_summaries)(out, key, groups, force or failed)
-    else:
-        (receive or phase_receive)(out, key, groups, wanted, force or failed)
+    try:
+        if phase == "summaries":
+            (summaries or phase_summaries)(out, key, groups, force or failed)
+        else:
+            (receive or phase_receive)(out, key, groups, wanted, force or failed)
+    except StaleFile:
+        raise
+    except Exception as error:
+        # Codex review, round 8: a failed rerun left the older files standing as the result.
+        note(out, key, f"{type(error).__name__}: {str(error)[:300]}")
+        raise
+    if phase == "receive":
         note(out, key, None)
 
 

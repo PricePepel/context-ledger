@@ -8,6 +8,16 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: L2 cross-model comparison harness (2026-11-27)
+
+`runtime/latent_compare/` runs one question set (200 SQuAD items and five edge-case groups) across eight open-weight models with the same arms: the passage as text, a sender's summary read by every receiver, the model's own KV cache handed over as bytes, and, for Phi-3.5-mini to Qwen2.5-1.5B, the M2b-S mapped cache with its mismatched and zeroed controls. One command reproduces the tables: in `runtime/`, `~/venvs/latent/bin/python -m latent_compare.run all --out ~/l2-compare/run1` (about 5.5 GPU hours; `report --out <dir>` rebuilds the tables without a GPU). Results, what was not run and the review record are in [evals](evals.md) under L2.
+
+What it found: three of four checks pass. The mapper result holds on this set (`swat` F1 0.859, far above both controls and the summary). The own-cache hand-off matches reading the text to within 0.009 F1 for all six torch models, but the "same answer on 95% of items" check fails for three of them (86.5% to 93.0%), and the cause is not isolated. Every one of the 64 summary pairs loses 0.11 to 0.45 F1 against reading the passage. 55 of 64 latent cells read "no mapper yet".
+
+The model set differs from the brief: Qwen2.5-7B and Llama-3.1-8B are 4-bit AWQ checkpoints served through vLLM (no cache hand-over, times not comparable); Granite is the 2B model; Qwen2.5-0.5B was added; Llama-3.2-3B is gated. No model in the set lacks a system role, so that path is covered by unit tests only.
+
+Next owner: (1) find why the own-cache answer text differs: add an arm that reuses the cache in memory without saving, and run one model in float32; (2) when a new mapper is trained, add its pair to `MAPPERS` in `latent_compare/models.py` and rerun `latent --pair`; (3) card L3 (PR #96) changes the alignment API (`batch.Pair`, `align.align_document`); `latent_compare` uses `latent_transfer.pair.TransferPair` and its own `mapper_cut`, so whichever of the two PRs merges second must run `tests.test_latent_compare` after merging and adapt `run.phase_latent` if it breaks; (4) the vLLM start with a per-run served name and the stricter stop were changed after the measured run (Codex round 4) and are unit-tested but were not run again on the GPU.
+
 ## Current checkpoint: H10 label lengths in code points (2026-11-26)
 
 `scripts/check.mjs` has a fourth rule, `label-length`: a label's `.length` next to a comparison must count code points (`[...label].length`), as JSON Schema `maxLength` and the graph schemas do. Its first run found that latent findings dropped labels of 500 emoji; fixed with a test. The store double-close candidate was dropped: no pattern finds it without understanding control flow, and its tests cover it. Next owner: add a rule the next time a review finding repeats a kind already seen (H13 writes that into AGENTS.md).

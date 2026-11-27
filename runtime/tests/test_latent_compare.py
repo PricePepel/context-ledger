@@ -723,6 +723,43 @@ class PhaseTest(unittest.TestCase):
         receive, _, _, notes = run.collect(self.out, self.groups, keys)
         self.assertEqual((sorted(receive), notes), (keys, {}))
 
+    def test_a_failed_single_phase_is_noted_and_takes_its_mapper_pair_with_it(self):
+        # Codex review, round 8: a failed `summaries --force` left no note, and a dropped model's
+        # older mapper file could still pass the mapper check.
+        keys = ["phi3.5", "qwen1.5"]
+        self.run_all(keys)
+        spec = models.MAPPERS[("phi3.5", "qwen1.5")]
+        run.save(run.path(self.out, "latent", "phi3.5__qwen1.5.json"),
+                 {**fake_latent(self.groups), "itemsId": run.fingerprint(self.groups), "checkpoint": spec["id"]})
+
+        def broken(out, key, groups, force):
+            raise OSError("the checkpoint did not load")
+
+        with self.assertRaises(OSError):
+            run.run_one(self.out, "summaries", "phi3.5", self.groups, keys, force=True, summaries=broken)
+        self.assertIn("OSError", run.load_notes(self.out)["phi3.5"])
+        receive, _, latent, notes = run.collect(self.out, self.groups, keys)
+        self.assertEqual(sorted(receive), ["qwen1.5"])
+        self.assertIn("phi3.5 has no current result", latent[("phi3.5", "qwen1.5")]["skipped"])
+        summary = run.phase_report(self.out, keys)
+        mapper = summary["checks"]["mapperHolds"]
+        self.assertEqual((mapper["applicable"], mapper["passed"]), (True, False))
+
+    def test_a_report_after_rewritten_summaries_still_expects_the_mapper_pair(self):
+        # Codex review, round 8: with both receivers stale the mapper check must fail, not vanish.
+        keys = ["phi3.5", "qwen1.5"]
+        self.run_all(keys)
+        target = os.path.join(self.out, "summaries", "phi3.5.json")
+        data = run.load(target)
+        record = data["summaries"][self.groups["main"][0]["id"]]
+        record["ms"] = record.get("ms", 0) + 1
+        run.save(target, data)
+        summary = run.phase_report(self.out, keys)
+        self.assertEqual(sorted(summary["dropped"]), keys)
+        mapper = summary["checks"]["mapperHolds"]
+        self.assertEqual((mapper["applicable"], mapper["passed"]), (True, False))
+        self.assertFalse(summary["checks"]["coverage"]["passed"])
+
     def test_all_runs_a_model_again_after_its_last_attempt_failed(self):
         # Codex review, round 4: a failed forced rerun left the old receive file and a note; the
         # next `all` cleared the note after the cached summaries and reused the old file.
