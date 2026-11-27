@@ -834,7 +834,7 @@ class VllmEngineTest(unittest.TestCase):
         command = vllm_engine.serve_command("/venv/bin/vllm", "some/model")
         self.assertIn("127.0.0.1", command)
         self.assertNotIn("--kv-cache-dtype", command)      # FP8 KV breaks the AWQ checkpoints here
-        self.assertIn("--no-enable-prefix-caching", command)
+        self.assertIn("--disable-prefix-caching", command)
 
     def test_token_counts_leave_out_the_end_of_turn_token_only_when_there_was_one(self):
         def reply(reason, count):

@@ -45,7 +45,7 @@ def serve_command(vllm, model, port=PORT):
     # No prefix caching either: every arm repeats the passage, and a warm prefix would make
     # these rows faster than the torch rows for a reason that is not the model.
     return [vllm, "serve", model, "--host", "127.0.0.1", "--port", str(port), "--max-model-len", str(MAX_MODEL_LEN),
-            "--gpu-memory-utilization", "0.85", "--no-enable-prefix-caching"]
+            "--gpu-memory-utilization", "0.85", "--disable-prefix-caching"]
 
 
 def served_models(base, timeout=5):
