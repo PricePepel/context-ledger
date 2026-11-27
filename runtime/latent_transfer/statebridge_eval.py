@@ -23,7 +23,7 @@ from . import statebridge as sb
 from .data import DOC_PREFIX, closed_prompt, contains, doc_text, f1, question_suffix, sample, squad, summary_prompt
 from .evaluate import eval_items
 from .statebridge_anchors import covered_share, overlap, shared_anchors, split_holdout, vocab_keys
-from .statebridge_stats import VARIANTS, summarize
+from .statebridge_stats import VARIANTS, mismatched_index, summarize, summary_key
 
 # The item set is always chosen with the M2b-S tokenizers, so every pair answers the same questions.
 REFERENCE_SENDER = "microsoft/Phi-3.5-mini-instruct"
@@ -92,9 +92,12 @@ class Bench:
         return self.receiver_tok.decode(tokens, skip_special_tokens=True).strip()
 
     def answer(self, parts, max_new_tokens=24):
-        """Receiver answer from a list of embedding blocks, timed."""
+        """Receiver answer from a list of embedding blocks, timed. `parts` may be a function that
+        builds the blocks, so that embedding a text is inside the timing like any other work."""
         self.sync()
         start = time.perf_counter()
+        if callable(parts):
+            parts = parts()
         embeds = torch.cat([part.to(self.vocab) for part in parts])
         text = self.decode(sb.answer_from_embeds(self.receiver, embeds, max_new_tokens, self.eos,
                                                  self.receiver_tok.pad_token_id or 0))
@@ -212,11 +215,16 @@ def prepare(bench, items, cache_path=None, per_message=False, log_every=50):
     """Everything the sender produces for each item, and every prefix built from it."""
     cached = {}
     if cache_path and os.path.exists(cache_path):
-        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        stored = torch.load(cache_path, map_location="cpu", weights_only=True)
+        if stored.get("sender") != bench.sender_name:
+            raise ValueError(f"{cache_path} holds summaries of {stored.get('sender')}, not {bench.sender_name}.")
+        cached = stored["items"]
     prepared = []
     for index, row in enumerate(items):
-        summary = cached.get(row["id"]) or bench.summary(row["context"])
-        cached[row["id"]] = summary
+        # Keyed by sender and passage text: another sender's states, or a changed passage, never match.
+        key = summary_key(bench.sender_name, row["context"])
+        summary = cached.get(key) or bench.summary(row["context"])
+        cached[key] = summary
         last = slice(-sb.PREFIX_TOKENS, None)
         tokens, states = summary["tokens"][last], summary["states"][last]
         passage = bench.passage_states(row["context"])
@@ -227,62 +235,65 @@ def prepare(bench, items, cache_path=None, per_message=False, log_every=50):
             entry["prefix"][f"{name}/summary"] = bench.prefix(name, states, tokens)
             entry["prefix"][f"{name}/passage"] = bench.prefix(name, passage["states"], passage["tokens"])
         entry["prefix"]["zeroed"] = bench.prefix("anchor", torch.zeros_like(states))
-        if per_message and len(tokens) >= 2:
+        if per_message:
+            if len(tokens) < 2:
+                raise ValueError(f"Item {row['id']}: a per-message fit needs a summary of at least two tokens.")
             entry["prefix"]["per-message"] = bench.per_message(states, tokens)
         prepared.append(entry)
         if log_every and (index + 1) % log_every == 0:
             print(f"sender {index + 1}/{len(items)}", flush=True)
     if cache_path:
         os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-        torch.save(cached, cache_path)
+        torch.save({"sender": bench.sender_name, "items": cached}, cache_path)
     return prepared
 
 
 def run(bench, items, prepared, per_message=False, log_every=50):
     head = bench.embed(DOC_PREFIX)
+    contexts = [row["context"] for row in items]
     results, swap_gaps = [], []
     for index, (row, own) in enumerate(zip(items, prepared)):
-        other = prepared[(index + 1) % len(items)]
+        # The control is the next item with a different passage: SQuAD asks several questions per passage.
+        other = prepared[mismatched_index(contexts, index)]
         suffix = bench.embed(question_suffix(row["question"]))
-        record = {"id": row["id"]}
+        record = {"id": row["id"], "passageAnchorShare": round(own["anchorShare"], 4)}
 
-        def arm(name, parts, extra_ms=0.0, hit=None):
+        def arm(name, parts, extra_ms=0.0, hit=None, timed=True):
+            """One receiver answer. Controls are not timed: nobody would ship them."""
             answer, ms = bench.answer(parts)
             record[name] = {"answer": answer, "f1": f1(answer, row["answers"]),
-                            "contains": contains(answer, row["answers"]), "ms": ms + extra_ms, "hit": hit}
+                            "contains": contains(answer, row["answers"]),
+                            "ms": ms + extra_ms if timed else None, "hit": hit}
 
-        arm("text", [bench.embed(doc_text(row["context"])), suffix])
-        arm("closed", [bench.embed(closed_prompt(row["question"]))])
-        arm("t2t", [bench.embed(doc_text(own["summary"])), suffix], own["summaryMs"])
+        arm("text", lambda: [bench.embed(doc_text(row["context"])), suffix])
+        arm("closed", lambda: [bench.embed(closed_prompt(row["question"]))])
+        arm("t2t", lambda: [bench.embed(doc_text(own["summary"])), suffix], own["summaryMs"])
         for variant in VARIANTS:
             if variant not in own["prefix"]:
                 continue
             sender_ms = own["summaryMs"] if variant.endswith("/summary") else own["passageMs"]
             mine, theirs = own["prefix"][variant], other["prefix"][variant]
             arm(variant, [head, mine["vectors"], suffix], sender_ms + mine["ms"], mine["hit"])
-            arm(f"{variant} mismatched", [head, theirs["vectors"], suffix])
-        arm("anchor/summary zeroed", [head, own["prefix"]["zeroed"]["vectors"], suffix])
-        if per_message and "per-message" in own["prefix"] and "per-message" in other["prefix"]:
+            arm(f"{variant} mismatched", [head, theirs["vectors"], suffix], timed=False)
+        arm("anchor/summary zeroed", [head, own["prefix"]["zeroed"]["vectors"], suffix], timed=False)
+        if per_message:
             mine, theirs = own["prefix"]["per-message"], other["prefix"]["per-message"]
             arm("per-message", [head, mine["vectors"], suffix], own["summaryMs"] + mine["ms"])
-            arm("per-message mismatched", [head, theirs["vectors"], suffix])
+            arm("per-message mismatched", [head, theirs["vectors"], suffix], timed=False)
             arm("tokens", [head, mine["reference"], suffix], own["summaryMs"])
+            # Own tokens with the other item's hidden states. Both are cut to a common number of
+            # rows, and the comparison is against the own-states fit at that same number of rows,
+            # so a difference cannot come from the prefix length.
             rows = min(len(own["tokens"]), len(other["tokens"]))
-            if rows >= 2:
-                # Own tokens, the next item's hidden states. Both are cut to a common length, and
-                # the comparison is against the own-states fit at that same length.
-                swapped = bench.per_message(other["states"][-rows:], own["tokens"][-rows:])
-                arm("per-message, states swapped", [head, swapped["vectors"], suffix])
-                same = mine if rows == len(own["tokens"]) else bench.per_message(own["states"][-rows:],
-                                                                                 own["tokens"][-rows:])
-                same_answer = record["per-message"]["answer"] if same is mine else \
-                    bench.answer([head, same["vectors"], suffix])[0]
-                record["per-message, states swapped"]["sameAnswer"] = \
-                    same_answer == record["per-message, states swapped"]["answer"]
-                gap = (swapped["vectors"].float() - same["vectors"].float()).norm() / same["vectors"].float().norm()
-                swap_gaps.append(float(gap))
-            else:
-                record["per-message, states swapped"] = dict(record["per-message"], ms=None, sameAnswer=None)
+            swapped = bench.per_message(other["states"][-rows:], own["tokens"][-rows:])
+            same = mine if rows == len(own["tokens"]) else bench.per_message(own["states"][-rows:],
+                                                                             own["tokens"][-rows:])
+            arm("per-message, same rows", [head, same["vectors"], suffix], timed=False)
+            arm("per-message, states swapped", [head, swapped["vectors"], suffix], timed=False)
+            record["per-message, states swapped"]["sameAnswer"] = \
+                record["per-message, same rows"]["answer"] == record["per-message, states swapped"]["answer"]
+            gap = (swapped["vectors"].float() - same["vectors"].float()).norm() / same["vectors"].float().norm()
+            swap_gaps.append(float(gap))
         if bench.pair is not None:
             start = time.perf_counter()
             answer, _ = bench.pair.answer_from_sender(doc_text(row["context"]), question_suffix(row["question"]))
@@ -292,7 +303,7 @@ def run(bench, items, prepared, per_message=False, log_every=50):
         results.append(record)
         if log_every and (index + 1) % log_every == 0:
             means = {name: round(sum(r[name]["f1"] for r in results) / len(results), 3)
-                     for name in record if name != "id"}
+                     for name in record if isinstance(record[name], dict)}
             print(f"{index + 1}/{len(items)} {means}", flush=True)
     return results, swap_gaps
 
@@ -345,8 +356,9 @@ def main():
     results, swap_gaps = run(bench, items, prepared, args.per_message)
     for record, entry in zip(results, prepared):
         record["summary"] = entry["summary"]
-    arms = [name for name in results[0] if name not in ("id", "summary")]
-    summary = summarize(results, arms)
+    arms = [name for name in results[0] if isinstance(results[0][name], dict)]
+    # Eight edge items give no interval and no verdict: means only.
+    summary = summarize(results, arms, intervals=args.items == "squad")
     meta = {"sender": args.sender, "receiver": args.receiver, "items": f"{args.items}, seed {args.seed}",
             "idsSha256": ids_digest, "sameIdsAsM2bS": same_as_m2bs, "sameTokenizer": bench.same_tokenizer,
             "checkpoint": bench.pair.checkpoint_id if bench.pair else None, "fit": bench.fit,

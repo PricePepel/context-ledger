@@ -83,6 +83,8 @@ def fit_map(moments, ridge=RIDGE, relative=True):
     values_x, vectors_x = torch.linalg.eigh((cov_x + cov_x.T) / 2)
     values_y, vectors_y = torch.linalg.eigh((cov_y + cov_y.T) / 2)
     values_x, values_y = values_x.clamp_min(0), values_y.clamp_min(0)
+    if float(values_x.max()) == 0 or float(values_y.max()) == 0:
+        raise ValueError("A fit needs rows that differ on both sides.")
     ridge_x = ridge * (values_x.mean() if relative else 1.0)
     ridge_y = ridge * (values_y.mean() if relative else 1.0)
     whiten_x = _sym_power(values_x + ridge_x, vectors_x, -0.5)

@@ -110,12 +110,53 @@ class StatsTest(unittest.TestCase):
         self.assertFalse(same["beatsMismatched"])
         self.assertFalse(same["passed"])
 
-    def test_a_marginal_secondary_pass_needs_a_repeat(self):
+    def test_a_marginal_secondary_result_needs_a_repeat_and_is_not_a_pass(self):
         aligned = [0.51] * 30
         marginal = stats.pass_rule(aligned, [0.5] * 30, [0.5] * 30, rounds=200, primary=False)
-        self.assertTrue(marginal["passed"])
-        self.assertTrue(marginal["needsRepeat"])
-        self.assertFalse(stats.pass_rule(aligned, [0.5] * 30, [0.5] * 30, rounds=200)["needsRepeat"])
+        self.assertEqual((marginal["result"], marginal["passed"], marginal["needsRepeat"]),
+                         ("needs a repeat", False, True))
+        primary = stats.pass_rule(aligned, [0.5] * 30, [0.5] * 30, rounds=200)
+        self.assertEqual((primary["result"], primary["passed"], primary["needsRepeat"]), ("pass", True, False))
+        clear = stats.pass_rule([0.9] * 30, [0.1] * 30, [0.5] * 30, rounds=200, primary=False)
+        self.assertEqual((clear["result"], clear["passed"]), ("pass", True))
+        self.assertEqual(stats.pass_rule([0.1] * 30, [0.1] * 30, [0.5] * 30, rounds=200)["result"], "fail")
+
+    def test_resampling_keeps_the_pairs_together(self):
+        # Every item differs by exactly 0.1, so a paired interval has no width. Resampling the
+        # two arms independently would give one.
+        diff, low, high = stats.paired_bootstrap([0.2, 0.8] * 10, [0.1, 0.7] * 10, rounds=300, seed=1)
+        for value in (diff, low, high):
+            self.assertAlmostEqual(value, 0.1)
+
+    def test_mismatched_control_never_shares_the_passage(self):
+        contexts = ["a", "a", "b", "a", "c", "c"]
+        picks = [stats.mismatched_index(contexts, i) for i in range(len(contexts))]
+        self.assertEqual(picks, [2, 2, 3, 4, 0, 0])
+        for index, other in enumerate(picks):
+            self.assertNotEqual(contexts[index], contexts[other])
+        with self.assertRaises(ValueError):
+            stats.mismatched_index(["a", "a"], 0)
+        with self.assertRaises(ValueError):
+            stats.mismatched_index(["a"], 0)
+
+    def test_summary_key_names_the_sender_and_the_passage(self):
+        key = stats.summary_key("model/a", "A passage.")
+        self.assertEqual(key, stats.summary_key("model/a", "A passage."))
+        self.assertNotEqual(key, stats.summary_key("model/b", "A passage."))
+        self.assertNotEqual(key, stats.summary_key("model/a", "A passage, changed."))
+        self.assertTrue(key.startswith("model/a|"))
+
+    def test_a_handful_of_items_gives_means_only(self):
+        cell = {"answer": "a", "f1": 1.0, "contains": 1.0, "ms": None, "hit": None}
+        results = [{"id": "1", "t2t": cell, "anchor/summary": cell, "anchor/summary mismatched": cell}]
+        summary = stats.summarize(results, ["t2t", "anchor/summary", "anchor/summary mismatched"], intervals=False)
+        self.assertEqual(summary["rule"], {})
+        self.assertEqual(summary["differences"], {})
+        self.assertEqual(summary["arms"]["t2t"]["f1"], 1.0)
+        text = stats.render({"meta": {"sender": "S", "receiver": "R", "items": "edge, seed 0", "fit": {}},
+                             "summary": summary})
+        self.assertNotIn("Result", text)
+        self.assertIn("item IDs not checked against M2b-S", text)
 
     def test_summary_and_tables(self):
         def cell(answer, score, ms=None):
@@ -128,6 +169,7 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(summary["arms"]["text"], {"f1": 1.0, "contains": 1.0, "words": 2.0, "ms": 10.0})
         self.assertNotIn("ms", summary["arms"]["anchor/summary mismatched"])
         self.assertFalse(summary["rule"]["anchor/summary"]["passed"])
+        self.assertEqual(summary["rule"]["anchor/summary"]["result"], "fail")
         self.assertEqual(summary["differences"]["anchor/summary - t2t"], [-0.3, -0.3, -0.3])
         text = stats.render({"meta": {"sender": "S", "receiver": "R", "items": "squad, seed 0", "fit": {}},
                              "summary": summary})
@@ -216,9 +258,14 @@ class ArithmeticTest(unittest.TestCase):
         fresh = torch.randn(3, 5, dtype=torch.float64)
         torch.testing.assert_close(small.apply(fresh * 1e-3) * 1e3, large.apply(fresh), atol=1e-8, rtol=1e-8)
 
-    def test_a_fit_needs_two_rows(self):
+    def test_a_fit_needs_two_rows_that_differ(self):
         with self.assertRaises(ValueError):
             self.fit(torch.randn(1, 3), torch.randn(1, 3))
+        same = torch.ones(4, 3, dtype=torch.float64)
+        with self.assertRaises(ValueError):   # no variance: a relative ridge would be zero
+            self.fit(same, torch.randn(4, 3, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            self.fit(torch.randn(4, 3, dtype=torch.float64), same)
 
     def test_norm_calibration_and_anchoring_by_hand(self):
         vectors = torch.tensor([[3.0, 4.0], [0.0, 0.5]])
@@ -251,7 +298,8 @@ class ArithmeticTest(unittest.TestCase):
         self.assertEqual(self.sb.retrieval_accuracy(fitted, rows, shuffled, vocab), 0.0)
 
     def test_per_message_fit_does_not_depend_on_the_states(self):
-        """With fewer rows than dimensions the paper's fit returns the reference embeddings,
+        """With fewer rows than dimensions, states far larger than the ridge and reference rows
+        of full rank (rows - 1 after centring), the paper's fit returns the reference embeddings,
         each singular value d changed to sqrt(d^2 + K*lambda), whatever the states are."""
         rows, width, ridge = 12, 40, 1e-3
         reference = torch.randn(rows, width, dtype=torch.float64) * 0.05
@@ -267,6 +315,44 @@ class ArithmeticTest(unittest.TestCase):
         torch.testing.assert_close(first, expected, atol=1e-7, rtol=0)
         # It is not the reference itself: the ridge inflates the small directions.
         self.assertGreater(float((first - reference).norm() / reference.norm()), 0.01)
+
+    def test_states_as_small_as_the_ridge_do_change_the_per_message_fit(self):
+        """The first condition. Two rows +-a e1 against +-b e1: the mapped rows are
+        +-[a / sqrt(a^2 + lambda)] sqrt(b^2 + lambda) e1, so a small a shows through."""
+        ridge, b = 1e-3, 0.5
+        unit = torch.tensor([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]], dtype=torch.float64)
+        for a in (0.01, 0.05, 50.0):
+            mapped = self.sb.per_message_map(unit * a, unit * b, ridge).apply(unit * a)
+            expected = a / (a * a + ridge) ** 0.5 * (b * b + ridge) ** 0.5
+            torch.testing.assert_close(mapped, unit * expected, atol=1e-9, rtol=0)
+        small = self.sb.per_message_map(unit * 0.01, unit * b, ridge).apply(unit * 0.01)
+        large = self.sb.per_message_map(unit * 50.0, unit * b, ridge).apply(unit * 50.0)
+        self.assertGreater(float((large - small).norm() / large.norm()), 0.5)
+
+    def test_repeated_tokens_leave_free_directions_that_follow_the_states(self):
+        """The second condition. A repeated token lowers the rank of the reference, the rotation
+        keeps the rank of the states, and the spare directions come out at the ridge's scale:
+        each adds at most sqrt(K * lambda) to the Frobenius norm, in a direction the states pick."""
+        rows, width, ridge = 12, 40, 1e-3
+        reference = torch.randn(rows, width, dtype=torch.float64) * 0.5
+        reference[4], reference[7], reference[9] = reference[1], reference[1], reference[2]   # 3 repeats
+        states = torch.randn(rows, width, dtype=torch.float64) * 80
+        other_states = torch.randn(rows, width, dtype=torch.float64) * 80
+        first = self.sb.per_message_map(states, reference, ridge).apply(states)
+        second = self.sb.per_message_map(other_states, reference, ridge).apply(other_states)
+        mean = reference.mean(0)
+        self.assertEqual(int(torch.linalg.matrix_rank(reference - mean)), rows - 1 - 3)
+        self.assertEqual(int(torch.linalg.matrix_rank(first - first.mean(0), tol=1e-8)), rows - 1)
+        # The states now show, but only in the three spare directions.
+        gap = float((first - second).norm())
+        self.assertGreater(gap, 1e-3)
+        self.assertLessEqual(gap, 2 * (3 * rows * ridge) ** 0.5 + 1e-9)
+        # Rows of a repeated token no longer get one vector.
+        self.assertGreater(float((first[4] - first[1]).norm()), 1e-3)
+        # What the reference fixes is unchanged: project the spare directions out and both agree.
+        _, singular, right = torch.linalg.svd(reference - mean, full_matrices=False)
+        basis = right[:rows - 1 - 3]
+        torch.testing.assert_close((first - mean) @ basis.T, (second - mean) @ basis.T, atol=1e-5, rtol=0)
 
     def test_with_more_rows_than_dimensions_the_states_do_matter(self):
         reference = torch.randn(200, 6, dtype=torch.float64)
