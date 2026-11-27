@@ -29,7 +29,7 @@ Do not start coding until you know which card you are working on.
 
 1. Write the acceptance eval first in `docs/evals.md` (what is tested, expected result, synthetic data used).
 2. Implement it with tests: `node:test` for units and APIs, Playwright for browser journeys.
-3. Run everything locally: `npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and in `runtime/` the Python checks `python -m unittest discover -s tests -t .` (standard library only; torch checks skip).
+3. Run everything locally: `node scripts/check.mjs` (the section 6 rules, on every tracked file; its messages say what to write instead), `npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and in `runtime/` the Python checks `python -m unittest discover -s tests -t .` (standard library only; torch checks skip).
 4. Get an independent code review from a different agent or model than the one that wrote the code (for example Claude reviews Codex work and Codex reviews Claude work), plus a human for anything touching security, export or signing.
 5. Fix the findings, each with a regression test, and record the review outcome in `docs/evals.md`.
 6. Update `docs/handoff.md` with what changed and what the next owner should do.
