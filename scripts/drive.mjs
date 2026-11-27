@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { terminalLabel } from '../src/text.mjs';
 
@@ -28,25 +28,46 @@ export function loadFeatures(path = join(repo, 'docs', 'features.json')) {
     if (ids.has(feature.id)) throw new Error(`${where}: id used twice.`);
     ids.add(feature.id);
     for (const key of ['name', 'what', 'path']) if (typeof feature[key] !== 'string' || feature[key] === '') throw new Error(`${where}: ${key} is required.`);
-    if (!feature.path.startsWith('/')) throw new Error(`${where}: path must start with "/".`);
+    // A path on the ledger itself: "/x", never "//host" or "/\host" (H11 review).
+    if (!/^\/(?![/\\])/u.test(feature.path)) throw new Error(`${where}: path must start with "/" and stay on the ledger.`);
     if (!Array.isArray(feature.steps) || feature.steps.length === 0) throw new Error(`${where}: steps are required.`);
     for (const step of feature.steps) {
       const kinds = Object.keys(step ?? {});
       if (kinds.length !== 1 || !stepKinds.has(kinds[0])) throw new Error(`${where}: each step is one of ${[...stepKinds].join(', ')}.`);
+      if (kinds[0] === 'upload') uploadPath(step.upload[1], where);
     }
     if (feature.proof !== undefined && typeof feature.proof !== 'string') throw new Error(`${where}: proof is a selector.`);
   }
   return map.features;
 }
 
+// Uploads come only from the repository's synthetic fixtures (H11 review: no "../").
+const fixtureRoots = ['demo/', 'tests/fixtures/', 'evals/'];
+
+export function uploadPath(file, where = 'upload') {
+  const full = resolve(repo, String(file));
+  const inside = relative(repo, full).split(sep).join('/');
+  if (inside.startsWith('..') || isAbsolute(inside) || !fixtureRoots.some(root => inside.startsWith(root))) {
+    throw new Error(`${where}: upload ${JSON.stringify(file)} must be a fixture under ${fixtureRoots.join(', ')}.`);
+  }
+  return full;
+}
+
+/** A URL on the ledger's own origin, or an error: nothing leaves the ledger. */
+export function onOrigin(origin, path) {
+  const url = new URL(path, origin);
+  if (url.origin !== new URL(origin).origin) throw new Error('A sign-in or feature URL pointed away from the ledger.');
+  return url.href;
+}
+
 /** Runs a feature's steps on a signed-in page at the ledger's origin. */
 export async function openFeature(page, origin, feature) {
   const timeout = feature.timeoutMs ?? 30_000;
-  await page.goto(new URL(feature.path, origin).href);
+  await page.goto(onOrigin(origin, feature.path));
   for (const step of feature.steps) {
     const [kind, value] = Object.entries(step)[0];
     if (kind === 'select') await page.locator(value[0]).selectOption(value[1], { timeout });
-    else if (kind === 'upload') await page.locator(value[0]).setInputFiles(join(repo, value[1]), { timeout });
+    else if (kind === 'upload') await page.locator(value[0]).setInputFiles(uploadPath(value[1]), { timeout });
     else if (kind === 'fill') await page.locator(value[0]).fill(value[1], { timeout });
     else if (kind === 'click') await page.locator(value).click({ timeout });
     else if (kind === 'waitFor') await page.locator(value).first().waitFor({ state: 'visible', timeout });
@@ -72,8 +93,8 @@ export async function startLedger() {
   let output = '';
   try {
     const ready = await new Promise((resolveReady, reject) => {
-      const timer = setTimeout(() => reject(new Error(`The ledger did not start: ${output}`)), 30_000);
-      child.on('exit', code => reject(new Error(`The ledger stopped (${code}): ${output}`)));
+      const timer = setTimeout(() => reject(new Error(`The ledger did not start: ${redact(output)}`)), 30_000);
+      child.on('exit', code => reject(new Error(`The ledger stopped (${code}): ${redact(output)}`)));
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
         output += chunk;
@@ -96,11 +117,16 @@ export async function startLedger() {
 
 /** A one-time sign-in link for a running ledger, minted with its access token. */
 export async function signInLink(origin, token) {
-  const response = await fetch(new URL('/api/login', origin), { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Sign-in was refused (HTTP ${response.status}); check CONTEXT_LEDGER_TOKEN.`);
+  // The token goes to this origin only: no redirect is followed (H11 review).
+  const response = await fetch(new URL('/api/login', origin), { method: 'POST', redirect: 'manual', headers: { Authorization: `Bearer ${token}` } });
+  if (response.status !== 200) throw new Error(`Sign-in was refused (HTTP ${response.status}); check CONTEXT_LEDGER_TOKEN.`);
   const { path } = await response.json();
-  return new URL(path, origin).href;
+  if (typeof path !== 'string' || !/^\/login\?code=[A-Za-z0-9_-]+$/u.test(path)) throw new Error('The ledger answered sign-in with an unexpected link.');
+  return onOrigin(origin, path);
 }
+
+// One-time sign-in codes never reach output (H11 review).
+export const redact = text => String(text ?? '').replace(/code=[A-Za-z0-9_-]+/gu, 'code=<redacted>');
 
 function parse(argv) {
   const options = { out: undefined, url: undefined, list: false, feature: undefined };
@@ -128,6 +154,8 @@ async function main(argv) {
   const feature = features.find(entry => entry.id === options.feature);
   if (!feature) throw new Error(`No feature ${terminalLabel(JSON.stringify(options.feature))}; node scripts/drive.mjs --list names them.`);
   if (options.url !== undefined && !/^http:\/\/(?:127\.0\.0\.1|localhost):\d+\/?$/u.test(options.url)) throw new Error('--url must be a loopback ledger, such as http://127.0.0.1:4317.');
+  // A local file: a screenshot of a ledger never goes to a network share (H11 review).
+  if (options.out !== undefined && /^(?:\\\\|\/\/)/u.test(options.out)) throw new Error('--out must be a local file, not a network path.');
   const out = resolve(options.out ?? `${feature.id}.png`);
 
   const { chromium } = await import('@playwright/test');
@@ -139,22 +167,30 @@ async function main(argv) {
     const origin = new URL(options.url).origin;
     ledger = { origin, link: await signInLink(origin, token), stop: async () => {} };
   }
-  const browser = await chromium.launch();
+  // The ledger is stopped whatever fails, a browser that will not launch included.
+  let browser;
   try {
-    const page = await browser.newPage({ viewport: { width: 1300, height: 900 } });
+    browser = await chromium.launch();
+    const context = await browser.newContext({ viewport: { width: 1300, height: 900 } });
+    // The page may talk to the ledger only; anything else is aborted (H11 review).
+    await context.route('**/*', route => (new URL(route.request().url()).origin === ledger.origin ? route.continue() : route.abort()));
+    const page = await context.newPage();
     await page.goto(ledger.link);
     const target = await openFeature(page, ledger.origin, feature);
     await target.screenshot(target === page ? { path: out, fullPage: true } : { path: out });
     console.log(`drive: ${feature.id} saved to ${terminalLabel(out)}`);
   } finally {
-    await browser.close();
-    await ledger.stop();
+    try {
+      await browser?.close();
+    } finally {
+      await ledger.stop();
+    }
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main(process.argv.slice(2)).catch(error => {
-    console.error(`drive: ${terminalLabel(error.message)}`);
+    console.error(`drive: ${terminalLabel(redact(error.message))}`);
     process.exitCode = 1;
   });
 }

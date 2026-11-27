@@ -27,7 +27,9 @@
         { "waitFor": "#reader-messages > *" },
         { "fill": ["#search-query", "orbit"] },
         { "click": "#search-form button:has-text(\"Search\")" },
-        { "waitFor": "#search-results button" }
+        { "waitFor": "#search-results button" },
+        { "click": "#search-results button" },
+        { "waitFor": "#reader-messages > *" }
       ],
       "proof": ".catalog"
     },
@@ -88,7 +90,8 @@
       "what": "A simulated 100-agent run to the end: each agent's tile, the checks and the combined answer.",
       "path": "/swarm/",
       "steps": [
-        { "waitFor": "#mode-simulated:checked" },
+        { "waitFor": "#mode-simulated:enabled" },
+        { "click": "#mode-simulated" },
         { "click": "#run" },
         { "waitFor": "body[data-run-state=\"done\"]" }
       ],

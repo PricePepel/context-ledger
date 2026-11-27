@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { loadFeatures, repo, startLedger } from '../scripts/drive.mjs';
+import { createServer } from 'node:http';
+import { loadFeatures, onOrigin, redact, repo, signInLink, startLedger, uploadPath } from '../scripts/drive.mjs';
 
 const run = promisify(execFile);
 const script = join(repo, 'scripts', 'drive.mjs');
@@ -69,4 +70,53 @@ test('the command starts its own ledger on loopback, signs in once, and cleans u
   } finally {
     await ledger.stop();
   }
+});
+
+// H11 Codex review, round 1.
+test('review: feature paths and sign-in links stay on the ledger origin', async () => {
+  assert.equal(onOrigin('http://127.0.0.1:4317', '/console/'), 'http://127.0.0.1:4317/console/');
+  for (const path of ['//example.com/x', 'https://example.com/', 'http://127.0.0.1:9999/']) {
+    assert.throws(() => onOrigin('http://127.0.0.1:4317', path), /away from the ledger/u, path);
+  }
+  const folder = await mkdtemp(join(tmpdir(), 'ledger-features-'));
+  try {
+    const backslash = String.fromCharCode(92);
+    for (const path of ['//example.com/', `/${backslash}example.com/`]) {
+      const file = join(folder, 'features.json');
+      await writeFile(file, JSON.stringify({ version: 1, features: [{ id: 'a', name: 'x', what: 'x', path, steps: [{ click: 'a' }] }] }));
+      assert.throws(() => loadFeatures(file), /stay on the ledger/u, path);
+    }
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+
+  // A ledger that redirects the token request, or answers with a link elsewhere, is refused.
+  for (const respond of [
+    (request, response) => { response.writeHead(307, { Location: 'http://127.0.0.1:1/api/login' }); response.end(); },
+    (request, response) => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ path: '//example.com/login?code=abc' })); },
+  ]) {
+    const server = createServer(respond);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      await assert.rejects(signInLink(`http://127.0.0.1:${server.address().port}`, 'token'), /refused|unexpected link/u);
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
+});
+
+test('review: uploads come only from the repository fixtures', () => {
+  assert.equal(uploadPath('demo/leo-orbit.jsonl'), join(repo, 'demo', 'leo-orbit.jsonl'));
+  for (const file of ['../secret.jsonl', 'demo/../../x.jsonl', 'src/server.mjs', join(tmpdir(), 'x.jsonl')]) {
+    assert.throws(() => uploadPath(file), /must be a fixture/u, file);
+  }
+});
+
+test('review: sign-in codes are redacted, and --out may not be a network path', async () => {
+  assert.equal(redact('goto http://127.0.0.1:1/login?code=AbC_12-x failed'), 'goto http://127.0.0.1:1/login?code=<redacted> failed');
+  const backslash = String.fromCharCode(92);
+  const unc = `${backslash}${backslash}server${backslash}share${backslash}proof.png`;
+  const share = await run(process.execPath, [script, 'swarm', '--out', unc]).then(() => null, error => error);
+  assert.equal(share?.code, 1);
+  assert.match(share.stderr, /--out must be a local file/u);
 });

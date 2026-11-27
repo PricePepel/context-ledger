@@ -5261,3 +5261,11 @@ The talk behind H9 gives agents a feature map (the app's features as a person na
 
 - `tests/drive.test.mjs` (map checks, the command's refusals, its own ledger signing in once and stopping) and `tests/e2e/features.spec.mjs` pass; `node scripts/check.mjs` has no findings; no new dependency (Playwright is already a devDependency).
 
+### H11 results (2026-11-27)
+
+- `node scripts/drive.mjs <id>` drove all nine features on its own temporary ledger on Windows and saved each screenshot; `tests/e2e/features.spec.mjs` 9/9 and `tests/e2e/drive-cli.spec.mjs` 1/1 (the command writes a real PNG, prints no sign-in code and leaves no ledger folder); `tests/drive.test.mjs` 7/7.
+- **Codex review, round 1:** no high; five medium and two low.
+  - Fixed with tests: the token request followed redirects and the browser trusted the returned path, so a misbehaving loopback server could send either elsewhere; sign-in is now `redirect: 'manual'` with a strict `/login?code=` answer, feature paths may not start `//` or `/\`, and every browser request off the ledger's origin is aborted. Upload steps could name `../` files; they are limited to fixtures under `demo/`, `tests/fixtures/` and `evals/`. `--out` may not be a network path. A browser that failed to launch left the ledger running; teardown now runs whatever fails. Errors could print the one-time sign-in code; it is redacted. `swarm-run` waited for Simulated without choosing it, so it stalled on a ledger with live models; it now clicks Simulated.
+  - Low, fixed: the command's own screenshot and teardown path had no test (the CLI spec above); `library-search` now also opens the result in the reader.
+  - Low, accepted: `room` and `node-review` show their forms on an empty ledger rather than seeded graphs; seeding graphs belongs to those features' own tests, which already exist.
+
