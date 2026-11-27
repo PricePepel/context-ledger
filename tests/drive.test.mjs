@@ -174,3 +174,17 @@ test('review 5: an option given where a value belongs is refused', async () => {
     assert.match(failure.stderr, /needs a value/u, args.join(' '));
   }
 });
+
+// Card H14: runsSwarm is a boolean. Whether an entry really starts a swarm run is checked
+// in the browser (tests/e2e/feature-check.mjs), from the request the page sends.
+test('H14: runsSwarm is true or false, and the swarm-run entry is marked', async () => {
+  assert.equal(loadFeatures().find(feature => feature.id === 'swarm-run')?.runsSwarm, true);
+  const folder = await mkdtemp(join(tmpdir(), 'ledger-features-'));
+  try {
+    const path = join(folder, 'features.json');
+    await writeFile(path, JSON.stringify({ version: 1, features: [{ id: 'a', name: 'x', what: 'x', path: '/', steps: [{ click: 'a' }], runsSwarm: 'yes' }] }));
+    assert.throws(() => loadFeatures(path), /runsSwarm is true or false/u);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});

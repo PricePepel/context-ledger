@@ -23,7 +23,16 @@ test('exports the same cited session the browser can find', async ({ page, reque
   await page.goto('/');
   await page.getByLabel('Search transcripts').fill('vega retry');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
+  // Card H14: on Windows runners the reader sometimes showed nothing within the 5 s an
+  // assertion waits, and the failure did not say why. Wait for the reader's own request
+  // instead, and fail with its status and body if the ledger refused it.
+  const opened = page.waitForResponse(response => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === `/api/sessions/${session.id}`);
   await page.getByRole('button', { name: session.title, exact: true }).click();
+  const response = await opened;
+  // H14 review: a body that cannot be read still leaves the status in the message.
+  const body = await response.text().catch(error => `(body unreadable: ${error.message})`);
+  expect(response.status(), body).toBe(200);
   await expect(page.getByText('Line 2', { exact: true })).toBeVisible();
 
   const { stdout: results } = await run(baseURL, 'search', '--provider', 'claude', 'vega retry');
