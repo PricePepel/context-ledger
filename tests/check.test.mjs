@@ -510,3 +510,9 @@ test('card H10 review 5: nested indexes, keys ending in label, and a 0 before mo
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
 });
+
+test('card H10 review 6: optional indexing before the label', () => {
+  for (const line of ['if (500 < nodes?.[index]?.label?.length) reject();', 'if (nodes?.[index]?.label.length > 500) cut();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+});

@@ -69,7 +69,7 @@ const browserFile = /^public\/|\.html$/u;
 // Calls and indexes nest one level: getNode(getId()), nodes[indexes[0]] (rounds 4 and 5).
 const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])`;
 // A ['...label'] key, any name ending in label or labelText (round 5: ['editLabel']).
-const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+${callOrIndex}*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])[\w$]*[Ll]abel(?:Text)?\1\s*\])\s*\??\.length\b`, 'gu');
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+(?:(?:\?\.)?${callOrIndex})*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])[\w$]*[Ll]abel(?:Text)?\1\s*\])\s*\??\.length\b`, 'gu');
 // The operator, the parentheses opened before the operand, and the operand. Only as many
 // ")" as were opened belong to it, so `> 0) ++count` is still a lone 0 (round 5).
 const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*(\(*)\s*([\w$.]*)/u;
