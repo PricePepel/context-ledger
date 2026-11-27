@@ -516,3 +516,15 @@ test('card H10 review 6: optional indexing before the label', () => {
     assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
   }
 });
+
+test('card H10 review 7: the whole member chain before the label, across lines and groups', () => {
+  const fail = [
+    'if (500 < getNode(\n  graph,\n  nodeId,\n).label.length) return false;',
+    'if (500 < (node ?? fallback).label.length) return false;',
+    'if (500 < store.graphs[id].nodes.find(n => n.id === key).label.length) cut();',
+  ];
+  for (const text of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(text))), ['label-length'], text);
+  for (const text of ['return 0 < node.label.length;', 'const ok = items.every(item => item.label.length > 0);', 'if (typeof label === "string" && label.length > 0) show();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(text)), [], text);
+  }
+});

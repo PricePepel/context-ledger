@@ -78,6 +78,40 @@ const afterOperand = (text, after) => {
   for (let open = after[2].length; open > 0; open -= 1) rest = rest.replace(/^\s*\)/u, '');
   return /^\s*(\S?)/u.exec(rest)[1];
 };
+
+// Where the member chain that ends at `index` starts, walking left over names, dots,
+// optional chaining and balanced (...) or [...] of any length, across lines (round 7:
+// `500 < getNode(\n graph,\n).label.length`, `500 < (node ?? fallback).label.length`).
+function chainStart(code, index) {
+  let start = index;
+  let expect = 'any'; // after a name only a dot may come before it; after a dot or group, anything
+  for (;;) {
+    let left = start;
+    while (left > 0 && /\s/u.test(code[left - 1])) left -= 1;
+    const character = code[left - 1];
+    if (character === '.') {
+      left -= 1;
+      if (code[left - 1] === '?') left -= 1;
+      start = left;
+      expect = 'any';
+    } else if (expect === 'any' && (character === ')' || character === ']')) {
+      const open = character === ')' ? '(' : '[';
+      let depth = 0;
+      let at = left - 1;
+      for (; at >= 0; at -= 1) {
+        if (code[at] === character) depth += 1;
+        else if (code[at] === open && (depth -= 1) === 0) break;
+      }
+      if (at < 0) return start;
+      start = at;
+      expect = 'any';
+    } else if (expect === 'any' && character !== undefined && /[\w$]/u.test(character)) {
+      while (left > 0 && /[\w$]/u.test(code[left - 1])) left -= 1;
+      start = left;
+      expect = 'dot';
+    } else return start;
+  }
+}
 // Not the ">" of an arrow function (`label => label.length`).
 const comparisonBefore = /(\S?)\s*\(*\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
@@ -284,7 +318,8 @@ export function checkFile(path, bytes, { browser = false } = {}) {
     for (const match of code.matchAll(labelLength)) {
       const following = code.slice(match.index + match[0].length, match.index + match[0].length + 80);
       const after = comparisonAfter.exec(following);
-      const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
+      const head = chainStart(code, match.index);
+      const before = comparisonBefore.exec(code.slice(Math.max(0, head - 80), head));
       if (!after && !before) continue;
       if (after && !before && emptyAfter.has(after[1] + after[3]) && !notAloneAfter.has(afterOperand(following, after))) continue;
       if (before && !after && emptyBefore.has(before[2] + before[3]) && !notAloneBefore.has(before[1])) continue;
