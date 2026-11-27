@@ -4,10 +4,12 @@ Standard library only, plus jinja2 for the checks that render real chat template
 without it). Nothing here loads a model: the torch engine is exercised by the GPU run.
 """
 import glob
+import http.server
 import json
 import os
 import re
 import tempfile
+import threading
 import unicodedata
 import unittest
 
@@ -18,7 +20,7 @@ except ImportError:
     HAVE_JINJA = False
 
 from latent_compare import items as item_sets
-from latent_compare import models, prompts, report, run, stats
+from latent_compare import models, prompting, prompts, report, run, stats, vllm_engine
 
 from .chat_template_fixtures import FAMILIES, TemplateTokenizer
 
@@ -207,6 +209,9 @@ class ModelsTest(unittest.TestCase):
         self.assertEqual(models.latent_status("phi3.5", "qwen1.5"), "mapper")
         self.assertEqual(models.latent_status("qwen1.5", "phi3.5"), "none")
         self.assertEqual(models.latent_status("qwen3", "qwen3"), "self")
+        self.assertEqual(models.latent_status("qwen7", "qwen7"), "self_refused")   # behind vLLM
+        self.assertEqual((models.backend("qwen7"), models.backend("llama8"), models.backend("phi3.5")),
+                         ("vllm", "vllm", "torch"))
         cross = [(s, r) for s in models.MODELS for r in models.MODELS if s != r]
         self.assertEqual(sum(models.latent_status(s, r) == "none" for s, r in cross), len(cross) - len(models.MAPPERS))
         for sender, receiver in models.MAPPERS:
@@ -502,6 +507,7 @@ class FakeEngine:
     """Stands in for the torch engine: it "reads" the code out of whatever passage it is given."""
 
     loads = []
+    hands_over_cache = True
 
     def __init__(self, key):
         self.key = key
@@ -682,6 +688,207 @@ class PhaseTest(unittest.TestCase):
         return target
 
 
+class WordTokenizer:
+    """A tokenizer double: one token per character, with offsets and a ChatML-like template."""
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        text = "".join(f"<{m['role']}>{m['content']}</{m['role']}>" for m in messages)
+        return text + ("<assistant>" if add_generation_prompt else "")
+
+    def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False):
+        encoded = {"input_ids": [ord(ch) for ch in text]}
+        if return_offsets_mapping:
+            encoded["offset_mapping"] = [(i, i + 1) for i in range(len(text))]
+        return encoded
+
+
+class FakeVllm(http.server.BaseHTTPRequestHandler):
+    """Answers /v1/completions with the digits of the prompt, and records each request."""
+
+    requests = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeVllm.requests.append((self.path, body))
+        prompt = "".join(chr(token) for token in body["prompt"])
+        reply = json.dumps({"choices": [{"text": " " + "".join(ch for ch in prompt if ch.isdigit()) + " "}],
+                            "usage": {"completion_tokens": 3}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):
+        pass
+
+
+class VllmEngineTest(unittest.TestCase):
+    """The vLLM backend: same prompt ids as the torch engine, no cache hand-over."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeVllm)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        config = {"num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "hidden_size": 3584,
+                  "max_position_embeddings": 32768}
+        cls.engine = vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=config,
+                                            base_url=f"http://127.0.0.1:{cls.server.server_address[1]}/v1")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        FakeVllm.requests.clear()
+
+    def test_the_prompt_goes_out_as_the_prepared_token_ids(self):
+        prepared = self.engine.prepare("The code is 412.", "What is the code?")
+        result = self.engine.timed(prepared["ids"])
+        path, body = FakeVllm.requests[0]
+        self.assertEqual(path, "/v1/completions")
+        self.assertEqual(body["prompt"], prepared["ids"])
+        self.assertEqual((body["temperature"], body["max_tokens"], body["add_special_tokens"]), (0, 24, False))
+        self.assertEqual(body["model"], "Qwen/Qwen2.5-7B-Instruct-AWQ")
+        self.assertEqual((result["answer"], result["newTokens"]), ("412", 3))
+        self.assertGreater(result["ms"], 0)
+
+    def test_the_prefix_ends_with_the_passage_and_the_rest_is_the_question(self):
+        # Codex review: a tokenizer round trip that checks the exact prefix and suffix ids.
+        passage = "The code is 412."
+        prepared = self.engine.prepare(passage, "What is the code?", system=prompts.SYSTEM_TEXT)
+        text = "".join(chr(token) for token in prepared["ids"])
+        prefix, suffix = text[:prepared["prefixTokens"]], text[prepared["prefixTokens"]:]
+        self.assertTrue(prefix.endswith("Read this passage.\n\n" + passage))
+        self.assertTrue(suffix.startswith("\n\nQuestion: What is the code?"))
+        self.assertTrue(suffix.endswith("<assistant>"))
+        self.assertIn(prompts.SYSTEM_TEXT, prefix)
+        self.assertEqual((prepared["promptTokens"], prepared["passageTokens"], prepared["truncated"]),
+                         (len(text), len(passage), False))
+        self.assertEqual(prepared["passageBytes"], len(passage))
+
+    def test_a_long_passage_is_cut_at_the_head_and_the_record_says_so(self):
+        passage = "A" * 500 + " the code is 77. " + "B" * 4000
+        prepared = self.engine.prepare(passage, "What is the code?", limit=2048)
+        text = "".join(chr(token) for token in prepared["ids"])
+        self.assertTrue(prepared["truncated"])
+        self.assertEqual(prepared["passageTokens"], len(passage))
+        self.assertLessEqual(prepared["promptTokens"] + prompting.ANSWER_TOKENS, 2048)
+        self.assertGreater(prepared["promptTokens"], 1900)            # the context is used, not wasted
+        self.assertEqual(text.count("B"), prepared["keptTokens"] - 517)
+        self.assertIn("the code is 77.", text)
+        self.assertIn("Question: What is the code?", text)             # the question is never cut
+        with self.assertRaises(ValueError):
+            self.engine.prepare("x", "Q" * 3000, limit=2048)
+
+    def test_an_empty_passage_still_has_a_prefix_and_a_question(self):
+        prepared = self.engine.prepare("", "Which city?", abstain=True)
+        text = "".join(chr(token) for token in prepared["ids"])
+        self.assertEqual((prepared["passageTokens"], prepared["passageBytes"]), (0, 0))
+        self.assertTrue(text[:prepared["prefixTokens"]].endswith("Read this passage.\n\n"))
+        self.assertIn(prompts.ABSTAIN_REPLY, text[prepared["prefixTokens"]:])
+
+    def test_a_summary_is_timed_and_measured_in_utf8_bytes(self):
+        record = self.engine.summarize("Boxes: 412 \u00e9.")
+        self.assertEqual((record["summary"], record["bytes"], record["truncated"]), ("40412", 5, False))
+        self.assertEqual(FakeVllm.requests[0][1]["max_tokens"], 96)
+
+    def test_the_cache_arm_is_a_named_refusal_not_an_error(self):
+        self.assertFalse(self.engine.hands_over_cache)
+        with self.assertRaises(NotImplementedError):
+            self.engine.answer_from_cache({})
+        description = self.engine.describe()
+        self.assertEqual((description["backend"], description["kvHeads"], description["headDim"]), ("vllm", 4, 128))
+        command = vllm_engine.serve_command("/venv/bin/vllm", "some/model")
+        self.assertIn("127.0.0.1", command)
+        self.assertNotIn("--kv-cache-dtype", command)      # FP8 KV breaks the AWQ checkpoints here
+
+    def test_a_vllm_receiver_records_the_refusal_and_stays_complete(self):
+        groups = item_sets.build(squad_rows(), lambda passage: True)
+        keys = ["qwen1.5", "qwen3", "phi3.5", "granite2", "qwen7"]
+        with tempfile.TemporaryDirectory() as out:
+            run.save(run.path(out, "items.json"), groups)
+
+            def factory(key):
+                engine = FakeEngine(key)
+                engine.hands_over_cache = key != "qwen7"
+                return engine
+
+            for key in keys:
+                run.phase_summaries(out, key, groups, engine_factory=factory)
+            for key in keys:
+                run.phase_receive(out, key, groups, keys, engine_factory=factory)
+            record = run.load(os.path.join(out, "receive", "qwen7.json"))["results"]["main-000"]
+            self.assertEqual(record["self_cache"], {"refused": vllm_engine.CACHE_REFUSAL})
+            receive, summaries, latent, _ = run.collect(out, groups, keys)
+            summary = report.build_summary(groups, receive, summaries, latent, rounds=200)
+        cache = summary["main"]["receivers"]["qwen7"]["self_cache"]
+        self.assertEqual((cache["n"], cache["errors"], cache["refused"], cache["missing"]), (0, 0, 200, 0))
+        self.assertNotIn("qwen7", summary["checks"]["handoffFaithful"]["models"])
+        self.assertTrue(summary["checks"]["handoffFaithful"]["passed"])
+        self.assertEqual(summary["checks"]["coverage"]["complete"], 5)
+        self.assertTrue(summary["checks"]["edgeCases"]["passed"], summary["checks"]["edgeCases"])
+        self.assertEqual(summary["latentTable"]["qwen7"]["qwen7"], {"status": "self_refused"})
+        markdown = report.render_markdown(summary)
+        self.assertEqual(markdown.count("not possible through vLLM"), 2)   # its main row and its diagonal cell
+
+
+class LatentResumeTest(unittest.TestCase):
+    """Codex review, round 2: a saved mapper result and a failed reload."""
+
+    spec = models.MAPPERS[("phi3.5", "qwen1.5")]
+
+    def test_what_the_mapper_path_keeps_is_the_earlier_of_the_two_ends(self):
+        document = "abcdefghij" * 10
+        sender = [(i, i + 1) for i in range(100)]          # 100 one-character tokens
+        receiver = [(i, i + 2) for i in range(0, 100, 2)]  # 50 two-character tokens
+        self.assertEqual(run.mapper_cut(document, sender, receiver, cap=384),
+                         {"docTokens": 50, "truncated": False, "keptBytes": 100})
+        # The sender reaches the cap first: the receiver's text is cut back to the sender's end.
+        self.assertEqual(run.mapper_cut(document, sender, receiver, cap=30),
+                         {"docTokens": 50, "truncated": True, "keptBytes": 30})
+        self.assertEqual(run.mapper_cut(document, sender, receiver, cap=60),
+                         {"docTokens": 50, "truncated": True, "keptBytes": 60})
+        self.assertEqual(run.mapper_cut("", [], [])["keptBytes"], 0)
+
+    def test_a_saved_result_is_reused_only_for_the_registered_checkpoint(self):
+        good = {"checkpoint": self.spec["id"], "senderSummaries": True}
+        self.assertTrue(run.latent_current(good, self.spec, True))
+        self.assertFalse(run.latent_current({**good, "checkpoint": "0000"}, self.spec, True))
+
+    def test_a_result_made_before_the_summaries_existed_is_run_again(self):
+        early = {"checkpoint": self.spec["id"], "senderSummaries": False}
+        self.assertFalse(run.latent_current(early, self.spec, True))
+        self.assertTrue(run.latent_current(early, self.spec, False))     # still none: nothing to add
+
+    def test_the_report_prefers_a_recorded_failure_to_an_older_file(self):
+        groups = item_sets.build(squad_rows(), lambda passage: True)
+        keys = ["qwen1.5", "phi3.5"]
+        with tempfile.TemporaryDirectory() as out:
+            run.save(run.path(out, "items.json"), groups)
+            for key in keys:
+                run.phase_summaries(out, key, groups, engine_factory=FakeEngine)
+                run.phase_receive(out, key, groups, keys, engine_factory=FakeEngine)
+            saved = {**fake_latent(groups), "itemsId": run.fingerprint(groups), "checkpoint": self.spec["id"]}
+            run.save(run.path(out, "latent", "phi3.5__qwen1.5.json"), saved)
+            receive, _, latent, _ = run.collect(out, groups, keys)
+            self.assertEqual((sorted(receive), "skipped" in latent[("phi3.5", "qwen1.5")]), (sorted(keys), False))
+            # A later forced run fails to load phi3.5 and refuses the mapper checkpoint.
+            run.note(out, "phi3.5", "OSError: the checkpoint did not load")
+            run.note(out, "phi3.5>qwen1.5", "The checkpoint is 0000, not the registered one.")
+            receive, summaries, latent, _ = run.collect(out, groups, keys)
+            self.assertEqual((sorted(receive), sorted(summaries)), (["qwen1.5"], ["qwen1.5"]))
+            self.assertEqual(latent[("phi3.5", "qwen1.5")], {"skipped": "The checkpoint is 0000, not the registered one."})
+            report.ROUNDS["n"] = 200
+            summary = run.phase_report(out, keys)
+            self.assertEqual(summary["dropped"], {"phi3.5": "OSError: the checkpoint did not load"})
+            # A saved result from another checkpoint is not shown as the registered mapper's.
+            run.note(out, "phi3.5>qwen1.5", None)
+            run.save(run.path(out, "latent", "phi3.5__qwen1.5.json"), {**saved, "checkpoint": "0000"})
+            self.assertIn("0000", run.collect(out, groups, keys)[2][("phi3.5", "qwen1.5")]["skipped"])
+
+
 class CheckTest(unittest.TestCase):
     """Codex review: the four checks passed or failed on the wrong evidence."""
 
@@ -727,6 +934,22 @@ class CheckTest(unittest.TestCase):
         checks = self.build(latent={("phi3.5", "qwen1.5"): latent})["checks"]
         self.assertEqual(checks["edgeCases"]["latent"], {"phi3.5>qwen1.5": 1})
         self.assertFalse(checks["edgeCases"]["passed"])
+
+    def test_a_model_with_a_failed_arm_is_not_complete(self):
+        # Codex review, round 2: five receivers with one failed `closed` arm still passed coverage.
+        receive = {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        receive["qwen3"]["results"]["main-004"]["closed"] = {"error": "RuntimeError: boom"}
+        checks = self.build(receive)["checks"]
+        self.assertEqual((checks["coverage"]["complete"], checks["coverage"]["passed"]), (4, False))
+
+    def test_a_missing_mapper_main_record_fails_the_edge_check(self):
+        # Codex review, round 2: only errors were summed for the mapper's main arms.
+        for arm in ("text_m2b", "t2t_m2b"):
+            latent = fake_latent(self.groups)
+            del latent["results"]["main-009"][arm]
+            checks = self.build(latent={("phi3.5", "qwen1.5"): latent})["checks"]
+            self.assertEqual(checks["edgeCases"]["latent"], {"phi3.5>qwen1.5": 1}, arm)
+            self.assertFalse(checks["edgeCases"]["passed"])
 
     def test_the_mapper_check_needs_every_main_item(self):
         latent = fake_latent(self.groups)

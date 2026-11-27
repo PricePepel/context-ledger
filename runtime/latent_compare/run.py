@@ -24,10 +24,11 @@ import os
 import time
 
 from . import items as item_sets
-from .models import MAPPERS, MODELS, keys
+from .models import MAPPERS, MODELS, backend, keys
 from .prompts import SYSTEM_TEXT
 from .report import build_summary, render_markdown
 from .stats import kv_bytes, score
+from .vllm_engine import CACHE_REFUSAL
 
 FIT_TOKENS = 384       # main-set passages fit this on every tokenizer (the M2b-S eval's cap)
 LONG_CONTEXT = 2048    # the context the long_passage group runs at
@@ -103,7 +104,21 @@ def mismatch_index(rows, index):
     raise ValueError("Every item has the same passage, so there is no mismatched control.")
 
 
+def mapper_cut(document, sender_offsets, receiver_offsets, cap=MAPPER_TOKENS):
+    """What latent_transfer keeps of a document: each side is cut to `cap` tokens, then both
+    are cut to the earlier of the two ends (batch.cut_to_common_end). Returns
+    {docTokens, truncated, keptBytes}; docTokens counts the receiver's tokens."""
+    ends = [offsets[min(len(offsets), cap) - 1][1] if offsets else 0 for offsets in (sender_offsets, receiver_offsets)]
+    limit = min(ends)
+    return {"docTokens": len(receiver_offsets),
+            "truncated": len(sender_offsets) > cap or len(receiver_offsets) > cap,
+            "keptBytes": len(document[:limit].encode("utf-8"))}
+
+
 def default_engine(key):
+    if backend(key) == "vllm":
+        from .vllm_engine import VllmEngine
+        return VllmEngine(key)
     from .engine import Engine
     return Engine(key)
 
@@ -172,7 +187,8 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
     engine = engine_factory(key)
     warm = engine.prepare("Warm-up passage.", "Warm-up?")
     engine.timed(warm["ids"], 2)
-    engine.answer_from_cache(warm)
+    if engine.hands_over_cache:
+        engine.answer_from_cache(warm)
     results, started = {}, time.time()
     for group, rows in groups.items():
         system = SYSTEM_TEXT if group == "no_system_role" else None
@@ -193,7 +209,11 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
                 return answer_record(item, prepared, engine.answer_from_cache(prepared))
 
             guarded(record, "text", text, engine.recover)
-            guarded(record, "self_cache", self_cache, engine.recover)
+            if engine.hands_over_cache:
+                guarded(record, "self_cache", self_cache, engine.recover)
+            else:
+                # A named, expected refusal: not an error and not a missing record.
+                record["self_cache"] = {"refused": CACHE_REFUSAL}
             if group == "main":
                 def closed(item=item):
                     start = time.perf_counter()
@@ -226,9 +246,11 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
 def phase_latent(out, sender, receiver, groups, force=False):
     """Returns None when it ran (or was already done), else the reason it could not run."""
     target, items_id = path(out, "latent", f"{sender}__{receiver}.json"), fingerprint(groups)
-    if existing(target, items_id, force):
-        return None
     spec = MAPPERS[(sender, receiver)]
+    summaries = available_summaries(out, [sender], items_id).get(sender, {})
+    done = existing(target, items_id, force)
+    if done and latent_current(done, spec, bool(summaries)):
+        return None
     checkpoint = os.path.expanduser(spec["checkpoint"])
     if not os.path.exists(checkpoint):
         return f"The mapper checkpoint {spec['checkpoint']} is not on this machine."
@@ -241,7 +263,6 @@ def phase_latent(out, sender, receiver, groups, force=False):
     if pair.checkpoint_id != spec["id"]:
         return f"The checkpoint at {spec['checkpoint']} is {pair.checkpoint_id}, not the registered {spec['id']}."
     shapes = {"sender": model_shape(pair.sender), "receiver": model_shape(pair.receiver)}
-    summaries = available_summaries(out, [sender], items_id).get(sender, {})
     pair.answer_from_text(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)
     pair.answer_from_sender(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)
 
@@ -250,13 +271,9 @@ def phase_latent(out, sender, receiver, groups, force=False):
         return (time.perf_counter() - start) * 1000
 
     def cut(document):
-        """What the mapper path keeps of a document: latent_transfer truncates to MAPPER_TOKENS."""
-        encoded = pair.receiver_tok(document, add_special_tokens=False, return_offsets_mapping=True)
-        total = len(encoded["input_ids"])
-        sender_total = len(pair.sender_tok(document, add_special_tokens=False)["input_ids"])
-        kept = document if total <= MAPPER_TOKENS else document[:encoded["offset_mapping"][MAPPER_TOKENS - 1][1]]
-        return {"docTokens": total, "truncated": total > MAPPER_TOKENS or sender_total > MAPPER_TOKENS,
-                "keptBytes": len(kept.encode("utf-8"))}
+        offsets = [tok(document, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+                   for tok in (pair.sender_tok, pair.receiver_tok)]
+        return mapper_cut(document, *offsets)
 
     results, started = {}, time.time()
     for group in LATENT_GROUPS:
@@ -264,15 +281,16 @@ def phase_latent(out, sender, receiver, groups, force=False):
         for index, item in enumerate(rows):
             record = {}
             document, suffix = doc_text(item["passage"]), question_suffix(item["question"])
-            info = cut(document)
 
             def text():
+                info = cut(document)
                 start = time.perf_counter()
                 answer = pair.answer_from_text(document, suffix)
                 return {"answer": answer, "ms": sync_ms(start), **score(answer, item), **info,
                         "bytes": info["keptBytes"]}
 
             def mapped(source_document=document, zero=False):
+                info = cut(source_document)   # of the document this arm really sends
                 start = time.perf_counter()
                 answer, receipt = pair.answer_from_sender(source_document, suffix, zero_sender=zero)
                 return {"answer": answer, "ms": sync_ms(start), **score(answer, item), **receipt, **info,
@@ -286,19 +304,28 @@ def phase_latent(out, sender, receiver, groups, force=False):
                 guarded(record, "mismatched", lambda: mapped(doc_text(other["passage"])))
                 guarded(record, "zeroed", lambda: mapped(zero=True))
                 summary = summaries.get(item["id"])
-                if summary is not None and "error" not in summary:
-                    def t2t():
+
+                def t2t():
+                        if summary is None or "error" in summary:
+                            raise ValueError("The sender's summary of this item is missing or failed.")
                         start = time.perf_counter()
                         answer = pair.answer_from_text(doc_text(summary["summary"]), suffix)
                         receiver_ms = sync_ms(start)
                         return {"answer": answer, "ms": receiver_ms + summary["ms"], "receiverMs": receiver_ms,
                                 **score(answer, item), "bytes": summary["bytes"]}
-                    guarded(record, "t2t_m2b", t2t)
+                guarded(record, "t2t_m2b", t2t)
             results[item["id"]] = record
         print(f"latent {sender}->{receiver} {group} done {time.time() - started:.0f}s", flush=True)
     save(target, {"itemsId": items_id, "sender": sender, "receiver": receiver, "checkpoint": pair.checkpoint_id,
+                  "senderSummaries": bool(summaries),
                   "shapes": {name: list(shape) for name, shape in shapes.items()}, "results": results})
     return None
+
+
+def latent_current(data, spec, have_summaries):
+    """Whether a saved mapper result still stands: it is from the registered checkpoint, and
+    it is not missing a summary arm that could be run now."""
+    return data.get("checkpoint") == spec["id"] and (data.get("senderSummaries") or not have_summaries)
 
 
 def collect(out, groups, wanted):
@@ -306,16 +333,22 @@ def collect(out, groups, wanted):
     items_id = fingerprint(groups)
     receive, summaries, latent, notes = {}, {}, {}, load_notes(out)
     for key in wanted:
+        if key in notes:
+            continue   # its last attempt failed: an older file must not stand in for it
         for store, folder in ((receive, "receive"), (summaries, "summaries")):
             data = existing(os.path.join(out, folder, f"{key}.json"), items_id)
             if data:
                 store[key] = data
-    for sender, receiver in MAPPERS:
+    for (sender, receiver), spec in MAPPERS.items():
+        name = f"{sender}>{receiver}"
         data = existing(os.path.join(out, "latent", f"{sender}__{receiver}.json"), items_id)
-        if data:
+        if name in notes:
+            latent[(sender, receiver)] = {"skipped": notes[name]}
+        elif data and data.get("checkpoint") != spec["id"]:
+            latent[(sender, receiver)] = {"skipped": f"The saved result is from checkpoint {data.get('checkpoint')}, "
+                                                     f"not the registered {spec['id']}."}
+        elif data:
             latent[(sender, receiver)] = data
-        elif f"{sender}>{receiver}" in notes:
-            latent[(sender, receiver)] = {"skipped": notes[f"{sender}>{receiver}"]}
     return receive, summaries, latent, notes
 
 
@@ -339,7 +372,7 @@ def phase_report(out, wanted=None):
     wanted = wanted or list(MODELS)
     receive, summaries, latent, notes = collect(out, groups, wanted)
     summary = build_summary(groups, receive, summaries, latent,
-                            dropped={key: notes[key] for key in wanted if key in notes and key not in receive})
+                            dropped={key: notes[key] for key in wanted if key in notes})
     summary["itemsId"] = fingerprint(groups)
     save(path(out, "summary.json"), summary)
     with open(path(out, "report.md"), "w", encoding="utf-8") as handle:

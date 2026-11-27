@@ -4,8 +4,9 @@ Licence and tokenizer family are facts about the published checkpoints, written 
 report can print them without a network call. The KV shape is read from each model's config
 when it loads and saved with the run, so the table shows what was measured.
 
-Only checkpoints that run in torch with the venv as it is, inside 16 GB, are listed.
-NOT_RUN below names the card's other candidates and why each is absent.
+A model runs in torch unless it says `"backend": "vllm"`: the 4-bit 7B and 8B checkpoints do
+not load in transformers with the venv as it is, so vLLM serves them. NOT_RUN below names
+what the card's brief asked for and this run does differently.
 """
 
 MODELS = {
@@ -22,6 +23,11 @@ MODELS = {
         "licence": "Qwen Research (non-commercial)", "tokenizer": "byte-level BPE, 151k (Qwen2)",
         "template": "ChatML",
     },
+    "qwen7": {
+        "id": "Qwen/Qwen2.5-7B-Instruct-AWQ", "family": "Qwen2.5", "params": "7.6B", "weights": "4-bit AWQ",
+        "licence": "Apache-2.0", "tokenizer": "byte-level BPE, 151k (Qwen2)", "template": "ChatML",
+        "backend": "vllm",
+    },
     "phi3.5": {
         "id": "microsoft/Phi-3.5-mini-instruct", "family": "Phi-3", "params": "3.8B", "weights": "bf16",
         "licence": "MIT", "tokenizer": "SentencePiece BPE, 32k (Llama-2 style)", "template": "Phi-3",
@@ -34,6 +40,11 @@ MODELS = {
         "id": "mistralai/Mistral-7B-Instruct-v0.3", "family": "Mistral", "params": "7.2B", "weights": "bf16",
         "licence": "Apache-2.0", "tokenizer": "SentencePiece BPE, 32.8k (Mistral v3)", "template": "Mistral [INST]",
     },
+    "llama8": {
+        "id": "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4", "family": "Llama 3.1", "params": "8B",
+        "weights": "4-bit AWQ", "licence": "Llama 3.1 Community",
+        "tokenizer": "byte-level BPE, 128k (tiktoken style)", "template": "Llama 3", "backend": "vllm",
+    },
 }
 
 # (sender, receiver) -> where the trained mapper's checkpoint is looked for. Only pairs
@@ -43,17 +54,22 @@ MAPPERS = {
                             "referenceF1": 0.872, "referenceItems": 300},
 }
 
-# Candidates of the card that are not in MODELS, and why. The report prints them.
+# What the card's brief named and this run does differently, and why. The report prints it.
 NOT_RUN = {
-    "Llama-3.1-8B (4-bit, RedHatAI w4a16)": "GPTQ format: transformers needs `optimum` to load it, which the venv does not have",
-    "Mistral-7B v0.3 (4-bit, RedHatAI w4a16)": "GPTQ format, same reason; the bf16 checkpoint runs instead",
+    "Qwen2.5-7B and Llama-3.1-8B in torch": "the AWQ and GPTQ checkpoints need `gptqmodel` or `optimum`, which the venv "
+                                            "does not have; both run through vLLM instead, without the cache hand-over arm",
+    "Qwen2.5-7B (FP8, RedHatAI) in torch": "decompresses to 14.2 GiB of dense bf16 weights; real prompts filled the GPU "
+                                           "(15.97 of 16 GiB) and 200 summaries did not finish in 28 minutes",
     "Granite-3.1-8B (4-bit, RedHatAI w4a16)": "loads, then decompresses to 15.9 GiB of dense weights and spills to host "
                                               "memory (352 s for one answer); Granite-3.1-2B runs instead",
-    "Qwen2.5-7B (FP8, RedHatAI)": "decompresses to 14.2 GiB of dense bf16 weights; with a real prompt the GPU fills "
-                                  "(15.97 of 16 GiB), spills to host memory, and 200 summaries did not finish in "
-                                  "28 minutes, so it was stopped",
-    "Llama-3.2-3B": "gated on Hugging Face and this machine has no token",
+    "Mistral-7B v0.3 (4-bit, RedHatAI w4a16)": "GPTQ format; the bf16 checkpoint runs in torch instead",
+    "Llama-3.2-3B": "gated on Hugging Face and this machine has no token; Llama-3.1-8B stands for the family",
 }
+
+
+def backend(key):
+    """'torch' (the model is loaded here and its cache can be handed over) or 'vllm'."""
+    return MODELS[key].get("backend", "torch")
 
 
 def keys(names=None):
@@ -70,10 +86,11 @@ def keys(names=None):
 
 
 def latent_status(sender, receiver):
-    """What the latent cell of a pair holds: 'self' (same model, cache handed straight over),
+    """What the latent cell of a pair holds: 'self' (same model, cache handed straight over), 'self_refused' (same model behind vLLM,
+    which does not expose its cache),
     'mapper' (a trained mapper exists) or 'none' (no mapper yet)."""
     if sender == receiver:
-        return "self"
+        return "self" if backend(sender) == "torch" else "self_refused"
     return "mapper" if (sender, receiver) in MAPPERS else "none"
 
 

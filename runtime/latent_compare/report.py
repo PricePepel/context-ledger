@@ -13,8 +13,9 @@ ROUNDS = {"n": BOOTSTRAP_ROUNDS}
 
 
 def ok(record, arm):
+    """The arm's record when it ran: not an error, and not a named refusal."""
     value = (record or {}).get(arm)
-    return value if value is not None and "error" not in value else None
+    return value if value is not None and "error" not in value and "refused" not in value else None
 
 
 def aggregate(records, arm, metrics=("f1", "em", "hit")):
@@ -22,7 +23,9 @@ def aggregate(records, arm, metrics=("f1", "em", "hit")):
     good = [ok(record, arm) for record in records]
     present = [record.get(arm) for record in records if record.get(arm) is not None]
     good = [value for value in good if value is not None]
-    result = {"n": len(good), "errors": len(present) - len(good), "missing": len(records) - len(present)}
+    refused = sum(1 for value in present if "refused" in value)
+    result = {"n": len(good), "errors": len(present) - len(good) - refused, "refused": refused,
+              "missing": len(records) - len(present)}
     if not good:
         return result
     for metric in metrics:
@@ -55,7 +58,7 @@ def rows_of(groups, results, group):
 def model_row(description):
     per_token = kv_bytes(description["layers"], description["kvHeads"], description["headDim"], 1)
     return {name: description.get(name) for name in
-            ("key", "id", "family", "params", "weights", "licence", "tokenizer", "template", "layers", "kvHeads",
+            ("key", "id", "family", "params", "weights", "backend", "licence", "tokenizer", "template", "layers", "kvHeads",
              "headDim", "context", "systemRole", "cacheDtype", "gpuGiB")} | {"kvBytesPerToken": per_token}
 
 
@@ -211,6 +214,8 @@ def checks(summary):
     faithful = {}
     for key, row in main.items():
         cache = row["self_cache"]
+        if cache.get("refused") == count:
+            continue   # served by vLLM: the arm cannot run, which the table says
         interval = (cache.get("vsText") or {}).get("f1")
         faithful[key] = bool(whole(cache) and whole(row["text"]) and cache.get("sameAnswer") is not None
                              and cache["sameAnswer"] >= FAITHFUL_SHARE
@@ -236,14 +241,15 @@ def checks(summary):
         cells = [main[key][arm] for arm in ("text", "closed", "self_cache")]
         cells += [summary["main"]["t2t"].get(sender, {}).get(key, {}) for sender in order]
         errors = sum(cell.get("errors", 0) for cell in cells) + sum(group["errors"] for group in edge.values())
-        absent = sum(count - cell.get("n", 0) - cell.get("errors", 0) for cell in cells) \
+        absent = sum(count - cell.get("n", 0) - cell.get("errors", 0) - cell.get("refused", 0) for cell in cells) \
             + sum(group["missing"] for group in edge.values())
         problems[key] = {"errors": errors, "missing": absent}
-    complete = [key for key, value in problems.items() if not value["missing"]]
+    complete = [key for key, value in problems.items() if not value["missing"] and not value["errors"]]
     result["coverage"] = {"passed": len(complete) >= 5, "complete": len(complete), "models": len(order),
                           "dropped": sorted(summary.get("dropped", {}))}
+    # Mapper pairs: every main arm must hold every item, and every edge item both of its arms.
     latent_errors = {name: sum(group["errors"] + group["missing"] for group in pair["edge"].values())
-                     + sum(arm.get("errors", 0) for arm in pair["arms"].values())
+                     + sum(count - arm.get("n", 0) for arm in pair["arms"].values())
                      for name, pair in summary["latent"].items() if "skipped" not in pair}
     result["edgeCases"] = {"passed": bool(problems) and not any(v["errors"] or v["missing"] for v in problems.values())
                            and not any(latent_errors.values()),
@@ -275,6 +281,8 @@ def build_summary(groups, receive, summaries, latent, rounds=BOOTSTRAP_ROUNDS, d
 def latent_cell(summary, sender, receiver):
     """What the latent table shows for a pair: a measured F1 or 'no mapper yet'."""
     status = latent_status(sender, receiver)
+    if status == "self_refused":
+        return {"status": "self_refused"}
     if status == "self":
         return {"status": "self", "f1": summary["main"]["receivers"][sender]["self_cache"].get("f1")}
     if status == "mapper":
@@ -315,19 +323,25 @@ def render_markdown(summary):
     main, order = summary["main"], [row["key"] for row in summary["models"]]
     parts = [f"Items: {summary['items']}"]
     parts.append("### Models\n\n" + table(
-        ["Key", "Checkpoint", "Weights", "Licence", "Tokenizer", "Chat template", "System role",
+        ["Key", "Checkpoint", "Weights", "Runs in", "Licence", "Tokenizer", "Chat template", "System role",
          "KV shape (layers × KV heads × head dim)", "Cache per token", "Declared context"],
-        [[m["key"], f"`{m['id']}`", m["weights"], m["licence"], m["tokenizer"], m["template"],
+        [[m["key"], f"`{m['id']}`", m["weights"], m.get("backend") or "torch", m["licence"], m["tokenizer"],
+          m["template"],
           "yes" if m["systemRole"] else "no", f"{m['layers']} × {m['kvHeads']} × {m['headDim']}",
           size(m["kvBytesPerToken"]), m["context"]] for m in summary["models"]]))
     gaps = [[name, reason] for name, reason in summary.get("notRun", {}).items()]
     gaps += [[f"`{key}` (dropped in this run)", reason] for key, reason in summary.get("dropped", {}).items()]
     if gaps:
-        parts.append("### Candidates that did not run\n\n" + table(["Checkpoint", "Why"], gaps))
+        parts.append("### Where the model set differs from the brief\n\n" + table(["What", "Why"], gaps))
     rows = []
     for key in order:
         r = main["receivers"][key]
         text, closed, cache = r["text"], r["closed"], r["self_cache"]
+        if cache.get("refused"):
+            rows.append([key, f"{num(text.get('f1'))} / {num(text.get('em'))}", num(closed.get("f1")),
+                         "not possible through vLLM", "—", "—", num(text.get("ms"), 0), "—", "—",
+                         size(text.get("bytes")), "—"])
+            continue
         rows.append([key, f"{num(text.get('f1'))} / {num(text.get('em'))}", num(closed.get("f1")),
                      f"{num(cache.get('f1'))} / {num(cache.get('em'))}", interval(cache["vsText"]["f1"]),
                      num(cache.get("sameAnswer")), num(text.get("ms"), 0), num(cache.get("ms"), 0),
@@ -352,6 +366,8 @@ def render_markdown(summary):
          for sender in order]))
 
     def latent_text(cell):
+        if cell["status"] == "self_refused":
+            return "not possible through vLLM"
         if cell["status"] == "self":
             return f"{num(cell['f1'])} (own cache, no mapper)"
         if cell["status"] == "mapper":
