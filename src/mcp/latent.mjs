@@ -160,6 +160,10 @@ export const latentTeam = ['latent_team', {
     if (data?.mode === 'unavailable') {
       return { content: [text(briefingText(`${data.reason ?? 'The latent team is unavailable.'} Answer the question yourself.`))] };
     }
+    if (data?.mode === 'held') {
+      return { content: [text(briefingText(`The latent team's watchdog held its answer (${briefingText(String(data.reason))}); ` +
+        'nothing was returned. Answer the question yourself.'))] };
+    }
     if (data?.mode !== 'latent-team' || typeof data.answer !== 'string') {
       throw new ToolError('Context Ledger returned an unexpected team response.');
     }

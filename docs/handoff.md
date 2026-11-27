@@ -693,7 +693,6 @@ PR #62, branch `claude/p5d-clean-install`. The Clean install workflow packs the 
 
 Branch `claude/p5e-launch-docs`. The README opens with **Install**: a global install from GitHub today and by name once the user publishes `@pricepepel/context-ledger` (with `--access public`), `npx` for one-off commands, first run, data in `~/.context-ledger`, connecting agents, upgrading and removing, and what this release leaves out. `tests/launch-docs.test.mjs` runs the commands the section shows. **Next owner:** the user publishes the package. With P5a–P5e merged, what is left of P5 is the license key (ADR-13), the user's product decision.
 
-
 ## Current checkpoint — S1 swarm demo (2026-11-21)
 
 Branch `claude/swarm-demo`. Read the S1 section of [the eval log](evals.md) and [the run sheet](swarm-demo.md). `/swarm/` runs up to 200 agents at once on local OpenAI-compatible model servers (`SWARM_URLS`, loopback only), shows each agent live, checks each quote against its report, and combines verified answers beside the generator's truth. A seeded simulation, labelled on every number, runs without a GPU.
@@ -735,3 +734,33 @@ Branch `ruslan/p3c-sign-readonly`. `openStore(path, { readOnly: true })` opens a
 `tests/fixtures/count-opens.cjs` is a `--require` preload that logs every `DatabaseSync` a process opens; use it to count connections in other CLI tests.
 
 Known and accepted: a ledger someone switched to WAL mode cannot be read read-only from a read-only folder without its `-wal` and `-shm` files.
+
+## Current checkpoint — watchdog design for the latent team (2026-11-21)
+
+Docs only, written on `ruslan/console-direction` (commit a467e6f) and brought onto `main` with W1. Cards W1 to W3 are on the board as Backlog; nobody has claimed them.
+
+- [The watchdog design](watchdog-security.md), version 2: one code watchdog per squad of up to 5 latent subagents and one code supervisor per run. It separates what holds by construction, what an exact check verifies, what is only a statistical check, and what is not covered, for four promises: honest hand-offs, hallucination, unnecessary actions, sensitive data.
+- [The research report](watchdog-research.md) behind it: about 95 sources, with the verification status of each group stated at the end.
+- The main design decisions are listed under "Decisions taken" in the design. The one that touches the runtime: production squads use soft thoughts with no adapter, because only then is every thought an exact, recorded mix of tokens.
+- No code and no evals in `docs/evals.md` yet. The evals are drafted in the design and move to the eval log when a card is claimed.
+
+Next steps:
+
+1. Leo and Ali read the design, in particular open question 3 (soft thoughts only).
+2. Claim W1 first. Its first results are new numbers on our own runs: how often a replay matches, how often team and solver agree, and how often the squad changes the answer at all.
+3. W2 is required before the latent team is given real project files or tools.
+
+## Current checkpoint — W1 latent team watchdogs: integrity and audits (2026-11-22)
+
+Branch `claude/w1-watchdog-integrity-82aa3b`, PR #73 (to `main`, which it also brings the watchdog design to: the cherry-picked commit a467e6f from `ruslan/console-direction`). Card W1, built by Claude Code for Ruslan. The design is [watchdog-security.md](watchdog-security.md); evals, results and three review rounds are in the W1 section of [the eval log](evals.md).
+
+- **What it is.** One code watchdog per squad (`runtime/latent_team/watchdog.py`): hooks on the model's base see every input and hidden state, the watchdog derives each soft thought's record (16 token ids and weights) itself, and seven exact checks run per question: turn structure against its own plan, configuration (soft, no adapter, no LoRA, weights unchanged and pinned), legibility, span ledger with mask and position checks, a keyed per-row memory checksum at every hand-off, numbers, and budgets. Two statistical scores (degenerate record, relative Mahalanobis distance) are measured, not trusted. Reports are number-only and HMAC-signed (`reports.py`); the supervisor (`supervisor.py`) decides by the fail-closed table; the guard (`guard.py`) runs sampled audits (replay, mismatched memory, solver alone) and the fallback; both service routes go through it, and a hold is HTTP 409 with no answer.
+- **Threshold set.** `runtime/latent_team/thresholds/qwen2.5-3b-instruct-soft-m40.json`: quantiles only, pinned to the weights hash. The distance reference statistics stay on the GPU machine (`~/w1/out/reference.pt`); the service uses them only when `LATENT_WATCH_REFERENCE` points at a file whose SHA-256 the threshold set names. Without it, releases are marked `unscreened`.
+- **Measured** on block 1 of GSM8K test (200 questions; details in the eval log, "W1 results"): no exact-check failure on clean runs; replay matched on 100% (answer, every top token, memory bitwise equal at every hand-off), so replay stays an exact check; team and solver alone agree on 81.5% (the squad changed the answer on 18.5%); another question's memory changed the answer on 20%; the statistical scores' false alarms were 2.0% (degenerate), 0.5% (distance) and 2.5% (supervisor rule), and they are no signal of a wrong answer (AUROC 0.38 and 0.62); all 19 injected faults were caught on 64 of 64 questions by the check named for each; the watchdog's checks cost 2.2% of median wall time, and audits at 1 in 20 plus every flagged run about 18% more on average.
+
+Next steps:
+
+1. **A human security review** of the PR before merge (watchdog, signatures, fail-closed routes).
+2. Leo and Ali: confirm "soft thoughts only" as the production rule (design decision 9).
+3. W2 (data gateway) is stacked on this branch; W3 (calibrated abstention) on W2.
+4. Not covered, by design and stated in the code: a change made in place in the middle of a turn, and a rewrite of the answer text after decoding (both need code inside the trusted runtime); interrupting a model call that stalls needs a timeout outside the process.

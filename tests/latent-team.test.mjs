@@ -29,7 +29,23 @@ test('a team run returns the one-line unverified answer and a cleaned receipt', 
   assert.equal(result.answer, 'Step 1... The answer is 18.');
   assert.equal(result.answerVerified, false);
   assert.deepEqual(result.receipt, { model: 'Qwen/Qwen2.5-3B-Instruct', agents: ['planner', 'critic', 'refiner', 'solver'],
-    latentStepsPerAgent: 40, latentVectors: 120, generatedTokens: 96, seconds: 3.2 });
+    system: 'latent_mas', latentStepsPerAgent: 40, latentVectors: 120, generatedTokens: 96, seconds: 3.2, decision: null });
+});
+
+test('W1: the watchdog decision passes as words only, and a hold has no answer', async () => {
+  const decided = { ...ok, receipt: { ...ok.receipt, system: 'single',
+    decision: { action: 'release', reason: 'statistical-flag', marks: ['fallback', 'uncalibrated', '<b>', 7] } } };
+  const result = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(200, decided) });
+  assert.deepEqual(result.receipt.decision, { action: 'release', reason: 'statistical-flag', marks: ['fallback', 'uncalibrated'] });
+  assert.equal(result.receipt.system, 'single');
+  const odd = { ...ok, receipt: { ...ok.receipt, decision: { action: 'ship it', reason: `a${String.fromCodePoint(0x1b)}[31m`, marks: 'x' } } };
+  assert.deepEqual((await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(200, odd) })).receipt.decision,
+    { action: null, reason: null, marks: [] });
+  const held = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(409,
+    { error: "The latent team's answer was held by its watchdog (memoryChecksum); no answer was returned." }) });
+  assert.deepEqual(held, { mode: 'held', reason: 'memoryChecksum' });
+  const strange = await latentTeam({ question: 'q' }, { fetchImpl: fakeRuntime(409, { error: 'held (<script>)' }) });
+  assert.deepEqual(strange, { mode: 'held', reason: 'unknown' });
 });
 
 test('bad requests never reach the runtime', async () => {

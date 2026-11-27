@@ -139,6 +139,7 @@ class LatentTeam:
         aligned thoughts only. Returns what was loaded, for the report.
         """
         loaded = {}
+        self._w1_weights = None  # the watchdog's weights fingerprint (watchdog.team_weights) is void now
         if lora:
             from .lora import load_lora
             config = dict(load_lora(self.model, lora))
@@ -275,7 +276,10 @@ class LatentTeam:
                                      hide=hide)
             memory = out.past_key_values
             hidden = out.last_hidden_state[:, -1]
-        close = self.tokenizer([self.close_turn()] * len(prompts), return_tensors="pt", add_special_tokens=False)
+        text = self.close_turn()
+        if not text:  # never with a derived template (chat_turns refuses an empty close); W1's fault eval
+            return memory, full
+        close = self.tokenizer([text] * len(prompts), return_tensors="pt", add_special_tokens=False)
         out, full = self.forward(memory, full, ids=close["input_ids"].to(self.device),
                                  mask=close["attention_mask"].to(self.device), hidden_only=True, hide=hide)
         return out.past_key_values, full
@@ -332,7 +336,15 @@ class LatentTeam:
         memory, mask, _ = self.chain(questions, steps, mode, grad_agents=grad_agents)
         return memory, mask
 
-    def chain(self, questions, steps, mode, grad_agents=None, roles=ROLES, views=None, sealed=False):
+    def between(self, index, memory, mask):
+        """The hand-off after thinking agent `index`: the memory passes on as it is.
+
+        A seam for W1's fault evals, which replace it on one team instance to tamper with
+        the memory between two turns, where the watchdog's checksum must see the change.
+        Nothing else overrides it."""
+        return memory, mask
+
+    def chain(self, questions, steps, mode, grad_agents=None, roles=ROLES, views=None, sealed=False, watch=None):
         """The thinking agents of `roles` in turn. Returns (memory, padding mask, hide).
 
         views (C15, split facts) gives each agent its own text in place of the question:
@@ -340,7 +352,7 @@ class LatentTeam:
         sealed (C15) hides every earlier agent's prompt from the agents after it and from
         the solver, so only the latent steps (and the turn-closing tokens) pass on. Unsealed,
         a later agent also reads the earlier prompts in the shared memory, the question
-        among them. hide is None unless sealed.
+        among them. hide is None unless sealed. watch (W1) is told every hand-off.
         """
         memory, mask, hide = DynamicCache(), None, None
         first_grad = 0 if grad_agents is None else len(roles) - grad_agents
@@ -349,8 +361,13 @@ class LatentTeam:
             prompts = [LATENT_PROMPTS[role].format(question=q) for q in texts]
             start = 0 if mask is None else mask.shape[1]
             width = self.render(prompts, first=index == 0)[0].shape[1] if sealed else 0
+            if watch is not None:
+                watch.turn_start(index, memory, mask)
             with torch.set_grad_enabled(torch.is_grad_enabled() and index >= first_grad):
                 memory, mask = self.think(memory, mask, prompts, steps, mode=mode, first=index == 0, hide=hide)
+            if watch is not None:
+                watch.turn_end(index, memory, mask)
+            memory, mask = self.between(index, memory, mask)
             if sealed:
                 grown = torch.zeros_like(mask)
                 if hide is not None:
@@ -421,21 +438,34 @@ class LatentTeam:
     # ------------------------------------------------------------------ systems
     @torch.no_grad()
     def latent_mas(self, questions, steps=40, max_new_tokens=512, mode="soft", random_thoughts=False, agents=3,
-                   views=None, solver_questions=None, sealed=False):
+                   views=None, solver_questions=None, sealed=False, watch=None):
         """The latent team. agents, views, solver_questions and sealed are C15's: the number of
         thinking agents (chain_roles), what each sees, what the solver sees (default: the
         question) and whether earlier prompts are hidden (chain). The defaults are the
-        three-agent team of cycles 9 to 14."""
+        three-agent team of cycles 9 to 14.
+
+        watch (W1, watchdog.Watch) sees every model input and every hand-off; the caller
+        runs its checks afterwards (watch.finish). Without it nothing changes."""
         mode = "random" if random_thoughts else mode
         if mode not in self.MODES:
             raise ValueError(f"Unknown thought mode: {mode}")
         roles = chain_roles(agents)
+        if watch is not None:
+            watch.attach(self, roles=roles, mode=mode, steps=steps, max_new_tokens=max_new_tokens, views=views,
+                         solver_questions=solver_questions, sealed=sealed)
         start = time.perf_counter()
-        memory, mask, hide = self.chain(questions, steps, mode, roles=roles, views=views, sealed=sealed)
-        solver = questions if solver_questions is None else solver_questions
-        answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in solver],
-                                      max_new_tokens, first=False, hide=hide)
-        self._sync()
+        try:
+            memory, mask, hide = self.chain(questions, steps, mode, roles=roles, views=views, sealed=sealed,
+                                            watch=watch)
+            if watch is not None:
+                watch.turn_start(len(roles), memory, mask)
+            solver = questions if solver_questions is None else solver_questions
+            answers, counts = self.decode(memory, mask, [LATENT_PROMPTS["solver"].format(question=q) for q in solver],
+                                          max_new_tokens, first=False, hide=hide)
+            self._sync()
+        finally:
+            if watch is not None:
+                watch.detach()
         names = {"soft": "latent_mas", "aligned": "latent_aligned", "random": "latent_random"}
         receipt = Receipt(names[mode], steps, counts, steps * len(roles), time.perf_counter() - start)
         return answers, receipt
