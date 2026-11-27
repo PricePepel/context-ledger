@@ -146,9 +146,50 @@ def phase_items(out, seed=0, force=False):
     return groups
 
 
+# The three saved_* functions below are the only readers of a phase's saved file, for the
+# phases and for the report alike. Six review findings in eight rounds were one mistake: some
+# path read a saved file and took it as the current result without one of the checks another
+# path made (the item set, the summaries it had read, the checkpoint). With one reader per
+# kind of file a check added for one path holds for all, and a test (ReaderTest) fails when
+# `existing` is called anywhere else.
+
+def saved_summaries(out, key, items_id, force=False):
+    """A model's saved summaries file for this item set, or None."""
+    return existing(os.path.join(out, "summaries", f"{key}.json"), items_id, force)
+
+
+def saved_receive(out, key, items_id, summaries, force=False):
+    """(data, None) for a receive file that read the summaries as they are now, (None, reason)
+    for one that read an earlier writing of them, (None, None) when there is none.
+    `summaries` is {sender: its saved summaries} for the senders at hand."""
+    data = existing(os.path.join(out, "receive", f"{key}.json"), items_id, force)
+    if not data:
+        return None, None
+    stamps = summary_stamps({sender: value for sender, value in summaries.items() if sender in data.get("senders", [])})
+    if not from_these_summaries(data.get("summaryStamps"), stamps):
+        return None, f"Its answers read summaries that were since written again; run `receive --model {key}`."
+    return data, None
+
+
+def saved_latent(out, sender, receiver, items_id, summaries, force=False):
+    """(data, None) for a mapper result from the registered checkpoint whose summary arm read
+    the sender's summaries as they are now, (None, reason) otherwise, (None, None) when there
+    is none. `summaries` is the sender's saved summaries, or None when it has none."""
+    data = existing(os.path.join(out, "latent", f"{sender}__{receiver}.json"), items_id, force)
+    if not data:
+        return None, None
+    spec = MAPPERS[(sender, receiver)]
+    if data.get("checkpoint") != spec["id"]:
+        return None, f"The saved result is from checkpoint {data.get('checkpoint')}, not the registered {spec['id']}."
+    if summaries and data.get("summaryStamp") not in (None, summary_stamps({sender: summaries})[sender]):
+        return None, (f"Its summary arm read {sender}'s summaries before they were written again; "
+                      f"run `latent --pair {sender}:{receiver}`.")
+    return data, None
+
+
 def phase_summaries(out, key, groups, force=False, engine_factory=default_engine):
     target, items_id = path(out, "summaries", f"{key}.json"), fingerprint(groups)
-    if existing(target, items_id, force):
+    if saved_summaries(out, key, items_id, force):
         return
     engine = engine_factory(key)
     try:
@@ -175,7 +216,7 @@ def available_summaries(out, senders, items_id):
     """{sender: summaries} for the senders whose summary phase has finished on this item set."""
     found = {}
     for sender in senders:
-        data = existing(os.path.join(out, "summaries", f"{sender}.json"), items_id)
+        data = saved_summaries(out, sender, items_id)
         if data:
             found[sender] = data["summaries"]
     return found
@@ -198,10 +239,10 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
     target, items_id = path(out, "receive", f"{key}.json"), fingerprint(groups)
     summaries = available_summaries(out, senders, items_id)
     stamps = summary_stamps(summaries)
-    done = existing(target, items_id, force)
     # Codex review, round 5: a sender whose summaries were written again (a retry after a
     # failure) left receivers holding answers to its previous summaries.
-    if done and set(summaries) <= set(done.get("senders", [])) and from_these_summaries(done.get("summaryStamps"), stamps):
+    done, _ = saved_receive(out, key, items_id, summaries, force)
+    if done and set(summaries) <= set(done.get("senders", [])):
         return
     # A file that lacks a sender whose summaries now exist is run again as a whole, so every
     # arm of a receiver comes from one load of the model.
@@ -273,7 +314,7 @@ def phase_latent(out, sender, receiver, groups, force=False):
     spec = MAPPERS[(sender, receiver)]
     summaries = available_summaries(out, [sender], items_id).get(sender, {})
     stamp = summary_stamps({sender: summaries}).get(sender) if summaries else None
-    done = existing(target, items_id, force)
+    done, _ = saved_latent(out, sender, receiver, items_id, summaries or None, force)
     if done and latent_current(done, spec, bool(summaries), stamp):
         return None
     checkpoint = os.path.expanduser(spec["checkpoint"])
@@ -368,19 +409,21 @@ def collect(out, groups, wanted):
     for key in wanted:
         if key in notes:
             continue   # its last attempt failed: an older file must not stand in for it
-        for store, folder in ((receive, "receive"), (summaries, "summaries")):
-            data = existing(os.path.join(out, folder, f"{key}.json"), items_id)
-            if data:
-                store[key] = data
+        data = saved_summaries(out, key, items_id)
+        if data:
+            summaries[key] = data
     # Codex review, round 6: a report must not pair a sender's new summaries with answers that
     # read its earlier ones. Such a receiver or pair is left out and named, until it is run again.
     failed = set(notes)   # recorded failures, before the stale receivers below are added
-    stamps = summary_stamps({key: data["summaries"] for key, data in summaries.items()})
-    for key in list(receive):
-        read = {sender: stamps[sender] for sender in receive[key].get("senders", []) if sender in stamps}
-        if not from_these_summaries(receive[key].get("summaryStamps"), read):
-            del receive[key]
-            notes[key] = f"Its answers read summaries that were since written again; run `receive --model {key}`."
+    written = {key: data["summaries"] for key, data in summaries.items()}
+    for key in wanted:
+        if key in failed:
+            continue
+        data, reason = saved_receive(out, key, items_id, written)
+        if data:
+            receive[key] = data
+        elif reason:
+            notes[key] = reason
     for (sender, receiver), spec in MAPPERS.items():
         name = f"{sender}>{receiver}"
         if sender not in wanted or receiver not in wanted:
@@ -390,13 +433,9 @@ def collect(out, groups, wanted):
             # Before the file is even read: its last attempt failed, whatever an older file holds.
             latent[(sender, receiver)] = {"skipped": notes[name]}
             continue
-        data = existing(os.path.join(out, "latent", f"{sender}__{receiver}.json"), items_id)
-        if data and data.get("checkpoint") != spec["id"]:
-            latent[(sender, receiver)] = {"skipped": f"The saved result is from checkpoint {data.get('checkpoint')}, "
-                                                     f"not the registered {spec['id']}."}
-        elif data and sender in stamps and data.get("summaryStamp") not in (None, stamps[sender]):
-            latent[(sender, receiver)] = {"skipped": f"Its summary arm read {sender}'s summaries before they were "
-                                                     f"written again; run `latent --pair {sender}:{receiver}`."}
+        data, reason = saved_latent(out, sender, receiver, items_id, written.get(sender))
+        if reason:
+            latent[(sender, receiver)] = {"skipped": reason}
         elif data and gone:
             # Codex review, round 8: an older mapper file must not pass for a pair whose model failed.
             latent[(sender, receiver)] = {"skipped": f"{gone[0]} has no current result: {notes[gone[0]]}"}

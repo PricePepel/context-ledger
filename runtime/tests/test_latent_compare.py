@@ -3,6 +3,7 @@
 Standard library only, plus jinja2 for the checks that render real chat templates (they skip
 without it). Nothing here loads a model: the torch engine is exercised by the GPU run.
 """
+import ast
 import glob
 import http.server
 import json
@@ -1297,6 +1298,30 @@ class LatentResumeTest(unittest.TestCase):
             run.save(run.path(out, "latent", "phi3.5__qwen1.5.json"), {**saved, "itemsId": "another"})
             self.assertEqual(run.collect(out, groups, keys)[2][("phi3.5", "qwen1.5")],
                              {"skipped": "The mapper checkpoint is not on this machine."})
+
+
+class ReaderTest(unittest.TestCase):
+    """AGENTS.md section 4 step 5: the repeated finding of the L2 reviews (a saved file taken
+    as the current result on one path without a check another path made) became an API
+    change: one reader per kind of file. This holds the code to it."""
+
+    def test_only_the_three_readers_open_a_saved_phase_file(self):
+        source = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "latent_compare", "run.py")
+        with open(source, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        callers = set()
+        for function in ast.walk(tree):
+            if isinstance(function, ast.FunctionDef):
+                for node in ast.walk(function):
+                    if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "existing":
+                        callers.add(function.name)
+        self.assertEqual(callers, {"saved_summaries", "saved_receive", "saved_latent"})
+        # And nothing reads the folders by another route: `load` of a phase folder appears nowhere.
+        loads = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "load"]
+        folders = {"summaries", "receive", "latent"}
+        named = [ast.unparse(node) for node in loads
+                 if any(isinstance(part, ast.Constant) and part.value in folders for part in ast.walk(node))]
+        self.assertEqual(named, [])
 
 
 class CheckTest(unittest.TestCase):
