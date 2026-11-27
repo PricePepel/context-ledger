@@ -249,7 +249,10 @@ def checks(summary):
         needed = [pair["intervals"][f"swat-{other}"]["f1"] for other in ("mismatched", "zeroed", "t2t_m2b")]
         mapper[name] = all(interval is not None and interval["n"] == count and interval["low"] > 0
                            for interval in needed)
-    expected = [f"{sender}>{receiver}" for sender, receiver in MAPPERS if sender in order and receiver in order]
+    # The set that was asked for: the models that ran and the ones that were dropped. A pair
+    # whose model failed to load is still expected, and fails (Codex review, round 7).
+    asked = set(order) | set(summary.get("dropped", {}))
+    expected = [f"{sender}>{receiver}" for sender, receiver in MAPPERS if sender in asked and receiver in asked]
     # applicable False: no pair with a mapper has both its models in this set (a subset report).
     result["mapperHolds"] = {"passed": bool(expected) and all(mapper.get(name, False) for name in expected),
                              "applicable": bool(expected),
@@ -273,6 +276,9 @@ def checks(summary):
     latent_errors = {name: sum(group["errors"] + group["missing"] for group in pair["edge"].values())
                      + sum(count - arm.get("n", 0) for arm in pair["arms"].values())
                      for name, pair in summary["latent"].items() if "skipped" not in pair}
+    for name in expected:
+        # An expected pair with no current result has none of its records (Codex review, round 7).
+        latent_errors.setdefault(name, count)
     result["edgeCases"] = {"passed": bool(problems) and not any(v["errors"] or v["missing"] for v in problems.values())
                            and not any(latent_errors.values()),
                            "errors": {key: value["errors"] for key, value in problems.items()},

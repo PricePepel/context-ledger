@@ -473,22 +473,32 @@ def main():
     if args.phase in ("summaries", "receive"):
         if args.model not in MODELS:
             parser.error(f"--model must be one of: {', '.join(MODELS)}")
-        if args.phase == "summaries":
-            phase_summaries(out, args.model, groups, args.force)
-        else:
-            phase_receive(out, args.model, groups, wanted, args.force)
-        note(out, args.model, None)
+        run_one(out, args.phase, args.model, groups, wanted, args.force)
     elif args.phase == "latent":
         sender, _, receiver = (args.pair or "").partition(":")
         if (sender, receiver) not in MAPPERS:
             parser.error("--pair must be a pair with a trained mapper: "
                          + ", ".join(f"{s}:{r}" for s, r in MAPPERS))
-        reason = phase_latent(out, sender, receiver, groups, args.force)
+        reason = phase_latent(out, sender, receiver, groups,
+                              args.force or f"{sender}>{receiver}" in load_notes(out))
         note(out, f"{sender}>{receiver}", reason)
         if reason:
             print(f"latent {sender}->{receiver} not run: {reason}", flush=True)
     elif args.phase == "all":
         run_all(out, wanted, groups, args.force)
+
+
+def run_one(out, phase, key, groups, wanted, force=False, summaries=None, receive=None):
+    """A single `summaries` or `receive` command. A model whose last attempt failed is run
+    again, not answered from an older file, and its failure note goes only when its receive
+    phase has succeeded: a cached summaries phase must not bring older receive results back
+    into the report (Codex review, round 7)."""
+    failed = key in load_notes(out)
+    if phase == "summaries":
+        (summaries or phase_summaries)(out, key, groups, force or failed)
+    else:
+        (receive or phase_receive)(out, key, groups, wanted, force or failed)
+        note(out, key, None)
 
 
 def run_all(out, wanted, groups, force=False, summaries=None, receive=None, latent=None, pairs=None):

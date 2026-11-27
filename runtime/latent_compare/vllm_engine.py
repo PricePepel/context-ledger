@@ -117,9 +117,9 @@ class VllmEngine(Prompter):
         """Stop the server and everything it started, whether or not the leader is still alive."""
         process, self.process = self.process, None
         log, self.log = self.log, None
-        if log is not None:
-            log.close()
         if process is None:
+            if log is not None:
+                log.close()
             return
         # The server only ever runs on Linux (WSL); the fallbacks keep this importable and
         # testable on Windows, which has neither process groups nor SIGKILL.
@@ -149,6 +149,9 @@ class VllmEngine(Prompter):
             # (Codex review, round 6): kill it at once, then let the interruption go on.
             send(kill)
             raise
+        finally:
+            if log is not None:      # after the signals, so nothing can interrupt before them
+                log.close()
 
     def recover(self):
         pass

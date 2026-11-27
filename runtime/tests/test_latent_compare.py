@@ -698,6 +698,31 @@ class PhaseTest(unittest.TestCase):
         receive, _, _, notes = run.collect(self.out, self.groups, keys)
         self.assertEqual((sorted(receive), notes), (keys, {}))
 
+    def test_a_single_phase_command_does_not_bring_a_failed_model_back(self):
+        # Codex review, round 7: `summaries --model X` answered from its cache, cleared X's
+        # failure note, and the report counted X's older receive file again.
+        keys = ["qwen1.5", "qwen3"]
+        self.run_all(keys)
+        run.note(self.out, "qwen3", "RuntimeError: the forced rerun failed")
+        FakeEngine.loads.clear()
+        run.run_one(self.out, "summaries", "qwen3", self.groups, keys,
+                    summaries=lambda out, key, groups, force: run.phase_summaries(out, key, groups, force,
+                                                                                  engine_factory=FakeEngine))
+        self.assertEqual(FakeEngine.loads, ["qwen3"])                      # run again, not read from the cache
+        self.assertIn("qwen3", run.load_notes(self.out))                    # and still noted
+        receive, _, _, notes = run.collect(self.out, self.groups, keys)
+        self.assertNotIn("qwen3", receive)
+        run.run_one(self.out, "receive", "qwen3", self.groups, keys,
+                    receive=lambda out, key, groups, senders, force: run.phase_receive(
+                        out, key, groups, senders, force, engine_factory=FakeEngine))
+        self.assertEqual(FakeEngine.loads, ["qwen3", "qwen3"])
+        self.assertEqual(run.load_notes(self.out), {})
+        run.run_one(self.out, "receive", "qwen1.5", self.groups, keys,     # qwen3's summaries are new
+                    receive=lambda out, key, groups, senders, force: run.phase_receive(
+                        out, key, groups, senders, force, engine_factory=FakeEngine))
+        receive, _, _, notes = run.collect(self.out, self.groups, keys)
+        self.assertEqual((sorted(receive), notes), (keys, {}))
+
     def test_all_runs_a_model_again_after_its_last_attempt_failed(self):
         # Codex review, round 4: a failed forced rerun left the old receive file and a note; the
         # next `all` cleared the note after the cached summaries and reused the old file.
@@ -1090,6 +1115,33 @@ class VllmEngineTest(unittest.TestCase):
         self.assertEqual(self.engine.served, models.MODELS["qwen7"]["id"])
         self.assertNotIn("--served-model-name", vllm_engine.serve_command("vllm", "some/model"))
 
+    def test_the_log_is_closed_after_the_signals_not_before(self):
+        # Codex review, round 7: an interruption while the log was being closed, before any
+        # signal had gone out, left the server running.
+        order = []
+
+        class Log:
+            def close(self):
+                order.append("log closed")
+
+        class Leader:
+            pid = 2 ** 22 + 4242
+
+            def wait(self, timeout=None):
+                return 0
+
+        process = Leader()
+        process.send_signal = lambda sign: order.append("signal")
+        engine = vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config(),
+                                        base_url=self.engine.base_url)
+        engine.process, engine.log = process, Log()
+        if hasattr(os, "killpg"):
+            with mock.patch.object(os, "killpg", side_effect=lambda pid, sign: order.append("signal")):
+                engine.close()
+        else:
+            engine.close()
+        self.assertEqual(order, ["signal", "signal", "log closed"])
+
     def test_an_interrupted_close_still_kills_the_group(self):
         # Codex review, round 6: SIGTERM landing while close() waited raised out of the wait,
         # and the group was never sent SIGKILL.
@@ -1137,7 +1189,10 @@ class VllmEngineTest(unittest.TestCase):
         self.assertNotIn("qwen7", summary["checks"]["handoffFaithful"]["models"])
         self.assertTrue(summary["checks"]["handoffFaithful"]["passed"])
         self.assertEqual(summary["checks"]["coverage"]["complete"], 5)
-        self.assertTrue(summary["checks"]["edgeCases"]["passed"], summary["checks"]["edgeCases"])
+        edge = summary["checks"]["edgeCases"]
+        self.assertEqual((set(edge["errors"].values()), set(edge["missing"].values())), ({0}, {0}))
+        # The mapper pair was not run in this folder, so its records are what the edge check lacks.
+        self.assertEqual(edge["latent"], {"phi3.5>qwen1.5": 200})
         self.assertEqual(summary["latentTable"]["qwen7"]["qwen7"], {"status": "self_refused"})
         markdown = report.render_markdown(summary)
         self.assertEqual(markdown.count("not possible through vLLM"), 2)   # its main row and its diagonal cell
@@ -1307,6 +1362,23 @@ class CheckTest(unittest.TestCase):
             checks = self.build(latent={("phi3.5", "qwen1.5"): latent})["checks"]
             self.assertEqual(checks["edgeCases"]["latent"], {"phi3.5>qwen1.5": 1}, arm)
             self.assertFalse(checks["edgeCases"]["passed"])
+
+    def test_a_mapper_pair_that_was_asked_for_and_has_no_result_fails_both_checks(self):
+        # Codex review, round 7: with phi3.5 dropped the mapper check read "Not applicable", and
+        # a pair whose saved result was skipped left the edge check passing with no records.
+        keys = [key for key in self.keys if key != "phi3.5"]
+        receive = {key: fake_receive(self.groups, key, keys) for key in keys}
+        summary = report.build_summary(self.groups, receive, self.summaries, {}, rounds=200,
+                                       dropped={"phi3.5": "OSError: the checkpoint did not load"})
+        mapper = summary["checks"]["mapperHolds"]
+        self.assertEqual((mapper["applicable"], mapper["passed"]), (True, False))
+        self.assertIn("| mapperHolds | Fail |", report.render_markdown(summary))
+
+        skipped = self.build(latent={("phi3.5", "qwen1.5"): {"skipped": "Its summary arm read older summaries."}})
+        self.assertEqual(skipped["checks"]["edgeCases"]["latent"], {"phi3.5>qwen1.5": len(self.groups["main"])})
+        self.assertFalse(skipped["checks"]["edgeCases"]["passed"])
+        self.assertFalse(skipped["checks"]["mapperHolds"]["passed"])
+        self.assertTrue(self.build()["checks"]["edgeCases"]["passed"])
 
     def test_the_mapper_check_needs_every_main_item(self):
         latent = fake_latent(self.groups)
