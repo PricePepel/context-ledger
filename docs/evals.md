@@ -4782,6 +4782,21 @@ The verdict is one of: "use it", "use it only for pairs like X", or "does not ca
 - **Low tokenizer overlap:** Phi-3.5-mini (32k SentencePiece) to Qwen (151k byte-level BPE) and to SmolLM2 (49k). The anchor count and coverage are reported for each.
 - **Emoji and non-English text:** eight hand-written synthetic passages (emoji, Russian, Uzbek, Chinese, Arabic, mixed) with one question each, in `runtime/latent_transfer/statebridge_edge.json`, run through every arm of the Phi-3.5-mini → Qwen2.5-1.5B pair. Eight items give no interval; counts are reported, plus the share of each passage's sender tokens that have an anchor.
 
+### Corrections before the measured runs (2026-11-27)
+
+Made after the smoke runs and a Codex review of the code, and before any of the 300-question results below existed. No result was seen when these were written.
+
+- **Passage cap.** The first draft of this section said 384 tokens. The ID check against the M2b-S run failed, which showed that M2b-S used 256. The runner's default is now 256 and the IDs match.
+- **Plain greedy.** The first runner used the receiver's generation defaults, and Qwen ships a repetition penalty of 1.1. M2b-S decodes by plain argmax, so the runner now sets the penalty to 1.0. A test covers it. The sender's summary is written with the sender's defaults, as in M2b-S's `t2t`.
+- **Which state belongs to a token.** "The states of the last 64 generated tokens" means, here and in the authors' code, the state each token was *read from* (the position before it), not the state at the token's own position.
+- **The prediction about the per-message fit needs two conditions** (Codex, high). It holds exactly when (a) the states are far larger than the ridge in every direction they span, and (b) the reference rows have full rank, 63 for 64 rows. Real states meet (a) easily. Repeated tokens break (b): each repeat leaves one spare direction, which the rotation fills at the ridge's scale (at most `√(Kλ)` ≈ 0.25 in Frobenius norm per spare direction) in a direction picked by the states and by the SVD routine. So the prediction is: the prefix is the token embeddings plus a small state-dependent part when tokens repeat. The unit tests now cover both conditions, and the run measures how large that part is on real summaries and whether it changes answers.
+- **Mismatched control.** It is the next item *with a different passage*. Of the 300 questions, 23 share a passage with another one, so "the next item" alone could have handed the control the right passage.
+- **States swapped** is compared with the own-states fit at the same number of rows (`per-message, same rows`), so a shorter prefix cannot pass for a hidden-state effect.
+- **Zeroed** sets the sender states to zero and keeps the summary's length. It tests the values of the states, not the length of the prefix.
+- **"Nearly touches zero"** for a secondary variant is a lower bound below 0.02 F1. `per-message` is judged apart and has no such threshold.
+- **Timing.** Controls are not timed. `t2t` and the summary arms share one measured summary time, which includes collecting the hidden states that `t2t` does not need (a small cost that counts against text). When a summary comes from the cache of an earlier pair with the same sender, its time is the one measured then.
+- **Edge items** get means only: no interval and no verdict from eight items.
+
 ### Unit tests (written with the code)
 
 Standard library: anchor keys across SentencePiece and byte-level vocabularies, duplicates and broken byte tokens; the paired bootstrap; the pass rule; the table. With torch (skipped without it, like the rest of `latent_transfer`): the fit recovers a known rotation between spaces of equal and unequal width, `Q` has orthonormal columns, the whitened covariances are the identity, norm calibration and anchoring match hand values, the zeroed prefix is constant, the collapse property above, and on a tiny random model the injected prefix of a text's own embeddings decodes exactly like the text.
