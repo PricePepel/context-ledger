@@ -5352,19 +5352,20 @@ One measured transfer exists in this repository (Phi-3.5 to Qwen2.5, M2b-S), so 
 
 ### Codex review of L3 (2026-11-26)
 
-Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc, 40db050 and 482a51b. Every finding was reproduced before it was fixed, and each fix has a regression test named for its round in `runtime/tests/test_align.py`.
+Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc, 40db050 and 482a51b, and a confirmation round on 9df433f. Every finding was reproduced before it was fixed, and each fix has a regression test named for its round in `runtime/tests/test_align.py`.
 
 - **Round 1 (10 findings).** Two tokenizers that cut one emoji into different byte groups could read a byte ahead; a sender token without characters carried earlier text past a receiver BOS and lost its order; `refine_spans` left overlaps longer than one character overlapping; rule 1 positions had changed for zero-width spans; a zero-width token could be taken as a place to truncate, and `max_tokens=None` raised; norm calibration rescaled padding, let a NaN in padding reach real tokens and gave NaN gradients at zero energy; a fraction broke the audit's JSON; the tensor mask compared floats; audit coverage and refusal counts; the word-marker tolerance applied to byte-level tokenizers. All fixed.
 - **Round 2 (4 of the 10 confirmed fixed, 8 findings).** Visibility read from the refined spans still let a receiver read ahead on overlaps longer than one character, and a cut could fall inside one; fixed by taking visibility and cuts from what the raw offsets say each token touched (`align.ownership`). `refine_spans` raised on orderable overlaps and on a sentinel offset; rule 2 positions could land on an empty token; a NaN in a real token was hidden and fp64 input went through fp32; audit miscounts. All fixed. Two accepted as documented rather than changed: the cache scale is taken over the whole document, so it is not prefix-causal (stated in `norm.py` and the handoff); a sender-only empty token at the very end is kept and reported unread.
 - **Round 3 (the round 2 items closed or accepted; 1 medium and 2 low new).** After a nested overlap, an uncovered gap was credited to the wrong sender token; a boundary could leave the overlap it divides; with offsets above 2**53 rule 2 chose a different receiver token than rule 1 on clean spans. All fixed in 9df433f. Codex also reported that rule 1 matched `origin/main` on 20,000 generated pairs and that no retained prefix was unsafe.
 - Found by the fixtures and the audit between rounds, not by Codex: an empty token between the pieces of one character blocked the completing piece from reading its own run; exact fractions gave rule 2 a different last digit than rule 1 on clean text (200 of 200 passages "changed" until fixed).
-- **Not yet recorded:** a confirmation round on 9df433f was started and had not reported when this was written. A human review is still owed if this is treated as touching export; it does not touch security or signing.
+- **Confirmation round on 9df433f: no defects above low.** The three round 3 fixes were confirmed with the values Codex evaluated, and its own per-character oracle found no mismatch in `ownership`, `reading_keys` or `common_cut` over 20,000 random span pairs, with and without the text length and at every token budget. One low finding: with offsets above 2**53 and a divided character on the receiver, the float midpoint chose the wrong receiver token. Fixed (the search is exact whenever the receiver has a divided character), with a test.
+- This card does not touch security, export or signing, so no human review is required by AGENTS.md section 4; Ruslan's review of the PR is still welcome.
 
 ### Suites for L3 (2026-11-26)
 
-- `python -m unittest discover -s tests -t .` in `runtime/` on Windows (no torch) at 9df433f: 309 tests, OK, 83 skipped.
-- The same in WSL with torch and the cached tokenizers at 482a51b: 308 tests, OK, none skipped. `tests.test_align` alone at 9df433f in WSL: 70 tests, OK. The full WSL run at 9df433f was started and had not reported when this was written.
+- `python -m unittest discover -s tests -t .` in `runtime/` on Windows (no torch), final commit: 309 tests, OK, 83 skipped.
+- The same in WSL with torch and the cached tokenizers, final commit: 309 tests, OK, none skipped.
 - `npm run -s test:graph`: 9 of 9.
 - `node --test tests/*.test.mjs`: 664 pass, 10 skipped, 0 failed. A first run, made while the audit and a Codex review were using the machine, had 1 failure of 674; only the end of that log was kept, so the test is not identified. The rerun on a quiet machine was clean. This card changes no JavaScript.
 - `npx playwright test`: 61 passed, 1 skipped (run at 40db050; later commits change only Python under `runtime/latent_transfer/` and its test).
-- Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), run at 482a51b.
+- Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), rerun on the final commit.

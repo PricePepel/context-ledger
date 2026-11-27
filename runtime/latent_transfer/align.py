@@ -218,6 +218,8 @@ def sender_positions(sender_spans, receiver_spans, rule=ALIGNMENT_RULE):
         raise ValueError(f"Unknown alignment rule {rule!r}.")
     wide = [index for index, (start, end) in enumerate(receiver_spans) if end > start]
     starts = [receiver_spans[index][0] for index in wide]
+    # A receiver with any divided character is searched with exact midpoints throughout.
+    clean = all(type(value) is int for span in receiver_spans for value in span)
     empty, used = {}, {}
     for index, (start, end) in enumerate(receiver_spans):
         if end == start:
@@ -231,7 +233,7 @@ def sender_positions(sender_spans, receiver_spans, rule=ALIGNMENT_RULE):
             continue
         # Whole-character spans use rule 1's own float arithmetic from the midpoint on, so
         # text that needs no refinement gets bit-identical positions under both rules.
-        whole = type(start) is int and type(end) is int
+        whole = clean and type(start) is int and type(end) is int
         middle = (start + end) / 2 if whole else Fraction(start + end) / 2
         slot = bisect.bisect_right(starts, middle) - 1
         if slot < 0:

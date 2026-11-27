@@ -358,6 +358,12 @@ class CausalityTest(unittest.TestCase):
             far = 2 ** 55
             huge = [(0, far)] + [(far + i, far + i + 1) for i in range(8)]
             self.assertEqual(sender_positions(huge, huge, rule), sender_positions(huge, huge, RULE_RAW))
+        # Confirmation round: with a divided character on the receiver the float midpoint rounded
+        # across its fractional boundaries; the search is exact there.
+        far = 2 ** 55
+        divided = refine_spans([(0, far), (far, far + 2), (far + 1, far + 2), (far + 1, far + 2)])
+        self.assertEqual(sender_positions(refine_spans([(0, far + 1), (far + 1, far + 2)]), divided)[-1], 2.0)
+        for rule in (RULE_RAW, RULE_REFINED):
             self.assertEqual(visible_counts(sender, receiver, rule), [1, 1, 4, 5])
             self.assertEqual(causal_mask(sender, receiver, rule),
                              [[s_end <= r_end for _, s_end in sender] for _, r_end in receiver])
