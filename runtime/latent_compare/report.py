@@ -5,11 +5,18 @@ and render_markdown turns those into the tables of docs/evals.md.
 """
 from .models import MAPPERS, NOT_RUN, latent_status
 from .stats import BOOTSTRAP_ROUNDS, compare, kv_bytes, mean, mean_interval
+from .vllm_engine import CACHE_REFUSAL
 
 NO_MAPPER = "no mapper yet"
 FAITHFUL_SHARE = 0.95
 # Resamples per interval; build_summary sets it for one build (tests use fewer).
 ROUNDS = {"n": BOOTSTRAP_ROUNDS}
+
+
+def expected_refusal(arm, value):
+    """The one refusal the run expects: the cache arm of a model whose cache vLLM does not expose.
+    Any other refused record, in another arm or for another reason, is work that failed."""
+    return arm == "self_cache" and value.get("refused") == CACHE_REFUSAL
 
 
 def ok(record, arm):
@@ -23,7 +30,7 @@ def aggregate(records, arm, metrics=("f1", "em", "hit")):
     good = [ok(record, arm) for record in records]
     present = [record.get(arm) for record in records if record.get(arm) is not None]
     good = [value for value in good if value is not None]
-    refused = sum(1 for value in present if "refused" in value)
+    refused = sum(1 for value in present if expected_refusal(arm, value))
     result = {"n": len(good), "errors": len(present) - len(good) - refused, "refused": refused,
               "missing": len(records) - len(present)}
     if not good:
@@ -152,10 +159,12 @@ def edge_section(groups, receive):
             return aggregate([record for item, record in rows_of(groups, results, group) if keep(item)], arm)
 
         def errors(group):
-            return sum(1 for _, record in rows_of(groups, results, group) for value in record.values() if "error" in value)
+            return sum(1 for _, record in rows_of(groups, results, group) for arm, value in record.items()
+                       if "error" in value or ("refused" in value and not expected_refusal(arm, value)))
 
         def refused(group):
-            return sum(1 for _, record in rows_of(groups, results, group) for value in record.values() if "refused" in value)
+            return sum(1 for _, record in rows_of(groups, results, group) for arm, value in record.items()
+                       if expected_refusal(arm, value))
 
         def missing(group):
             """Arms a record should hold and does not: an item with no record counts in full."""
@@ -241,7 +250,9 @@ def checks(summary):
         mapper[name] = all(interval is not None and interval["n"] == count and interval["low"] > 0
                            for interval in needed)
     expected = [f"{sender}>{receiver}" for sender, receiver in MAPPERS if sender in order and receiver in order]
+    # applicable False: no pair with a mapper has both its models in this set (a subset report).
     result["mapperHolds"] = {"passed": bool(expected) and all(mapper.get(name, False) for name in expected),
+                             "applicable": bool(expected),
                              "pairs": {name: mapper.get(name, False) for name in expected}}
 
     # A model is complete when every arm of every group ran for every item, for every sender.
@@ -433,7 +444,7 @@ def render_markdown(summary):
           num(e["no_system_role"]["self_cache"].get("f1")), num(e["no_system_role"]["sameAnswer"]),
           e["no_system_role"]["errors"]] for key, e in edge.items()]))
     parts.append("### Checks\n\n" + table(["Check", "Result", "Detail"], [
-        [name, "Pass" if check["passed"] else "Fail",
+        [name, "Not applicable" if check.get("applicable") is False else "Pass" if check["passed"] else "Fail",
          ", ".join(f"{k}: {v}" for k, v in check.items() if k != "passed")]
         for name, check in summary["checks"].items()]))
     return "\n\n".join(parts) + "\n"

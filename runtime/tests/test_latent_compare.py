@@ -12,6 +12,7 @@ import tempfile
 import threading
 import unicodedata
 import unittest
+from unittest import mock
 
 try:
     import jinja2  # noqa: F401
@@ -399,6 +400,12 @@ class ReportTest(unittest.TestCase):
         without = report.build_summary(self.groups, self.receive, self.summaries, {}, rounds=300)
         self.assertEqual(without["latentTable"]["phi3.5"]["qwen1.5"]["status"], "mapper_not_run")
         self.assertFalse(without["checks"]["mapperHolds"]["passed"])
+        self.assertTrue(without["checks"]["mapperHolds"]["applicable"])
+        # Codex review, round 6: a subset with no mapper pair printed "Fail" for a check that does not apply.
+        subset = {key: self.receive[key] for key in self.receive if key != "phi3.5"}
+        alone = report.build_summary(self.groups, subset, self.summaries, {}, rounds=300)
+        self.assertEqual(alone["checks"]["mapperHolds"]["applicable"], False)
+        self.assertIn("| mapperHolds | Not applicable |", report.render_markdown(alone))
 
     def test_main_aggregates_and_paired_differences(self):
         row = self.summary["main"]["receivers"]["qwen3"]
@@ -569,6 +576,149 @@ class PhaseTest(unittest.TestCase):
 
     def read(self, folder, key):
         return run.load(os.path.join(self.out, folder, f"{key}.json"))
+
+    def run_all(self, keys, fail=None):
+        """`all` with the fake engine; the (phase, model, force) of each call it made."""
+        calls = []
+
+        def summaries(out, key, groups, force):
+            calls.append(("summaries", key, force))
+            return run.phase_summaries(out, key, groups, force, engine_factory=FakeEngine)
+
+        def receive(out, key, groups, senders, force):
+            calls.append(("receive", key, force))
+            if key == fail:
+                raise RuntimeError("the server did not start")
+            return run.phase_receive(out, key, groups, senders, force, engine_factory=FakeEngine)
+
+        summary = run.run_all(self.out, keys, self.groups, summaries=summaries, receive=receive, pairs=[])
+        return calls, summary
+
+    def test_a_sender_whose_summaries_were_written_again_is_read_again(self):
+        # Codex review, round 5: receivers and the mapper pair kept answers to a sender's
+        # previous summaries after a retry wrote them anew.
+        for key in ("qwen1.5", "phi3.5"):
+            self.summaries(key)
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        saved = self.read("receive", "qwen1.5")
+        self.assertEqual(sorted(saved["summaryStamps"]), ["phi3.5", "qwen1.5"])
+        FakeEngine.loads.clear()
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        self.assertEqual(FakeEngine.loads, [])                              # nothing changed: reused
+
+        target = os.path.join(self.out, "summaries", "phi3.5.json")
+        data = run.load(target)
+        record = data["summaries"][self.groups["main"][0]["id"]]
+        record["ms"] = record.get("ms", 0) + 1                              # written again: a timing differs
+        run.save(target, data)
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        self.assertEqual(FakeEngine.loads, ["qwen1.5"])                     # the receiver ran again
+        self.assertNotEqual(self.read("receive", "qwen1.5")["summaryStamps"]["phi3.5"], saved["summaryStamps"]["phi3.5"])
+
+        # A receive file from before stamps were recorded is not thrown away.
+        legacy = self.read("receive", "qwen1.5")
+        del legacy["summaryStamps"]
+        run.save(os.path.join(self.out, "receive", "qwen1.5.json"), legacy)
+        FakeEngine.loads.clear()
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        self.assertEqual(FakeEngine.loads, [])
+
+        spec = models.MAPPERS[("phi3.5", "qwen1.5")]
+        result = {"checkpoint": spec["id"], "senderSummaries": True, "summaryStamp": "aaaa"}
+        self.assertTrue(run.latent_current(result, spec, True, "aaaa"))
+        self.assertFalse(run.latent_current(result, spec, True, "bbbb"))    # the summaries changed
+        self.assertTrue(run.latent_current({**result, "summaryStamp": None}, spec, True, "bbbb"))
+        self.assertTrue(run.latent_current(result, spec, False))
+
+    def test_a_report_on_a_subset_leaves_out_a_mapper_pair_outside_it(self):
+        # Codex review, round 5: an old mapper file with an error failed the edge check of a
+        # report whose models did not include the pair.
+        for key in ("qwen1.5", "qwen3"):
+            self.summaries(key)
+        for key in ("qwen1.5", "qwen3"):
+            self.receive(key, ["qwen1.5", "qwen3"])
+        latent = fake_latent(self.groups)
+        latent["results"][self.groups["long_passage"][0]["id"]]["swat"] = {"error": "ValueError: no tokens"}
+        spec = models.MAPPERS[("phi3.5", "qwen1.5")]
+        run.save(run.path(self.out, "latent", "phi3.5__qwen1.5.json"),
+                 {**latent, "itemsId": run.fingerprint(self.groups), "checkpoint": spec["id"]})
+        _, _, pairs, _ = run.collect(self.out, self.groups, ["qwen1.5", "qwen3"])
+        self.assertEqual(pairs, {})
+        _, _, pairs, _ = run.collect(self.out, self.groups, ["qwen1.5", "qwen3", "phi3.5"])
+        self.assertEqual(list(pairs), [("phi3.5", "qwen1.5")])
+
+    def test_a_plain_kill_unwinds_the_run_so_a_server_is_stopped(self):
+        # Codex review, round 5: SIGTERM ended Python without running `finally`, and the vLLM
+        # server, in its own session, kept the port and the GPU.
+        before = run.signal.getsignal(run.signal.SIGTERM)
+        try:
+            stop = run.stop_on_sigterm()
+            self.assertIs(run.signal.getsignal(run.signal.SIGTERM), stop)
+            closed = []
+            with self.assertRaises(SystemExit) as raised:
+                try:
+                    stop(run.signal.SIGTERM, None)
+                finally:
+                    closed.append("engine")
+            self.assertEqual((raised.exception.code, closed), (128 + run.signal.SIGTERM, ["engine"]))
+        finally:
+            run.signal.signal(run.signal.SIGTERM, before)
+
+    def test_a_report_leaves_out_answers_to_summaries_that_were_written_again(self):
+        # Codex review, round 6: `summaries --force` then `report` paired the new summaries'
+        # timings with receivers' answers to the old ones.
+        keys = ["phi3.5", "qwen1.5"]
+        for key in keys:
+            self.summaries(key)
+        for key in keys:
+            self.receive(key, keys)
+        spec = models.MAPPERS[("phi3.5", "qwen1.5")]
+        stamp = self.read("receive", "qwen1.5")["summaryStamps"]["phi3.5"]
+        run.save(run.path(self.out, "latent", "phi3.5__qwen1.5.json"),
+                 {**fake_latent(self.groups), "itemsId": run.fingerprint(self.groups), "checkpoint": spec["id"],
+                  "senderSummaries": True, "summaryStamp": stamp})
+        receive, _, latent, notes = run.collect(self.out, self.groups, keys)
+        self.assertEqual((sorted(receive), notes), (keys, {}))
+        self.assertNotIn("skipped", latent[("phi3.5", "qwen1.5")])
+
+        target = os.path.join(self.out, "summaries", "phi3.5.json")
+        data = run.load(target)
+        record = data["summaries"][self.groups["main"][0]["id"]]
+        record["ms"] = record.get("ms", 0) + 1
+        run.save(target, data)                                              # summaries --force
+        receive, _, latent, notes = run.collect(self.out, self.groups, keys)
+        self.assertEqual(receive, {})                                       # both read phi3.5's old summaries
+        self.assertEqual(sorted(notes), keys)
+        self.assertIn("receive --model qwen1.5", notes["qwen1.5"])
+        self.assertIn("latent --pair phi3.5:qwen1.5", latent[("phi3.5", "qwen1.5")]["skipped"])
+        self.assertEqual(run.load_notes(self.out), {})                      # named in the report, not saved
+
+        for key in keys:
+            self.receive(key, keys)                                         # run again: current
+        receive, _, _, notes = run.collect(self.out, self.groups, keys)
+        self.assertEqual((sorted(receive), notes), (keys, {}))
+
+    def test_all_runs_a_model_again_after_its_last_attempt_failed(self):
+        # Codex review, round 4: a failed forced rerun left the old receive file and a note; the
+        # next `all` cleared the note after the cached summaries and reused the old file.
+        keys = ["qwen1.5", "qwen3"]
+        calls, summary = self.run_all(keys)
+        self.assertEqual(sorted(summary["main"]["receivers"]), keys)
+        self.assertFalse(any(force for _, _, force in calls))
+
+        run.note(self.out, "qwen3", "RuntimeError: the forced rerun failed")
+        calls, summary = self.run_all(keys, fail="qwen3")              # it fails again
+        self.assertIn(("summaries", "qwen3", True), calls)
+        self.assertIn(("receive", "qwen3", True), calls)
+        self.assertIn(("receive", "qwen1.5", False), calls)
+        self.assertEqual(sorted(summary["main"]["receivers"]), ["qwen1.5"])   # the old file does not stand in
+        self.assertIn("qwen3", summary["dropped"])
+        self.assertIn("qwen3", run.load_notes(self.out))
+
+        calls, summary = self.run_all(keys)                            # and then succeeds
+        self.assertIn(("receive", "qwen3", True), calls)
+        self.assertEqual(sorted(summary["main"]["receivers"]), keys)
+        self.assertEqual(run.load_notes(self.out), {})
 
     def test_a_receiver_holds_every_arm_for_every_item(self):
         for key in ("qwen1.5", "phi3.5"):
@@ -870,8 +1020,98 @@ class VllmEngineTest(unittest.TestCase):
                                         base_url=self.engine.base_url)
         engine.process = Gone()
         engine.close()                     # no ProcessLookupError, and the child is waited for
-        self.assertEqual((engine.process, Gone.waited), (None, 1))
+        self.assertEqual((engine.process, Gone.waited), (None, 2))
         engine.close()                     # closing twice is harmless
+
+    def signals_of(self, process):
+        """Close an engine holding `process`; the signals sent to it or to its group, in order."""
+        sent = []
+        process.send_signal = sent.append
+        engine = vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config(),
+                                        base_url=self.engine.base_url)
+        engine.process = process
+        if hasattr(os, "killpg"):
+            with mock.patch.object(os, "killpg", side_effect=lambda pid, sign: sent.append(sign)):
+                engine.close()
+        else:
+            engine.close()
+        return sent
+
+    def test_closing_kills_the_group_even_when_the_leader_exits_at_once(self):
+        # Codex review, round 4: the leader's exit ended the loop, so a worker of its group
+        # that ignored SIGTERM kept the GPU and was never sent SIGKILL.
+        class Leader:
+            pid = 2 ** 22 + 54321
+
+            def wait(self, timeout=None):
+                return 0
+
+        sent = self.signals_of(Leader())
+        self.assertEqual(sent, [vllm_engine.signal.SIGTERM,
+                                getattr(vllm_engine.signal, "SIGKILL", vllm_engine.signal.SIGTERM)])
+
+    def test_a_server_with_the_same_checkpoint_from_another_run_is_not_ours(self):
+        # Codex review, round 4: two runs start together, both see a free port, one server
+        # binds; the other run found its checkpoint's id listed and scored that server's replies.
+        class Child:
+            pid = 2 ** 22 + 777
+
+            def poll(self):
+                return None                # still loading: it never bound the port
+
+            def wait(self, timeout=None):
+                return 0
+
+            def send_signal(self, sign):
+                pass
+
+        checkpoint = models.MODELS["qwen7"]["id"]
+        answers = iter([None, [checkpoint]])     # the port is free, then another run's server answers
+        commands = []
+
+        def popen(command, **options):
+            commands.append(command)
+            return Child()
+
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                mock.patch.object(vllm_engine, "served_models", side_effect=lambda base, timeout=5: next(answers)), \
+                mock.patch.object(vllm_engine.subprocess, "Popen", side_effect=popen), \
+                mock.patch.object(vllm_engine.os, "killpg", create=True):
+            with self.assertRaises(RuntimeError) as raised:
+                vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config())
+        self.assertIn("not ours", str(raised.exception))
+        name = commands[0][commands[0].index("--served-model-name") + 1]
+        self.assertTrue(name.startswith("l2-qwen7-") and name != checkpoint)
+        other = vllm_engine.serve_command("vllm", checkpoint, served="l2-qwen7-" + "0" * 16)
+        self.assertNotEqual(name, other[-1])                          # a new name every run
+
+    def test_an_attached_server_is_asked_for_the_checkpoint_and_a_started_one_for_its_run_name(self):
+        self.assertEqual(self.engine.served, models.MODELS["qwen7"]["id"])
+        self.assertNotIn("--served-model-name", vllm_engine.serve_command("vllm", "some/model"))
+
+    def test_an_interrupted_close_still_kills_the_group(self):
+        # Codex review, round 6: SIGTERM landing while close() waited raised out of the wait,
+        # and the group was never sent SIGKILL.
+        class Slow:
+            pid = 2 ** 22 + 999
+
+            def wait(self, timeout=None):
+                raise SystemExit(143)
+
+        process, sent = Slow(), []
+        process.send_signal = sent.append
+        engine = vllm_engine.VllmEngine("qwen7", tokenizer=WordTokenizer(), config=self.engine_config(),
+                                        base_url=self.engine.base_url)
+        engine.process = process
+        with self.assertRaises(SystemExit):
+            if hasattr(os, "killpg"):
+                with mock.patch.object(os, "killpg", side_effect=lambda pid, sign: sent.append(sign)):
+                    engine.close()
+            else:
+                engine.close()
+        self.assertEqual(sent, [vllm_engine.signal.SIGTERM,
+                                getattr(vllm_engine.signal, "SIGKILL", vllm_engine.signal.SIGTERM)])
 
     def test_a_vllm_receiver_records_the_refusal_and_stays_complete(self):
         groups = item_sets.build(squad_rows(), lambda passage: True)
@@ -1021,8 +1261,36 @@ class CheckTest(unittest.TestCase):
         checks = self.build(receive)["checks"]
         self.assertFalse(checks["handoffFaithful"]["models"]["qwen3"])
         self.assertEqual(checks["coverage"]["complete"], 4)
-        self.assertGreaterEqual(checks["edgeCases"]["missing"]["qwen3"], 200)
+        self.assertGreaterEqual(checks["edgeCases"]["errors"]["qwen3"] + checks["edgeCases"]["missing"]["qwen3"], 200)
         self.assertFalse(checks["edgeCases"]["passed"])
+
+    def served_run(self):
+        keys = self.keys + ["qwen7"]
+        receive = {key: fake_receive(self.groups, key, keys) for key in keys}
+        for record in receive["qwen7"]["results"].values():
+            record["self_cache"] = {"refused": vllm_engine.CACHE_REFUSAL}
+        return receive
+
+    def test_only_the_named_cache_refusal_of_a_vllm_model_is_excused(self):
+        # Codex review, round 4: every refusal of a vLLM receiver was excused in the edge groups,
+        # and any reason was accepted in its cache arm.
+        checks = self.build(self.served_run())["checks"]
+        self.assertEqual((checks["coverage"]["complete"], checks["edgeCases"]["passed"]), (6, True))
+
+        receive = self.served_run()
+        receive["qwen7"]["results"][self.groups["long_passage"][0]["id"]]["text"] = {"refused": "unexpected"}
+        summary = self.build(receive)
+        self.assertEqual(summary["edge"]["qwen7"]["long_passage"]["errors"], 1)
+        self.assertEqual(summary["checks"]["coverage"]["complete"], 5)
+        self.assertFalse(summary["checks"]["edgeCases"]["passed"])
+
+        receive = self.served_run()
+        receive["qwen7"]["results"]["main-003"]["self_cache"] = {"refused": "out of memory"}
+        summary = self.build(receive)
+        cache = summary["main"]["receivers"]["qwen7"]["self_cache"]
+        self.assertEqual((cache["refused"], cache["errors"]), (199, 1))
+        self.assertEqual(summary["checks"]["coverage"]["complete"], 5)
+        self.assertFalse(summary["checks"]["edgeCases"]["passed"])
 
     def test_a_model_with_a_failed_arm_is_not_complete(self):
         # Codex review, round 2: five receivers with one failed `closed` arm still passed coverage.

@@ -21,6 +21,8 @@ import argparse
 import hashlib
 import json
 import os
+import signal
+import sys
 import time
 
 from . import items as item_sets
@@ -179,11 +181,27 @@ def available_summaries(out, senders, items_id):
     return found
 
 
+def summary_stamps(summaries):
+    """{sender: a short hash of its saved summaries, timings included}: which writing of them
+    a result was computed from. A sender whose summaries are written again gets a new stamp."""
+    return {sender: hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+            for sender, data in summaries.items()}
+
+
+def from_these_summaries(saved, stamps):
+    """Whether a saved result read these very summaries. A file from before stamps were
+    recorded (saved is None) is taken as current: there is nothing to compare."""
+    return saved is None or all(saved.get(sender) == stamp for sender, stamp in stamps.items())
+
+
 def phase_receive(out, key, groups, senders, force=False, engine_factory=default_engine):
     target, items_id = path(out, "receive", f"{key}.json"), fingerprint(groups)
     summaries = available_summaries(out, senders, items_id)
+    stamps = summary_stamps(summaries)
     done = existing(target, items_id, force)
-    if done and set(summaries) <= set(done.get("senders", [])):
+    # Codex review, round 5: a sender whose summaries were written again (a retry after a
+    # failure) left receivers holding answers to its previous summaries.
+    if done and set(summaries) <= set(done.get("senders", [])) and from_these_summaries(done.get("summaryStamps"), stamps):
         return
     # A file that lacks a sender whose summaries now exist is run again as a whole, so every
     # arm of a receiver comes from one load of the model.
@@ -243,7 +261,8 @@ def phase_receive(out, key, groups, senders, force=False, engine_factory=default
                         guarded(record, f"t2t:{sender}", t2t, engine.recover)
                 results[item["id"]] = record
             print(f"receive {key} {group} done {time.time() - started:.0f}s", flush=True)
-        save(target, {"itemsId": items_id, "model": engine.describe(), "senders": sorted(summaries), "results": results})
+        save(target, {"itemsId": items_id, "model": engine.describe(), "senders": sorted(summaries),
+                      "summaryStamps": stamps, "results": results})
     finally:
         engine.close()
 
@@ -253,8 +272,9 @@ def phase_latent(out, sender, receiver, groups, force=False):
     target, items_id = path(out, "latent", f"{sender}__{receiver}.json"), fingerprint(groups)
     spec = MAPPERS[(sender, receiver)]
     summaries = available_summaries(out, [sender], items_id).get(sender, {})
+    stamp = summary_stamps({sender: summaries}).get(sender) if summaries else None
     done = existing(target, items_id, force)
-    if done and latent_current(done, spec, bool(summaries)):
+    if done and latent_current(done, spec, bool(summaries), stamp):
         return None
     checkpoint = os.path.expanduser(spec["checkpoint"])
     if not os.path.exists(checkpoint):
@@ -325,15 +345,20 @@ def phase_latent(out, sender, receiver, groups, force=False):
             results[item["id"]] = record
         print(f"latent {sender}->{receiver} {group} done {time.time() - started:.0f}s", flush=True)
     save(target, {"itemsId": items_id, "sender": sender, "receiver": receiver, "checkpoint": pair.checkpoint_id,
-                  "senderSummaries": bool(summaries),
+                  "senderSummaries": bool(summaries), "summaryStamp": stamp,
                   "shapes": {name: list(shape) for name, shape in shapes.items()}, "results": results})
     return None
 
 
-def latent_current(data, spec, have_summaries):
-    """Whether a saved mapper result still stands: it is from the registered checkpoint, and
-    it is not missing a summary arm that could be run now."""
-    return data.get("checkpoint") == spec["id"] and (data.get("senderSummaries") or not have_summaries)
+def latent_current(data, spec, have_summaries, stamp=None):
+    """Whether a saved mapper result still stands: it is from the registered checkpoint, it is
+    not missing a summary arm that could be run now, and its summary arm read the sender's
+    summaries as they are now (a file from before stamps were recorded is taken as current)."""
+    if data.get("checkpoint") != spec["id"]:
+        return False
+    if not have_summaries:
+        return True
+    return bool(data.get("senderSummaries")) and data.get("summaryStamp") in (None, stamp)
 
 
 def collect(out, groups, wanted):
@@ -347,8 +372,18 @@ def collect(out, groups, wanted):
             data = existing(os.path.join(out, folder, f"{key}.json"), items_id)
             if data:
                 store[key] = data
+    # Codex review, round 6: a report must not pair a sender's new summaries with answers that
+    # read its earlier ones. Such a receiver or pair is left out and named, until it is run again.
+    stamps = summary_stamps({key: data["summaries"] for key, data in summaries.items()})
+    for key in list(receive):
+        read = {sender: stamps[sender] for sender in receive[key].get("senders", []) if sender in stamps}
+        if not from_these_summaries(receive[key].get("summaryStamps"), read):
+            del receive[key]
+            notes[key] = f"Its answers read summaries that were since written again; run `receive --model {key}`."
     for (sender, receiver), spec in MAPPERS.items():
         name = f"{sender}>{receiver}"
+        if sender not in wanted or receiver not in wanted:
+            continue   # a report on a subset is not graded on a pair outside it (Codex review, round 5)
         if name in notes:
             # Before the file is even read: its last attempt failed, whatever an older file holds.
             latent[(sender, receiver)] = {"skipped": notes[name]}
@@ -357,6 +392,9 @@ def collect(out, groups, wanted):
         if data and data.get("checkpoint") != spec["id"]:
             latent[(sender, receiver)] = {"skipped": f"The saved result is from checkpoint {data.get('checkpoint')}, "
                                                      f"not the registered {spec['id']}."}
+        elif data and sender in stamps and data.get("summaryStamp") not in (None, stamps[sender]):
+            latent[(sender, receiver)] = {"skipped": f"Its summary arm read {sender}'s summaries before they were "
+                                                     f"written again; run `latent --pair {sender}:{receiver}`."}
         elif data:
             latent[(sender, receiver)] = data
     return receive, summaries, latent, notes
@@ -391,19 +429,32 @@ def phase_report(out, wanted=None):
     return summary
 
 
-def attempt(out, name, work):
-    """One model's or pair's phase inside `all`: a failure is noted and the run goes on."""
+def attempt(out, name, work, clear=True):
+    """One model's or pair's phase inside `all`: a failure is noted and the run goes on.
+    clear=False leaves an older note in place on success, for a phase that is not the last."""
     try:
         reason = work()
     except StaleFile:
         raise
     except Exception as error:  # noqa: BLE001 - a checkpoint that does not load is dropped and named
         reason = f"{type(error).__name__}: {str(error)[:300]}"
-    note(out, name, reason)
+    if reason is not None or clear:
+        note(out, name, reason)
     return reason is None
 
 
+def stop_on_sigterm():
+    """A plain `kill` ends the run through SystemExit, so every `finally` runs and a vLLM
+    server this run started is stopped with it (Codex review, round 5). By default Python
+    dies on SIGTERM without unwinding, and the server, in its own session, would live on."""
+    def stop(signum, frame):
+        sys.exit(128 + signum)
+    signal.signal(signal.SIGTERM, stop)
+    return stop
+
+
 def main():
+    stop_on_sigterm()
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("phase", choices=["all", "items", "summaries", "receive", "latent", "report"])
     parser.add_argument("--out", required=True)
@@ -437,15 +488,25 @@ def main():
         if reason:
             print(f"latent {sender}->{receiver} not run: {reason}", flush=True)
     elif args.phase == "all":
-        alive = [key for key in wanted
-                 if attempt(out, key, lambda key=key: phase_summaries(out, key, groups, args.force))]
-        for key in alive:
-            attempt(out, key, lambda key=key: phase_receive(out, key, groups, alive, args.force))
-        for sender, receiver in MAPPERS:
-            if sender in alive and receiver in alive:
-                attempt(out, f"{sender}>{receiver}",
-                        lambda sender=sender, receiver=receiver: phase_latent(out, sender, receiver, groups, args.force))
-        phase_report(out, wanted)
+        run_all(out, wanted, groups, args.force)
+
+
+def run_all(out, wanted, groups, force=False, summaries=None, receive=None, latent=None, pairs=None):
+    """Every phase for every model, then the report. A model or pair whose last attempt failed
+    is run again from the start: its older files must not come back as its result just because
+    a cached phase succeeded and cleared the note (Codex review, round 4)."""
+    summaries, receive, latent = summaries or phase_summaries, receive or phase_receive, latent or phase_latent
+    failed = set(load_notes(out))
+    alive = [key for key in wanted
+             if attempt(out, key, lambda key=key: summaries(out, key, groups, force or key in failed), clear=False)]
+    for key in alive:
+        attempt(out, key, lambda key=key: receive(out, key, groups, alive, force or key in failed))
+    for sender, receiver in (MAPPERS if pairs is None else pairs):
+        name = f"{sender}>{receiver}"
+        if sender in alive and receiver in alive:
+            attempt(out, name, lambda sender=sender, receiver=receiver, name=name:
+                    latent(out, sender, receiver, groups, force or name in failed))
+    return phase_report(out, wanted)
 
 
 if __name__ == "__main__":
