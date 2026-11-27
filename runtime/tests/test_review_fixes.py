@@ -151,7 +151,7 @@ class PathCharacterTest(unittest.TestCase):
     """Finding 3: separators, bidi and format characters cannot fake prefix lines."""
 
     def test_rejects_line_separators_and_format_characters(self):
-        for character in [" ", " ", "\u0085", "‮", "​", "﻿", "\U000e0001"]:
+        for character in ["\u2028", "\u2029", "\u0085", "\u202e", "\u200b", "\ufeff", "\U000e0001"]:
             with self.subTest(code=hex(ord(character))):
                 with self.assertRaises(ApiError) as caught:
                     check_path_syntax(f"src/a{character}.js")

@@ -498,3 +498,12 @@ test('G7 review round 3: label tokens are whole in any script, and combining mar
   assert.equal(isGrounded('RETRY_LIMIT is 3', 'export const RETRY_LIMIT = 3;'), true);
   assert.equal(isGrounded('Uses $retry_limit', 'let $retry_limit = 1'), true);
 });
+
+test('card H10: a finding label is limited to 500 code points, as a graph label is', async t => {
+  const smile = String.fromCodePoint(0x1f600);
+  const span = [{ path: 'src/config.js', startLine: 8, endLine: 8 }];
+  const findings = [{ label: smile.repeat(500), evidence: span }, { label: smile.repeat(501), evidence: span }];
+  const runtime = await fakeRuntime(t, () => ({ body: { graph: slice(findings), receipt: { model: 'fake' }, stats: {} } }));
+  const result = await read({}, runtime);
+  assert.equal(result.graph.rejectedFindings, 1, '500 astral characters are 1000 UTF-16 units but still one valid label');
+});
