@@ -20,6 +20,8 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      # Card H9: the AGENTS.md section 6 rules, on every tracked file, before anything is installed.
+      - run: node scripts/check.mjs
       - run: npm ci
       - run: npm run -s test:graph
       # A test file that hangs fails on its own after five minutes instead of holding the job.
