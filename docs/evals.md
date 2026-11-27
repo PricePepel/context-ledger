@@ -5217,3 +5217,19 @@ A driver, `evals/latent/serving-levers.mjs` (pure helpers in `serving-lib.mjs`),
 - Every row has measured numbers or a stated reason why it cannot be measured here; nothing is estimated and every figure is marked measured.
 - A lever is recommended for the default setup only if it helps its target metric (time to finish, KV capacity or peak GPU memory) without losing correct answers against the baseline in the same session.
 - The figures are for one laptop GPU, one 7B model and one synthetic task, and the doc says so.
+
+### Results so far — L1 (2026-11-26, partial: rows 1 and 2; rows 3 to 5 wait for the GPU)
+
+All figures **measured** on the RTX 4090 Laptop (16 GB), vLLM 0.33.0 in WSL2, Qwen2.5-7B-Instruct-AWQ, `--gpu-memory-utilization 0.85`, prefix caching on, one synthetic task (the swarm's incident reports), by `evals/latent/serving-levers.mjs`. Every agent starts at the same moment; each run's prefix is salted so a run's hit rate is its own sharing. "Plan-shaped" agents carry about 4,010 prompt tokens each (about 3.0K shared handbook plus 1.0K unique) and answer in at most 160 tokens.
+
+Startup log, baseline: weights 5.29 GiB, CUDA graphs 0.61 GiB (0.37 + 0.24), KV pool 7.32 GiB = 137,136 tokens (max concurrency 4.19× at 32,768 tokens), engine start 25 s. GPU memory reads 14.3–14.7 GiB at every agent count because vLLM reserves its pool at start; the KV-use column is what moves.
+
+| Row | Agents | Wall s | Completion tok/s | Prefix-cache hits | Peak KV use | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 baseline, swarm task (~370 tokens) | 1 / 25 / 50 / 100 | 1.31 / 2.06 / 2.83 / 4.84 | 40 / 641 / 926 / 1085 | 0 / 79% / 82% / 82% | 0.3% / 2% / 4% / 8% | all |
+| 1 baseline, plan-shaped | 25 / 50 / 100 | 11.9 / 21.0 / 42.6 | 111 / 125 / 123 | 71% / 72% / 73% | 23% / 43% / 82% | all |
+| 1 swarm cross-check (`src/swarm.mjs`, concurrency 100) | 100 | 4.58 | — | 81% | 9% | 100/100 |
+| 2 native KV offload, 6 GiB, plan-shaped | 25 / 50 / 100 | 16.5 / 31.1 / 90.8 | 80 / 84 / 58 | 71% / 72% / 73% | 25% / 47% / 91% | all |
+| 2 offload, over capacity (100 × ~5.4K tokens), wave 1 then the same prompts again | 100 | 141.9 then 140.3 | 37 | 53.5% then 54.1% | 96% then 97% | 96/100 both |
+
+Row 2 findings: `--kv-offloading-backend native --kv-offloading-size N` exists in this vLLM. N is limited by `/dev/shm` (7.8 GiB free here: 8 GiB failed at start, 6 GiB worked). It cost KV capacity (pool 137,136 → 123,040 tokens), start time (about 4.5 minutes against 25 s) and speed (100 plan-shaped agents took 90.8 s against 42.6 s). Repeating the same 100 prompts after they no longer fit gained nothing (hit rate 54.1% against 53.5%), so on this machine offload did not help; the no-offload over-capacity baseline is still to run, to confirm. Not yet measured: rows 3 to 5 and `--max-num-seqs`.
