@@ -5360,6 +5360,22 @@ Codex confirmed round 2's fixes (signed-report copy, zero-mask detection, solver
 - (medium) Eval 2 counted an unavailable score as a miss: measured and unmeasured rows are reported apart, and AUROC uses measured rows only. Replay time now includes its comparisons, and each audit's time is divided by the questions it audited.
 - (low) One squad listing a span twice could quarantine it alone: spans are counted per distinct squad.
 
+### W1 repeated findings (AGENTS.md section 4, step 5; recorded 2026-11-27)
+
+H13 added the rule for repeated findings after W1's three review rounds. This entry checks those rounds against it. No review earlier in this log reported a break of these rules, so the repeats are all between W1's own rounds. Each finding below already has its regression test from its round.
+
+- **Weights stay unchanged during a run.** Found in round 1 (medium, a cached fingerprint), round 2 (high, a stale hash) and round 3 (high, a fallback from changed weights).
+  - API change: one function, `weights_state` in `runtime/latent_team/watchdog.py`, records every parameter's and buffer's name, storage address, in-place version counter, dtype and shape. The watchdog's configuration check and the guard's fallback both compare against it.
+  - No `scripts/check.mjs` rule can tell whether some new release path compares that state. A text pattern cannot see which model a code path releases from.
+- **Only a checked release carries text.** Found in round 1 (low, an abstention would have released the squad's answer), round 2 (high, an unchecked fallback; medium, routes released any non-hold outcome) and round 3 (high, the fallback from changed weights).
+  - API change: the guard sets `Outcome.answer` in one place, and only for a `release` decision. The service returns text only when the action is `release` and an answer is present (`runtime/latent_pool/team_service.py`). A hold or an abstention carries no text by construction.
+- **Replay compares what each recipient received.** Found in round 1 (two mediums, a batch-wide comparison and a tolerance set by one divergent replay), round 2 (medium, only the solver's memory compared) and round 3 (medium, a zero-step request).
+  - Not caught by a rule: whether a numeric comparison covers the right rows, positions and hand-offs is a matter of meaning, which no text pattern can check.
+  - The comparison lives in one function, `memory_difference` in `runtime/latent_team/guard.py`.
+- **The memory's attention mask and positions are checked.** Found in round 1 (medium, mask and positions unchecked) and round 2 (high, an appended column with a zero mask).
+  - Not caught by a rule, for the same reason.
+  - The span ledger checks the mask, the positions and every new column at each model call. Eval 1 now injects the round 2 case as a fault.
+
 ### W1 results (2026-11-22, live: Qwen2.5-3B-Instruct, bf16, soft thoughts, no adapter, m = 40, GSM8K test seed 0)
 
 The GPU ran a snapshot of W1 at 482f4cb. Block 0 (200 questions) set the threshold set, block 2 built the distance reference (24,000 thought samples, statistics kept on the GPU machine, SHA-256 recorded), and block 1 (200 questions) was scored; each fault ran on the first 64 questions of block 1. The committed threshold set is `runtime/latent_team/thresholds/qwen2.5-3b-instruct-soft-m40.json` (quantiles and hashes only).
