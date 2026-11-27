@@ -62,10 +62,19 @@ class Engine:
         if limit is None:
             return passage, total, total, False
         kept, truncated = fit_tokens(total, other_tokens + JOIN_SLACK, limit, reserve)
-        return cut_passage(passage, encoded["offset_mapping"], kept), total, kept, truncated
+        if not truncated:
+            return passage, total, total, False
+        cut = cut_passage(passage, encoded["offset_mapping"], kept)
+        # Counted again on the cut text: several byte-level tokens can end on one character,
+        # so the cut can keep a token or two more than asked for.
+        return cut, total, self.count(cut), True
 
     def prepare(self, passage, question, abstain=False, system=None, limit=None):
-        """Token ids of the full prompt and how many of them form the hand-over prefix."""
+        """Token ids of the full prompt and how many of them form the hand-over prefix.
+
+        prepareMs (rendering, fitting and tokenizing) is part of every arm's time end to end.
+        """
+        start = time.perf_counter()
         rendered = self.render(chat_messages(user_content(SENTINEL, question, abstain), system, self.system_ok))
         passage, total, kept, truncated = self.fit(passage, self.count(rendered), limit, ANSWER_TOKENS)
         prefix, suffix = split_rendered(rendered, passage)
@@ -75,7 +84,7 @@ class Engine:
             raise ValueError(f"Prompt of {len(ids)} tokens does not fit the context of {limit}.")
         return {"ids": ids, "prefixTokens": prefix_token_count(encoded["offset_mapping"], len(prefix)),
                 "promptTokens": len(ids), "passageTokens": total, "keptTokens": kept, "truncated": truncated,
-                "passageBytes": len(passage.encode("utf-8"))}
+                "passageBytes": len(passage.encode("utf-8")), "prepareMs": (time.perf_counter() - start) * 1000}
 
     def closed_ids(self, question):
         return self.tok(self.render(chat_messages(closed_content(question))), add_special_tokens=False)["input_ids"]
@@ -84,7 +93,22 @@ class Engine:
         rendered = self.render(chat_messages(summary_request(SENTINEL)))
         passage, total, kept, truncated = self.fit(passage.strip(), self.count(rendered), limit, SUMMARY_TOKENS)
         ids = self.tok(rendered.replace(SENTINEL, passage), add_special_tokens=False)["input_ids"]
+        if limit is not None and len(ids) + SUMMARY_TOKENS > limit:
+            raise ValueError(f"Summary prompt of {len(ids)} tokens does not fit the context of {limit}.")
         return ids, {"passageTokens": total, "keptTokens": kept, "truncated": truncated}
+
+    def summarize(self, passage, limit=None, max_new_tokens=SUMMARY_TOKENS):
+        """The sender's summary of a passage, timed from the raw text to the last token."""
+        start = time.perf_counter()
+        ids, info = self.summary_ids(passage, limit)
+        text, tokens = self.greedy(ids, max_new_tokens)
+        return {"summary": text, "ms": (time.perf_counter() - start) * 1000, "newTokens": tokens,
+                "bytes": len(text.encode("utf-8")), **info}
+
+    def recover(self):
+        """After a failed arm: drop what it left on the GPU so the next arm starts clean."""
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # Decoding -------------------------------------------------------------
     def sync(self):

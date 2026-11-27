@@ -24,8 +24,11 @@ def hit(prediction, answers):
 
 
 def abstained(prediction):
-    """Whether the reply is the abstain phrase the prompt asked for."""
-    return float(ABSTAIN_REPLY in " ".join(normalize(prediction).split()))
+    """Whether the reply is the abstain phrase and nothing else (case and punctuation aside).
+
+    A reply that names an answer and then adds the phrase is not an abstention.
+    """
+    return float(" ".join(normalize(prediction).split()) == " ".join(normalize(ABSTAIN_REPLY).split()))
 
 
 def score(prediction, item):

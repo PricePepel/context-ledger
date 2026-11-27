@@ -42,7 +42,17 @@ MODELS = {
 # (sender, receiver) -> where the trained mapper's checkpoint is looked for. Only pairs
 # listed here get the latent arm; every other cross-model cell is reported as "no mapper yet".
 MAPPERS = {
-    ("phi3.5", "qwen1.5"): {"checkpoint": "~/m2b-scale/run1/best.pt", "card": "M2b-S", "id": "ade79c34041fd529"},
+    ("phi3.5", "qwen1.5"): {"checkpoint": "~/m2b-scale/run1/best.pt", "card": "M2b-S", "id": "ade79c34041fd529",
+                            "referenceF1": 0.872, "referenceItems": 300},
+}
+
+# Candidates of the card that are not in MODELS, and why. The report prints them.
+NOT_RUN = {
+    "Llama-3.1-8B (4-bit, RedHatAI w4a16)": "GPTQ format: transformers needs `optimum` to load it, which the venv does not have",
+    "Mistral-7B v0.3 (4-bit, RedHatAI w4a16)": "GPTQ format, same reason; the bf16 checkpoint runs instead",
+    "Granite-3.1-8B (4-bit, RedHatAI w4a16)": "loads, then decompresses to 15.9 GiB of dense weights and spills to host "
+                                              "memory (352 s for one answer); Granite-3.1-2B runs instead",
+    "Llama-3.2-3B": "gated on Hugging Face and this machine has no token",
 }
 
 

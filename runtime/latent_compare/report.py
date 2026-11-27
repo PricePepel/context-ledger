@@ -3,7 +3,7 @@
 build_summary turns the per-item phase files into aggregates (no passage or answer text),
 and render_markdown turns those into the tables of docs/evals.md.
 """
-from .models import MAPPERS, MODELS, latent_status
+from .models import MAPPERS, NOT_RUN, latent_status
 from .stats import BOOTSTRAP_ROUNDS, compare, kv_bytes, mean, mean_interval
 
 NO_MAPPER = "no mapper yet"
@@ -109,6 +109,11 @@ def latent_section(groups, receive, latent):
                 arms["swat"][part] = round(mean(value[part] for value in good), 1)
             arms["swat"]["mappedBytes"] = round(mean(value["mappedBytes"] for value in good))
             arms["swat"]["senderTokens"] = round(mean(value["senderTokens"] for value in good), 1)
+        for arm in ("mismatched", "zeroed"):
+            ran = [value for value in (ok(record, arm) for record in records) if value is not None]
+            if ran:
+                arms[arm]["mappedBytes"] = round(mean(value["mappedBytes"] for value in ran))
+        clipped = sum(1 for value in good if value.get("truncated"))
         intervals = {f"swat-{other}": {metric: paired(records, "swat", other, metric) for metric in ("f1", "em", "hit")}
                      for other in ("mismatched", "zeroed", "t2t_m2b", "text_m2b")}
         # Against the harness's own arms for the same receiver and items (its chat template).
@@ -124,8 +129,13 @@ def latent_section(groups, receive, latent):
             edge[group] = {arm: aggregate(answerable, arm) for arm in ("text_m2b", "swat")}
             edge[group]["items"] = len(group_rows)
             edge[group]["errors"] = sum(1 for _, record in group_rows for value in record.values() if "error" in value)
-        pairs[name] = {"checkpoint": data["checkpoint"], "card": MAPPERS[(sender, receiver)]["card"], "arms": arms,
-                       "intervals": intervals, "edge": edge}
+            edge[group]["missing"] = sum(1 for _, record in group_rows for arm in ("text_m2b", "swat") if arm not in record)
+            ran = [value for value in (ok(record, "swat") for _, record in group_rows) if value is not None]
+            edge[group]["clipped"] = sum(1 for value in ran if value.get("truncated"))
+        spec = MAPPERS[(sender, receiver)]
+        pairs[name] = {"checkpoint": data["checkpoint"], "card": spec["card"], "arms": arms, "items": len(rows),
+                       "clippedMain": clipped if good else None, "referenceF1": spec.get("referenceF1"),
+                       "referenceItems": spec.get("referenceItems"), "intervals": intervals, "edge": edge}
     return pairs
 
 
@@ -140,6 +150,11 @@ def edge_section(groups, receive):
 
         def errors(group):
             return sum(1 for _, record in rows_of(groups, results, group) for value in record.values() if "error" in value)
+
+        def missing(group):
+            """Arms a record should hold and does not: an item with no record counts in full."""
+            expected = ("text", "self_cache") if group == "no_system_role" else arms
+            return sum(1 for _, record in rows_of(groups, results, group) for arm in expected if arm not in record)
 
         long_rows = rows_of(groups, results, "long_passage")
         long_text = [ok(record, "text") for _, record in long_rows]
@@ -156,22 +171,22 @@ def edge_section(groups, receive):
                 "passageTokens": round(mean(v["passageTokens"] for v in long_text)) if long_text else None,
                 "keptTokens": round(mean(v["keptTokens"] for v in long_text)) if long_text else None,
                 "maxPromptTokens": max((v["promptTokens"] for v in long_text), default=None),
-                "errors": errors("long_passage"),
+                "errors": errors("long_passage"), "missing": missing("long_passage"),
             },
             "tiny_passage": {
                 "one_word": {arm.split(":")[0]: part("tiny_passage", lambda i: i["kind"] == "one_word", arm) for arm in arms},
                 "empty": {arm.split(":")[0]: part("tiny_passage", lambda i: i["kind"] == "empty", arm) for arm in arms},
-                "errors": errors("tiny_passage"),
+                "errors": errors("tiny_passage"), "missing": missing("tiny_passage"),
             },
             "non_english_emoji": {**{arm.split(":")[0]: part("non_english_emoji", lambda i: True, arm) for arm in arms},
-                                  "errors": errors("non_english_emoji")},
+                                  "errors": errors("non_english_emoji"), "missing": missing("non_english_emoji")},
             "unanswerable": {
                 "unanswerable": {arm.split(":")[0]: part("unanswerable", lambda i: not i["answerable"], arm) for arm in arms},
                 "control": {arm.split(":")[0]: part("unanswerable", lambda i: i["answerable"], arm,) for arm in arms},
                 "controlAbstained": {arm.split(":")[0]: aggregate(
                     [record for item, record in rows_of(groups, results, "unanswerable") if item["answerable"]],
                     arm, metrics=("abstained",)).get("abstained") for arm in arms},
-                "errors": errors("unanswerable"),
+                "errors": errors("unanswerable"), "missing": missing("unanswerable"),
             },
             "no_system_role": {
                 "systemRole": data["model"]["systemRole"],
@@ -179,44 +194,72 @@ def edge_section(groups, receive):
                 "self_cache": aggregate([record for _, record in system_rows], "self_cache"),
                 "sameAnswer": same_answer([record for _, record in system_rows], "self_cache", "text"),
                 "vsPlain": paired(joined, "system", "plain"),
-                "errors": errors("no_system_role"),
+                "errors": errors("no_system_role"), "missing": missing("no_system_role"),
             },
         }
     return edge
 
 
 def checks(summary):
-    """The four checks of the eval definition, from the aggregates."""
-    main, result = summary["main"]["receivers"], {}
+    """The four checks of the eval definition. A missing or failed record never counts in favour."""
+    main, order, result = summary["main"]["receivers"], list(summary["main"]["receivers"]), {}
+    count = summary["items"]["main"]
+
+    def whole(cell):
+        return bool(cell) and cell.get("n") == count
+
     faithful = {}
     for key, row in main.items():
         cache = row["self_cache"]
         interval = (cache.get("vsText") or {}).get("f1")
-        faithful[key] = bool(cache.get("sameAnswer") is not None and cache["sameAnswer"] >= FAITHFUL_SHARE
-                             and interval and interval["low"] <= 0 <= interval["high"])
+        faithful[key] = bool(whole(cache) and whole(row["text"]) and cache.get("sameAnswer") is not None
+                             and cache["sameAnswer"] >= FAITHFUL_SHARE
+                             and interval and interval["n"] == count and interval["low"] <= 0 <= interval["high"])
     result["handoffFaithful"] = {"passed": bool(faithful) and all(faithful.values()), "models": faithful}
+
     mapper = {}
     for name, pair in summary["latent"].items():
         if "skipped" in pair:
             mapper[name] = False
             continue
         needed = [pair["intervals"][f"swat-{other}"]["f1"] for other in ("mismatched", "zeroed", "t2t_m2b")]
-        needed.append(pair["intervals"]["swat-harness_t2t"]["f1"])
-        mapper[name] = all(interval is not None and interval["low"] > 0 for interval in needed)
-    result["mapperHolds"] = {"passed": bool(mapper) and all(mapper.values()), "pairs": mapper}
-    complete = [key for key in main if key in summary["edge"]]
-    result["coverage"] = {"passed": len(complete) >= 5, "models": len(complete)}
-    errors = {key: sum(group["errors"] for group in groups.values()) + sum(
-        main[key][arm]["errors"] for arm in ("text", "closed", "self_cache")) for key, groups in summary["edge"].items()}
-    result["edgeCases"] = {"passed": bool(errors) and not any(errors.values()), "errors": errors}
+        mapper[name] = all(interval is not None and interval["n"] == count and interval["low"] > 0
+                           for interval in needed)
+    expected = [f"{sender}>{receiver}" for sender, receiver in MAPPERS if sender in order and receiver in order]
+    result["mapperHolds"] = {"passed": bool(expected) and all(mapper.get(name, False) for name in expected),
+                             "pairs": {name: mapper.get(name, False) for name in expected}}
+
+    # A model is complete when every arm of every group ran for every item, for every sender.
+    problems = {}
+    for key in order:
+        edge = summary["edge"][key]
+        cells = [main[key][arm] for arm in ("text", "closed", "self_cache")]
+        cells += [summary["main"]["t2t"].get(sender, {}).get(key, {}) for sender in order]
+        errors = sum(cell.get("errors", 0) for cell in cells) + sum(group["errors"] for group in edge.values())
+        absent = sum(count - cell.get("n", 0) - cell.get("errors", 0) for cell in cells) \
+            + sum(group["missing"] for group in edge.values())
+        problems[key] = {"errors": errors, "missing": absent}
+    complete = [key for key, value in problems.items() if not value["missing"]]
+    result["coverage"] = {"passed": len(complete) >= 5, "complete": len(complete), "models": len(order),
+                          "dropped": sorted(summary.get("dropped", {}))}
+    latent_errors = {name: sum(group["errors"] + group["missing"] for group in pair["edge"].values())
+                     + sum(arm.get("errors", 0) for arm in pair["arms"].values())
+                     for name, pair in summary["latent"].items() if "skipped" not in pair}
+    result["edgeCases"] = {"passed": bool(problems) and not any(v["errors"] or v["missing"] for v in problems.values())
+                           and not any(latent_errors.values()),
+                           "errors": {key: value["errors"] for key, value in problems.items()},
+                           "missing": {key: value["missing"] for key, value in problems.items()},
+                           "latent": latent_errors}
     return result
 
 
-def build_summary(groups, receive, summaries, latent, rounds=BOOTSTRAP_ROUNDS):
+def build_summary(groups, receive, summaries, latent, rounds=BOOTSTRAP_ROUNDS, dropped=None):
     ROUNDS["n"] = rounds
     summary = {
         "items": {name: len(rows) for name, rows in groups.items()},
         "bootstrapRounds": rounds,
+        "dropped": dict(dropped or {}),
+        "notRun": dict(NOT_RUN),
         "models": [model_row(data["model"]) for data in receive.values()],
         "main": main_section(groups, receive, summaries),
         "latent": latent_section(groups, receive, latent),
@@ -237,6 +280,8 @@ def latent_cell(summary, sender, receiver):
     if status == "mapper":
         pair = summary["latent"].get(f"{sender}>{receiver}")
         if pair and "skipped" not in pair:
+            if not pair["arms"]["swat"].get("n"):
+                return {"status": "mapper_failed"}
             return {"status": "mapper", "f1": pair["arms"]["swat"].get("f1")}
         return {"status": "mapper_not_run"}
     return {"status": "none"}
@@ -275,6 +320,10 @@ def render_markdown(summary):
         [[m["key"], f"`{m['id']}`", m["weights"], m["licence"], m["tokenizer"], m["template"],
           "yes" if m["systemRole"] else "no", f"{m['layers']} × {m['kvHeads']} × {m['headDim']}",
           size(m["kvBytesPerToken"]), m["context"]] for m in summary["models"]]))
+    gaps = [[name, reason] for name, reason in summary.get("notRun", {}).items()]
+    gaps += [[f"`{key}` (dropped in this run)", reason] for key, reason in summary.get("dropped", {}).items()]
+    if gaps:
+        parts.append("### Candidates that did not run\n\n" + table(["Checkpoint", "Why"], gaps))
     rows = []
     for key in order:
         r = main["receivers"][key]
@@ -307,6 +356,8 @@ def render_markdown(summary):
             return f"{num(cell['f1'])} (own cache, no mapper)"
         if cell["status"] == "mapper":
             return f"**{num(cell['f1'])}** (mapper)"
+        if cell["status"] == "mapper_failed":
+            return "mapper ran, every item failed"
         return "mapper not run" if cell["status"] == "mapper_not_run" else NO_MAPPER
 
     parts.append("### Latent hand-over F1, sender (rows) to receiver (columns)\n\n" + table(
@@ -317,16 +368,20 @@ def render_markdown(summary):
             parts.append(f"### Mapper pair {name}\n\nNot run: {pair['skipped']}")
             continue
         arms = pair["arms"]
-        parts.append(f"### Mapper pair {name} (checkpoint `{pair['checkpoint']}`, {pair['card']})\n\n" + table(
+        parts.append(f"### Mapper pair {name} (checkpoint `{pair['checkpoint']}`, {pair['card']})\n\n"
+                     f"{pair['card']} measured `swat` F1 {pair['referenceF1']} on {pair['referenceItems']} items of "
+                     f"another sample. The mapper path cuts a document to 384 tokens: {pair['clippedMain']} of "
+                     f"{pair['items']} main items were cut.\n\n" + table(
             ["Arm", "F1", "EM", "Containment", "ms end to end", "Bytes handed over", "n", "Errors"],
             [[f"`{arm}`", num(a.get("f1")), num(a.get("em")), num(a.get("hit")), num(a.get("ms"), 0),
               size(a.get("bytes")) + (f" sender cache, {size(a['mappedBytes'])} mapped" if "mappedBytes" in a else ""),
               a["n"], a["errors"]] for arm, a in arms.items()]))
         parts.append(table(["Difference", "F1 (95%)", "EM (95%)"],
                            [[f"`{k}`", interval(v["f1"]), interval(v["em"])] for k, v in pair["intervals"].items()]))
-        parts.append(table(["Edge group (answerable items)", "`text_m2b` hit", "`swat` hit", "`swat` F1", "Items", "Errors"],
+        parts.append(table(["Edge group (answerable items)", "`text_m2b` hit", "`swat` hit", "`swat` F1", "Items",
+                            "Cut to 384 tokens", "Errors"],
                            [[group, num(e["text_m2b"].get("hit")), num(e["swat"].get("hit")), num(e["swat"].get("f1")),
-                             e["items"], e["errors"]] for group, e in pair["edge"].items()]))
+                             e["items"], e["clipped"], e["errors"]] for group, e in pair["edge"].items()]))
     edge = summary["edge"]
 
     def trio(cells, metric="f1"):
@@ -335,14 +390,14 @@ def render_markdown(summary):
     parts.append("### Edge cases (each cell: `text` / `self_cache` / `t2t` from the model's own summary)\n\n" + table(
         ["Model", "Long, answer first F1", "Long, answer last F1", "Kept of passage tokens", "Largest prompt",
          "One word hit", "Empty abstains", "Non-English and emoji hit", "Unanswerable abstains", "Control F1",
-         "Control wrongly abstains", "Errors"],
+         "Control wrongly abstains", "Errors or missing"],
         [[key, trio(e["long_passage"]["head"]), trio(e["long_passage"]["tail"]),
           f"{e['long_passage']['keptTokens']} of {e['long_passage']['passageTokens']}",
           e["long_passage"]["maxPromptTokens"], trio(e["tiny_passage"]["one_word"], "hit"),
           trio(e["tiny_passage"]["empty"]), trio(e["non_english_emoji"], "hit"),
           trio(e["unanswerable"]["unanswerable"]), trio(e["unanswerable"]["control"]),
           " / ".join(num(e["unanswerable"]["controlAbstained"][arm]) for arm in ("text", "self_cache", "t2t")),
-          sum(e[group]["errors"] for group in e)] for key, e in edge.items()]))
+          sum(e[group]["errors"] + e[group]["missing"] for group in e)] for key, e in edge.items()]))
     parts.append("### Edge case: a system instruction\n\n" + table(
         ["Model", "Template has a system role", "`text` F1 with the instruction", "Against the same items without it (95%)",
          "`self_cache` F1", "Same answer", "Errors"],

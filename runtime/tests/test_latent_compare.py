@@ -4,7 +4,10 @@ Standard library only, plus jinja2 for the checks that render real chat template
 without it). Nothing here loads a model: the torch engine is exercised by the GPU run.
 """
 import glob
+import json
 import os
+import re
+import tempfile
 import unicodedata
 import unittest
 
@@ -157,6 +160,13 @@ class StatsTest(unittest.TestCase):
         scored = stats.score("Paris", answerable)
         self.assertEqual((scored["f1"], scored["em"], scored["hit"], scored["abstained"]), (1.0, 1.0, 1.0, 0.0))
         self.assertEqual(stats.score("not in passage", answerable)["f1"], 0.0)
+
+    def test_a_reply_that_answers_and_then_says_the_phrase_is_not_an_abstention(self):
+        # Codex review: a substring test gave these full credit on an unanswerable item.
+        for reply in ("The answer is Paris, not in passage", "It is not in passages", "Paris. Not in passage."):
+            self.assertEqual(stats.abstained(reply), 0.0, reply)
+        for reply in ("not in passage", "Not in passage.", "  NOT IN PASSAGE!  "):
+            self.assertEqual(stats.abstained(reply), 1.0, reply)
 
     def test_paired_interval_keeps_pairs_together(self):
         # b is a + 0.5 on every item, so the difference has no spread at all.
@@ -464,15 +474,295 @@ class RunTest(unittest.TestCase):
         self.assertEqual(record["text"], {"answer": "ok"})
         self.assertEqual(record["swat"], {"error": "ValueError: A document produced no tokens on one side."})
 
-    def test_running_out_of_gpu_memory_stops_the_run(self):
+    def test_running_out_of_gpu_memory_is_a_record_and_the_gpu_is_cleaned(self):
+        cleaned = []
+
         def oom():
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
-        with self.assertRaises(RuntimeError):
-            run.guarded({}, "text", oom)
+        record = {}
+        run.guarded(record, "text", oom, lambda: cleaned.append(True))
+        run.guarded(record, "closed", lambda: {"answer": "ok"}, lambda: cleaned.append(True))
+        self.assertTrue(record["text"]["error"].startswith("RuntimeError: CUDA out of memory"))
+        self.assertEqual(cleaned, [True])
+
+    def test_the_mismatched_control_never_gets_the_right_passage_back(self):
+        # Codex review: SQuAD asks several questions of one paragraph, so index + 1 could
+        # hand the control the correct passage.
+        rows = [{"passage": "A"}, {"passage": "A "}, {"passage": "B"}, {"passage": "A"}]
+        self.assertEqual([run.mismatch_index(rows, i) for i in range(4)], [2, 2, 3, 2])
+        with self.assertRaises(ValueError):
+            run.mismatch_index([{"passage": "A"}, {"passage": "A"}], 0)
 
     def test_only_the_long_group_runs_at_the_small_context(self):
         self.assertEqual(run.limit_for({"group": "long_passage"}), run.LONG_CONTEXT)
         self.assertIsNone(run.limit_for({"group": "main"}))
+
+
+class FakeEngine:
+    """Stands in for the torch engine: it "reads" the code out of whatever passage it is given."""
+
+    loads = []
+
+    def __init__(self, key):
+        self.key = key
+        FakeEngine.loads.append(key)
+
+    def prepare(self, passage, question, abstain=False, system=None, limit=None):
+        return {"ids": [passage, question], "prefixTokens": 5, "promptTokens": 9, "passageTokens": 4, "keptTokens": 4,
+                "truncated": False, "passageBytes": len(passage.encode("utf-8")), "prepareMs": 1.0}
+
+    def closed_ids(self, question):
+        return ["", question]
+
+    def timed(self, ids, max_new_tokens=24):
+        found = re.search(r"code\d{5}", ids[0])
+        return {"answer": found.group(0) if found else "unknown", "ms": 10.0, "newTokens": 2}
+
+    def answer_from_cache(self, prepared):
+        return {**self.timed(prepared["ids"]), "bytes": 4000, "prefixTokens": 5, "prefillMs": 4.0, "saveMs": 1.0,
+                "loadMs": 1.0, "answerMs": 4.0}
+
+    def summarize(self, passage, limit=None, max_new_tokens=96):
+        found = re.search(r"code\d{5}", passage)
+        text = f"{self.key} says {found.group(0) if found else 'nothing'}"
+        return {"summary": text, "ms": 100.0, "newTokens": 5, "bytes": len(text), "passageTokens": 4, "keptTokens": 4,
+                "truncated": False}
+
+    def describe(self):
+        return {**models.MODELS[self.key], "key": self.key, "layers": 2, "kvHeads": 2, "headDim": 8, "hidden": 16,
+                "context": 4096, "systemRole": True, "cacheDtype": "bfloat16", "gpuGiB": 0.1}
+
+    def recover(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class PhaseTest(unittest.TestCase):
+    """The phases with a fake engine: what is saved, what is reused and what is refused."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.groups = item_sets.build(squad_rows(), lambda passage: True)
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.out = self.folder.name
+        run.save(run.path(self.out, "items.json"), self.groups)
+        FakeEngine.loads.clear()
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def summaries(self, key, groups=None):
+        run.phase_summaries(self.out, key, groups or self.groups, engine_factory=FakeEngine)
+
+    def receive(self, key, senders, groups=None, force=False):
+        run.phase_receive(self.out, key, groups or self.groups, senders, force, engine_factory=FakeEngine)
+
+    def read(self, folder, key):
+        return run.load(os.path.join(self.out, folder, f"{key}.json"))
+
+    def test_a_receiver_holds_every_arm_for_every_item(self):
+        for key in ("qwen1.5", "phi3.5"):
+            self.summaries(key)
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        data = self.read("receive", "qwen1.5")
+        self.assertEqual(data["itemsId"], run.fingerprint(self.groups))
+        self.assertEqual(data["senders"], ["phi3.5", "qwen1.5"])
+        main = self.groups["main"][7]
+        record = data["results"][main["id"]]
+        self.assertEqual(set(record), {"text", "self_cache", "closed", "t2t:qwen1.5", "t2t:phi3.5"})
+        self.assertEqual(record["text"]["answer"], main["answers"][0])
+        self.assertEqual((record["text"]["f1"], record["closed"]["f1"]), (1.0, 0.0))
+        # Time end to end: preparing the prompt counts, and t2t adds the sender's summary time.
+        self.assertEqual(record["text"]["ms"], 11.0)
+        self.assertEqual((record["t2t:phi3.5"]["receiverMs"], record["t2t:phi3.5"]["ms"]), (11.0, 111.0))
+        self.assertEqual(record["t2t:phi3.5"]["bytes"], len("phi3.5 says " + main["answers"][0]))
+        self.assertEqual(record["text"]["bytes"], len(main["passage"].encode("utf-8")))
+        edge = data["results"][self.groups["non_english_emoji"][0]["id"]]
+        self.assertEqual(set(edge), {"text", "self_cache", "t2t:qwen1.5"})   # only its own summary
+        self.assertEqual(set(data["results"][self.groups["no_system_role"][0]["id"]]), {"text", "self_cache"})
+        self.assertEqual(len(data["results"]), sum(len(rows) for rows in self.groups.values()))
+
+    def test_a_finished_phase_is_not_run_again(self):
+        self.summaries("qwen1.5")
+        self.receive("qwen1.5", ["qwen1.5"])
+        FakeEngine.loads.clear()
+        self.summaries("qwen1.5")
+        self.receive("qwen1.5", ["qwen1.5"])
+        self.assertEqual(FakeEngine.loads, [])
+
+    def test_a_receiver_is_run_again_when_a_new_sender_has_summaries(self):
+        # Codex review: an existing file kept a receiver from ever getting a later sender's arm.
+        self.summaries("qwen1.5")
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        first = self.read("receive", "qwen1.5")
+        self.assertNotIn("t2t:phi3.5", first["results"]["main-000"])
+        self.summaries("phi3.5")
+        self.receive("qwen1.5", ["qwen1.5", "phi3.5"])
+        self.assertIn("t2t:phi3.5", self.read("receive", "qwen1.5")["results"]["main-000"])
+
+    def test_files_from_another_item_set_are_refused_not_paired(self):
+        # Codex review: items.json rebuilt with another seed kept ids such as main-000, and the
+        # old answers were paired with the new questions.
+        self.summaries("qwen1.5")
+        self.receive("qwen1.5", ["qwen1.5"])
+        other = item_sets.build(squad_rows(), lambda passage: True, seed=1)
+        self.assertNotEqual(run.fingerprint(other), run.fingerprint(self.groups))
+        with self.assertRaises(run.StaleFile):
+            self.summaries("qwen1.5", other)
+        with self.assertRaises(run.StaleFile):
+            self.receive("phi3.5", ["qwen1.5"], other)       # its sender's summaries are stale
+        run.save(run.path(self.out, "items.json"), other)
+        with self.assertRaises(run.StaleFile):
+            run.phase_report(self.out, ["qwen1.5"])
+        run.phase_summaries(self.out, "qwen1.5", other, force=True, engine_factory=FakeEngine)
+        self.receive("qwen1.5", ["qwen1.5"], other, force=True)
+        self.assertEqual(self.read("receive", "qwen1.5")["itemsId"], run.fingerprint(other))
+
+    def test_a_file_without_a_fingerprint_is_stale(self):
+        run.save(run.path(self.out, "summaries", "qwen3.json"), {"model": {}, "summaries": {}})
+        with self.assertRaises(run.StaleFile):
+            self.summaries("qwen3")
+
+    def test_a_failed_summary_becomes_a_failed_arm_not_a_missing_one(self):
+        self.summaries("qwen1.5")
+        data = self.read("summaries", "qwen1.5")
+        data["summaries"]["main-003"] = {"error": "RuntimeError: boom"}
+        run.save(os.path.join(self.out, "summaries", "qwen1.5.json"), data)
+        self.receive("qwen1.5", ["qwen1.5"])
+        record = self.read("receive", "qwen1.5")["results"]["main-003"]
+        self.assertIn("The sender's summary failed", record["t2t:qwen1.5"]["error"])
+        self.assertEqual(record["text"]["f1"], 1.0)
+
+    def test_the_report_reads_the_phase_files_and_names_what_did_not_run(self):
+        keys = ["qwen1.5", "qwen3", "phi3.5", "granite2", "mistral7"]
+        for key in keys:
+            self.summaries(key)
+        for key in keys:
+            self.receive(key, keys)
+        run.note(self.out, "qwen7", "OSError: the checkpoint did not load")
+        run.note(self.out, "phi3.5>qwen1.5", "The mapper checkpoint ~/m2b-scale/run1/best.pt is not on this machine.")
+        report.ROUNDS["n"] = 200
+        receive, summaries, latent, notes = run.collect(self.out, self.groups, keys + ["qwen7"])
+        summary = report.build_summary(self.groups, receive, summaries, latent, rounds=200,
+                                       dropped={"qwen7": notes["qwen7"]})
+        self.assertEqual(list(summary["main"]["receivers"]), keys)
+        self.assertEqual(summary["main"]["t2t"]["phi3.5"]["qwen3"]["f1"], 1.0)
+        self.assertTrue(summary["checks"]["coverage"]["passed"])
+        self.assertEqual(summary["checks"]["coverage"]["dropped"], ["qwen7"])
+        self.assertTrue(summary["checks"]["handoffFaithful"]["passed"])
+        self.assertFalse(summary["checks"]["mapperHolds"]["passed"])
+        markdown = report.render_markdown(summary)
+        self.assertIn("mapper not run", markdown)
+        self.assertIn("`qwen7` (dropped in this run)", markdown)
+        self.assertIn("Llama-3.2-3B", markdown)
+        run.note(self.out, "qwen7", None)
+        self.assertNotIn("qwen7", run.load_notes(self.out))
+
+    def test_all_goes_on_when_one_model_fails_to_load(self):
+        def failing(key):
+            if key == "qwen3":
+                raise OSError("the checkpoint did not load")
+            return FakeEngine(key)
+
+        self.assertFalse(run.attempt(self.out, "qwen3", lambda: run.phase_summaries(self.out, "qwen3", self.groups,
+                                                                                    engine_factory=failing)))
+        self.assertTrue(run.attempt(self.out, "phi3.5", lambda: run.phase_summaries(self.out, "phi3.5", self.groups,
+                                                                                    engine_factory=failing)))
+        self.assertEqual(run.load_notes(self.out), {"qwen3": "OSError: the checkpoint did not load"})
+        with self.assertRaises(run.StaleFile):
+            run.attempt(self.out, "x", lambda: run.existing(self.write_stale(), "new"))
+
+    def write_stale(self):
+        target = run.path(self.out, "summaries", "stale.json")
+        run.save(target, {"itemsId": "old"})
+        return target
+
+
+class CheckTest(unittest.TestCase):
+    """Codex review: the four checks passed or failed on the wrong evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.groups = item_sets.build(squad_rows(), lambda passage: True)
+        cls.keys = ["qwen1.5", "qwen3", "phi3.5", "granite2", "mistral7"]
+        cls.summaries = {}
+
+    def build(self, receive=None, latent=None):
+        receive = receive or {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        latent = {("phi3.5", "qwen1.5"): fake_latent(self.groups)} if latent is None else latent
+        return report.build_summary(self.groups, receive, self.summaries, latent, rounds=200)
+
+    def test_one_matching_item_out_of_two_hundred_is_not_a_faithful_hand_off(self):
+        receive = {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        for item in self.groups["main"][1:]:
+            del receive["qwen3"]["results"][item["id"]]["self_cache"]
+        checks = self.build(receive)["checks"]
+        self.assertFalse(checks["handoffFaithful"]["models"]["qwen3"])
+        self.assertFalse(checks["handoffFaithful"]["passed"])
+
+    def test_a_model_with_a_missing_sender_arm_is_not_complete(self):
+        receive = {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        for record in receive["mistral7"]["results"].values():
+            record.pop("t2t:phi3.5", None)
+        checks = self.build(receive)["checks"]
+        self.assertEqual((checks["coverage"]["complete"], checks["coverage"]["passed"]), (4, False))
+        self.assertEqual(checks["edgeCases"]["missing"]["mistral7"], 200)
+        self.assertFalse(checks["edgeCases"]["passed"])
+
+    def test_an_edge_item_with_no_record_fails_the_edge_check(self):
+        receive = {key: fake_receive(self.groups, key, self.keys) for key in self.keys}
+        del receive["granite2"]["results"][self.groups["tiny_passage"][8]["id"]]
+        summary = self.build(receive)
+        self.assertEqual(summary["edge"]["granite2"]["tiny_passage"]["missing"], 3)
+        self.assertFalse(summary["checks"]["edgeCases"]["passed"])
+        self.assertFalse(summary["checks"]["coverage"]["passed"])
+
+    def test_a_failed_latent_edge_item_fails_the_edge_check(self):
+        latent = fake_latent(self.groups)
+        latent["results"][self.groups["long_passage"][0]["id"]]["swat"] = {"error": "ValueError: no tokens"}
+        checks = self.build(latent={("phi3.5", "qwen1.5"): latent})["checks"]
+        self.assertEqual(checks["edgeCases"]["latent"], {"phi3.5>qwen1.5": 1})
+        self.assertFalse(checks["edgeCases"]["passed"])
+
+    def test_the_mapper_check_needs_every_main_item(self):
+        latent = fake_latent(self.groups)
+        for item in self.groups["main"][20:]:
+            del latent["results"][item["id"]]["mismatched"]
+        summary = self.build(latent={("phi3.5", "qwen1.5"): latent})
+        self.assertGreater(summary["latent"]["phi3.5>qwen1.5"]["intervals"]["swat-mismatched"]["f1"]["low"], 0)
+        self.assertFalse(summary["checks"]["mapperHolds"]["passed"])
+
+    def test_the_mapper_check_is_the_three_comparisons_of_the_definition(self):
+        # The harness-format summary arm is reported beside them and is not a fourth condition.
+        receive = {key: fake_receive(self.groups, key, self.keys, wrong_every=10 ** 6) for key in self.keys}
+        summary = self.build(receive)
+        self.assertEqual(summary["latent"]["phi3.5>qwen1.5"]["intervals"]["swat-harness_t2t"]["f1"]["low"], 0.0)
+        self.assertTrue(summary["checks"]["mapperHolds"]["passed"])
+
+    def test_a_mapper_cell_where_every_item_failed_is_not_shown_as_measured(self):
+        latent = fake_latent(self.groups)
+        for record in latent["results"].values():
+            record["swat"] = {"error": "RuntimeError: boom"}
+        summary = self.build(latent={("phi3.5", "qwen1.5"): latent})
+        self.assertEqual(summary["latentTable"]["phi3.5"]["qwen1.5"], {"status": "mapper_failed"})
+        self.assertIn("mapper ran, every item failed", report.render_markdown(summary))
+        self.assertFalse(summary["checks"]["mapperHolds"]["passed"])
+
+    def test_the_mapper_table_shows_the_reference_and_what_was_cut(self):
+        latent = fake_latent(self.groups)
+        for item in self.groups["main"][:3] + self.groups["long_passage"]:
+            latent["results"][item["id"]]["swat"]["truncated"] = True
+        summary = self.build(latent={("phi3.5", "qwen1.5"): latent})
+        pair = summary["latent"]["phi3.5>qwen1.5"]
+        self.assertEqual((pair["clippedMain"], pair["edge"]["long_passage"]["clipped"]), (3, 20))
+        self.assertEqual(pair["arms"]["zeroed"]["mappedBytes"], 4014080)
+        markdown = report.render_markdown(summary)
+        self.assertIn("M2b-S measured `swat` F1 0.872 on 300 items", markdown)
+        self.assertIn("3 of 200 main items were cut", markdown)
 
 
 if __name__ == "__main__":
