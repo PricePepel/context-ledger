@@ -4693,6 +4693,286 @@ Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 
 
 Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
 
+## L4 — Training-free alignment, StateBridge-style (defined 2026-11-26, before the code)
+
+M2b-S trains one mapper per sender and receiver pair, which does not scale to 5 to 8 models. StateBridge (arXiv 2608.13317) claims a hand-off with no training. This card reads the paper, builds the cross-model version it does not test, and measures it on the M2b-S questions with a mismatched control.
+
+### What the paper does, and what it does not
+
+Read in full on 2026-11-26, with the authors' code (`YanwenPneg/StateBridge`, commit `3f6bf54`, Apache-2.0) read only to confirm the formulas. No code is reused; the implementation here is written from the paper's equations.
+
+**What it does.** A sender writes a message as usual. The final-layer hidden states `S` of the last `K = 64` generated tokens are kept, together with the input embeddings `R` of those same tokens. Both are centred and whitened (ridge `λ = 1e-3`), a rotation `Q` is found in closed form (`Q = UVᵀ` from the SVD of `S_wᵀR_w`), and the result is put back on the embeddings' scale and mean. Each vector is then scaled to the mean norm of the vocabulary embeddings and moved 30% of the way to its nearest vocabulary embedding. The `K` vectors are placed in front of the receiver's prompt as input embeddings.
+
+**What it measures.** A four-agent pipeline (planner, critic, refiner, judge) on GSM8K, AIME24/25, GPQA-Diamond, ARC-Challenge, MedQA, MBPP+ and HumanEval+, with Qwen3-4B, 8B, 32B and OLMo3-7B-Think. Accuracy or pass@1 against a single agent, a text pipeline and LatentMAS. It reports the best or tied-best score on 22 of 26 model and task pairs and, per model, an average gain of 2.4 to 2.9 points over the baseline with the best average, sampled at temperature 0.6.
+
+**What it does not do.**
+
+- **No two different models.** In every run all agents are the same model. The conclusion says so: "Our current setting assumes a shared model and a fixed prefix length", and names different models as future work. The paper has no measurement of a hand-off between two models.
+- **The map is fitted on each message, against that message's own tokens.** It is not a map between two spaces that is fitted once. The receiver side of the fit, `R`, is the embedding of the text the sender just wrote. Between two models with different tokenizers there is no such `R` without sending the text.
+- **No mismatched control.** Random noise is the only replacement-prefix control in its ablation table. It also ablates each component and shows one plan-recovery example, but nothing tests whether the prefix of another example scores the same, and nothing compares the prefix with the plain embeddings of the same tokens.
+- **No intervals, one sampled run per cell,** and `K` and `α` were chosen on MedQA with Qwen3-4B, one of the reported cells.
+- **No timing table** and no receiver below 4B.
+
+**A property of the arithmetic we expect, to be checked before any claim.** The fit uses `K = 64` rows in a space of 2,560 or more dimensions. After centring, 64 rows span at most 63 directions. Whitening sets every one of those directions to the same length on both sides, so the two whitened point sets differ by a rotation exactly, and the rotation maps one onto the other with no residual. Putting the scale back then returns `R` itself (with each singular value `δ` changed to `√(δ² + Kλ)`), whatever `S` was. If that holds, the prefix the paper sends is a function of the decoded tokens only: the last 64 tokens of the text, slightly rescaled, and the hidden states add nothing. This card checks it twice: a unit test on random matrices, and on real states by swapping in another passage's hidden states while keeping the tokens (`per-message, states swapped` below). It is stated here as a prediction, not a finding. *(Superseded on 2026-11-27, before the measured runs: the collapse is not exact in general; see "Corrections before the measured runs" for the two conditions.)*
+
+### What is built
+
+New files only: `runtime/latent_transfer/statebridge.py` (the arithmetic), `runtime/latent_transfer/statebridge_anchors.py` and `statebridge_stats.py` (standard library: vocabulary anchors, intervals, the table), `runtime/latent_transfer/statebridge_eval.py` (the runner) and `runtime/tests/test_statebridge.py`. `align.py` is not edited.
+
+Because the paper's per-message fit has no meaning between two tokenizers, the cross-model version fits one map per pair, once, in closed form:
+
+- **Anchor map (the card's primary).** Anchors are the vocabulary entries both tokenizers share (same text, same word-start marker). The sender side of an anchor is its row in the sender's output embedding (the final layer's states are read by that matrix); the receiver side is its row in the receiver's input embedding. Centre, whiten (ridge `1e-3` × the mean eigenvalue, because the paper's absolute `1e-3` is larger than the eigenvalues of an embedding matrix), rotate (`UVᵀ`, semi-orthogonal when the two widths differ), put back the receiver's scale and mean. No text and no forward pass is needed.
+- **Calibrated map (secondary).** The same closed form, fitted on real sender states instead of output-embedding rows: the sender reads 400 SQuAD *train* passages (seed 0; none is in the evaluation set), and each final-layer state whose own most likely next token is an anchor is paired with the receiver's embedding of that token. Still no gradient step; it needs a few seconds of sender time per pair.
+
+Then, as in the paper: norm calibration to the receiver's mean embedding norm and anchoring with `α = 0.3` over the receiver's whole vocabulary. The vectors go where the passage would be: after the receiver's `Read this passage.` header and before the question (the paper puts them at position 0; its code has the same insertion option).
+
+Two sources of sender states, each with both maps:
+
+- **Summary states (the paper's source).** The sender writes the same 40-word summary as the `t2t` arm; the states of its last 64 generated tokens are sent.
+- **Passage states.** The sender only reads the passage, as in M2b-S; the state at every passage position is sent. No generation, so this is the fast variant. The paper does not do this.
+
+### Arms
+
+Same 300 SQuAD v1.1 validation questions as M2b-S (seed 0, passages that fit 256 tokens for Phi-3.5-mini and Qwen2.5-1.5B, the cap the M2b-S run used; the runner checks the IDs against the M2b-S run on the GPU machine and stops if they differ), greedy, 24 new tokens, the same prompts, token F1 and containment from `latent_transfer.data`.
+
+| Arm | What the receiver gets |
+| --- | --- |
+| `text` | the passage |
+| `closed` | no passage |
+| `t2t` | the sender's 40-word summary as text |
+| `anchor/summary` (primary) | anchor map of the summary states |
+| `anchor/summary` mismatched | the same from the next item's passage |
+| `anchor/summary` zeroed | the same with the sender states set to zero |
+| `calibrated/summary`, `anchor/passage`, `calibrated/passage` | each with its own mismatched control |
+| `swat` (Phi-3.5-mini to Qwen2.5-1.5B only) | the trained M2b-S mapper, checkpoint `ade79c34041fd529` |
+| `per-message` (pairs with one tokenizer only) | the paper's own fit: summary states against the receiver's embeddings of the summary's last 64 tokens, `λ = 1e-3` |
+| `per-message, states swapped` | the same tokens, the hidden states of the next item |
+| `per-message` mismatched | tokens and states of the next item |
+| `tokens` | the receiver's embeddings of the summary's last 64 tokens, untouched |
+
+Pairs (all cached on the laptop, none needs a trained mapper except for the `swat` arm):
+
+| Pair | Why |
+| --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | the M2b-S pair; two families, two tokenizers, receiver below 2B |
+| Qwen2.5-3B → Qwen2.5-1.5B | one tokenizer, receiver below 2B |
+| Phi-3.5-mini → Qwen2.5-3B | two families, receiver above 2B |
+| Qwen2.5-1.5B → Qwen2.5-3B | one tokenizer, small to large |
+| Qwen2.5-3B → Qwen2.5-3B | the paper's own setting (one model) |
+| Qwen2.5-3B → Qwen2.5-0.5B, Phi-3.5-mini → SmolLM2-360M | edge: very small receivers; the second is the lowest tokenizer overlap available |
+
+Llama-3.2-3B is not on the machine and is gated; it is left out and named here.
+
+Reported for every arm: mean F1, containment, mean answer words, mean end-to-end milliseconds (summary arms include the sender writing the summary; passage arms include the sender's forward pass; the one-off map fit is reported apart). For every aligned arm: the paired difference to its mismatched control, to `t2t` and to `closed`, with a paired bootstrap 95% interval (10,000 resamples, seed 0). For every pair: how many anchors, what share of each vocabulary they cover, and on anchors held out of the fit, how often the mapped sender row lands nearest its own receiver row.
+
+### Pass rule (fixed before any run)
+
+For a pair and a variant, the aligned prefix **passes** when both hold:
+
+1. it beats its mismatched control: the 95% interval of `aligned − mismatched` F1 is above zero;
+2. it is at least as good as the text summary: mean F1 of `aligned` ≥ mean F1 of `t2t` (the interval is reported; "clearly better" only if it is above zero).
+
+The primary variant is `anchor/summary`. The other three are named in advance and judged by the same rule; because that is four tries per pair, a pass by a secondary variant with an interval that nearly touches zero counts as "needs a repeat", not a pass. `per-message` is judged apart: it is defined only where the tokenizer is shared, and a pass there says nothing about cross-model use if `states swapped` scores the same.
+
+The verdict is one of: "use it", "use it only for pairs like X", or "does not carry content here". Failing is an acceptable outcome and will be reported as such. No parameter is tuned on the 300 questions; `K`, `α` and `λ` are the paper's.
+
+### Edge cases
+
+- **Receiver below 2B:** Qwen2.5-1.5B (two pairs), Qwen2.5-0.5B, SmolLM2-360M.
+- **Low tokenizer overlap:** Phi-3.5-mini (32k SentencePiece) to Qwen (151k byte-level BPE) and to SmolLM2 (49k). The anchor count and coverage are reported for each.
+- **Emoji and non-English text:** eight hand-written synthetic passages (emoji, Russian, Uzbek, Chinese, Arabic, mixed) with one question each, in `runtime/latent_transfer/statebridge_edge.json`, run through every applicable arm of the Phi-3.5-mini → Qwen2.5-1.5B pair (no per-message arms: two tokenizers). Eight items give no interval; counts are reported, plus the share of each passage's sender tokens that have an anchor.
+
+### Corrections before the measured runs (2026-11-27)
+
+Made after the smoke runs (6 or 8 items, tiny models) and a Codex review of the code, and before any of the 300-question results below existed. No full-run result had been seen when these were written.
+
+- **Passage cap.** The first draft of this section said 384 tokens. The ID check against the M2b-S run failed, which showed that M2b-S used 256. The runner's default is now 256 and the IDs match.
+- **Plain greedy.** The first runner used the receiver's generation defaults, and Qwen ships a repetition penalty of 1.1. M2b-S decodes by plain argmax, so the runner now sets the penalty to 1.0. A test covers it. The sender's summary is written with the sender's defaults, as in M2b-S's `t2t`.
+- **Which state belongs to a token.** "The states of the last 64 generated tokens" means, here and in the authors' code, the state each token was *read from* (the position before it), not the state at the token's own position.
+- **The prediction about the per-message fit needs two conditions** (Codex, high). For `K` rows the argument assumes (a) the centred states span all `K − 1` row directions with covariance eigenvalues far above the ridge, and (b) the reference rows have full rank, 63 for 64 rows. Under both, the output is the reference with its singular values changed as described, up to a term that shrinks as the states grow against the ridge; it is exact only in that limit. A reference of lower rank leaves spare directions, which the rotation fills at the ridge's scale (at most `√(Kλ)` ≈ 0.25 in Frobenius norm each) in a direction picked by the states and by the SVD routine; repeated tokens are one source of lower rank. So the prediction becomes: the prefix is the token embeddings plus a small state-dependent part. The unit tests now cover both conditions, and the run measures how large that part is on real summaries and whether it changes answers.
+- **Mismatched control.** It is the next item *with a different passage*. Of the 300 questions, 23 share a passage with another one, so "the next item" alone could have handed the control the right passage.
+- **States swapped** is compared with the own-states fit at the same number of rows (`per-message, same rows`), so a shorter prefix cannot pass for a hidden-state effect.
+- **Zeroed** sets the sender states to zero and keeps the summary's length. It tests the values of the states, not the length of the prefix.
+- **"Nearly touches zero"** for a secondary variant is a lower bound below 0.02 F1. `per-message` is judged apart and has no such threshold.
+- **Timing.** Controls are not timed. `t2t` and the summary arms share one measured summary time, which includes collecting the hidden states that `t2t` does not need (a small cost that counts against text). When a summary comes from the cache of an earlier pair with the same sender, its time is the one measured then.
+- **Edge items** get means only: no interval and no verdict from eight items.
+
+### Unit tests (written with the code)
+
+Standard library: anchor keys across SentencePiece and byte-level vocabularies, duplicates and broken byte tokens; the paired bootstrap; the pass rule; the table. With torch (skipped without it, like the rest of `latent_transfer`): the fit recovers a known rotation between spaces of equal and unequal width, `Q` has orthonormal columns, the whitened covariances are the identity, norm calibration and anchoring match hand values, the zeroed prefix is constant, the collapse property above, and on a tiny random model the injected prefix of a text's own embeddings decodes exactly like the text.
+
+One command reproduces a pair's table: `python -m latent_transfer.statebridge_eval --sender <id> --receiver <id> --out <file>` from `runtime/` (add `--checkpoint` for the `swat` arm), and `python -m latent_transfer.statebridge_stats <file>...` prints the tables below from the saved files.
+
+### Result (2026-11-27)
+
+Seven pairs on the 16 GB laptop GPU (WSL, bf16, batch 1), 300 SQuAD v1.1 validation questions each, the same IDs as the M2b-S run (checked by the runner), greedy. Parameters as fixed above: `K = 64`, `α = 0.3`, `λ = 1e-3`; nothing was tuned. The aggregate tables in this document are what is committed; the per-item run files stay in `~/l4-statebridge/` on the GPU machine. On Phi-3.5-mini → Qwen2.5-1.5B the runner reproduces M2b-S: `text` 0.779 (M2b-S 0.778), `t2t` 0.461 (0.460), `swat` 0.872 (0.872).
+
+**Verdict: does not carry content here; it does not replace the mapper.** Of the three verdicts fixed above this is the one that applies, and it needs its two parts kept apart. None of the 28 pair and variant checks meets the rule, and all 28 score below the sender's text summary. The two anchor variants, including the primary `anchor/summary`, do not beat their mismatched control on any pair (14 of 14 intervals include zero), and the primary is below the receiver with no passage at all in six of the seven pairs. The two calibrated variants do carry a trace of the right passage: they beat their mismatched control in 11 of 14 checks, by 0.045 to 0.172 F1. That trace is far from usable: they are 0.22 to 0.38 F1 below the text summary everywhere, and against no passage at all 1 of 14 intervals is above zero, 4 are below and 9 include zero. On the pair this card is about, Phi-3.5-mini → Qwen2.5-1.5B, the best aligned variant scores 0.192, the text summary 0.461, no passage 0.191, and the trained mapper 0.872. The paper's own per-message fit, judged apart on the two pairs where it was run, beats its mismatched control by +0.31 and +0.40 F1 and fails the rule because its mean is 0.010 and 0.025 below `t2t`; its differences from the plain embeddings of the same tokens are small with intervals that include zero. It needs a token-by-token match with the receiver's vocabulary, which two different tokenizers do not have. Keep the trained mapper for cross-model hand-offs; where no mapper exists, send text.
+
+**Baselines and the primary variant (mean token F1, 300 questions):**
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | its mismatched | its zeroed | `swat` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.779 | 0.461 | 0.191 | 0.135 | 0.138 | 0.143 | 0.872 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.779 | 0.441 | 0.191 | 0.011 | 0.012 | 0.139 | – |
+| Phi-3.5-mini → Qwen2.5-3B | 0.871 | 0.539 | 0.211 | 0.060 | 0.054 | 0.028 | – |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.871 | 0.418 | 0.211 | 0.004 | 0.006 | 0.000 | – |
+| Qwen2.5-3B → Qwen2.5-3B | 0.871 | 0.472 | 0.211 | 0.010 | 0.005 | 0.143 | – |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.716 | 0.444 | 0.124 | 0.097 | 0.093 | 0.111 | – |
+| Phi-3.5-mini → SmolLM2-360M | 0.418 | 0.359 | 0.106 | 0.100 | 0.098 | 0.105 | – |
+
+**The pass rule, every variant (paired F1 difference with its 95% interval, 10,000 resamples):**
+
+| Pair | Variant | F1 | minus mismatched | minus `t2t` | minus `closed` | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/summary` | 0.135 | -0.003 [-0.018, +0.013] | -0.326 [-0.378, -0.274] | -0.056 [-0.089, -0.024] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/summary` | 0.192 | +0.062 [+0.028, +0.098] | -0.269 [-0.321, -0.216] | +0.001 [-0.038, +0.039] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/passage` | 0.134 | +0.008 [-0.005, +0.022] | -0.327 [-0.379, -0.275] | -0.057 [-0.087, -0.027] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/passage` | 0.178 | +0.045 [+0.017, +0.075] | -0.282 [-0.336, -0.229] | -0.013 [-0.046, +0.020] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/summary` | 0.011 | -0.001 [-0.010, +0.009] | -0.430 [-0.477, -0.383] | -0.180 [-0.215, -0.147] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/summary` | 0.218 | +0.097 [+0.060, +0.135] | -0.223 [-0.272, -0.174] | +0.027 [-0.013, +0.068] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/passage` | 0.006 | -0.002 [-0.011, +0.006] | -0.435 [-0.482, -0.388] | -0.185 [-0.221, -0.151] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/passage` | 0.172 | +0.045 [+0.013, +0.077] | -0.269 [-0.323, -0.216] | -0.019 [-0.056, +0.017] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/summary` | 0.060 | +0.006 [-0.009, +0.021] | -0.479 [-0.534, -0.426] | -0.150 [-0.189, -0.113] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/summary` | 0.159 | +0.090 [+0.059, +0.123] | -0.381 [-0.434, -0.328] | -0.052 [-0.092, -0.012] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/passage` | 0.072 | +0.019 [-0.006, +0.045] | -0.467 [-0.523, -0.413] | -0.139 [-0.176, -0.102] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/passage` | 0.161 | +0.105 [+0.073, +0.137] | -0.379 [-0.437, -0.322] | -0.050 [-0.085, -0.016] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/summary` | 0.004 | -0.002 [-0.006, +0.001] | -0.414 [-0.466, -0.363] | -0.206 [-0.246, -0.169] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/summary` | 0.178 | +0.114 [+0.077, +0.152] | -0.240 [-0.291, -0.189] | -0.032 [-0.072, +0.007] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/passage` | 0.005 | +0.004 [-0.001, +0.012] | -0.413 [-0.465, -0.361] | -0.205 [-0.245, -0.168] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/passage` | 0.144 | +0.079 [+0.049, +0.112] | -0.274 [-0.328, -0.221] | -0.067 [-0.101, -0.033] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/summary` | 0.010 | +0.005 [-0.002, +0.014] | -0.462 [-0.512, -0.411] | -0.201 [-0.240, -0.163] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/summary` | 0.234 | +0.172 [+0.129, +0.216] | -0.238 [-0.287, -0.189] | +0.023 [-0.026, +0.072] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/passage` | 0.003 | +0.000 [+0.000, +0.000] | -0.468 [-0.519, -0.419] | -0.207 [-0.247, -0.170] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/passage` | 0.141 | +0.084 [+0.055, +0.115] | -0.331 [-0.386, -0.277] | -0.070 [-0.109, -0.032] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/summary` | 0.097 | +0.004 [-0.017, +0.023] | -0.347 [-0.400, -0.295] | -0.027 [-0.054, -0.002] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/summary` | 0.174 | +0.068 [+0.032, +0.106] | -0.270 [-0.321, -0.219] | +0.050 [+0.016, +0.084] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/passage` | 0.095 | +0.004 [-0.011, +0.019] | -0.349 [-0.401, -0.297] | -0.029 [-0.056, -0.004] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/passage` | 0.139 | +0.022 [-0.009, +0.054] | -0.305 [-0.357, -0.253] | +0.015 [-0.015, +0.045] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/summary` | 0.100 | +0.003 [-0.006, +0.012] | -0.259 [-0.302, -0.217] | -0.005 [-0.024, +0.013] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/summary` | 0.107 | +0.007 [-0.008, +0.023] | -0.253 [-0.295, -0.211] | +0.001 [-0.019, +0.021] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/passage` | 0.086 | -0.001 [-0.008, +0.006] | -0.273 [-0.316, -0.231] | -0.020 [-0.038, -0.001] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/passage` | 0.099 | +0.010 [-0.003, +0.024] | -0.260 [-0.303, -0.217] | -0.007 [-0.028, +0.014] | fail |
+
+**Containment** (share of answers that contain a gold answer; it does not reward short answers, and tells the same story):
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.860 | 0.437 | 0.137 | 0.073 | 0.120 | 0.087 | 0.110 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.860 | 0.400 | 0.137 | 0.003 | 0.153 | 0.000 | 0.107 |
+| Phi-3.5-mini → Qwen2.5-3B | 0.873 | 0.487 | 0.143 | 0.033 | 0.090 | 0.050 | 0.100 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.873 | 0.370 | 0.143 | 0.000 | 0.100 | 0.000 | 0.070 |
+| Qwen2.5-3B → Qwen2.5-3B | 0.873 | 0.390 | 0.143 | 0.000 | 0.163 | 0.000 | 0.063 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.700 | 0.377 | 0.073 | 0.047 | 0.100 | 0.037 | 0.077 |
+| Phi-3.5-mini → SmolLM2-360M | 0.607 | 0.380 | 0.040 | 0.067 | 0.083 | 0.053 | 0.067 |
+
+**The maps.** Anchors are vocabulary entries both tokenizers have. "Held-out vocabulary rows" is the share of anchors kept out of the fit whose mapped sender output-embedding row lands nearest its own receiver row. "In the run" is the share of prefix positions whose nearest receiver row is the anchor of the token the sender state predicts.
+
+| Pair | Anchors | Share of sender / receiver vocabulary | Passage tokens with an anchor | Anchor map, held-out vocabulary rows | Calibrated map, held-out states | In the run: `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 26,211 | 82% / 17% | 82% | 0.84 | 0.49 | 0.07 | 0.35 | 0.00 | 0.44 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.23 | 0.40 | 0.05 | 0.46 |
+| Phi-3.5-mini → Qwen2.5-3B | 26,211 | 82% / 17% | 82% | 0.86 | 0.50 | 0.08 | 0.36 | 0.01 | 0.44 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.10 | 0.34 | 0.06 | 0.46 |
+| Qwen2.5-3B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 1.00 | 0.49 | 0.69 | 0.41 | 0.56 | 0.47 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 150,194 | 99% / 99% | 100% | 0.91 | 0.49 | 0.10 | 0.38 | 0.02 | 0.47 |
+| Phi-3.5-mini → SmolLM2-360M | 18,594 | 58% / 38% | 81% | 0.81 | 0.47 | 0.01 | 0.29 | 0.00 | 0.40 |
+
+What these diagnostics show, without isolating a cause: the two vocabulary tables do line up under one rotation, with 81% to 100% of held-out rows landing on their own row across families and sizes. Real final-layer states sent through the same map land on the right row 0% to 23% of the time between different models (10% or less in ten of the twelve cases), so a hidden state does not behave like an output-embedding row. Maps fitted on real states agree more often (29% to 47%), and those are the variants that more often beat their mismatched control. High agreement alone is not enough: in the same-model pair the anchor map lands 56% to 69% of positions on the right row and the receiver still scores 0.01. After anchoring, 70% of each vector's weight is still the mapped state; how far that leaves the prefix from what a receiver was trained to read was not measured.
+
+**Time end to end (mean ms per question; the one-off fits apart):**
+
+| Pair | `text` | `t2t` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` | `swat` | Anchor fit (s) | Calibrated fit (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 316 | 3,267 | 3,400 | 3,326 | 589 | 481 | 385 | 9.1 | 63.8 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 334 | 3,167 | 3,784 | 3,251 | 1,041 | 488 | – | 12.0 | 45.6 |
+| Phi-3.5-mini → Qwen2.5-3B | 336 | 3,314 | 3,388 | 3,366 | 521 | 542 | – | 10.5 | 69.8 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 331 | 2,434 | 2,760 | 2,507 | 602 | 481 | – | 12.0 | 33.6 |
+| Qwen2.5-3B → Qwen2.5-3B | 338 | 3,207 | 3,984 | 3,242 | 1,470 | 654 | – | 15.9 | 47.8 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 200 | 3,078 | 3,228 | 3,133 | 460 | 378 | – | 8.4 | 42.3 |
+| Phi-3.5-mini → SmolLM2-360M | 576 | 3,462 | 3,707 | 3,636 | 921 | 843 | – | 5.1 | 60.0 |
+
+The summary variants cost what the text summary costs, because the sender writes the same summary first (a mean of 3.0 s for Phi-3.5-mini, 2.9 s for Qwen2.5-3B and 2.1 s for Qwen2.5-1.5B, from the summary cache), plus 50 to 330 ms end to end on the five pairs that ran alone; the stages inside that overhead were not timed apart. The passage variants skip the writing and take 0.38 to 1.47 s (0.38 to 0.92 s without the two pairs that also ran the per-message arms, whose CPU fits shared the process). Every passage-arm mean is above the receiver reading the passage itself, and on the Phi pair both are above the trained mapper's 385 ms. The fits are a one-off per pair: 5 to 16 s for the anchor map and 34 to 70 s for the calibrated one, against hours for a trained mapper. That is the method's one real advantage, and it does not help if the result cannot be read.
+
+**The paper's own per-message fit** (run on two of the four pairs that share a tokenizer):
+
+| Pair | `per-message` | mismatched | `tokens` | `t2t` | minus mismatched | minus `tokens` | minus `t2t` | same rows minus states swapped | Same answer with swapped states | Prefix change when states are swapped (mean / max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.430 | 0.124 | 0.426 | 0.441 | +0.306 [+0.257, +0.357] | +0.004 [-0.001, +0.011] | -0.010 [-0.027, +0.004] | -0.003 [-0.017, +0.009] | 279 of 300 | 7.2% / 13.4% |
+| Qwen2.5-3B → Qwen2.5-3B | 0.447 | 0.046 | 0.448 | 0.472 | +0.401 [+0.351, +0.451] | -0.001 [-0.006, +0.003] | -0.025 [-0.046, -0.005] | -0.006 [-0.016, +0.002] | 280 of 300 | 7.5% / 14.5% |
+
+- **It scores like the tokens' own embeddings.** `per-message` and `tokens` (the receiver's embeddings of the same last 64 summary tokens, untouched, in the same place) differ by −0.001 [−0.006, +0.003] and +0.004 [−0.001, +0.011] F1. An interval that includes zero is not proof of equality; it bounds any difference at about 0.01 F1 here.
+- **Swapping the hidden states changed little.** Keeping the tokens and using the hidden states of another passage, at an equal number of rows, changes the prefix vectors by 7.5% and 7.2% on average (at most 14.5% and 13.4%), the F1 by −0.006 [−0.016, +0.002] and −0.003 [−0.017, +0.009] (own states minus swapped), and leaves 280 and 279 of 300 answers identical. No benefit of the original states was detected. Measured on the cached Qwen2.5-3B summaries: condition (a) holds with room (the smallest state eigenvalue is at least 4,700 times the ridge in every summary), and condition (b) almost never does (the last 64 tokens repeat 9.5 tokens on average, and only 2 of 277 summaries have none), which is where a state-dependent part of this size is expected; the run does not separate repeats from other sources.
+- **It is not better than sending that text.** Against the summary as text (the full summary in the ordinary prompt, where `tokens` and `per-message` carry only its last 64 tokens) it is −0.025 [−0.046, −0.005] in the paper's own same-model setting and −0.010 [−0.027, +0.004] from 3B to 1.5B. By the card's rule it beats its mismatched control and is below `t2t` on the mean in both pairs: fail. 84% of the Qwen2.5-3B summaries are 64 tokens or shorter, so for those the prefix covers the whole summary.
+- `per-message` took 2.6 s and 1.6 s longer end to end than `tokens`. That is our float64 CPU fit, not a measurement of the authors' GPU code.
+
+What this does and does not say about the paper: we did not rerun its benchmarks, its models (Qwen3 and OLMo3 are not on this machine), its four-agent pipeline, its sampling or its prefix placement. What we have is the arithmetic (under the two conditions the output is fixed by the token embeddings, shown by unit tests) and two SQuAD runs on Qwen2.5-3B in which the aligned prefix behaved like the embeddings of its own tokens and the original hidden states made no detectable difference. That makes "the prefix is mostly the decoded tokens" a plausible reading of the method. Where the paper's reported gains over a text pipeline come from remains untested.
+
+### Edge cases
+
+- **Receiver below 2B.** All four pairings with a receiver below 2B fail (Qwen2.5-1.5B twice, Qwen2.5-0.5B, SmolLM2-360M), and so do all three with the 3B receiver. Receiver size was not varied apart from model identity, so this says only that a larger receiver did not rescue the method here. On SmolLM2-360M both calibrated intervals against the mismatched control include zero (+0.007 [−0.008, +0.023] and +0.010 [−0.003, +0.024]).
+- **Low tokenizer overlap.** Phi-3.5-mini shares 26,211 entries with Qwen (82% of its own vocabulary, 17% of Qwen's) and 18,594 with SmolLM2 (58% and 38%); 82% and 81% of SQuAD passage tokens have an anchor. The Qwen pairs share 150,194 (99% of the vocabulary; all but 0.04% of passage tokens have an anchor). They fail too, so near-full overlap did not rescue the method. Overlap was not varied apart from model identity either.
+- **Emoji and non-English text** (8 synthetic items, Phi-3.5-mini → Qwen2.5-1.5B, means only, no interval):
+
+  | Arm | F1 | Containment |
+  | --- | --- | --- |
+  | `text` | 0.780 | 0.875 |
+  | `closed` | 0.042 | 0.000 |
+  | `t2t` | 0.789 | 0.875 |
+  | `anchor/summary` | 0.042 | 0.000 |
+  | `anchor/summary mismatched` | 0.042 | 0.000 |
+  | `calibrated/summary` | 0.050 | 0.000 |
+  | `calibrated/summary mismatched` | 0.025 | 0.000 |
+  | `anchor/passage` | 0.025 | 0.000 |
+  | `anchor/passage mismatched` | 0.025 | 0.000 |
+  | `calibrated/passage` | 0.050 | 0.000 |
+  | `calibrated/passage mismatched` | 0.050 | 0.000 |
+  | `anchor/summary zeroed` | 0.025 | 0.000 |
+  | `swat` | 0.812 | 0.750 |
+
+  Text, the text summary and the trained mapper answer most of these (the mapper misses the mixed-script item and half of one Russian name). Every aligned arm has containment 0 on all eight, at the level of no passage. Only 39% to 71% of these passages' sender tokens have an anchor, against 82% on SQuAD.
+
+### What is not covered
+
+One task (extractive questions over one short passage), one seed, one machine, greedy decoding. No multi-step reasoning task of the kind the paper reports. No Llama pair (gated, not on the machine). The seven pairs reuse the same 300 questions, over 277 distinct passages; the intervals are paired by question and do not account for questions that share a passage, nor for looking at 28 checks at once (with every check failing, that does not change the verdict). The four fixed-map variants are this card's adaptation: their fit targets differ from the paper's, and the token budget of a prefix was not matched to the text summary's. The trained mapper is measured on one pair only. The calibrated map was fitted on states from reading 400 passages, not from writing summaries. `K`, `α` and `λ` were not searched; that was the point of fixing them, and a search on these 300 questions would not be evidence.
+
+### Suites and review
+
+Suites on this branch (Windows): `npm run -s test:graph` 9 of 9; `node --test tests/*.test.mjs` 674 tests, 664 passed, 10 skipped, 0 failed (an earlier run while the GPU was busy lost `tests/paging.test.mjs` to the 300 s per-file limit; alone it passed 17 of 17); `npx playwright test` 61 passed, 1 skipped; runtime `python -m unittest discover -s tests -t .` 275 tests, OK with 85 skipped without torch, and 275 OK with none skipped in the WSL environment that has torch (36 of them are this card's).
+
+**Codex review of the code (read-only, 2026-11-27, before the measured runs):** 11 findings, 3 high. All fixed, or answered in "Corrections before the measured runs", before any 300-question result was used; every run in the tables was made after the fixes.
+
+1. *(high)* The claim that the per-message fit ignores the hidden states needed two conditions (states well above the ridge, reference rows of full rank). Wording corrected; two new tests cover states near the ridge and repeated tokens.
+2. *(high)* The summary cache was keyed by question ID only, so another sender's file could be loaded. Now keyed by sender and passage text, and a file names its sender; test added.
+3. *(high)* The mismatched control was "the next item", and 23 of the 300 questions share a passage with another one. Now the next item with a different passage; test added.
+4. *(medium)* Which state belongs to a token was ambiguous in the eval text. It is the state the token is read from, as in the authors' code; wording fixed, no code change.
+5. *(medium)* The zeroed control keeps the summary's length. Stated; not changed.
+6. *(medium)* Controls were timed and text arms embedded their text outside the timer. Controls are no longer timed and embedding is inside the timer.
+7. *(medium)* The states-swapped comparison mixed prefix lengths. It is now made at an equal number of rows; a summary too short to fit raises an error.
+8. *(medium)* A marginal secondary result was stored as passed. It is now "needs a repeat" and not a pass; test changed.
+9. *(medium)* An edge run produced intervals and a verdict from eight items, and a run without the ID check looked the same as a checked one. Edge runs give means only, and the table header says whether the IDs were checked.
+10. *(low)* A fit on rows without variance divided by zero. It is refused; test added.
+11. *(low)* No test showed that resampling keeps pairs together. Test added.
+
+Two more defects were found by the runner's own checks before any result was used: the passage cap (256, not 384) and the receiver's repetition penalty.
+
+**Codex review of this record (read-only, 2026-11-27, against the raw aggregates of the eight runs):** every table cell and every count in the prose matched the aggregates (0 of 28, 11 of 14, six of seven, 1 above / 4 below / 9 including zero, ten of twelve, 280 and 279 of 300). It agreed that the replacement decision follows from the rule, and raised ten wording findings, 3 high, all applied above; none changed a number or needed code.
+
+1. *(high)* "Does not carry content" blurred the rule's two parts. The verdict now says that the anchor variants show no content signal, the calibrated ones show a trace in 11 of 14 checks, and all 28 are below the text summary.
+2. *(high)* The summary of the per-message fit contradicted the rule's own outcome. It now says: beats its mismatched control, fails on the mean against `t2t`, run on two of the four pairs that share a tokenizer.
+3. *(high)* "The hidden states do not matter" and the sentence about the paper's gains went past the evidence. They now say what was measured (no detectable difference on two runs; an interval that includes zero is not equality) and that the source of the paper's gains is untested.
+4. *(medium)* The correction still claimed exactness and asserted that real states meet the first condition. The conditions are restated as a limit, the first prediction is marked as superseded where it stands, and both conditions were then measured on the cached summaries (smallest state eigenvalue at least 4,700 times the ridge; 2 of 277 summaries without a repeated token).
+5. *(medium)* Timing prose gave ranges that left out two pairs and attributed overheads to stages that were not timed apart. Ranges corrected, summary times taken from the cache, the per-message figure given as end-to-end overhead.
+6. *(medium)* "This is why it fails" was an explanation the diagnostics do not isolate. Reworded as observations; the comparison with no passage is given as its three counts.
+7. *(medium)* The edge conclusions blamed neither size nor overlap on evidence that did not vary them apart from model identity. Reworded.
+8. *(medium)* Missing limits added: shared passages and 28 checks at once, the variants being this card's adaptation, no matched token budget, the mapper on one pair, the share of summaries that 64 tokens cover.
+9. *(low)* Two descriptions of the paper narrowed (what it measures between models; which controls it has).
+10. *(low)* What is committed is stated exactly, the board's scope now names all seven pairings, and the edge arms are "every applicable arm".
+
+No regression test applies to wording; the code and its 36 tests are unchanged since the measured runs.
+
+**Repeated findings (AGENTS.md section 4, step 5).** One kind of finding came back: a claim stronger than its evidence, about the per-message fit (code review, finding 1) and again in the results record (findings 3 and 4). The part that is arithmetic is now held by tests: both conditions of the claim have a unit test, so the code cannot drift from what the text says. The part that is wording has no pattern a `scripts/check.mjs` rule could match, because it is a judgement about whether a sentence follows from a table. What catches it is the second review against the raw aggregates, which this card ran and records above. No other finding repeated. After merging `main` at `a3f9a83` and later, `node scripts/check.mjs` reports no findings on 319 files and the runtime suite still passes.
+
 ## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
 
 For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
