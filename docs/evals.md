@@ -4971,6 +4971,8 @@ Two more defects were found by the runner's own checks before any result was use
 
 No regression test applies to wording; the code and its 36 tests are unchanged since the measured runs.
 
+**Repeated findings (AGENTS.md section 4, step 5).** One kind of finding came back: a claim stronger than its evidence, about the per-message fit (code review, finding 1) and again in the results record (findings 3 and 4). The part that is arithmetic is now held by tests: both conditions of the claim have a unit test, so the code cannot drift from what the text says. The part that is wording has no pattern a `scripts/check.mjs` rule could match, because it is a judgement about whether a sentence follows from a table. What catches it is the second review against the raw aggregates, which this card ran and records above. No other finding repeated. After merging `main` at `a3f9a83` and later, `node scripts/check.mjs` reports no findings on 319 files and the runtime suite still passes.
+
 ## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
 
 For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
