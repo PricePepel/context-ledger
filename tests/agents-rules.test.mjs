@@ -12,7 +12,7 @@ test('AGENTS.md section 4 defines a repeat and turns it into a check', () => {
   assert.match(step, /same rule|same misuse/iu, 'says what makes it a repeat');
   assert.match(step, /cite/iu, 'asks for the earlier entry');
   assert.match(step, /scripts\/check\.mjs/u, 'the fix adds a check rule');
-  assert.match(step, /API/u, 'or an API change');
+  assert.match(step, /changes the API|API change/u, 'or an API change');
   assert.match(step, /why[^.]*docs\/evals\.md|docs\/evals\.md[^.]*why/iu, 'and records the exception in docs/evals.md');
 });
 

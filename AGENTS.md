@@ -31,7 +31,7 @@ Do not start coding until you know which card you are working on.
 2. Implement it with tests: `node:test` for units and APIs, Playwright for browser journeys.
 3. Run everything locally: `node scripts/check.mjs` (the section 6 rules, on every tracked file; its messages say what to write instead), `npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and in `runtime/` the Python checks `python -m unittest discover -s tests -t .` (standard library only; torch checks skip).
 4. Get an independent code review from a different agent or model than the one that wrote the code (for example Claude reviews Codex work and Codex reviews Claude work), plus a human for anything touching security, export or signing.
-5. Fix the findings, each with a regression test, and record the review outcome in `docs/evals.md`. A finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry). For a repeat, the fix also adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written; if no pattern can catch it, say why in `docs/evals.md`.
+5. Fix the findings, each with a regression test, and record the review outcome in `docs/evals.md`. A finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry). For a repeat, the fix also adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written; if no reliable `scripts/check.mjs` rule can detect the mistake and no practical API change can prevent it, explain why in `docs/evals.md`.
 6. Update `docs/handoff.md` with what changed and what the next owner should do.
 
 ## 5. Data and secrets
