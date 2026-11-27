@@ -73,7 +73,8 @@ export async function openFeature(page, origin, feature) {
     if (kind === 'select') await page.locator(value[0]).selectOption(value[1], { timeout });
     else if (kind === 'upload') await page.locator(value[0]).setInputFiles(uploadPath(value[1]), { timeout });
     else if (kind === 'fill') await page.locator(value[0]).fill(value[1], { timeout });
-    else if (kind === 'click') await page.locator(value).click({ timeout });
+    // The first match, as waitFor uses: a populated ledger can show several (round 4).
+    else if (kind === 'click') await page.locator(value).first().click({ timeout });
     else if (kind === 'waitFor') await page.locator(value).first().waitFor({ state: 'visible', timeout });
   }
   return feature.proof ? page.locator(feature.proof) : page;
