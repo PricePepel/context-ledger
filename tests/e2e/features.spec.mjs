@@ -1,14 +1,9 @@
 // Card H11: every entry in docs/features.json opens and reaches its last step, so the
-// map an agent drives cannot drift from the app.
-import { loadFeatures, openFeature } from '../../scripts/drive.mjs';
-import { expect, test } from './fixtures.mjs';
+// map an agent drives cannot drift from the app. Card H14: entries that start a swarm
+// run are checked in swarm.spec.mjs instead, one at a time with the other swarm tests:
+// a ledger runs one swarm at a time, and two spec files run in parallel.
+import { loadFeatures } from '../../scripts/drive.mjs';
+import { checkFeature, featureTitle } from './feature-check.mjs';
+import { test } from './fixtures.mjs';
 
-for (const feature of loadFeatures()) {
-  test(`H11 feature map: ${feature.id} (${feature.name}) opens and shows its proof`, async ({ page, baseURL }) => {
-    test.setTimeout((feature.timeoutMs ?? 30_000) + 30_000);
-    await page.setViewportSize({ width: 1300, height: 900 });
-    const target = await openFeature(page, baseURL, feature);
-    if (target !== page) await expect(target).toBeVisible();
-    expect(await target.screenshot()).toBeInstanceOf(Buffer);
-  });
-}
+for (const feature of loadFeatures()) if (!feature.runsSwarm) test(featureTitle(feature), checkFeature(feature));

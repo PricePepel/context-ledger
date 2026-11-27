@@ -8,6 +8,12 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: H14 Windows-only browser test flakes (2026-11-27)
+
+Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
+
+Next owner: H15. The Node suite on #100 failed because the server's Windows token-file write (PowerShell, 30 s timeout, `src/token.mjs`) did not finish under load, so the server exited. That code guards the token file, so Ruslan approves its merge.
+
 ## Current checkpoint: H10 label lengths in code points (2026-11-26)
 
 `scripts/check.mjs` has a fourth rule, `label-length`: a label's `.length` next to a comparison must count code points (`[...label].length`), as JSON Schema `maxLength` and the graph schemas do. Its first run found that latent findings dropped labels of 500 emoji; fixed with a test. The store double-close candidate was dropped: no pattern finds it without understanding control flow, and its tests cover it. Next owner: add a rule the next time a review finding repeats a kind already seen (H13 writes that into AGENTS.md).
