@@ -5255,3 +5255,14 @@ Graph labels are limited to 500 characters by JSON Schema `maxLength`, which cou
 - **Codex review, round 3:** no high; one medium and one low, fixed with tests: a reversed limit on an indexed or called receiver (`500 < graph.nodes[0].label.length`, `500 < getNode().label.length`) was missed, and `label.length > (0)` was flagged. The member chain now takes calls and indexes, and a parenthesized 0 or 1 that stands alone passes.
 - **Codex review, round 4:** no high; two medium and one low in H10's rule, fixed with tests: `label.length < (1) + MAX` and nested receivers (`500 < getNode(getId()).label.length`, `500 < getNode()['label'].length`) were missed, and `return 0 < label.length` was flagged. A 0 or 1 now counts as the whole other side unless arithmetic or a member access touches it, and receivers take one level of nested calls. Two more findings came from H9's round 9 commit not yet merged into H10.
 - `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.
+
+## H13 — A repeated finding becomes a check (defined 2026-11-27, before the change)
+
+H9 and H10 turned review findings that kept coming back into `scripts/check.mjs` rules, and each found real bugs on its first run. H13 makes that the default for every card, so the next repeated finding does not cost another round of review.
+
+### What is tested and the expected result
+
+- **AGENTS.md section 4, step 5** says: when a finding is of a kind a review has reported before (search `docs/evals.md`), the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
+- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: repeated findings became a check, or the PR says why not.
+- `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
+
