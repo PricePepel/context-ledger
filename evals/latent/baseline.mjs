@@ -38,7 +38,7 @@ async function renderPrefix(paths) {
   const parts = [];
   for (const path of paths) {
     let text = await readFile(new URL(`./${set.fixture ?? 'fixture'}/${path}`, import.meta.url), 'utf8');
-    text = text.replace(/^﻿/u, '').replace(/\r\n/gu, '\n');
+    text = text.replace(/^\uFEFF/u, '').replace(/\r\n/gu, '\n');
     const lines = text === '' ? [] : text.replace(/\n$/u, '').split('\n');
     parts.push(`=== FILE: ${path} ===\n`);
     lines.forEach((line, index) => parts.push(`${index + 1}| ${line}\n`));
