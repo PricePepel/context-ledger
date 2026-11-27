@@ -120,3 +120,37 @@ test('review: sign-in codes are redacted, and --out may not be a network path', 
   assert.equal(share?.code, 1);
   assert.match(share.stderr, /--out must be a local file/u);
 });
+
+// H11 Codex review, round 2.
+test('review 2: a mixed-slash network --out is refused', async () => {
+  const backslash = String.fromCharCode(92);
+  const share = await run(process.execPath, [script, 'swarm', '--out', `${backslash}/server/share/proof.png`]).then(() => null, error => error);
+  assert.equal(share?.code, 1);
+  assert.match(share.stderr, /--out must be a local file/u);
+});
+
+test('review 2: a fixture that is a link to a file outside the repository is refused', async t => {
+  const outside = await mkdtemp(join(tmpdir(), 'ledger-outside-'));
+  const link = join(repo, 'demo', `h11-link-${process.pid}.jsonl`);
+  try {
+    await writeFile(join(outside, 'secret.jsonl'), '{}\n');
+    try {
+      const { symlink } = await import('node:fs/promises');
+      await symlink(join(outside, 'secret.jsonl'), link, 'file');
+    } catch (error) {
+      t.skip(`cannot create a symbolic link here (${error.code})`);
+      return;
+    }
+    assert.throws(() => uploadPath(`demo/h11-link-${process.pid}.jsonl`), /must be a fixture/u);
+  } finally {
+    await rm(link, { force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('review 2: a ledger that stops before it is ready fails at once, not after 30 seconds', async () => {
+  const started = Date.now();
+  const failure = await run(process.execPath, [script, 'swarm'], { env: { ...process.env, CONTEXT_LEDGER_DB: '' , NODE_OPTIONS: '--require=./does-not-exist.cjs' }, cwd: repo }).then(() => null, error => error);
+  assert.equal(failure?.code, 1);
+  assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+});

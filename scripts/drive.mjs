@@ -7,7 +7,7 @@
 // CONTEXT_LEDGER_TOKEN. Uses the Playwright devDependency; not part of the package.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -45,11 +45,15 @@ export function loadFeatures(path = join(repo, 'docs', 'features.json')) {
 const fixtureRoots = ['demo/', 'tests/fixtures/', 'evals/'];
 
 export function uploadPath(file, where = 'upload') {
+  const refuse = () => new Error(`${where}: upload ${JSON.stringify(file)} must be a fixture under ${fixtureRoots.join(', ')}.`);
+  const within = path => {
+    const inside = relative(repo, path).split(sep).join('/');
+    return !inside.startsWith('..') && !isAbsolute(inside) && fixtureRoots.some(root => inside.startsWith(root));
+  };
   const full = resolve(repo, String(file));
-  const inside = relative(repo, full).split(sep).join('/');
-  if (inside.startsWith('..') || isAbsolute(inside) || !fixtureRoots.some(root => inside.startsWith(root))) {
-    throw new Error(`${where}: upload ${JSON.stringify(file)} must be a fixture under ${fixtureRoots.join(', ')}.`);
-  }
+  if (!within(full)) throw refuse();
+  // A link inside the fixtures may point anywhere; the file it names must be inside too (round 2).
+  if (existsSync(full) && !within(realpathSync(full))) throw refuse();
   return full;
 }
 
@@ -94,7 +98,10 @@ export async function startLedger() {
   try {
     const ready = await new Promise((resolveReady, reject) => {
       const timer = setTimeout(() => reject(new Error(`The ledger did not start: ${redact(output)}`)), 30_000);
-      child.on('exit', code => reject(new Error(`The ledger stopped (${code}): ${redact(output)}`)));
+      child.on('exit', code => {
+        clearTimeout(timer);
+        reject(new Error(`The ledger stopped (${code}): ${redact(output)}`));
+      });
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
         output += chunk;
@@ -155,12 +162,21 @@ async function main(argv) {
   if (!feature) throw new Error(`No feature ${terminalLabel(JSON.stringify(options.feature))}; node scripts/drive.mjs --list names them.`);
   if (options.url !== undefined && !/^http:\/\/(?:127\.0\.0\.1|localhost):\d+\/?$/u.test(options.url)) throw new Error('--url must be a loopback ledger, such as http://127.0.0.1:4317.');
   // A local file: a screenshot of a ledger never goes to a network share (H11 review).
-  if (options.out !== undefined && /^(?:\\\\|\/\/)/u.test(options.out)) throw new Error('--out must be a local file, not a network path.');
+  // Two leading slashes of either kind are a network path on Windows (round 2: "\/server").
+  if (options.out !== undefined && /^[\\/]{2}/u.test(options.out)) throw new Error('--out must be a local file, not a network path.');
   const out = resolve(options.out ?? `${feature.id}.png`);
 
   const { chromium } = await import('@playwright/test');
   let ledger;
-  if (options.url === undefined) ledger = await startLedger();
+  if (options.url === undefined) {
+    ledger = await startLedger();
+    // Stopping the driver stops its ledger too (round 2: the finally below never runs on a signal).
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+      process.once(signal, () => {
+        ledger.stop().finally(() => process.exit(130));
+      });
+    }
+  }
   else {
     const token = process.env.CONTEXT_LEDGER_TOKEN;
     if (!token) throw new Error('With --url, set CONTEXT_LEDGER_TOKEN to the ledger\'s access token.');
@@ -175,8 +191,15 @@ async function main(argv) {
     // The page may talk to the ledger only; anything else is aborted (H11 review).
     await context.route('**/*', route => (new URL(route.request().url()).origin === ledger.origin ? route.continue() : route.abort()));
     const page = await context.newPage();
+    // Routing does not see redirects, so the page's origin is checked after each step that
+    // can navigate (round 2).
+    const stayed = () => {
+      if (new URL(page.url()).origin !== ledger.origin) throw new Error('The browser was sent away from the ledger.');
+    };
     await page.goto(ledger.link);
+    stayed();
     const target = await openFeature(page, ledger.origin, feature);
+    stayed();
     await target.screenshot(target === page ? { path: out, fullPage: true } : { path: out });
     console.log(`drive: ${feature.id} saved to ${terminalLabel(out)}`);
   } finally {
