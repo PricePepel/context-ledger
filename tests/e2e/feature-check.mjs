@@ -13,14 +13,16 @@ export function checkFeature(feature) {
     await page.setViewportSize({ width: 1300, height: 900 });
     // H14 review: whether an entry starts a swarm run is read from what the page asks the
     // ledger, not guessed from a selector, so a wrong runsSwarm fails here.
+    // Attempts and runs the ledger accepted are counted apart (review 2: a 409 is no run).
+    let swarmAttempts = 0;
     let swarmRuns = 0;
-    page.on('request', request => {
-      if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/swarm/runs') swarmRuns += 1;
-    });
+    const isRunStart = request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/swarm/runs';
+    page.on('request', request => { if (isRunStart(request)) swarmAttempts += 1; });
+    page.on('response', response => { if (isRunStart(response.request()) && response.status() === 200) swarmRuns += 1; });
     const target = await openFeature(page, baseURL, feature);
     if (target !== page) await expect(target).toBeVisible();
     expect(await target.screenshot()).toBeInstanceOf(Buffer);
-    if (feature.runsSwarm) expect(swarmRuns, `${feature.id} is marked runsSwarm but started no run`).toBeGreaterThan(0);
-    else expect(swarmRuns, `${feature.id} started a swarm run: mark it "runsSwarm": true in docs/features.json`).toBe(0);
+    if (feature.runsSwarm) expect(swarmRuns, `${feature.id} is marked runsSwarm but the ledger started no run`).toBeGreaterThan(0);
+    else expect(swarmAttempts, `${feature.id} asked for a swarm run: mark it "runsSwarm": true in docs/features.json`).toBe(0);
   };
 }

@@ -49,7 +49,8 @@ test('the demo plays from empty to finished, and one click shows the proof', asy
             if (!line.isConnected) return;
             const style = getComputedStyle(line);
             const box = line.getBoundingClientRect();
-            seen.visible ||= Number(style.opacity) > 0.5 && style.stroke !== 'none' && (box.width > 0 || box.height > 0);
+            // Visibility is inherited, so a hidden flash layer counts too (review 2).
+            seen.visible ||= style.visibility === 'visible' && Number(style.opacity) > 0.5 && style.stroke !== 'none' && (box.width > 0 || box.height > 0);
             requestAnimationFrame(sample);
           };
           sample();
