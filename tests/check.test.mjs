@@ -501,3 +501,35 @@ test('card H10 review 4: nested receivers, a parenthesized 1 in a sum, and a key
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
 });
+
+test('card H10 review 5: nested indexes, keys ending in label, and a 0 before more code', () => {
+  for (const line of ['if (500 < graph.nodes[indexes[0]].label.length) reject();', "if (node['editLabel'].length > 500) reject();", 'if (label.length < (1) + MAX) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['if (label.length > 0) ++count;', 'if ((label.length > (0))) show();', 'if (label.length < 1) refuse();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 6: optional indexing before the label', () => {
+  for (const line of ['if (500 < nodes?.[index]?.label?.length) reject();', 'if (nodes?.[index]?.label.length > 500) cut();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+});
+
+test('card H10 review 7: the whole member chain before the label, across lines and groups', () => {
+  const fail = [
+    'if (500 < getNode(\n  graph,\n  nodeId,\n).label.length) return false;',
+    'if (500 < (node ?? fallback).label.length) return false;',
+    'if (500 < store.graphs[id].nodes.find(n => n.id === key).label.length) cut();',
+  ];
+  for (const text of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(text))), ['label-length'], text);
+  for (const text of ['return 0 < node.label.length;', 'const ok = items.every(item => item.label.length > 0);', 'if (typeof label === "string" && label.length > 0) show();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(text)), [], text);
+  }
+});
+
+test('card H10 review 8: a shifted limit is not a lone 1', () => {
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8('if (label.length < 1 << 9) reject();'))), ['label-length']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length < 1) refuse();')), []);
+});

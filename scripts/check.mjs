@@ -66,17 +66,61 @@ const browserFile = /^public\/|\.html$/u;
 // length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
 // labelParts) are lists and are left out.
 // Call arguments and indexes in a member chain, one level of nesting (round 4).
-const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[[^\]\n]*\])`;
-const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+${callOrIndex}*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*\(*\s*([\w$.]*)\s*\)*\s*(\S?)/u;
+// Calls and indexes nest one level: getNode(getId()), nodes[indexes[0]] (rounds 4 and 5).
+const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])`;
+// A ['...label'] key, any name ending in label or labelText (round 5: ['editLabel']).
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+(?:(?:\?\.)?${callOrIndex})*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])[\w$]*[Ll]abel(?:Text)?\1\s*\])\s*\??\.length\b`, 'gu');
+// The operator, the parentheses opened before the operand, and the operand. Only as many
+// ")" as were opened belong to it, so `> 0) ++count` is still a lone 0 (round 5).
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*(\(*)\s*([\w$.]*)/u;
+const afterOperand = (text, after) => {
+  let rest = text.slice(after.index + after[0].length);
+  for (let open = after[2].length; open > 0; open -= 1) rest = rest.replace(/^\s*\)/u, '');
+  return /^\s*(\S?)/u.exec(rest)[1];
+};
+
+// Where the member chain that ends at `index` starts, walking left over names, dots,
+// optional chaining and balanced (...) or [...] of any length, across lines (round 7:
+// `500 < getNode(\n graph,\n).label.length`, `500 < (node ?? fallback).label.length`).
+function chainStart(code, index) {
+  let start = index;
+  let expect = 'any'; // after a name only a dot may come before it; after a dot or group, anything
+  for (;;) {
+    let left = start;
+    while (left > 0 && /\s/u.test(code[left - 1])) left -= 1;
+    const character = code[left - 1];
+    if (character === '.') {
+      left -= 1;
+      if (code[left - 1] === '?') left -= 1;
+      start = left;
+      expect = 'any';
+    } else if (expect === 'any' && (character === ')' || character === ']')) {
+      const open = character === ')' ? '(' : '[';
+      let depth = 0;
+      let at = left - 1;
+      for (; at >= 0; at -= 1) {
+        if (code[at] === character) depth += 1;
+        else if (code[at] === open && (depth -= 1) === 0) break;
+      }
+      if (at < 0) return start;
+      start = at;
+      expect = 'any';
+    } else if (expect === 'any' && character !== undefined && /[\w$]/u.test(character)) {
+      while (left > 0 && /[\w$]/u.test(code[left - 1])) left -= 1;
+      start = left;
+      expect = 'dot';
+    } else return start;
+  }
+}
 // Not the ">" of an arrow function (`label => label.length`).
 const comparisonBefore = /(\S?)\s*\(*\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
 const emptyBefore = new Set(['1>', '0<', '1<=']);
 // A 0 or 1 is the whole other side unless arithmetic or a member access touches it
 // (`< (1) + MAX`); a keyword before it (`return 0 < length`) leaves it alone.
-const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[']);
-const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']']);
+// A shift binds tighter than a comparison too (round 8: `< 1 << 9`).
+const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[', '<', '>']);
+const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']', '<', '>']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
 // listen named but not called, as in promisify(server.listen.bind(server)): the host it
@@ -273,10 +317,12 @@ export function checkFile(path, bytes, { browser = false } = {}) {
       }
     }
     for (const match of code.matchAll(labelLength)) {
-      const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
-      const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
+      const following = code.slice(match.index + match[0].length, match.index + match[0].length + 80);
+      const after = comparisonAfter.exec(following);
+      const head = chainStart(code, match.index);
+      const before = comparisonBefore.exec(code.slice(Math.max(0, head - 80), head));
       if (!after && !before) continue;
-      if (after && !before && emptyAfter.has(after[1] + after[2]) && !notAloneAfter.has(after[3])) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[3]) && !notAloneAfter.has(afterOperand(following, after))) continue;
       if (before && !after && emptyBefore.has(before[2] + before[3]) && !notAloneBefore.has(before[1])) continue;
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
