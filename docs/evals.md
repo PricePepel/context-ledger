@@ -5288,3 +5288,14 @@ The talk behind H9 gives agents a feature map (the app's features as a person na
 - **Codex review, round 4:** no high; one medium, fixed: on a ledger with several matching transcripts the search step's click matched more than one result; click steps now take the first match, as waits do. Two low, accepted: Ctrl-C in the instant before the ledger is spawned can leave an empty `ledger-drive-*` folder, and the cleanup tests can be confused by another drive command running at the same moment.
 - **Codex review, round 5:** no high or medium, so the review stops here. One low, fixed with a test: `--url --list` took `--list` as the URL; an option given where a value belongs is refused.
 
+## H13 — A repeated finding becomes a check (defined 2026-11-27, before the change)
+
+H9 and H10 turned review findings that kept coming back into `scripts/check.mjs` rules, and each found real bugs on its first run. H13 makes that the default for every card, so the next repeated finding does not cost another round of review.
+
+### What is tested and the expected result
+
+- **AGENTS.md section 4, step 5** says: a finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry); for a repeat, the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
+- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: each repeated finding became a check or an API change, or `docs/evals.md` says why no pattern can catch it.
+- `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
+- **Codex review, round 1:** no high; two medium and two low, fixed: what counts as a repeat was undefined (now: the same rule broken, or the same API misused, as an earlier entry, which the fix cites); the PR checklist let the exception live in the PR instead of `docs/evals.md` (it now points there); the test matched exact wording and missed the exception (it now checks the elements: repeat, cite, check rule or API change, exception recorded in `docs/evals.md`); a blank line at the end of this file.
+- **Codex review, round 2:** no high or medium, so the review stops here. Three low, fixed: the exception now needs that no reliable check rule and no practical API change exists; the test checks the API-change option itself; the H9 handoff line now asks for a check rule as well as the regression test.
