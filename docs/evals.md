@@ -5262,7 +5262,7 @@ H9 and H10 turned review findings that kept coming back into `scripts/check.mjs`
 
 ### What is tested and the expected result
 
-- **AGENTS.md section 4, step 5** says: when a finding is of a kind a review has reported before (search `docs/evals.md`), the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
-- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: repeated findings became a check, or the PR says why not.
+- **AGENTS.md section 4, step 5** says: a finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry); for a repeat, the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
+- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: each repeated finding became a check or an API change, or `docs/evals.md` says why no pattern can catch it.
 - `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
-
+- **Codex review, round 1:** no high; two medium and two low, fixed: what counts as a repeat was undefined (now: the same rule broken, or the same API misused, as an earlier entry, which the fix cites); the PR checklist let the exception live in the PR instead of `docs/evals.md` (it now points there); the test matched exact wording and missed the exception (it now checks the elements: repeat, cite, check rule or API change, exception recorded in `docs/evals.md`); a blank line at the end of this file.
