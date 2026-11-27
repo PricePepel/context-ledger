@@ -420,3 +420,116 @@ test('the repository itself has no findings', async () => {
   const { stdout } = await run(process.execPath, [script, repo]);
   assert.match(stdout.trim(), /^check: \d+ files, no findings$/u);
 });
+
+// Card H10: label lengths count code points.
+test('card H10: a label length compared with a limit is a finding unless it counts code points', () => {
+  const fail = [
+    'if (label.length > 500) refuse();',
+    'const ok = node.label.length <= maxLabel;',
+    'if (maxLabel < editLabel.length) refuse();',
+    'return finding?.label?.length >= 64;',
+  ];
+  for (const line of fail) {
+    const findings = checkFile('src/a.mjs', utf8(line));
+    assert.deepEqual(rules(findings), ['label-length'], line);
+    assert.match(findings[0].message, /\[\.\.\.label\]\.length/u);
+  }
+  const pass = [
+    'if ([...label].length > 500) refuse();',
+    'if (Array.from(label).length > maxLabel) refuse();',
+    'if (label.length < 1) refuse();',
+    'if (label.length > 0) show();',
+    'const width = labels.length * 8;',
+    'if (labels.length > 3) more();',
+    'if (node.edgeLabels.length >= 10) page();',
+    'if (text.length > 500) cut();',
+  ];
+  for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  assert.deepEqual(checkFile('tests/a.test.mjs', utf8('assert.ok(label.length > 500);')), [], 'tests may count units');
+});
+
+test('card H10 review: any comparison spelling is caught; only exact emptiness tests pass', () => {
+  const fail = [
+    'if (label.length <= (500)) keep();',
+    "if (node['label'].length <= 500) keep();",
+    'if (getMaxLabel() >= label.length) keep();',
+    'if (label.length <= 1) one();',
+    'if (1 < label.length) many();',
+    'if (labelText.length > limit) cut();',
+  ];
+  for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  const pass = [
+    'if (label.length < 1) refuse();',
+    'if (label.length > 0) show();',
+    'if (label.length >= 1) show();',
+    'if (0 < label.length) show();',
+    'if (1 > label.length) refuse();',
+    'if (1 <= label.length) show();',
+    'const sizes = items.map(label => label.length);',
+    "const labelParts = ['a', 'b', 'c', 'd']; if (labelParts.length > 3) trimParts();",
+    'const width = label.length * 8;',
+  ];
+  for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+});
+
+test('card H10 review 2: a member chain, parentheses and a lone 0 or 1', () => {
+  const fail = [
+    'if (500 < node.label.length) reject();',
+    'if ((label.length) > 500) reject();',
+    'if (label.length < 1 + MAX_LABEL_LENGTH) keep();',
+    'if (MAX + 1 > label.length) keep();',
+    "if (graph.nodes[0]['label'].length > 500) cut();",
+  ];
+  for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  for (const line of ['if (!(label.length > 0)) refuse();', 'const empty = label.length < 1;', 'return (label.length >= 1) && ok;']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 3: indexed and call receivers, and a parenthesized 0', () => {
+  for (const line of ['if (500 < graph.nodes[0].label.length) reject();', 'if (500 < getNode().label.length) reject();', 'if (label.length < (1 + MAX)) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length > (0)) show();')), []);
+});
+
+test('card H10 review 4: nested receivers, a parenthesized 1 in a sum, and a keyword before 0', () => {
+  for (const line of ['if (label.length < (1) + MAX_LABEL_LENGTH) keep();', 'if (500 < getNode(getId()).label.length) reject();', "if (500 < getNode()['label'].length) reject();"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['return 0 < label.length;', 'if (label.length < 1) refuse();', 'const ok = (label.length > 0) ? a : b;']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 5: nested indexes, keys ending in label, and a 0 before more code', () => {
+  for (const line of ['if (500 < graph.nodes[indexes[0]].label.length) reject();', "if (node['editLabel'].length > 500) reject();", 'if (label.length < (1) + MAX) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['if (label.length > 0) ++count;', 'if ((label.length > (0))) show();', 'if (label.length < 1) refuse();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 6: optional indexing before the label', () => {
+  for (const line of ['if (500 < nodes?.[index]?.label?.length) reject();', 'if (nodes?.[index]?.label.length > 500) cut();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+});
+
+test('card H10 review 7: the whole member chain before the label, across lines and groups', () => {
+  const fail = [
+    'if (500 < getNode(\n  graph,\n  nodeId,\n).label.length) return false;',
+    'if (500 < (node ?? fallback).label.length) return false;',
+    'if (500 < store.graphs[id].nodes.find(n => n.id === key).label.length) cut();',
+  ];
+  for (const text of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(text))), ['label-length'], text);
+  for (const text of ['return 0 < node.label.length;', 'const ok = items.every(item => item.label.length > 0);', 'if (typeof label === "string" && label.length > 0) show();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(text)), [], text);
+  }
+});
+
+test('card H10 review 8: a shifted limit is not a lone 1', () => {
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8('if (label.length < 1 << 9) reject();'))), ['label-length']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length < 1) refuse();')), []);
+});
