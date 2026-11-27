@@ -198,8 +198,11 @@ class Bench:
         self.sync()
         start = time.perf_counter()
         reference = self.vocab[tokens].to(self.device)
-        fitted = sb.per_message_map(states.to(self.device), reference)
-        vectors, _ = sb.bridge(states.to(self.device), fitted, self.vocab, self.target_norm)
+        # The fit is a full eigendecomposition per message. In float64 it takes about 2 s on
+        # this machine's CPU and 4 to 7 s on its GPU, so it runs on the CPU.
+        fitted = sb.per_message_map(states.double().cpu(), reference.double().cpu())
+        aligned = fitted.apply(states.double().cpu()).to(self.device)
+        vectors, _ = sb.anchor_to_vocab(sb.norm_calibrate(aligned, self.target_norm), self.vocab)
         self.sync()
         return {"vectors": vectors.to(self.vocab.dtype).cpu(), "ms": (time.perf_counter() - start) * 1000,
                 "reference": reference.float().cpu()}
