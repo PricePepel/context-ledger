@@ -5539,3 +5539,41 @@ Graph labels are limited to 500 characters by JSON Schema `maxLength`, which cou
 ).label.length`, `500 < (node ?? fallback).label.length`). Instead of a longer pattern, the rule now walks left over the whole member chain (names, dots, optional chaining and balanced brackets of any length) before looking for the comparison.
 - **Codex review, round 8:** no high or medium, so the review stops here. `chainStart` always moves left and stops at an unmatched bracket (100,000 extra closing parentheses finish without a hang). One low, fixed with a test: `label.length < 1 << 9` was read as a lone 1; a shift after the number now counts as part of the limit.
 - `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.
+
+## H11 — Feature map and screenshot driver (defined 2026-11-26, before the code)
+
+The talk behind H9 gives agents a feature map (the app's features as a person names them, and how to reach each) and one reusable command that drives the running app and saves a screenshot, so a change carries proof of what it does and agents stop working out how to operate the app each time. H11 adds both for the browser app. Synthetic data only: the demo transcripts in `demo/`.
+
+### What is tested and the expected result
+
+- **The map.** `docs/features.json` (version 1) lists every user-facing feature of the library, room, review, console and swarm pages: an id, a name, one line on what it does, a path, and steps (select, upload, fill, click, waitFor) that reach it on an empty ledger, with an optional element to photograph. `loadFeatures` refuses a map with a bad id, a repeated id, a path not starting with `/`, an unknown step or a missing field, naming the entry.
+- **The command.** `node scripts/drive.mjs --list` prints the features. `node scripts/drive.mjs <id> [--out file.png]` starts its own ledger on an empty temporary database (loopback only, live swarm off), signs in with the one-time link the server prints, runs the steps and saves a screenshot, then stops the ledger and removes the folder. `--url` drives a running loopback ledger with the token in `CONTEXT_LEDGER_TOKEN`; a non-loopback URL is refused. An unknown feature is refused with a pointer to `--list`. Output is escaped.
+- **Kept honest.** `tests/e2e/features.spec.mjs` opens every feature in the map against the e2e ledger and photographs it, so a renamed element breaks the build, not the agent.
+
+### Acceptance for the code
+
+- `tests/drive.test.mjs` (map checks, the command's refusals, its own ledger signing in once and stopping) and `tests/e2e/features.spec.mjs` pass; `node scripts/check.mjs` has no findings; no new dependency (Playwright is already a devDependency).
+
+### H11 results (2026-11-27)
+
+- `node scripts/drive.mjs <id>` drove all nine features on its own temporary ledger on Windows and saved each screenshot; `tests/e2e/features.spec.mjs` 9/9 and `tests/e2e/drive-cli.spec.mjs` 1/1 (the command writes a real PNG, prints no sign-in code and leaves no ledger folder); `tests/drive.test.mjs` 7/7.
+- **Codex review, round 1:** no high; five medium and two low.
+  - Fixed with tests: the token request followed redirects and the browser trusted the returned path, so a misbehaving loopback server could send either elsewhere; sign-in is now `redirect: 'manual'` with a strict `/login?code=` answer, feature paths may not start `//` or `/\`, and every browser request off the ledger's origin is aborted. Upload steps could name `../` files; they are limited to fixtures under `demo/`, `tests/fixtures/` and `evals/`. `--out` may not be a network path. A browser that failed to launch left the ledger running; teardown now runs whatever fails. Errors could print the one-time sign-in code; it is redacted. `swarm-run` waited for Simulated without choosing it, so it stalled on a ledger with live models; it now clicks Simulated.
+  - Low, fixed: the command's own screenshot and teardown path had no test (the CLI spec above); `library-search` now also opens the result in the reader.
+  - Low, accepted: `room` and `node-review` show their forms on an empty ledger rather than seeded graphs; seeding graphs belongs to those features' own tests, which already exist.
+- **Codex review, round 2:** no high; four medium and one low, fixed with tests where the platform allows: the browser could follow a redirect off the ledger (the page's origin is now checked after sign-in and after the steps); a mixed-slash network path got past `--out` (two leading slashes of either kind are refused); a fixture could be a link to a file outside the repository (the link's target must be inside too; the test skips where links cannot be made); stopping the driver with Ctrl-C left its ledger running (SIGINT and SIGTERM stop it first); a ledger that died early held the command for 30 seconds (the start timer is cleared). `tests/drive.test.mjs` 9 pass, 1 skipped on Windows.
+- **Codex review, round 3:** no high; three medium and two low. Fixed with tests: ledger requests are now fetched without following redirects and handed back to the browser, so a redirect off the ledger is a new request that the origin check aborts; the stop hook is registered as soon as the ledger is spawned, so a signal during start-up stops it; a ledger that exits by signal is counted as stopped and its folder removed; the early-exit test now starts a real ledger that fails. Accepted (low): a mapped network drive letter such as `Z:` passes `--out`; it is a local path the person chose, and telling it apart needs Windows APIs this script does not use. `tests/drive.test.mjs` 9 pass, 1 skipped on Windows; the browser specs 10/10.
+- **Codex review, round 4:** no high; one medium, fixed: on a ledger with several matching transcripts the search step's click matched more than one result; click steps now take the first match, as waits do. Two low, accepted: Ctrl-C in the instant before the ledger is spawned can leave an empty `ledger-drive-*` folder, and the cleanup tests can be confused by another drive command running at the same moment.
+- **Codex review, round 5:** no high or medium, so the review stops here. One low, fixed with a test: `--url --list` took `--list` as the URL; an option given where a value belongs is refused.
+
+## H13 — A repeated finding becomes a check (defined 2026-11-27, before the change)
+
+H9 and H10 turned review findings that kept coming back into `scripts/check.mjs` rules, and each found real bugs on its first run. H13 makes that the default for every card, so the next repeated finding does not cost another round of review.
+
+### What is tested and the expected result
+
+- **AGENTS.md section 4, step 5** says: a finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry); for a repeat, the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
+- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: each repeated finding became a check or an API change, or `docs/evals.md` says why no pattern can catch it.
+- `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
+- **Codex review, round 1:** no high; two medium and two low, fixed: what counts as a repeat was undefined (now: the same rule broken, or the same API misused, as an earlier entry, which the fix cites); the PR checklist let the exception live in the PR instead of `docs/evals.md` (it now points there); the test matched exact wording and missed the exception (it now checks the elements: repeat, cite, check rule or API change, exception recorded in `docs/evals.md`); a blank line at the end of this file.
+- **Codex review, round 2:** no high or medium, so the review stops here. Three low, fixed: the exception now needs that no reliable check rule and no practical API change exists; the test checks the API-change option itself; the H9 handoff line now asks for a check rule as well as the regression test.
