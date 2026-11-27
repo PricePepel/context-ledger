@@ -80,20 +80,24 @@ export async function openFeature(page, origin, feature) {
 }
 
 /** Starts a ledger on an empty temporary database; resolves to its origin and sign-in link. */
-export async function startLedger() {
+// `onSpawn` receives stop() as soon as the ledger process exists, so a signal during start-up
+// can still stop it (round 3). `env` is for tests.
+export async function startLedger({ onSpawn, env = {} } = {}) {
   const folder = await mkdtemp(join(tmpdir(), 'ledger-drive-'));
   const child = spawn(process.execPath, [join(repo, 'src', 'server.mjs')], {
     cwd: repo,
-    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(folder, 'ledger.sqlite'), SWARM_URLS: 'off' },
+    env: { ...process.env, PORT: '0', CONTEXT_LEDGER_DB: join(folder, 'ledger.sqlite'), SWARM_URLS: 'off', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const stop = async () => {
-    if (child.exitCode === null) {
+    // An exit by signal leaves exitCode null and sets signalCode (round 3).
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill();
       await once(child, 'exit');
     }
     await rm(folder, { recursive: true, force: true });
   };
+  onSpawn?.(stop);
   let output = '';
   try {
     const ready = await new Promise((resolveReady, reject) => {
@@ -169,13 +173,15 @@ async function main(argv) {
   const { chromium } = await import('@playwright/test');
   let ledger;
   if (options.url === undefined) {
-    ledger = await startLedger();
-    // Stopping the driver stops its ledger too (round 2: the finally below never runs on a signal).
+    // Stopping the driver stops its ledger too, from the moment it is spawned (rounds 2 and 3:
+    // the finally below never runs on a signal).
+    let stopLedger = async () => {};
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.once(signal, () => {
-        ledger.stop().finally(() => process.exit(130));
+        stopLedger().finally(() => process.exit(130));
       });
     }
+    ledger = await startLedger({ onSpawn: stop => { stopLedger = stop; } });
   }
   else {
     const token = process.env.CONTEXT_LEDGER_TOKEN;
@@ -189,7 +195,12 @@ async function main(argv) {
     browser = await chromium.launch();
     const context = await browser.newContext({ viewport: { width: 1300, height: 900 } });
     // The page may talk to the ledger only; anything else is aborted (H11 review).
-    await context.route('**/*', route => (new URL(route.request().url()).origin === ledger.origin ? route.continue() : route.abort()));
+    // Ledger requests are fetched without following redirects, so a redirect comes back to
+    // the browser as a new request and passes this check again (round 3).
+    await context.route('**/*', async route => {
+      if (new URL(route.request().url()).origin !== ledger.origin) return route.abort();
+      return route.fulfill({ response: await route.fetch({ maxRedirects: 0 }) });
+    });
     const page = await context.newPage();
     // Routing does not see redirects, so the page's origin is checked after each step that
     // can navigate (round 2).

@@ -148,9 +148,21 @@ test('review 2: a fixture that is a link to a file outside the repository is ref
   }
 });
 
-test('review 2: a ledger that stops before it is ready fails at once, not after 30 seconds', async () => {
+// Round 3: the round 2 version never started a ledger. This one starts a real ledger whose
+// database path is a folder, so the server itself exits before it is ready.
+test('review 2 and 3: a ledger that stops before it is ready fails at once and leaves no folder', async () => {
+  const { readdirSync } = await import('node:fs');
+  const folders = () => readdirSync(tmpdir()).filter(name => name.startsWith('ledger-drive-')).sort();
+  const before = folders();
+  const notAFile = await mkdtemp(join(tmpdir(), 'ledger-not-a-file-'));
+  let spawned = false;
   const started = Date.now();
-  const failure = await run(process.execPath, [script, 'swarm'], { env: { ...process.env, CONTEXT_LEDGER_DB: '' , NODE_OPTIONS: '--require=./does-not-exist.cjs' }, cwd: repo }).then(() => null, error => error);
-  assert.equal(failure?.code, 1);
-  assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+  try {
+    await assert.rejects(startLedger({ env: { CONTEXT_LEDGER_DB: notAFile }, onSpawn: () => { spawned = true; } }), /The ledger stopped/u);
+    assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+    assert.ok(spawned, 'onSpawn hands over stop() before the ledger is ready');
+    assert.deepEqual(folders(), before);
+  } finally {
+    await rm(notAFile, { recursive: true, force: true });
+  }
 });
