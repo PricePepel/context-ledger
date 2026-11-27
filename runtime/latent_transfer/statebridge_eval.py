@@ -305,7 +305,8 @@ def main():
     parser.add_argument("--items", choices=("squad", "edge"), default="squad")
     parser.add_argument("--count", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--max-tokens", type=int, default=384)
+    parser.add_argument("--max-tokens", type=int, default=256,
+                        help="passage cap of the item set; 256 is what the M2b-S run used")
     parser.add_argument("--per-message", action="store_true",
                         help="add the paper's own per-message fit (needs one shared tokenizer)")
     parser.add_argument("--no-calibrated", action="store_true")
@@ -334,6 +335,8 @@ def main():
         bench.fit_calibrated_map(calibration_passages(args.calibration_passages, args.seed,
                                                       exclude={row["context"] for row in items}))
     print(json.dumps(bench.fit), flush=True)
+    if args.device.startswith("cuda"):
+        torch.cuda.empty_cache()  # the fits' float64 work areas; two 3B models leave little room
     # Warm-up, so the first item's timing is fair.
     bench.answer([bench.embed(doc_text("Warm-up passage.")), bench.embed(question_suffix("Warm-up?"))], 2)
     bench.summary("Warm-up passage.")

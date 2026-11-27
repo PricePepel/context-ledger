@@ -4733,7 +4733,7 @@ Two sources of sender states, each with both maps:
 
 ### Arms
 
-Same 300 SQuAD v1.1 validation questions as M2b-S (seed 0, passages that fit 384 tokens for Phi-3.5-mini and Qwen2.5-1.5B; the runner checks the IDs against the M2b-S run on the GPU machine), greedy, 24 new tokens, the same prompts, token F1 and containment from `latent_transfer.data`.
+Same 300 SQuAD v1.1 validation questions as M2b-S (seed 0, passages that fit 256 tokens for Phi-3.5-mini and Qwen2.5-1.5B, the cap the M2b-S run used; the runner checks the IDs against the M2b-S run on the GPU machine and stops if they differ), greedy, 24 new tokens, the same prompts, token F1 and containment from `latent_transfer.data`.
 
 | Arm | What the receiver gets |
 | --- | --- |

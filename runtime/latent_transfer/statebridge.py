@@ -185,6 +185,9 @@ def answer_from_embeds(model, embeds, max_new_tokens, eos_ids, pad_id=0):
     """Greedy answer of a receiver given input embeddings [T, d]; returns the new token ids."""
     embeds = embeds[None].to(model.get_input_embeddings().weight)
     mask = torch.ones(embeds.shape[:2], dtype=torch.long, device=embeds.device)
+    # Plain greedy, like M2b-S's own decoding loop: a model's generation defaults (Qwen ships a
+    # repetition penalty of 1.1) must not change the answer.
     out = model.generate(inputs_embeds=embeds, attention_mask=mask, max_new_tokens=max_new_tokens,
-                         do_sample=False, eos_token_id=sorted(eos_ids), pad_token_id=pad_id)
+                         do_sample=False, repetition_penalty=1.0, eos_token_id=sorted(eos_ids),
+                         pad_token_id=pad_id)
     return out[0].tolist()

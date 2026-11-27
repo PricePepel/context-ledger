@@ -327,5 +327,27 @@ class ModelHelperTest(unittest.TestCase):
         self.assertEqual(from_embeds, [token for token in from_ids])
 
 
+    def test_answers_are_plain_greedy_whatever_the_models_defaults_say(self):
+        document = torch.randint(3, 97, (1, 12))
+        embeds = self.model.get_input_embeddings()(document)[0]
+        with torch.no_grad():
+            plain = self.sb.answer_from_embeds(self.model, embeds, 8, eos_ids={1})
+            self.model.generation_config.repetition_penalty = 5.0
+            try:
+                penalised = self.sb.answer_from_embeds(self.model, embeds, 8, eos_ids={1})
+            finally:
+                self.model.generation_config.repetition_penalty = 1.0
+            # Argmax by hand, one token at a time.
+            ids, by_hand = document, []
+            for _ in range(8):
+                token = int(self.model(input_ids=ids).logits[0, -1].argmax())
+                if token == 1:
+                    break
+                by_hand.append(token)
+                ids = torch.cat([ids, torch.tensor([[token]])], dim=1)
+        self.assertEqual(penalised, plain)
+        self.assertEqual([t for t in plain if t != 1], by_hand)
+
+
 if __name__ == "__main__":
     unittest.main()
