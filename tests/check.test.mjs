@@ -501,3 +501,12 @@ test('card H10 review 4: nested receivers, a parenthesized 1 in a sum, and a key
     assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
   }
 });
+
+test('card H10 review 5: nested indexes, keys ending in label, and a 0 before more code', () => {
+  for (const line of ['if (500 < graph.nodes[indexes[0]].label.length) reject();', "if (node['editLabel'].length > 500) reject();", 'if (label.length < (1) + MAX) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['if (label.length > 0) ++count;', 'if ((label.length > (0))) show();', 'if (label.length < 1) refuse();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});

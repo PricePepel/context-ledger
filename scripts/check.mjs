@@ -66,9 +66,18 @@ const browserFile = /^public\/|\.html$/u;
 // length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
 // labelParts) are lists and are left out.
 // Call arguments and indexes in a member chain, one level of nesting (round 4).
-const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[[^\]\n]*\])`;
-const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+${callOrIndex}*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*\(*\s*([\w$.]*)\s*\)*\s*(\S?)/u;
+// Calls and indexes nest one level: getNode(getId()), nodes[indexes[0]] (rounds 4 and 5).
+const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])`;
+// A ['...label'] key, any name ending in label or labelText (round 5: ['editLabel']).
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+${callOrIndex}*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])[\w$]*[Ll]abel(?:Text)?\1\s*\])\s*\??\.length\b`, 'gu');
+// The operator, the parentheses opened before the operand, and the operand. Only as many
+// ")" as were opened belong to it, so `> 0) ++count` is still a lone 0 (round 5).
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*(\(*)\s*([\w$.]*)/u;
+const afterOperand = (text, after) => {
+  let rest = text.slice(after.index + after[0].length);
+  for (let open = after[2].length; open > 0; open -= 1) rest = rest.replace(/^\s*\)/u, '');
+  return /^\s*(\S?)/u.exec(rest)[1];
+};
 // Not the ">" of an arrow function (`label => label.length`).
 const comparisonBefore = /(\S?)\s*\(*\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
@@ -273,10 +282,11 @@ export function checkFile(path, bytes, { browser = false } = {}) {
       }
     }
     for (const match of code.matchAll(labelLength)) {
-      const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
+      const following = code.slice(match.index + match[0].length, match.index + match[0].length + 80);
+      const after = comparisonAfter.exec(following);
       const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
       if (!after && !before) continue;
-      if (after && !before && emptyAfter.has(after[1] + after[2]) && !notAloneAfter.has(after[3])) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[3]) && !notAloneAfter.has(afterOperand(following, after))) continue;
       if (before && !after && emptyBefore.has(before[2] + before[3]) && !notAloneBefore.has(before[1])) continue;
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
