@@ -6389,6 +6389,14 @@ A tenth round, run on the merged branch (673a6ce), found seven medium and two lo
 33. *(low)* `htmlOf` took `<!doctype html><html>A</html><html>B</html>` as one build. It now requires a single `<html>` element.
 34. *(low)* The rescoring below said 25 saved sites while the round tables count 23 builds. The tables hold 6 built sites in round 1 (3 chat, 3 ledger; the notes builds made no page), 8 in round 2 (3 chat, 2 notes, 3 ledger) and 9 in round 3. The other 2 are single-run ledger checks with Sonnet outside the tables: one at 20:35 before round 1 and one at 20:57 between rounds 1 and 2.
 
+An eleventh round found five medium, fixed with one regression test:
+
+35. *(medium)* An unpriced card took the next card's price when both names were headings ("Oat latte" card, then "Chocolate chip cookie $5.25"). The visible text now marks where each heading starts, and a heading between a name and a price starts another card.
+36. *(medium)* "$5 one-time signup fee, then $18 per month" failed: the words after the $5 were read as the $18's. Qualifier words right after an earlier amount now stay with it.
+37. *(medium)* `button.mobile-only { display: none }` hid a `<p class="mobile-only">`. A tag-qualified selector now hides only elements of that tag.
+38. *(medium)* "Open 3pm to 9pm" met "Closes at 15:00". The start of a range, or a time after "open(s) at/from", is an opening time.
+39. *(medium)* "Closed Monday, open Tuesday" met "Closed on Tuesdays". A match with "open" in it, or a day then a comma then "closed", does not count; "Closed Mondays and Tuesdays" still does.
+
 The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
 
 Rescoring all 25 saved sites (the 23 in the round tables and the 2 single-run checks) with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

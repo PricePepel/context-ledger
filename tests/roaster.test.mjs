@@ -327,3 +327,22 @@ test('review 4, round 10: a reply with a second <html> document is not one build
   assert.equal(htmlOf('<!doctype html><html>A</html><html>B</html>'), '');
   assert.equal(htmlOf('Here:\n<!doctype html><html><body>A</body></html>\nDone.'), '<!doctype html><html><body>A</body></html>');
 });
+
+test('review 4, round 11: headings start cards, qualifiers stay with their amount, tag selectors, ranges and other days', () => {
+  const card = good.replace('<li>Oat latte <b>$5.25</b></li>', '<li><h3>Oat latte</h3></li><li><h3>Chocolate chip cookie</h3><p>$5.25</p></li>');
+  assert.ok(scoreSite(card).missed.includes('Oat latte $5.25'));
+  assert.deepEqual(scoreSite(good.replace('<li>Oat latte <b>$5.25</b></li>', '<li><h3>Oat latte</h3><p>$5.25</p></li>')).missed, []);
+  const club = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>$5 one-time signup fee, then $18 per month.</p>'));
+  assert.deepEqual(club.missed, []);
+  const tagged = good.replace('</style>', 'button.mobile-only {display:none}</style>')
+    .replace('<p>Roasted slow, poured fresh.</p>', '<p class="mobile-only">Roasted slow, poured fresh.</p>');
+  assert.deepEqual(scoreSite(tagged).missed, []);
+  assert.ok(scoreSite(tagged.replace('<p class="mobile-only">Roasted slow, poured fresh.</p>', '<button class="mobile-only">Roasted slow, poured fresh.</button>'))
+    .missed.includes('Tagline "Roasted slow, poured fresh."'));
+  const hours = '<p>Open 7:00–15:00. Closed on Tuesdays.</p>';
+  const swap = text => scoreSite(good.replace(hours, text)).missed;
+  assert.ok(swap('<p>Open 3pm to 9pm.</p><p>Closed on Tuesdays.</p>').includes('Closes at 15:00'));
+  assert.ok(swap('<p>Open 7:00–15:00.</p><p>Closed Monday, open Tuesday.</p>').includes('Closed on Tuesdays'));
+  assert.ok(swap('<p>Open 7:00–15:00.</p><p>Open Tuesday, closed Monday.</p>').includes('Closed on Tuesdays'));
+  assert.deepEqual(swap('<p>Open 7:00–15:00.</p><p>Closed Mondays and Tuesdays.</p>'), []);
+});

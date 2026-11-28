@@ -166,8 +166,9 @@ export function hiddenSelectors(html) {
   for (const [, selectors, body] of withoutAtRules(css).matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
     if (!hidingRule.test(body)) continue;
     for (const selector of selectors.split(',')) {
-      const simple = /^\s*(?:[a-z][\w-]*)?([.#])([\w-]+)\s*$/iu.exec(selector);
-      if (simple) (simple[1] === '.' ? classes : ids).add(simple[2].toLowerCase());
+      // Kept as "tag|name", with "*" for no tag: "button.mobile-only" hides buttons only.
+      const simple = /^\s*([a-z][\w-]*)?([.#])([\w-]+)\s*$/iu.exec(selector);
+      if (simple) (simple[2] === '.' ? classes : ids).add(`${(simple[1] ?? '*').toLowerCase()}|${simple[3].toLowerCase()}`);
     }
   }
   return { classes, ids };
@@ -176,12 +177,14 @@ export function hiddenSelectors(html) {
 /** Whether a tag's attributes hide it: `hidden`, `aria-hidden="true"`, an inline style with
  * `display: none` or `visibility: hidden`, or a class or ID the page's stylesheet hides.
  * Words inside other attributes' values do not count. */
-function hides(source, hidden = { classes: new Set(), ids: new Set() }) {
+function hides(source, hidden = { classes: new Set(), ids: new Set() }, tag = '*') {
   const found = attributesOf(source);
   const classes = (found.get('class') ?? '').toLowerCase().split(/\s+/u).filter(Boolean);
+  const id = (found.get('id') ?? '').toLowerCase();
+  const listed = (set, name) => Boolean(name) && (set.has(`*|${name}`) || set.has(`${tag}|${name}`));
   return found.has('hidden') || /^\s*true\s*$/iu.test(found.get('aria-hidden') ?? '')
     || hidingRule.test(found.get('style') ?? '')
-    || classes.some(name => hidden.classes.has(name)) || hidden.ids.has((found.get('id') ?? '').toLowerCase());
+    || classes.some(name => listed(hidden.classes, name)) || listed(hidden.ids, id);
 }
 
 /** The page with every hidden element removed, up to its matching close tag (nesting counted). */
@@ -193,7 +196,7 @@ export function withoutHidden(html) {
   for (let open = tags.exec(html); open; open = tags.exec(html)) {
     const [whole, closing, name, source] = open;
     // The page's own <html>, <head> and <body> are never treated as hidden.
-    if (closing || ['html', 'head', 'body'].includes(name.toLowerCase()) || !hides(source, hidden)) continue;
+    if (closing || ['html', 'head', 'body'].includes(name.toLowerCase()) || !hides(source, hidden, name.toLowerCase())) continue;
     out += `${html.slice(kept, open.index)} `;
     kept = tags.lastIndex;
     const tagName = name.toLowerCase();
@@ -225,7 +228,9 @@ export function pageParts(html) {
     .replace(/<head[\s\S]*?<\/head>/giu, ' ').replace(/<title[\s\S]*?<\/title>/giu, ' ')
     .replace(/<script[\s\S]*?<\/script>/giu, ' ').replace(/<style[\s\S]*?<\/style>/giu, ' ')
     // Tags go with their quoted attribute values whole (a ">" inside a title is not the tag's end);
-    // what is left, such as <!doctype html>, goes after.
+    // what is left, such as <!doctype html>, goes after. A heading's start is marked "§", so a
+    // price after a second heading is not taken for the first one's.
+    .replace(/<h[1-6]\b(?:[^>"']|"[^"]*"|'[^']*')*>/giu, ' § ')
     .replace(blockEnd, ' | ').replace(anyTag, ' ').replace(/<[^>]+>/gu, ' ')
     .replace(/&nbsp;/gu, ' ').replace(/&amp;/gu, '&').replace(/&#36;|&dollar;/gu, '$')
     .replace(/&ndash;|&mdash;|&#8211;|&#8212;/gu, '-').replace(/&quot;|&#34;/gu, '"').replace(/&#39;|&rsquo;|&apos;/gu, "'")
@@ -251,7 +256,8 @@ function pricesOf(text, item) {
     // Another item starts a new row when its name opens a block as a short label ("| cold brew $"
     // or "| small cold brew |", up to two words before the name), not when a description sentence
     // begins with it ("| espresso cut with…").
-    const label = name => new RegExp(`\\|\\s*([\\p{L}-]+\\s+){0,2}${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
+    // A heading's "§" may open the block.
+    const label = name => new RegExp(`\\|\\s*(§\\s*)?([\\p{L}-]+\\s+){0,2}${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
     // Nor can it borrow the price of something off the menu list: when the price sits in a later
@@ -259,6 +265,9 @@ function pricesOf(text, item) {
     // that price is the cookie's. A block that is only the price ("| oat latte | $5.25"), a size
     // ("| 12 oz $5.25") or a longer description ("| creamy oat milk, silky espresso $5.25")
     // still belongs to the item.
+    // A heading between the name and the price starts another card ("§ oat latte | § chocolate
+    // chip cookie | $5.25"): pageParts marks each heading's start with "§".
+    if (between.includes('§')) continue;
     const priceBlock = between.includes('|') ? between.slice(between.lastIndexOf('|') + 1) : '';
     const named = priceBlock.replace(/\b(small|medium|large|regular|hot|iced|cup|mug|oz|ml|\d+)\b/gu, ' ').trim();
     if (named && /^[\p{L}'&-]+(\s+[\p{L}'&-]+)?$/u.test(named)) continue;
@@ -270,7 +279,7 @@ function pricesOf(text, item) {
     // A name in a sentence ("inspired by our oat latte $5.00", "oat latte fans might like our
     // cookie for $5.00") may be followed by some other thing's price, and so may a heading
     // whose next block is about something else ("| oat latte pairings | cookie $5.00").
-    const ownRow = /(^|\|)\s*([\p{L}-]+\s+){0,2}$/u.test(text.slice(Math.max(0, match.index - 40), match.index))
+    const ownRow = /(^|\|)\s*(§\s*)?([\p{L}-]+\s+){0,2}$/u.test(text.slice(Math.max(0, match.index - 40), match.index))
       && /^[^|]{0,15}(\|\s*)?$/u.test(between);
     if (amount) found.push({ price: Number(amount[1]), label: ownRow });
   }
@@ -313,7 +322,11 @@ function monthlyClub(text) {
     const after = text.slice(price.index + price[0].length, price.index + price[0].length + 80);
     const blocksBefore = before.split('|');
     // The sentence before the price, from the last amount in it on: words before that amount are its.
-    const sentenceBefore = blocksBefore.at(-1).split(/[.!?]\s/u).pop().split(new RegExp(amount.source, 'gu')).pop();
+    const pieces = blocksBefore.at(-1).split(/[.!?]\s/u).pop().split(new RegExp(amount.source, 'gu'));
+    // Qualifier words right after an earlier amount are that amount's ("$5 one-time signup fee,
+    // then $18 per month").
+    const sentenceBefore = pieces.length > 1
+      ? pieces.at(-1).replace(/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front|once)\b/u, '') : pieces[0];
     const [own, next = ''] = after.split('|');
     const sentenceAfter = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
     // When another amount follows in the sentence, only the words right after this one are its.
@@ -336,11 +349,17 @@ const closesAt = time => p => [...p.text.matchAll(new RegExp(time, 'gu'))].some(
   const blockStart = p.text.lastIndexOf('|', match.index) + 1;
   const blockEnd = p.text.indexOf('|', match.index);
   const block = p.text.slice(blockStart, blockEnd < 0 ? undefined : blockEnd);
+  const trail = p.text.slice(match.index + match[0].length, match.index + match[0].length + 12);
+  // The start of a range ("3pm to 9pm", "open 3pm") is an opening time, not a closing one.
+  if (/^\s*(\p{Pd}|to\b|until\b|till\b|through\b)/u.test(trail) || /\bopens?(\s+(at|from))?\s*$/u.test(lead)) return false;
   return /(\p{Pd}|\bto|\buntil|\btill|\bthrough|\bclos(e|es|ing)(\s+at)?)\s*$/u.test(lead) || hoursWords.test(block);
 });
-// Closed on Tuesdays, but not "Tuesday we are never closed" or "not closed on Tuesdays".
+// Closed on Tuesdays, but not "Tuesday we are never closed", "not closed on Tuesdays", or a
+// closure on another day next to "open Tuesday" ("Closed Monday, open Tuesday", "Open Tuesday,
+// closed Monday").
 const closedTuesdays = p => [...p.text.matchAll(new RegExp(`closed[^.|]{0,40}${day}|${day}[^.|]{0,20}closed`, 'gu'))]
-  .some(match => !/\b(never|not|no longer)\b|n't\b/u.test(match[0]) &&
+  .some(match => !/\b(never|not|no longer)\b|n't\b|\bopen/u.test(match[0]) &&
+    !(match[0].startsWith('closed') ? false : /[,;]/u.test(match[0])) &&
     !/\b(never|not|no longer)\s*$|n't\s*$/u.test(p.text.slice(Math.max(0, match.index - 12), match.index)));
 
 /** The client's final word: 15 requirements, each a test on the page. */
