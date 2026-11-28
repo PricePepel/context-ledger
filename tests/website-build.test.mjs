@@ -56,3 +56,10 @@ test('review 4: report.json escapes bidi, format and line-separator characters',
   assert.doesNotMatch(out, /[\p{Cf}\p{Zl}\p{Zp}\u{80}-\u{9f}]/u);
   assert.deepEqual(JSON.parse(out), { note: `a${rlo}b${String.fromCodePoint(0x2028)}c${String.fromCodePoint(0x200b)}d${String.fromCodePoint(0x85)}e` });
 });
+
+test('review 4, round 2: a format character above U+FFFF is escaped as a surrogate pair', () => {
+  const tag = String.fromCodePoint(0xe0001);
+  const out = reportJson({ note: `a${tag}b` });
+  assert.ok(out.includes(String.raw`\udb40\udc01`));
+  assert.deepEqual(JSON.parse(out), { note: `a${tag}b` });
+});

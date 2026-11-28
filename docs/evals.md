@@ -6257,4 +6257,11 @@ A read-only Codex review confirmed the gate verdicts against `report.json`: the 
 4. *(low)* `report.json` could carry raw bidi and format characters from agent text. It is now written with every control, format and line-separator character as a `\u` escape.
 5. *(low)* The handoff called readers stopping early the cause of the round 3 gap; it now says it is an association, as the round 3 write-up does.
 
-Rescoring all 25 saved sites from rounds 1 to 3 with the fixed scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
+A second Codex round found that the first fixes were incomplete: three medium and one low, all fixed with regression tests.
+
+6. *(medium)* A hidden element was cut at the first close tag of its name, so `<div hidden><div>…</div><p>tagline</p></div>` still scored the tagline, and a single-quoted or unquoted `style` was not read. Hidden elements are now removed up to their matching close tag, nesting counted, in any quoting.
+7. *(medium)* Any mention of "oat latte" followed by $5.00 was stale, including "a cold brew float, inspired by our oat latte $5.00". A replaced price now counts only as the first price after the name or after the name used as a label (starting a row or block).
+8. *(medium)* "Next month: $18 upfront" met the monthly requirement, and "$18.00 per month" did not. The check now needs "monthly" or "per/a/each/every month" (not just "month"), rejects "upfront", and accepts $18.00.
+9. *(low)* `reportJson` wrote a character above U+FFFF as one five-digit escape, which JSON reads as two characters. It now writes each UTF-16 unit, a surrogate pair.
+
+Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

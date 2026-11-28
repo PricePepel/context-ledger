@@ -235,7 +235,9 @@ const prompts = {
  * a \u escape, so agent text cannot reorder or hide what a terminal or editor shows. */
 export function reportJson(report) {
   return JSON.stringify(report, null, 2)
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => (char === '\n' ? char : `\\u${char.codePointAt(0).toString(16).padStart(4, '0')}`));
+    // One \u escape per UTF-16 unit, so a character above U+FFFF is written as its surrogate pair.
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => (char === '\n' ? char
+      : Array.from({ length: char.length }, (_, unit) => `\\u${char.charCodeAt(unit).toString(16).padStart(4, '0')}`).join('')));
 }
 
 /** Whole-condition cost: every builder, and each first agent once even when shared. Marked

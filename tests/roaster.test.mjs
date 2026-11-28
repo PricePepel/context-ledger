@@ -164,3 +164,32 @@ test('review 4: the Bean Club must be $18 a month, not a one-time $18', () => {
   assert.equal(swap('<p>Monthly subscription: $18</p>'), false);
   assert.equal(swap('<p>$18 per month.</p>'), false);
 });
+
+test('review 4, round 2: a hidden element hides all it contains, in any quoting', () => {
+  const tagline = '<p>Roasted slow, poured fresh.</p>';
+  for (const wrap of [
+    `<div hidden><div>Intro</div>${tagline}</div>`,
+    `<p style='display:none'>Roasted slow, poured fresh.</p>`,
+    `<p style=display:none>Roasted slow, poured fresh.</p>`,
+    `<section aria-hidden='true'><div><div>x</div></div>${tagline}</section>`,
+  ]) {
+    const score = scoreSite(good.replace(tagline, wrap));
+    assert.ok(score.missed.includes('Tagline "Roasted slow, poured fresh."'), wrap);
+    assert.equal(score.requirements, 14, wrap);
+  }
+  // What follows a closed hidden element is still read.
+  assert.deepEqual(scoreSite(good.replace(tagline, `<div hidden><div>x</div></div>${tagline}`)).missed, []);
+});
+
+test('review 4, round 2: an item named mid-sentence does not take a stale price', () => {
+  const score = scoreSite(good.replace('<p>Our signature', '<p>Cold brew float, inspired by our oat latte $5.00.</p><p>Our signature'));
+  assert.deepEqual(score.stale, []);
+  assert.deepEqual(score.missed, []);
+});
+
+test('review 4, round 2: "next month ... upfront" is not monthly, and $18.00 per month is', () => {
+  const name = 'Bean Club, $18 a month';
+  const swap = text => scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', text)).missed.includes(name);
+  assert.equal(swap('<p>Next month: $18 upfront for a bag.</p>'), true);
+  assert.equal(swap('<p>$18.00 per month.</p>'), false);
+});

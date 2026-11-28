@@ -115,12 +115,48 @@ const fold = text => text.toLowerCase().replace(/\s+/gu, ' ');
 // Table cells and inline elements do not, so "Tue | Closed" stays one row: "tue closed".
 const blockEnd = /<\/(li|tr|p|div|h[1-6]|section|article|header|footer|ul|ol|table|nav|figure|blockquote)>|<br\s*\/?>/giu;
 
+const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+
+/** Whether a tag's attributes hide it: `hidden`, `aria-hidden="true"`, or an inline style with
+ * `display: none` or `visibility: hidden`, in any quoting. */
+function hides(attributes) {
+  if (/(^|\s)hidden(\s|=|\/|$)/iu.test(attributes) || /aria-hidden\s*=\s*["']?true\b/iu.test(attributes)) return true;
+  const style = /(^|\s)style\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/iu.exec(attributes);
+  const value = style ? style[3] ?? style[4] ?? style[5] : '';
+  return /display\s*:\s*none|visibility\s*:\s*hidden/iu.test(value);
+}
+
+/** The page with every hidden element removed, up to its matching close tag (nesting counted). */
+export function withoutHidden(html) {
+  const tags = /<([a-z][\w-]*)\b([^>]*)>/giu;
+  let out = '';
+  let kept = 0;
+  for (let open = tags.exec(html); open; open = tags.exec(html)) {
+    const [, name, attributes] = open;
+    if (!hides(attributes)) continue;
+    out += `${html.slice(kept, open.index)} `;
+    kept = tags.lastIndex;
+    if (!voidTags.has(name.toLowerCase()) && !/\/\s*$/u.test(attributes)) {
+      const same = new RegExp(`<(/?)${name}\\b[^>]*>`, 'giu');
+      same.lastIndex = kept;
+      let depth = 1;
+      let tag = null;
+      while (depth > 0 && (tag = same.exec(html))) {
+        if (tag[1]) depth -= 1;
+        else if (!/\/\s*>$/u.test(tag[0])) depth += 1;
+      }
+      // An element that is never closed hides the rest of the page.
+      kept = tag ? same.lastIndex : html.length;
+    }
+    tags.lastIndex = kept;
+  }
+  return out + html.slice(kept);
+}
+
 /** Visible body text, CSS and attribute values of a page, each folded to lower case. */
 export function pageParts(html) {
   // Hidden elements are not shown to a visitor, so they earn nothing and their text is not read.
-  // A hidden element that nests its own tag name is cut at the first close: still never shown.
-  const bare = html.replace(/<!--[\s\S]*?-->/gu, ' ')
-    .replace(/<([a-z][\w-]*)\b(?=[^>]*(\shidden(\s|=|>|\/)|aria-hidden\s*=\s*"true"|style\s*=\s*"[^"]*(display\s*:\s*none|visibility\s*:\s*hidden)))[^>]*>[\s\S]*?<\/\1\s*>/giu, ' ');
+  const bare = withoutHidden(html.replace(/<!--[\s\S]*?-->/gu, ' '));
   const css = [...bare.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/giu)].map(match => match[1])
     .concat([...bare.matchAll(/style\s*=\s*"([^"]*)"/giu)].map(match => match[1]))
     .join(' ').replace(/\/\*[\s\S]*?\*\//gu, ' ');
@@ -154,17 +190,19 @@ function pricesOf(text, item) {
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
     const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
-    if (amount) found.push(Number(amount[1]));
+    // A label opens a row or block ("| oat latte $5.00"); a name mid-sentence ("inspired by our
+    // oat latte $5.00") may be followed by another item's price.
+    if (amount) found.push({ price: Number(amount[1]), label: /(^|\|)\s*$/u.test(text.slice(0, match.index)) });
   }
   return found;
 }
 // The item's price is the first one after its name: later matches are often the item named in
-// another item's description ("equal parts espresso and steamed milk $4.00"). The stale check
-// below looks at every match, and a page that also shows a replaced price loses the requirement.
-const priced = (item, amount, replaced = []) => p => {
-  const prices = pricesOf(p.text, item);
-  return prices[0] === amount && !prices.some(price => replaced.includes(price));
-};
+// another item's description ("equal parts espresso and steamed milk $4.00").
+const priceOf = (text, item) => pricesOf(text, item)[0]?.price ?? null;
+// A replaced price counts as shown when it is the first price or follows the item as a label.
+const shows = (text, item, amount) => pricesOf(text, item).some((found, index) => found.price === amount && (index === 0 || found.label));
+const priced = (item, amount, replaced = []) => p =>
+  priceOf(p.text, item) === amount && !replaced.some(old => shows(p.text, item, old));
 const day = String.raw`\btues?(day)?s?\b`;
 
 /** The client's final word: 15 requirements, each a test on the page. */
@@ -183,10 +221,11 @@ export const requirements = [
   ['Oat latte $5.25', priced('oat latte', 5.25, [5])],
   ['Cold brew $4.75', priced('cold brew', 4.75)],
   ['Features the Harbor Fog blend', p => p.text.includes('harbor fog')],
-  // Monthly, not just $18: "a month", "/mo", "per month" or "monthly" next to the price or before it.
-  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) =>
-    !/one[\s\p{Pd}]?time|once/u.test(after.slice(0, 20)) &&
-    (/^[\s|]*(\/\s*mo(nth)?\b|a month|per month|each month|every month|monthly|month)/u.test(after) || /month/u.test(before)))],
+  // Monthly, not just $18: "/mo", "a month", "per month" or "monthly" right after the price, or
+  // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" after it.
+  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) =>
+    !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(after) &&
+    (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month|monthly)/u.test(after) || /monthly|\b(per|a|each|every) month\b/u.test(before)))],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
   ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],
 ];
@@ -197,7 +236,7 @@ export const stale = [
   ['Old closing time 17:00', p => /(?<![\d:])(17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
   // "Fresh every day" is fine; only the old opening pattern counts.
   ['Old hours "open every day"', p => /open (every day|daily|7 days a week|seven days)|every day,? (from )?7|(am|pm|:00)\s*,?\s*(daily|every day)/u.test(p.text)],
-  ['Old oat latte price $5.00', p => pricesOf(p.text, 'oat latte').includes(5)],
+  ['Old oat latte price $5.00', p => shows(p.text, 'oat latte', 5)],
 ];
 
 /** Things the client ruled out. */
