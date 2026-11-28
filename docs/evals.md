@@ -5626,6 +5626,19 @@ A graph lives in one ledger, tied to the session it cites, so today nothing move
 - The guard has now needed fixes in four rounds. It is a guard against verbatim repeats, and `docs/parcels.md` says a person reads the labels before sharing; it is not the control that keeps secrets in, which is the scanner over everything that leaves.
 - **Suites after round 4, with main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 698/709 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. Only two local ledgers were used; the commands have not been run between two machines.
 
+### Refresh with main and a fresh Codex review (2026-11-27 and 28)
+
+Nobody had touched #90 since 2026-11-23, and it conflicted with main. Main was merged three times (the last included P4d's copy search, #69, and H12, #110), then a read-only Codex review of the PR's own diff ran until no high finding was left. Every fix has a test that fails without it.
+
+- Round 1, medium: a ledger upgraded from before message keys keys turns `l:<line>`, so a fresh import of the same file refused that ledger's line-cited parcels. For a version 1 or 2 graph a turn on the same line now matches. Medium: main's H10 check reported the label guard's `label.length`; renamed, unchanged.
+- Round 2, high: the scanner finds `password=value` by its context, so a label that copied only the value left verbatim. Medium: a legacy key that came in a parcel could never give way to the real key.
+- Round 3, high (twice): the value check missed a value followed by punctuation, and a bare copy of a found value in a carried turn was sent. `share` now runs P4d's `redactSession` over the whole session plus the graph's own text: a found value is removed from carried turns wherever it is copied, and a copy in the graph's own text, which cannot be redacted, refuses the share. Medium: a line-cited parcel could install an invented key that outlived a full import.
+- Round 4, medium: a key from a line-cited parcel still blocked a later version 3 parcel; a version 3 parcel now takes over any excerpt key no stored graph cites. Medium, accepted: a forged version 3 parcel can cite line 2 by line 5's real key, and the full transcript is then refused, with its own message (`keyClash`).
+- Round 5, medium: a line-cited parcel could store one line under another line's real key. Lines of a version 1 or 2 parcel are now stored under `l:<line>`, whatever keys they carry.
+- Round 6, medium: `publishGraph` checked and inserted outside a transaction, so another process could re-key an excerpt in between; both now run under one write lock (`tests/delete.test.mjs` shows the other connection waiting). Medium: a line-cited parcel carried record UUIDs as keys, outside what the scanner reads; it now sends `l:<line>`. Medium, accepted: a version 3 graph published on the receiver that cites an `l:<line>` placeholder pins it, so a version 3 parcel with that turn's real key is refused there. The fix is several keys per turn, a schema change for a later card; until then, cite received excerpts by line or import the transcript first.
+- Accepted from P4d (ADR-9a): copies under six characters are not looked for.
+- **Suites at 223f30b with main merged (Windows):** `node scripts/check.mjs` no findings, `npm run -s test:graph` 9/9, `node --test tests/*.test.mjs` 0 failed (13 skipped), `npx playwright test` 72 passed (1 skipped). Still not run between two machines.
+
 ## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
 
 R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
@@ -5666,6 +5679,17 @@ R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the
   - (low) `isLoopback` missed `localhost.`, `*.localhost` and the IPv4-mapped form. Added.
   - Not changed: the timeouts and the connection limit have no test of their own (they are Node settings), and the eval's claim that nothing from the network reaches the terminal rests on the code printing only fixed sentences, which the hostile-relay cases exercise.
 - **Suites after the security review, with R1 and main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 712/723 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. The relay and both ledgers ran on one machine; a transfer between two machines has not been tried.
+
+### Refresh with main and R1, and a fresh Codex review (2026-11-27 and 28)
+
+R1 (with main) was merged in after each R1 change. A read-only Codex review of this PR's own diff (`ruslan/r1-parcels...HEAD`) found one medium and five lows over two rounds, all fixed with tests that fail without the fix; round 2 found no high or medium.
+
+- Medium: a box deleted or expired while a slow download was still sending it freed its room at once, so new uploads could hold more memory than the limit. Those bytes stay counted until the last download ends, and one download has 3 minutes in all (`limits.downloadMs`). The tests drive the relay's handler with a response that never finishes, because Windows takes a whole 8 MiB reply into its own buffers.
+- Low: the client read an answer that said it was compressed (fetch unpacks it anyway); such an answer is now refused unread, and the header is compared exactly (round 2 found the first pattern let `sidentity` through).
+- Low: `receive --from` promised a relay that refused the delete would drop its copy in 24 hours, and stated a delete it can only report; both sentences now say what is known.
+- Main's H9 `loopback-only` check flags `relay serve --host`, the one listener ADR-20 allows beyond loopback. `scripts/check.mjs` names it by file and exact arguments, once; the same call anywhere else, or twice, is still a finding. Low, not changed: the exemption follows the argument text, not the function it sits in.
+- Low, not changed: response bodies the client does not need are left to the transfer timeout instead of being cancelled.
+- **Suites with R1 and main merged (Windows):** see the R1 refresh entry; the relay ran on one machine only.
 
 ## H9 — Repo-wide invariant checks (defined 2026-11-26, before the code)
 
