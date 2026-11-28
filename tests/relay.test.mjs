@@ -27,14 +27,14 @@ const transcript = [
 
 /** A relay listening on a loopback port for one test. */
 async function relay(t, options) {
-  const { server, stats, arriving } = createRelay(options);
+  const { server, stats, arriving, leaving } = createRelay(options);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise(resolve => {
     server.closeAllConnections();
     server.close(resolve);
   }));
-  return { origin: `http://127.0.0.1:${server.address().port}`, stats, arriving, port: server.address().port };
+  return { origin: `http://127.0.0.1:${server.address().port}`, stats, arriving, leaving, port: server.address().port };
 }
 
 const put = (origin, token, body, headers = {}) => fetch(origin + '/v1/parcel', {
@@ -232,6 +232,71 @@ test('R2: an upload must say its length, and counts against the limits while it 
   assert.deepEqual(stats(), { parcels: 2, bytes: 440 });
 });
 
+/**
+ * A download whose reader never finishes: the relay's request handler is given a response
+ * that only ends when the relay destroys it. A real slow socket cannot show this on every
+ * system, because the system can take a whole parcel into its own buffers at once.
+ */
+async function stuckDownload(server, secret) {
+  const { EventEmitter } = await import('node:events');
+  const response = new EventEmitter();
+  response.status = null;
+  response.writeHead = status => { response.status = status; };
+  response.end = () => {};
+  response.destroy = () => { response.destroyed = true; response.emit('close'); };
+  response.finish = () => response.emit('close');
+  server.emit('request', { headers: { authorization: `Bearer ${accessToken(secret)}` }, url: '/v1/parcel', method: 'GET' }, response);
+  assert.equal(response.status, 200);
+  return response;
+}
+
+test('R2: a parcel still being downloaded counts against the limit after it is deleted, until the download ends', async t => {
+  // Codex review of the refresh (2026-11-27): a slow reader kept a deleted parcel's buffer
+  // in memory while new uploads filled the room it had freed.
+  const limits = { parcels: 8, bytes: 1000, lifetimeMs: 60_000, downloadMs: 60_000 };
+  const { server, stats, leaving } = createRelay({ limits });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const secret = newSecret();
+  await sendSealed(origin, secret, sealedBytes(600));
+  const first = await stuckDownload(server, secret);
+  const second = await stuckDownload(server, secret);
+  assert.equal(await deleteSealed(origin, secret), true);
+  assert.deepEqual(stats(), { parcels: 0, bytes: 0 });
+  assert.deepEqual(leaving(), { bytes: 600 }, 'one buffer, still being sent twice');
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(401))).status, 507);
+  first.finish();
+  assert.deepEqual(leaving(), { bytes: 600 }, 'until the last download ends');
+  second.finish();
+  assert.deepEqual(leaving(), { bytes: 0 });
+  assert.equal((await put(origin, accessToken(newSecret()), sealedBytes(401))).status, 201);
+  // A download that ended before the delete leaves nothing behind.
+  const other = newSecret();
+  await sendSealed(origin, other, sealedBytes(100));
+  (await stuckDownload(server, other)).finish();
+  assert.equal(await deleteSealed(origin, other), true);
+  assert.deepEqual(leaving(), { bytes: 0 });
+});
+
+test('R2: one download has a deadline, however slowly its reader keeps reading', async t => {
+  const { server, leaving } = createRelay({ limits: { parcels: 2, bytes: 1000, lifetimeMs: 60_000, downloadMs: 50 } });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const secret = newSecret();
+  await sendSealed(origin, secret, sealedBytes(200));
+  const download = await stuckDownload(server, secret);
+  const cut = new Promise(resolve => download.once('close', () => resolve(true)));
+  const late = new Promise(resolve => setTimeout(() => resolve(false), 5_000).unref());
+  assert.equal(await Promise.race([cut, late]), true, 'the relay cut the download');
+  assert.equal(download.destroyed, true);
+  assert.equal(await deleteSealed(origin, secret), true);
+  assert.deepEqual(leaving(), { bytes: 0 });
+});
+
 test('R2: a parcel expires on an idle relay, with no request to prompt it', async t => {
   const { origin, stats } = await relay(t, { limits: { parcels: 2, bytes: 1000, lifetimeMs: 150 } });
   await sendSealed(origin, newSecret(), sealedBytes(64));
@@ -315,6 +380,29 @@ test('R2: the client reports a relay that is absent, or is not one, in fixed wor
   await assert.rejects(fetchSealed(origin, newSecret()), unreachable);
   assert.equal(await deleteSealed(origin, newSecret()), false);
   assert.equal(elsewhere, 0);
+});
+
+test('R2: the client does not read a relay answer that says it is compressed', async t => {
+  // Codex review of the refresh (2026-11-27): fetch unpacks a compressed answer even when
+  // asked for it as it is, so a small hostile answer could unpack into a large one.
+  const { createServer } = await import('node:http');
+  const { gzipSync } = await import('node:zlib');
+  let served = 0;
+  const hostile = createServer((request, response) => {
+    served += 1;
+    const body = request.url === '/v1/health'
+      ? gzipSync(JSON.stringify({ relay: relayName, version: 1 }))
+      : gzipSync(Buffer.alloc(4 * maxSealedBytes, 7));
+    response.writeHead(200, { 'Content-Encoding': 'gzip', 'Content-Length': body.length, 'Content-Type': 'application/octet-stream' });
+    response.end(body);
+  });
+  hostile.listen(0, '127.0.0.1');
+  await once(hostile, 'listening');
+  t.after(() => new Promise(resolve => { hostile.closeAllConnections(); hostile.close(resolve); }));
+  const origin = `http://127.0.0.1:${hostile.address().port}`;
+  await assert.rejects(checkRelay(origin), { message: 'That address does not answer as a Context Ledger relay.' });
+  await assert.rejects(fetchSealed(origin, newSecret()), { message: 'The relay sent a compressed answer, which a relay never does. Nothing was stored.' });
+  assert.equal(served, 2);
 });
 
 test('R2: a parcel whose upload was stored but not confirmed is deleted again', async t => {
@@ -452,6 +540,38 @@ test('R2: share --relay and receive --from carry a graph between two ledgers, an
   const twice = await run(['receive', '--from', code], b.env);
   assert.equal(twice.code, 1);
   assert.equal(twice.stderr, 'The relay holds no parcel for this code. It may have been received already, or have expired.\n');
+});
+
+test('R2: receive --from does not promise that a relay which refused the delete will drop its copy', async t => {
+  // Codex review of the refresh (2026-11-27): only the bundled relay is known to delete
+  // after 24 hours; a relay that refuses the delete may keep the copy.
+  const a = vera(t);
+  const b = ledger(t, 'b');
+  openStore(b.path).close();
+  const secret = newSecret();
+  const sealed = sealParcel(secret, serializeParcel(a.parcel));
+  const { createServer } = await import('node:http');
+  const keeper = createServer((request, response) => {
+    if (request.url === '/v1/health') {
+      const body = JSON.stringify({ relay: relayName, version: 1 });
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+      return response.end(body);
+    }
+    if (request.method === 'GET') {
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': sealed.length });
+      return response.end(sealed);
+    }
+    response.writeHead(500, { 'Content-Length': 0 });
+    return response.end();
+  });
+  keeper.listen(0, '127.0.0.1');
+  await once(keeper, 'listening');
+  t.after(() => new Promise(resolve => { keeper.closeAllConnections(); keeper.close(resolve); }));
+  const received = await run(['receive', '--from', formatCode(`http://127.0.0.1:${keeper.address().port}`, secret)], b.env);
+  assert.equal(received.code, 0, received.stderr);
+  assert.equal(received.stdout.trimEnd().split('\n').at(-1),
+    'The relay did not confirm that it deleted its sealed copy. A Context Ledger relay deletes a copy after 24 hours; a relay that is not one may keep it.');
+  assert.equal(received.stdout.includes('expires within'), false);
 });
 
 test('R2: a parcel the ledger refuses stays on the relay, and a changed one is not opened', async t => {

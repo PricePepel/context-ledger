@@ -610,7 +610,7 @@ async function receiveFromCommand(code) {
   await storeParcel(parseParcel(client.openParcel(secret, sealed)));
   console.log(await client.deleteSealed(origin, secret)
     ? 'The relay no longer holds the parcel.'
-    : 'The relay did not confirm that it deleted its sealed copy. That copy expires within 24 hours.');
+    : 'The relay did not confirm that it deleted its sealed copy. A Context Ledger relay deletes a copy after 24 hours; a relay that is not one may keep it.');
 }
 
 /** Card R2: run the relay until the process is stopped. */

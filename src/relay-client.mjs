@@ -112,8 +112,17 @@ async function call(origin, path, init = {}, timeoutMs = transferMs) {
   }
 }
 
+// Asking for the answer as it is (Accept-Encoding above) is only a preference: fetch
+// still unpacks a compressed answer as it is read. So an answer that says it is encoded is
+// never read (Codex review of the refresh, 2026-11-27).
+const isEncoded = response => !/^(?:s*identitys*)?$/iu.test(response.headers.get('content-encoding') ?? '');
+
 /** The body of an answer, or null once it passes `limit` bytes; an unreadable body rejects. */
 async function readBody(response, limit) {
+  if (isEncoded(response)) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('An encoded answer is not read.');
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body ?? []) {
@@ -172,6 +181,10 @@ export async function fetchSealed(origin, secret) {
     throw new Error('The relay holds no parcel for this code. It may have been received already, or have expired.');
   }
   if (response.status !== 200 || !response.body) throw new Error(`The relay returned HTTP ${response.status}.`);
+  if (isEncoded(response)) {
+    await response.body.cancel().catch(() => {});
+    throw new Error('The relay sent a compressed answer, which a relay never does. Nothing was stored.');
+  }
   let sealed;
   try {
     sealed = await readBody(response, maxSealedBytes);

@@ -15,7 +15,9 @@ export const defaultRelayPort = 4319;
 // A parcel is at most 8 MiB (parcel.mjs); the seal adds a 32-byte header and tag.
 export const maxSealedBytes = 8 * 1024 * 1024 + 1024;
 export const minSealedBytes = 33;
-export const defaultLimits = Object.freeze({ parcels: 64, bytes: 128 * 1024 * 1024, lifetimeMs: 24 * 60 * 60 * 1000 });
+// downloadMs: how long one download may take in all, so a reader that takes a byte now
+// and then cannot keep a parcel's buffer alive past the idle timeout.
+export const defaultLimits = Object.freeze({ parcels: 64, bytes: 128 * 1024 * 1024, lifetimeMs: 24 * 60 * 60 * 1000, downloadMs: 180_000 });
 
 /**
  * What `ledger relay serve` prints once it listens, from server.address(). An address
@@ -102,13 +104,21 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
   // the relay hold more in memory than it says it holds.
   let arriving = 0;
   let arrivingBytes = 0;
+  // A box deleted or expired while a download is still sending it keeps its buffer in
+  // memory until the last such download ends, so those bytes still count against the
+  // limit (Codex review of the refresh, 2026-11-27).
+  let leavingBytes = 0;
+  const downloadMs = limits.downloadMs ?? defaultLimits.downloadMs;
   const drop = id => {
     const box = boxes.get(id);
     if (!box) return false;
     held -= box.sealed.length;
     boxes.delete(id);
+    box.dropped = true;
+    if (box.readers > 0) leavingBytes += box.sealed.length;
     return true;
   };
+  const inMemory = () => held + leavingBytes + arrivingBytes;
   const sweep = () => {
     const time = now();
     for (const [id, box] of boxes) {
@@ -124,6 +134,14 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
     if (request.method === 'GET') {
       const box = boxes.get(id);
       if (!box) return refuse(response, 404);
+      box.readers += 1;
+      const deadline = setTimeout(() => response.destroy(), downloadMs);
+      deadline.unref();
+      response.on('close', () => {
+        clearTimeout(deadline);
+        box.readers -= 1;
+        if (box.dropped && box.readers === 0) leavingBytes -= box.sealed.length;
+      });
       response.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'Content-Length': box.sealed.length,
@@ -146,7 +164,7 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
     const early = Number.isNaN(declared) ? 411
       : boxes.has(id) ? 409
         : declared > maxSealedBytes ? 413
-          : boxes.size + arriving >= limits.parcels || held + arrivingBytes + declared > limits.bytes ? 507 : 0;
+          : boxes.size + arriving >= limits.parcels || inMemory() + declared > limits.bytes ? 507 : 0;
     if (early) {
       await readBody(request, 0);
       return refuse(response, early);
@@ -165,8 +183,8 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
     // Checked again: other requests ran while this body arrived.
     sweep();
     if (boxes.has(id)) return refuse(response, 409);
-    if (boxes.size + arriving >= limits.parcels || held + arrivingBytes + sealed.length > limits.bytes) return refuse(response, 507);
-    boxes.set(id, { sealed, expires: now() + limits.lifetimeMs });
+    if (boxes.size + arriving >= limits.parcels || inMemory() + sealed.length > limits.bytes) return refuse(response, 507);
+    boxes.set(id, { sealed, expires: now() + limits.lifetimeMs, readers: 0, dropped: false });
     held += sealed.length;
     return send(response, 201, { stored: true, expiresInSeconds: Math.floor(limits.lifetimeMs / 1000) });
   }
@@ -204,5 +222,10 @@ export function createRelay({ limits = defaultLimits, now = Date.now } = {}) {
   const sweeper = setInterval(sweep, Math.max(1, Math.min(60_000, limits.lifetimeMs)));
   sweeper.unref();
   server.on('close', () => clearInterval(sweeper));
-  return { server, stats: () => ({ parcels: boxes.size, bytes: held }), arriving: () => ({ uploads: arriving, bytes: arrivingBytes }) };
+  return {
+    server,
+    stats: () => ({ parcels: boxes.size, bytes: held }),
+    arriving: () => ({ uploads: arriving, bytes: arrivingBytes }),
+    leaving: () => ({ bytes: leavingBytes }),
+  };
 }
