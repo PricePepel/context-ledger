@@ -388,12 +388,13 @@ test('R2: the client does not read a relay answer that says it is compressed', a
   const { createServer } = await import('node:http');
   const { gzipSync } = await import('node:zlib');
   let served = 0;
+  let encoding = 'gzip';
   const hostile = createServer((request, response) => {
     served += 1;
     const body = request.url === '/v1/health'
       ? gzipSync(JSON.stringify({ relay: relayName, version: 1 }))
       : gzipSync(Buffer.alloc(4 * maxSealedBytes, 7));
-    response.writeHead(200, { 'Content-Encoding': 'gzip', 'Content-Length': body.length, 'Content-Type': 'application/octet-stream' });
+    response.writeHead(200, { 'Content-Encoding': encoding, 'Content-Length': body.length, 'Content-Type': 'application/octet-stream' });
     response.end(body);
   });
   hostile.listen(0, '127.0.0.1');
@@ -403,6 +404,10 @@ test('R2: the client does not read a relay answer that says it is compressed', a
   await assert.rejects(checkRelay(origin), { message: 'That address does not answer as a Context Ledger relay.' });
   await assert.rejects(fetchSealed(origin, newSecret()), { message: 'The relay sent a compressed answer, which a relay never does. Nothing was stored.' });
   assert.equal(served, 2);
+  // Round 2: a value that only contains the word identity is not identity.
+  for (encoding of ['sidentity', 'identitys', 'gzip, identity']) {
+    await assert.rejects(fetchSealed(origin, newSecret()), { message: 'The relay sent a compressed answer, which a relay never does. Nothing was stored.' }, encoding);
+  }
 });
 
 test('R2: a parcel whose upload was stored but not confirmed is deleted again', async t => {
@@ -528,7 +533,7 @@ test('R2: share --relay and receive --from carry a graph between two ledgers, an
   assert.equal(received.code, 0, received.stderr);
   assert.equal(received.stdout, `Received graph ${a.graph.id} of party vera into project default.\n`
     + `Session ${a.session.id}: 2 lines added; it holds 2 excerpt lines received from another machine.\n`
-    + 'The relay no longer holds the parcel.\n');
+    + 'The relay says it deleted its sealed copy.\n');
   assert.equal(received.stdout.includes(secret.toString('base64url')), false);
   const store = openStore(b.path);
   try {

@@ -115,7 +115,7 @@ async function call(origin, path, init = {}, timeoutMs = transferMs) {
 // Asking for the answer as it is (Accept-Encoding above) is only a preference: fetch
 // still unpacks a compressed answer as it is read. So an answer that says it is encoded is
 // never read (Codex review of the refresh, 2026-11-27).
-const isEncoded = response => !/^(?:s*identitys*)?$/iu.test(response.headers.get('content-encoding') ?? '');
+const isEncoded = response => !['', 'identity'].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
 
 /** The body of an answer, or null once it passes `limit` bytes; an unreadable body rejects. */
 async function readBody(response, limit) {
