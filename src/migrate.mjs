@@ -2,7 +2,7 @@
 // versions existed is version 0 and is upgraded in place when a store opens it.
 import { appendEvent } from './reviews.mjs';
 
-export const schemaVersion = 7;
+export const schemaVersion = 8;
 
 const userVersion = database => database.prepare('PRAGMA user_version').get().user_version;
 const columns = (database, table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -198,7 +198,8 @@ export function refuseNewerSchema(database) {
  * keys (copyStoredMessages), and one session that cannot be copied fails the whole step,
  * with an error that names it. A file that already has a messages table or a
  * sessions_messages trigger is refused. A turn's text is kept as a JSON string literal
- * (text_json), which is lossless.
+ * (text_json), which is lossless. Version 8 adds session_excerpts (card R1): a row marks
+ * a session that holds only the lines a graph received from another machine cites.
  * Every step checks the schema itself, so it is safe to repeat and does not depend on
  * the order in which other branches add their own steps.
  *
@@ -407,6 +408,18 @@ export function migrate(database, bootstrap = () => {}) {
         database.exec('DROP TABLE node_reviews;');
       }
       database.exec('PRAGMA user_version = 7;');
+    }
+    if (version < 8) {
+      // Card R1 (ADR-19): a session received in a parcel holds only the lines a shared
+      // graph cites. A side table, so sessions and its triggers stay as they are; the row
+      // goes with its session when that is deleted.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS session_excerpts (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+          received_at TEXT NOT NULL
+        ) STRICT;
+        PRAGMA user_version = 8;
+      `);
     }
     database.exec('COMMIT');
   } catch (error) {

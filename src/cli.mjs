@@ -23,6 +23,8 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
+  '       npm run ledger -- share <graph-id> --out <new-file>\n' +
+  '       npm run ledger -- receive <parcel-file>\n' +
   '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
   '       npm run ledger -- artifact list [--project <slug>] [--limit <n>] [--after <id>]\n' +
   '       npm run ledger -- login\n' +
@@ -105,6 +107,14 @@ function command(argv) {
       return { action, path: '/api/sessions/' + positionals[0], sessionId: positionals[0], signDir: values.sign };
     }
   }
+  // Card R1: a parcel carries one graph and the lines it cites to another machine.
+  if (action === 'share') {
+    const { values, positionals } = options(args, { out: { type: 'string' } });
+    if (positionals.length === 1 && /^[a-f0-9]{64}$/u.test(positionals[0]) && values.out) {
+      return { action, graphId: positionals[0], out: values.out };
+    }
+  }
+  if (action === 'receive' && args.length === 1 && args[0] !== '' && !args[0].startsWith('-')) return { action, filePath: args[0] };
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
     return { action, path: '/api/export?' + new URLSearchParams(args.slice(1).map(id => ['graph', id])), raw: true };
@@ -146,13 +156,14 @@ function command(argv) {
   throw new Error(usage);
 }
 
-async function readGraphPacket(packetPath) {
+/** The bytes of a regular file of at most 8 MiB; `name` starts the error sentences. */
+async function readSmallFile(path, name) {
   let file;
   try {
-    file = await open(packetPath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    file = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     const stat = await file.stat();
-    if (!stat.isFile()) throw new Error('Graph packet must be a regular file.');
-    if (stat.size > maxGraphPacketBytes) throw new Error('Graph packet exceeds 8 MiB.');
+    if (!stat.isFile()) throw new Error(`${name} must be a regular file.`);
+    if (stat.size > maxGraphPacketBytes) throw new Error(`${name} exceeds 8 MiB.`);
 
     // Keep the limit if the file grows between stat and read.
     const buffer = Buffer.allocUnsafe(maxGraphPacketBytes + 1);
@@ -162,15 +173,17 @@ async function readGraphPacket(packetPath) {
       if (bytesRead === 0) break;
       size += bytesRead;
     }
-    if (size > maxGraphPacketBytes) throw new Error('Graph packet exceeds 8 MiB.');
+    if (size > maxGraphPacketBytes) throw new Error(`${name} exceeds 8 MiB.`);
     return buffer.subarray(0, size);
   } catch (error) {
-    if (error.code) throw new Error('Cannot read graph packet file.');
+    if (error.code) throw new Error(`Cannot read ${name.toLowerCase()} file.`);
     throw error;
   } finally {
     await file?.close();
   }
 }
+
+const readGraphPacket = packetPath => readSmallFile(packetPath, 'Graph packet');
 
 /** Card G8: install or uninstall the MCP server and instruction block for each agent. */
 async function setup(mode, args) {
@@ -490,6 +503,96 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
   console.log(`Review chain verified: ${count}, with the trusted head at event ${result.trustedAt} (${since} added since).\nHead: ${result.head}`);
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * Card R1 (ADR-19): write a parcel for one stored graph: the packet, the lines it cites
+ * after the secret scanner, and its artifacts. The ledger is read on one read-only
+ * connection, and the file is new and for its owner only.
+ */
+async function shareCommand(graphId, out) {
+  const store = await openCurrentStore(ledgerDatabasePath(), 'share');
+  const { buildParcel } = await import('./parcel.mjs');
+  const { InputError } = await import('./errors.mjs');
+  let built;
+  let total;
+  try {
+    let graph;
+    let session;
+    try {
+      graph = store.getGraph(graphId);
+      session = graph && store.get(graph.packet.sessionId);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+    if (!graph || !session) throw new Error('Graph not found.');
+    total = session.messages.length;
+    try {
+      built = buildParcel(graph, session);
+    } catch (error) {
+      // The parcel's own messages are fixed sentences; anything else may carry content.
+      throw error instanceof InputError ? error : new Error('Cannot build a parcel for this graph.');
+    }
+  } finally {
+    store.close();
+  }
+  let file;
+  try {
+    // wx: never replace a file, and never write through a link someone left at the path.
+    file = await open(out, 'wx', 0o600);
+  } catch (error) {
+    if (error.code === 'EEXIST') throw new Error('The output file already exists. Choose a new file.');
+    if (error.code === 'ENOENT') throw new Error('The folder of the output file does not exist.');
+    throw new Error('Cannot create the output file.');
+  }
+  try {
+    await file.writeFile(built.text);
+    await file.sync();
+  } catch {
+    throw new Error('Cannot write the output file. Delete what was written and try again.');
+  } finally {
+    await file.close();
+  }
+  const lines = built.parcel.session.messages.length;
+  console.log(`Parcel written to ${terminalLabel(out)}\nGraph: ${graphId}\n` +
+    `It carries the ${plural(lines, 'line')} the graph cites, of ${total} in the session.`);
+  if (built.redacted > 0) {
+    console.log(`${plural(built.redacted, 'possible secret')} in what it carries ${built.redacted === 1 ? 'was' : 'were'} replaced by [REDACTED] markers.`);
+  }
+  if (built.links > 0) {
+    console.log(`This graph links to ${plural(built.links, 'other graph')}. The receiving ledger needs ${built.links === 1 ? 'it' : 'them'} first.`);
+  }
+  console.log('On the other machine, run: ledger receive <this file>');
+}
+
+/** Card R1 (ADR-19): check a parcel file and store its graph and lines, all or nothing. */
+async function receiveCommand(filePath) {
+  const { parseParcel } = await import('./parcel.mjs');
+  const { GraphInputError } = await import('./graph.mjs');
+  const parcel = parseParcel(await readSmallFile(filePath, 'Parcel'));
+  const { openStore, InputError, ConflictError } = await import('./store.mjs');
+  let store;
+  try {
+    store = openStore(ledgerDatabasePath());
+  } catch (error) {
+    // A newer file is refused in words that name no path; any other error may name one.
+    throw new Error(error?.code === 'LEDGER_SCHEMA' ? error.message : 'Cannot open the ledger database.');
+  }
+  try {
+    const { graph, session, added } = store.receiveParcel(parcel);
+    const party = typeof graph.packet.party === 'string' ? ` of party ${terminalLabel(graph.packet.party)}` : '';
+    console.log(`Received graph ${graph.id}${party} into project ${terminalLabel(session.project)}.`);
+    console.log(session.excerpts === true
+      ? `Session ${session.id}: ${plural(added, 'line')} added; it holds ${plural(session.messageCount, 'excerpt line')} received from another machine.`
+      : `Session ${session.id} was already imported here, so no line was added.`);
+  } catch (error) {
+    // Store, parcel and graph messages are fixed sentences; anything else may carry content.
+    throw error instanceof InputError || error instanceof ConflictError || error instanceof GraphInputError ? error : new Error('The parcel was not stored.');
+  } finally {
+    try { store.close(); } catch { /* the result or error above is what matters */ }
+  }
+}
+
 async function signCommand(sessionId, signDir) {
   // Load the key first, so a missing key fails before anything is read or written.
   const privateKey = await loadSigningKey(signingKeyPath());
@@ -558,9 +661,12 @@ async function main() {
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head } = command(argv);
+  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head, graphId, out } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
+  // Card R1: parcels are read from and stored into the database in this process too.
+  if (action === 'share') return shareCommand(graphId, out);
+  if (action === 'receive') return receiveCommand(filePath);
   // Card P4a: keys, signing and checking work on local files; signing reads the session
   // from the ledger database in this process, never from whatever answers on PORT.
   if (action === 'keygen') {

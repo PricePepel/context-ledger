@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, mkdirSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
-import { basename, dirname, win32 } from 'node:path';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { graphContext } from './context.mjs';
 import { ConflictError, InputError } from './errors.mjs';
@@ -9,10 +9,12 @@ import { diffGraphs } from './diff.mjs';
 import { graphPrefixLength, nodeLinkBundle } from './export.mjs';
 import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
-import { canonicalPacket, isPartyGraph, resolveCitations, validateGraph } from './graph.mjs';
+import { canonicalPacket, isPartyGraph, packetCitations, resolveCitations, serializeGraphPacket, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
+import { byLine, checkParcel, compatibleTurns, sameTurn } from './parcel.mjs';
 import { mountRooms, roomsSchema } from './rooms.mjs';
+import { sourceName } from './text.mjs';
 
 export { ConflictError, InputError };
 
@@ -23,7 +25,16 @@ const secureDeleteModes = ['OFF', 'ON', 'FAST'];
 const deleteJournalModes = new Set(['delete', 'truncate', 'memory', 'off']);
 
 // A summary names its project by slug; project IDs stay inside the database.
-const summaryColumns = 's.id, s.provider, s.source, s.title, s.message_count AS messageCount, p.slug AS project';
+// Card R1: excerpts is 1 for a session received in a parcel; summaryRow() turns that into
+// excerpts: true and leaves the field out of every other summary.
+const summaryColumns = 's.id, s.provider, s.source, s.title, s.message_count AS messageCount, p.slug AS project, '
+  + 'EXISTS (SELECT 1 FROM session_excerpts e WHERE e.session_id = s.id) AS excerpts';
+function summaryRow(row) {
+  if (!row) return row;
+  if (row.excerpts) row.excerpts = true;
+  else delete row.excerpts;
+  return row;
+}
 const sessionRows = 'sessions s LEFT JOIN projects p ON p.id = s.project_id';
 const projectPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 // A record UUID as Claude Code writes it. Anything else gets a line-hash key.
@@ -310,15 +321,6 @@ function withSkipped(summary, skipped) {
   return { ...summary, skipped: { count: skipped.count, lines: skipped.lines } };
 }
 
-function sourceName(source) {
-  if (typeof source !== 'string') throw new InputError('Choose a transcript file.');
-  const name = basename(win32.basename(source)).trim();
-  if (!name || name === '.' || name === '..' || name.length > 255 || /\p{Cc}/u.test(name)) {
-    throw new InputError('Invalid transcript file name.');
-  }
-  return name;
-}
-
 function sessionFilter(query, provider, project) {
   const tokens = [...new Set(query.toLowerCase().split(/\s+/u).filter(Boolean))];
   const conditions = tokens.map(() => 'instr(s.search_text, ?) > 0');
@@ -335,6 +337,8 @@ function sessionFilter(query, provider, project) {
 }
 
 const whereClause = conditions => (conditions.length ? `WHERE ${conditions.join(' AND ')}` : '');
+
+const searchTextFor = (title, messages) => [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
 
 function titleFor(messages) {
   const first = messages.find(message => message.role === 'user') ?? messages[0];
@@ -354,16 +358,6 @@ function titleFor(messages) {
     if (title.length >= 120) break;
   }
   return title.join('');
-}
-
-function serializeGraphPacket(packet) {
-  // JSON object key order is insignificant. Array order remains part of the packet.
-  return JSON.stringify(packet, (_key, value) => {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
-    }
-    return value;
-  });
 }
 
 /**
@@ -431,6 +425,19 @@ function storeOn(database) {
   `);
   const getGraph = database.prepare('SELECT payload FROM graphs WHERE id = ?');
   const countCitingGraphs = database.prepare('SELECT count(*) AS graphs FROM graphs WHERE session_id = ?');
+  const selectSessionGraphs = database.prepare('SELECT payload FROM graphs WHERE session_id = ?');
+  // A key of the form l:<line> is what an upgrade from before message keys gave a turn
+  // (schema version 3). A fresh import of the same file keys that turn by its UUID or hash.
+  const legacyKey = key => key.startsWith('l:');
+  /** The message keys the stored version 3 graphs of a session cite; a cited key must stay. */
+  const keysCitedByGraphs = sessionId => {
+    const keys = new Set();
+    for (const { payload } of selectSessionGraphs.iterate(sessionId)) {
+      const { packet } = JSON.parse(payload);
+      if (packet.version === 3) for (const key of packetCitations(packet).keys) keys.add(key);
+    }
+    return keys;
+  };
   const deleteSessionRow = database.prepare('DELETE FROM sessions WHERE id = ?');
   const readGraph = id => {
     const row = getGraph.get(id);
@@ -483,7 +490,17 @@ function storeOn(database) {
     .map(({ role, text, line }) => ({ role, text, line })));
   const deleteRows = database.prepare('DELETE FROM messages WHERE session_id = ?');
   const refreshSession = database.prepare('UPDATE sessions SET message_count = ?, messages = ?, search_text = ? WHERE id = ?');
-  const getSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
+  const selectSummary = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} WHERE s.id = ?`);
+  const getSummary = { get: id => summaryRow(selectSummary.get(id)) };
+  // Card R1 (ADR-19): the mark of a session that holds only received excerpts.
+  const markExcerpts = database.prepare(`
+    INSERT INTO session_excerpts (session_id, received_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT (session_id) DO NOTHING
+  `);
+  const unmarkExcerpts = database.prepare('DELETE FROM session_excerpts WHERE session_id = ?');
+  const completeSession = database.prepare(`
+    UPDATE sessions SET provider = ?, source = ?, title = ?, message_count = ?, messages = ?, search_text = ? WHERE id = ?
+  `);
   const selectMessages = database.prepare('SELECT role, text_json, line, key, author_json, recipient_json FROM messages WHERE session_id = ? ORDER BY seq');
   // Plain objects, as the JSON column gave. The text is a JSON string literal, because
   // node:sqlite cuts a string at a NUL when reading and replaces lone surrogates when
@@ -540,64 +557,148 @@ function storeOn(database) {
    * imported again. Its ID stays, and every turn it had is matched by line, role and text
    * and keeps its key, an l:<line> key from the version 3 copy included, so graphs that
    * cite it hold. A session whose turns would change in any other way is left as it is.
-   * Returns the session's summary, read under the write lock, or undefined when the
-   * session is gone.
+   * Runs inside save's transaction.
    */
   function addAgentTurns(id, messages, searchText) {
+    const old = readMessages(id);
+    const atLine = new Map(messages.map(message => [message.line, message]));
+    const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
+    if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
+        && old.length < messages.length && old.every(same)) {
+      const keyAt = new Map(old.map(message => [message.line, message.key]));
+      const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+      // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
+      if (new Set(merged.map(message => message.key)).size === merged.length) {
+        deleteRows.run(id);
+        writeRows(id, merged);
+        refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
+      }
+    }
+  }
+
+  const excerptsMismatch = 'This ledger holds excerpts received from another machine under this transcript\'s ID, '
+    + 'and the file\'s lines do not match them. Nothing was changed.';
+  const keyClash = 'A graph received from another machine cites one line of this transcript by the key the file gives '
+    + 'another line, so the file was not imported. Nothing was changed.';
+
+  /**
+   * Card R1 (ADR-19): the full transcript of a session that so far held only excerpts
+   * received in a parcel. The whole session replaces them; a line the excerpts had keeps
+   * its key when a stored graph cites that key, so the graph holds, and otherwise takes the
+   * file's own key; the mark is removed. Every excerpt must
+   * be a turn of the file: the same line and role, and the same text or that text with
+   * values replaced by redaction markers (sameTurn). Any other file is refused, so text
+   * someone else sent is never swapped for different text without a word. Runs inside
+   * save's transaction.
+   */
+  function completeExcerpts(id, provider, name, messages, title, searchText) {
+    const old = readMessages(id);
+    const atLine = new Map(messages.map(message => [message.line, message]));
+    if (!old.every(message => atLine.has(message.line) && sameTurn(message, atLine.get(message.line)))) throw new ConflictError(excerptsMismatch);
+    // A key that came in a parcel and that no stored graph cites by key is only a
+    // placeholder, legacy or not: a parcel's keys are not checked against any file, so the
+    // file's own key replaces it (Codex review of the refresh, rounds 2 and 3).
+    const cited = keysCitedByGraphs(id);
+    const kept = old.filter(message => cited.has(message.key));
+    const keyAt = new Map(kept.map(message => [message.line, message.key]));
+    const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
+    // A key a received graph cites can be the file's key of another line: a version 3
+    // parcel's keys are checked only against the lines it carries. The file is refused,
+    // with that reason, rather than the graph losing its citation (accepted in the Codex
+    // review of the refresh, round 4: it needs a forged parcel and changes nothing).
+    if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(keyClash);
+    deleteRows.run(id);
+    writeRows(id, merged);
+    completeSession.run(provider, name, title, merged.length, legacyCopy(merged), searchText, id);
+    unmarkExcerpts.run(id);
+  }
+
+  /**
+   * Stores a parsed transcript, or returns the session these bytes already are. The whole
+   * decision runs under one write lock (card R1 review), so a parcel another process
+   * receives cannot arrive between the look and the write: a new session is inserted,
+   * received excerpts are completed, and a session imported before gains agent turns.
+   */
+  function save(id, provider, name, project, { messages, skipped }) {
+    const title = titleFor(messages);
+    const searchText = searchTextFor(title, messages);
     database.exec('BEGIN IMMEDIATE');
     let pending = true;
     try {
-      if (!getSummary.get(id)) return undefined;
-      const old = readMessages(id);
-      const atLine = new Map(messages.map(message => [message.line, message]));
-      const same = message => atLine.get(message.line)?.role === message.role && atLine.get(message.line).text === message.text;
-      if (messages.some(message => message.role === 'agent') && !old.some(message => message.role === 'agent')
-          && old.length < messages.length && old.every(same)) {
-        const keyAt = new Map(old.map(message => [message.line, message.key]));
-        const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
-        // A new turn's key could equal an old one only by a hash collision; leave the session as it is then.
-        if (new Set(merged.map(message => message.key)).size === merged.length) {
-          deleteRows.run(id);
-          writeRows(id, merged);
-          refreshSession.run(merged.length, legacyCopy(merged), searchText, id);
-        }
+      const stored = getSummary.get(id);
+      if (!stored) {
+        insertProject.run(randomBytes(16).toString('hex'), project, project);
+        // Rows first: the foreign key is deferred, and a session inserted with rows
+        // already in place is left alone by the trigger for older builds.
+        writeRows(id, messages);
+        insert.run(id, provider, name, title, messages.length, legacyCopy(messages), searchText, projectId.get(project).id);
+      } else if (stored.excerpts) {
+        completeExcerpts(id, provider, name, messages, title, searchText);
+      } else {
+        addAgentTurns(id, messages, searchText);
       }
       const summary = getSummary.get(id);
       database.exec('COMMIT');
       pending = false;
-      return summary;
+      return withSkipped(summary, skipped);
     } finally {
       if (pending) database.exec('ROLLBACK');
     }
   }
 
-  function save(id, provider, name, project, { messages, skipped }) {
-    const title = titleFor(messages);
-    const searchText = [title, ...messages.map(message => message.text)].join('\n').toLowerCase();
-    const stored = getSummary.get(id) && addAgentTurns(id, messages, searchText);
-    if (stored) return withSkipped(stored, skipped);
+  // The messages a packet is checked against, the check and the insert run under one write
+  // lock, so a parcel or an import in another process cannot re-key an excerpt between the
+  // check and the insert (Codex review of the R1 refresh, round 6). receiveParcel already
+  // holds the lock when it publishes.
+  let holdingWriteLock = false;
+  function publishUnderLock(packet) {
+    const sessionId = packet?.sessionId;
+    if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
+      throw new InputError('Graph requires a valid transcript session ID.');
+    }
+    if (!getSummary.get(sessionId)) throw new InputError('Graph transcript session not found.');
 
-    database.exec('BEGIN IMMEDIATE');
-    let pending = true;
+    // P1c: the messages come from their rows; G7 grounds each node in them.
+    const messages = readMessages(sessionId);
+    const sourceLines = messages.map(message => message.line);
+    // P2a: a link must stay in the project of the session this graph cites.
+    // A session or graph without a resolved project matches nothing (P2a review).
+    const project = getSummary.get(sessionId).project ?? null;
+    // P2b: version 3 cites this session's messages by key and this project's artifacts.
+    const options = {
+      lookupGraph: id => readGraph(id),
+      sameProject: id => project !== null && graphProject(id) === project,
+      messageKeys: messages.map(message => message.key),
+      hasArtifact: id => artifacts.artifactInProject(id, project),
+    };
+    validateGraph(packet, sourceLines, options);
+    // Derive from the canonical form so derived ID lists follow its order.
+    const ordered = canonicalPacket(packet);
+    const derived = validateGraph(ordered, sourceLines, options);
+    const canonical = serializeGraphPacket(ordered);
+    const id = createHash('sha256').update(canonical).digest('hex');
+    // P2b: a version 3 graph stores what its citations resolved to, so every reader
+    // gets lines (and artifacts) without parsing keys again; G7 grounds on those lines.
+    let citations;
+    if (ordered.version === 3) {
+      const lineAt = new Map(messages.map(message => [message.key, message.line]));
+      citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
+    }
+    const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
+    // P2c: and the hash a person approves or rejects, per node.
+    const versionThree = citations ? { citations, nodeHashes: nodeHashes(ordered) } : {};
+    const payload = { packet: JSON.parse(canonical), ...derived, ...versionThree, ...groundNodes(ordered, messages, linesOf) };
     try {
-      // Another process may have stored the same bytes since the check above.
-      const stored = getSummary.get(id);
-      if (stored) return withSkipped(stored, skipped);
-      insertProject.run(randomBytes(16).toString('hex'), project, project);
-      // Rows first: the foreign key is deferred, and a session inserted with rows
-      // already in place is left alone by the trigger for older builds.
-      writeRows(id, messages);
-      insert.run(id, provider, name, title, messages.length, legacyCopy(messages), searchText, projectId.get(project).id);
-      database.exec('COMMIT');
-      pending = false;
-    } finally {
-      if (pending) database.exec('ROLLBACK');
+      insertGraph.run(id, sessionId, JSON.stringify(payload));
+    } catch (error) {
+      // Another connection deleted the session after it was read above.
+      if (/FOREIGN KEY constraint failed/u.test(error?.message)) throw new InputError('Graph transcript session not found.');
+      throw error;
     }
-    return withSkipped(getSummary.get(id), skipped);
+    return { id, ...JSON.parse(getGraph.get(id).payload) };
   }
 
-
-  return {
+  const store = {
     /**
      * Stores a transcript in a project (the default one when none is named), creating
      * the project on first use. The session ID depends only on the provider and the
@@ -632,7 +733,8 @@ function storeOn(database) {
 
     list(query, provider, project) {
       const { conditions, values } = sessionFilter(query, provider, project);
-      return database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC`).all(...values);
+      return database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC`).all(...values)
+        .map(summaryRow);
     },
 
     /** One page of list(), newest first; next is the last ID shown when more rows match. */
@@ -644,7 +746,7 @@ function storeOn(database) {
         values.push(rowid);
       }
       const rows = database.prepare(`SELECT ${summaryColumns} FROM ${sessionRows} ${whereClause(conditions)} ORDER BY s.rowid DESC LIMIT ?`)
-        .all(...values, limit + 1);
+        .all(...values, limit + 1).map(summaryRow);
       const { rows: sessions, next } = page(rows, limit);
       return { sessions, next };
     },
@@ -701,53 +803,122 @@ function storeOn(database) {
     },
 
     publishGraph(packet) {
-      const sessionId = packet?.sessionId;
-      if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
-        throw new InputError('Graph requires a valid transcript session ID.');
-      }
-      if (!getSummary.get(sessionId)) throw new InputError('Graph transcript session not found.');
-
-      // P1c: the messages come from their rows; G7 grounds each node in them.
-      const messages = readMessages(sessionId);
-      const sourceLines = messages.map(message => message.line);
-      // P2a: a link must stay in the project of the session this graph cites.
-      // A session or graph without a resolved project matches nothing (P2a review).
-      const project = getSummary.get(sessionId).project ?? null;
-      // P2b: version 3 cites this session's messages by key and this project's artifacts.
-      const options = {
-        lookupGraph: id => readGraph(id),
-        sameProject: id => project !== null && graphProject(id) === project,
-        messageKeys: messages.map(message => message.key),
-        hasArtifact: id => artifacts.artifactInProject(id, project),
-      };
-      validateGraph(packet, sourceLines, options);
-      // Derive from the canonical form so derived ID lists follow its order.
-      const ordered = canonicalPacket(packet);
-      const derived = validateGraph(ordered, sourceLines, options);
-      const canonical = serializeGraphPacket(ordered);
-      const id = createHash('sha256').update(canonical).digest('hex');
-      // P2b: a version 3 graph stores what its citations resolved to, so every reader
-      // gets lines (and artifacts) without parsing keys again; G7 grounds on those lines.
-      let citations;
-      if (ordered.version === 3) {
-        const lineAt = new Map(messages.map(message => [message.key, message.line]));
-        citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
-      }
-      const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
-      // P2c: and the hash a person approves or rejects, per node.
-      const versionThree = citations ? { citations, nodeHashes: nodeHashes(ordered) } : {};
-      const payload = { packet: JSON.parse(canonical), ...derived, ...versionThree, ...groundNodes(ordered, messages, linesOf) };
+      if (holdingWriteLock) return publishUnderLock(packet);
+      database.exec('BEGIN IMMEDIATE');
+      holdingWriteLock = true;
+      let pending = true;
       try {
-        insertGraph.run(id, sessionId, JSON.stringify(payload));
-      } catch (error) {
-        // Another connection deleted the session after it was read above.
-        if (/FOREIGN KEY constraint failed/u.test(error?.message)) throw new InputError('Graph transcript session not found.');
-        throw error;
+        const graph = publishUnderLock(packet);
+        database.exec('COMMIT');
+        pending = false;
+        return graph;
+      } finally {
+        holdingWriteLock = false;
+        if (pending) database.exec('ROLLBACK');
       }
-      return { id, ...JSON.parse(getGraph.get(id).payload) };
     },
 
     getGraph: readGraph,
+
+    /**
+     * Card R1 (ADR-19): store a checked parcel (parcel.mjs) in one transaction, so a
+     * parcel that fails any check changes nothing. The session keeps the sender's ID.
+     * A new session holds the parcel's lines and is marked as excerpts. Excerpts already
+     * here gain the lines they lack. A session imported here from its file stays as it is,
+     * and the parcel's lines must be in it. A line both have must be the same turn: the
+     * same key, line and role, and the same text or one a redaction of the other
+     * (sameTurn). Then the artifacts are registered in the parcel's project and the graph
+     * is published as any graph is; its ID must be the one the parcel names. Returns the
+     * stored graph, the session's summary and how many lines were added.
+     */
+    receiveParcel(parcel) {
+      // Checked here too, so no caller can store a parcel that was not checked.
+      const { project, session, graph } = checkParcel(parcel);
+      const name = sourceName(session.source);
+      // A version 1 or 2 graph cites lines, so the keys its parcel carries are checked
+      // against nothing and could be any other line's real key. Its lines are stored under
+      // the placeholder l:<line>, which no other line can hold, and a version 3 parcel or the
+      // full transcript supplies the real key later (Codex review of the refresh, round 5).
+      const incoming = (graph.packet.version === 3 ? [...session.messages] : session.messages.map(message => ({ ...message, key: `l:${message.line}` })))
+        .sort(byLine);
+      database.exec('BEGIN IMMEDIATE');
+      holdingWriteLock = true;
+      let pending = true;
+      try {
+        const stored = getSummary.get(session.id);
+        let added = 0;
+        if (!stored) {
+          const title = titleFor(incoming);
+          insertProject.run(randomBytes(16).toString('hex'), project, project);
+          // Rows first, as an import writes them (see save).
+          writeRows(session.id, incoming);
+          insert.run(session.id, session.provider, name, title, incoming.length, legacyCopy(incoming),
+            searchTextFor(title, incoming), projectId.get(project).id);
+          markExcerpts.run(session.id);
+          added = incoming.length;
+        } else {
+          if (stored.provider !== session.provider || stored.project !== project) {
+            throw new ConflictError('This ledger has the parcel\'s session under another provider or project, so the parcel was not stored.');
+          }
+          const old = readMessages(session.id);
+          const byKey = new Map(old.map(message => [message.key, message]));
+          const byLineHere = new Map(old.map(message => [message.line, message]));
+          const lines = new Set(old.map(message => message.line));
+          // Two sources may key one turn differently: one may be legacy (l:<line>, see
+          // legacyKey), and a line-cited parcel's keys are checked against nothing. A version
+          // 3 graph cites the key, so excerpts here whose key no stored graph cites take the
+          // parcel's key. A version 1 or 2 graph cites only lines, so its keys are not
+          // evidence: the turn on the same line is the same turn and the key already here is
+          // kept (Codex review of the refresh, rounds 3 and 4).
+          const citesLines = graph.packet.version !== 3;
+          let citedHere;
+          const rekey = new Map();
+          const fresh = [];
+          for (const message of incoming) {
+            let have = byKey.get(message.key);
+            const onLine = have ? undefined : byLineHere.get(message.line);
+            if (onLine && !citesLines && stored.excerpts
+              && !(citedHere ??= keysCitedByGraphs(session.id)).has(onLine.key)) {
+              have = onLine;
+              rekey.set(onLine.line, message.key);
+            } else if (onLine && citesLines && (legacyKey(onLine.key) || legacyKey(message.key))) {
+              have = onLine;
+            }
+            // Against a transcript imported here, the parcel shows the turn or a redaction
+            // of it. Of two sets of excerpts, either may be the more redacted one.
+            const same = have && (stored.excerpts ? compatibleTurns(message, have) : sameTurn(message, have));
+            if (have ? !same : lines.has(message.line) || !stored.excerpts) {
+              throw new ConflictError('The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.');
+            }
+            if (!have) fresh.push(message);
+          }
+          if (fresh.length > 0 || rekey.size > 0) {
+            const rekeyed = old.map(message => (rekey.has(message.line) ? { ...message, key: rekey.get(message.line) } : message));
+            const merged = [...rekeyed, ...fresh].sort(byLine);
+            const title = titleFor(merged);
+            deleteRows.run(session.id);
+            writeRows(session.id, merged);
+            completeSession.run(stored.provider, stored.source, title, merged.length, legacyCopy(merged), searchTextFor(title, merged), session.id);
+            added = fresh.length;
+          }
+        }
+        for (const artifact of parcel.artifacts) artifacts.insertArtifact({ ...artifact, project });
+        // Said here, in words a person can act on; validateGraph would refuse it too.
+        const linked = Array.isArray(graph.packet.links) ? graph.packet.links.map(link => link?.graph) : [];
+        if (linked.some(id => typeof id === 'string' && !readGraph(id))) {
+          throw new InputError('This graph links to a graph that is not in this ledger. Receive that graph first.');
+        }
+        const published = store.publishGraph(graph.packet);
+        if (published.id !== graph.id) throw new InputError('The parcel\'s graph ID does not match its packet.');
+        const summary = getSummary.get(session.id);
+        database.exec('COMMIT');
+        pending = false;
+        return { graph: published, session: summary, added };
+      } finally {
+        holdingWriteLock = false;
+        if (pending) database.exec('ROLLBACK');
+      }
+    },
 
     diffGraphs: diff,
 
@@ -779,4 +950,5 @@ function storeOn(database) {
       return graphContext(graph, readDetail(graph.packet.sessionId), { lookupGraph: readGraph, question, budget });
     },
   };
+  return store;
 }
