@@ -27,21 +27,30 @@ test('the PR template runs the check and asks about repeated findings', () => {
 
 // Card H12: a rule the check enforces is named once, beside the check, not restated as a
 // manual step that drifts from it.
-// One bullet names the check, its four rules and where a new rule goes; no other bullet
-// asks for a scan of raw characters, HTML sinks or listen calls.
+// One bullet names the check, its four rules and where a new rule goes. No other bullet
+// names a rule only the check enforces (listen, HTML sinks, code points) or asks for a scan.
+// A bullet runs on over indented or wrapped lines until the next bullet or a blank line.
 export function sectionSixProblems(agents) {
   const section = agents.match(/^## 6\.[^\n]*\n([\s\S]*?)^## 7\./mu)?.[1];
   if (!section) return ['no section 6'];
-  const bullets = section.split(/\r?\n/u).filter(line => line.startsWith('- '));
-  const checker = bullets.filter(line => /node scripts\/check\.mjs/u.test(line));
+  const bullets = [];
+  for (const line of section.split(/\r?\n/u)) {
+    if (line.startsWith('- ')) bullets.push(line);
+    else if (line.trim() && bullets.length) bullets[bullets.length - 1] += ` ${line.trim()}`;
+    else if (!line.trim()) bullets.push('');
+  }
+  const named = bullets.filter(Boolean);
+  const checker = named.filter(line => /node scripts\/check\.mjs/u.test(line));
   const problems = [];
   if (checker.length !== 1) problems.push(`${checker.length} bullets name the check`);
   const [line = ''] = checker;
   for (const [name, pattern] of [['loopback', /loopback/iu], ['HTML sinks', /innerHTML|HTML sink/u], ['raw characters', /raw control/iu], ['code points', /code points/iu], ['add to the check', /add to the check/iu]]) {
     if (!pattern.test(line)) problems.push(`the check bullet does not name ${name}`);
   }
-  for (const other of bullets.filter(bullet => !checker.includes(bullet))) {
-    if (/\b(?:scan|check that|make sure)\b[^.]*\b(?:raw|control|format|bidi|innerHTML|listen)\b/iu.test(other)) problems.push(`restated: ${other.slice(0, 60)}`);
+  for (const other of named.filter(bullet => !checker.includes(bullet))) {
+    const restates = /innerHTML|textContent|HTML sink|\blisten\b|loopback|code points/iu.test(other)
+      || /\b(?:scan|check that|make sure|verify)\b[^.]*\b(?:raw|control|format|bidi)\b/iu.test(other);
+    if (restates) problems.push(`restated: ${other.slice(0, 60)}`);
   }
   return problems;
 }
@@ -56,4 +65,7 @@ test('the section 6 rule fails on a removed rule list, a second copy, or a manua
   assert.notEqual(sectionSixProblems(agents.replace(checkerLine, '- Run `node scripts/check.mjs`.')).length, 0, 'rule list removed');
   assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n${checkerLine}`)).length, 0, 'duplicated');
   assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n- Scan the tests and source for raw control characters.`)).length, 0, 'manual scan');
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n- Browser rendering uses \`textContent\`, never \`innerHTML\`.`)).length, 0, 'a rule restated without a scan verb');
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n- Before a PR, look through the changed files\n  and scan them for raw bidi characters.`)).length, 0, 'a scan on a wrapped line');
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n- The server binds to loopback only.`)).length, 0, 'the listen rule restated');
 });

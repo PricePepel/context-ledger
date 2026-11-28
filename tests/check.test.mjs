@@ -151,6 +151,7 @@ test('the command reads the file kinds the removed per-card scans read', async (
   try {
     const failure = await run(process.execPath, [script, bad]).then(() => null, error => error);
     assert.ok(failure, 'a raw character fails the command');
+    assert.equal(failure.code, 1);
     const found = failure.stdout.trim().split(/\r?\n/u).slice(0, -1).map(line => line.split('  ').slice(0, 2));
     assert.deepEqual(found.sort(), paths.map(path => [`${path}:1:3`, 'raw-character']).sort());
     const { stdout } = await run(process.execPath, [script, clean]);

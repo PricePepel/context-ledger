@@ -242,15 +242,15 @@ test('the console shows hidden characters exactly as the CLI and handoff do', ()
   for (const sample of samples) assert.equal(visibleText(sample), serverVisibleText(sample), JSON.stringify(sample));
 });
 
-test('console files stay light and never parse transcript text as HTML', async () => {
+test('console files stay light and never run text as code', async () => {
   let total = 0;
   for (const name of await readdir(consoleDir)) {
     const text = await readFile(new URL(name, consoleDir), 'utf8');
     total += (await stat(new URL(name, consoleDir))).size;
-    // Card H12: raw control and format characters are scripts/check.mjs's rule, for every
+    // Card H12: raw characters and HTML sinks are scripts/check.mjs's rules, for every
     // tracked file; this test keeps what only the console needs.
     if (name.endsWith('.mjs')) {
-      assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function/u, name);
+      assert.doesNotMatch(text, /\beval\(|new Function/u, name);
       if (name === 'swarm-room.mjs') {
         // Card U7: the one exception. Starting a swarm run is a POST to /api/swarm/runs; it
         // writes nothing to the ledger. No other write method and no other path.

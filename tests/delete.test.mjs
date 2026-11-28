@@ -444,3 +444,10 @@ test('the MCP adapter has no way to delete', async () => {
   }
   assert.doesNotMatch(await readFile(new URL('../src/mcp.mjs', import.meta.url), 'utf8'), /DELETE|deleteSession/u);
 });
+
+// Card H12: Playwright runs the specs it finds, so a deleted browser journey would pass
+// silently. The removed character scan also asserted the spec exists; this keeps that.
+test('the delete browser journey is still in the Playwright suite', async () => {
+  const spec = await readFile(new URL('./e2e/delete.spec.mjs', import.meta.url), 'utf8');
+  assert.match(spec, /\btest\(/u);
+});
