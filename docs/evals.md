@@ -5609,10 +5609,12 @@ M2b-S and L5 train one mapper per ordered pair of models, so a library of N mode
 ### Items, decoding and score (all steps)
 
 - **Items.** The 300 SQuAD v1.1 validation questions of M2b-S (seed 0). The runner checks the IDs against the M2b-S run, as L4's runner does.
-- **Per route,** an item counts only if its M2b document fits 256 tokens for every tokenizer on the route (sender, pivot if there is one, receiver). 256 is the cap L5 trains with. All 300 fit for Phi-3.5 and the Qwen2.5 sizes, which is how M2b-S chose them. A route left with fewer than 200 items is reported and gets no verdict.
+- **Per route,** an item counts only if its M2b document fits 256 tokens for every tokenizer on the route (sender, pivot if there is one, receiver), and, for a chain, both alignments keep the same pivot tokens. 256 is the cap L5 trains with. M2b-S chose the 300 so that they fit Phi-3.5 and Qwen2.5-1.5B; the other Qwen2.5 sizes are expected to fit too, and the runner counts it. The eligible IDs of each route are saved before any arm is scored. A route left with fewer than 200 items gets no verdict, and a step whose required route gets none has no verdict.
+- **Order.** Items keep the order of the M2b-S run. The mismatched donor of an item is the next item in that order with a different passage, wrapping at the end.
 - **Decoding.** Plain greedy, 24 new tokens, repetition penalty 1.0 (the L4 correction).
 - **Score.** Token F1 against the gold answers, best over the references, as M2b-S. Hit rate (the answer contains a gold answer) is reported beside it, because stage 2 teaches SQuAD's short answers.
-- **Intervals.** Paired bootstrap 95% intervals of the per-item F1 difference, 10,000 resamples.
+- **Intervals.** Paired bootstrap 95% intervals of the per-item F1 difference, 10,000 resamples, seed 0.
+- **Comparators.** The id and alignment rule of every L5 checkpoint used, as a leg or as `direct`, are written into this section before the run, and the runner refuses any other. Both legs of a chain must have the same alignment rule.
 - **One seed.** No part is retrained to look for a better result.
 
 ### Arms, per route
@@ -5627,15 +5629,21 @@ M2b-S and L5 train one mapper per ordered pair of models, so a library of N mode
 | `text` | The passage itself, as the M2b document |
 | `closed` | The question alone |
 
-For the pivot hub one more number is reported: the pivot → receiver mapper's own F1 on the same items, where the pivot reads the passage itself. The gap between that and `hub` is what the predicted pivot cache costs.
+For the pivot hub one more number is reported: the pivot → receiver mapper's own F1 on the same items, where the pivot reads the passage itself, with the same pivot tokens, positions and second mapper as the chain. The gap between that and `hub` is what the predicted pivot cache costs.
 
 ### Pass rule per route (fixed before any run)
 
-1. **Carries the passage.** `hub − mismatched` and `hub − zeroed` both have the interval above zero. This is the rule of M2b-S, L4 and L5.
+1. **Carries the passage.** `hub − mismatched` and `hub − zeroed` both have the interval above zero. This is the rule of M2b-S and L5.
 2. **Beats the text summary.** `hub − t2t` has the interval above zero.
 3. **Keeps direct quality.** The lower end of the interval of `hub − direct` is above −0.05 F1. The margin is the one L5 uses to accept its shorter recipe.
 
-A route with no `direct` arm is judged on 1 and 2 only and is never called "keeps direct quality".
+Against `direct`, a route that meets 1 and 2 gets one of three words:
+
+- **keeps direct quality:** it meets 3;
+- **loses quality:** the whole interval of `hub − direct` is below zero and 3 is not met;
+- **inconclusive:** anything else.
+
+A route with no `direct` arm is judged on 1 and 2 only and is never called "keeps direct quality". Every claim is about the routes that were run.
 
 ### Step 1 — the chain (card T1b; eval only, about 1.5 GPU hours, after L5 ends)
 
@@ -5655,9 +5663,10 @@ A route runs only if both of its L5 mappers exist and passed L5's rule. Pairs 7 
 | Verdict for the pivot hub | When |
 | --- | --- |
 | **Keeps direct quality on the compared route** | Phi-3.5 → Qwen2.5-3B meets 1, 2 and 3 |
-| **Carries the passage but loses quality** | That route meets 1 and 2 and fails 3 |
+| **Carries the passage but loses quality** | That route meets 1 and 2 and is "loses quality" |
+| **Carries the passage, inconclusive against direct** | That route meets 1 and 2 and is "inconclusive" |
 | **Fails** | That route fails 1 or 2 |
-| **No verdict** | Pair 1, 3 or 4 is missing or failed in L5. The routes that can run are still reported |
+| **No verdict** | Pair 1, 3 or 4 is missing or failed in L5, or the route has fewer than 200 items. The routes that can run are still reported |
 
 The other routes are reported one by one as "carries and beats the summary" or not. One compared route is evidence about that route; it is not a claim about the library.
 
@@ -5667,13 +5676,15 @@ The other routes are reported one by one as "carries and beats the summary" or n
 - **Recipe.** L5's settings for the mapper and the optimiser (width 384, 6 heads, 8 blocks, learning rates 3e-4 and 1e-5, QA share 0.7, passages capped at 256 tokens, seed 0, alignment rule 2, bf16), and the batch sizes L5 ends up using for Phi-3.5 with Qwen2.5-3B.
 - **Steps.** Stage 1: 24,000. Stage 2: 30,000. Three L5 mappers' worth, so each of the six parts gets about as many updates as a direct mapper.
 - **Schedule.** Two models loaded at a time, 1,000 steps per block, rotating through the three unordered pairs. Within a block each step draws one route uniformly: the two cross routes, and in stage 1 also the two self routes.
-- **Compared routes.** Each of Phi-3.5 → Qwen2.5-1.5B, Qwen2.5-3B → Qwen2.5-1.5B, Qwen2.5-1.5B → Qwen2.5-3B, Phi-3.5 → Qwen2.5-3B and Qwen2.5-1.5B → Phi-3.5 whose L5 mapper exists and passed. Qwen2.5-3B → Phi-3.5 has no direct mapper and is judged on 1 and 2.
+- **Required routes.** All six ordered pairs of the three models run. Five have an L5 mapper to compare with: Phi-3.5 → Qwen2.5-1.5B, Qwen2.5-3B → Qwen2.5-1.5B, Qwen2.5-1.5B → Qwen2.5-3B, Phi-3.5 → Qwen2.5-3B and Qwen2.5-1.5B → Phi-3.5. Qwen2.5-3B → Phi-3.5 has none and is judged on 1 and 2.
 
 | Verdict for the split hub | When |
 | --- | --- |
-| **Keeps direct quality** | Every compared route meets 1, 2 and 3, and at least three routes were compared |
-| **Works but loses quality** | Every compared route meets 1 and 2, and at least one fails 3. The loss per route is the result |
-| **Fails** | A compared route fails 1 or 2 |
+| **Keeps direct quality** | All six routes meet 1 and 2, and all five compared routes meet 3 |
+| **Works but loses quality** | All six routes meet 1 and 2, and at least one compared route is "loses quality". The loss per route is the result |
+| **Works, inconclusive against direct** | All six routes meet 1 and 2, none is "loses quality", and at least one is "inconclusive" |
+| **Fails** | Any of the six routes fails 1 or 2 |
+| **No verdict on quality** | One of the five L5 mappers is missing or failed L5's rule. The hub can still be "works" or "fails", and the compared routes are reported one by one |
 
 All checks are required and none is corrected for the number of routes, which makes "keeps direct quality" harder to reach, not easier.
 
@@ -5684,10 +5695,10 @@ Granite-3.1-2B joins the frozen hub of step 2. Only its encoder and decoder trai
 | Check | Pass when |
 | --- | --- |
 | Old routes untouched | Every step 2 route gives the same answer text on all items before and after |
-| Compared routes | Granite → Qwen2.5-1.5B and Qwen2.5-1.5B → Granite meet 1, 2 and 3 against L5's pairs 5 and 8, where those exist and passed |
+| Compared routes | Granite → Qwen2.5-1.5B and Qwen2.5-1.5B → Granite both meet 1, 2 and 3 against L5's pairs 5 and 8. If either pair is missing or failed in L5, this check has no verdict |
 | Routes never trained together | Granite ↔ Phi-3.5, both directions, meet 1 and 2. Phi-3.5 was not loaded while Granite trained |
 
-**"The library can grow"** when all three hold. If the compared routes pass and the Phi-3.5 routes do not, the result is "a new model works only with the members it trained against", and the cost of a new model becomes one training block per member.
+**"The library can grow"** when all three hold. With no verdict on the compared routes, the most that is said is "a model added later carries the passage". If the compared routes pass and the Phi-3.5 routes do not, the result is "a new model works only with the members it trained against", and the cost of a new model becomes one training block per member.
 
 ### Also recorded
 
@@ -5713,10 +5724,41 @@ Synthetic only: random weights, random caches, made-up digests. Expected, and wh
 | Routes | The sender's encoder and the receiver's decoder; no part at the pivot; the same build is handed straight over | Pass |
 | Refusals by name | Unknown model, another build of a covered model, a missing part, a failed or untested part, a failed route, an unmeasured route; a name that is not a model id is never echoed | Pass |
 | One failed encoder | Stops every route from its model and no other route | Pass |
-| Manifest | 24 malformed manifests are refused, among them path-like file names, a part over 1 GiB, a part for the pivot, and a bidi character in a licence | Pass |
-| Download | A matching file is kept and not fetched twice; wrong, short, long and empty bodies leave nothing behind; a damaged file is replaced; only https is read | Pass |
+| Manifest | 36 malformed manifests are refused, among them path-like file names, a part over 1 GiB, a part for the pivot, a bidi character in a licence, a list where a key belongs, and a build whose key is not the digest of its files | Pass |
+| Download | A matching file is kept and not fetched twice; wrong, short, long and empty bodies leave nothing behind; a damaged file is refused and replaced; only https is read and a redirect elsewhere is refused | Pass |
+| Loading | The bytes that were checked are the bytes returned; a file swapped afterwards changes nothing | Pass |
 
-Suites: the hub tests are 39, of which 10 need torch. On Windows without torch 29 pass and 10 skip. In WSL with torch on the CPU (`CUDA_VISIBLE_DEVICES=""`, GPU untouched) all 39 pass.
+Suites: the hub tests are 51, of which 13 need torch. On Windows without torch 38 pass and 13 skip. In WSL with torch on the CPU (`CUDA_VISIBLE_DEVICES=""`, GPU untouched) all 51 pass. The first version of this table (39 tests) is the one the review read.
+
+### Codex review of T1a (2026-11-27)
+
+Read-only (`codex exec --sandbox read-only`), of commit `d78c090`. Verdict: request changes; 12 findings, 4 high. None repeats a finding of an earlier review in this file. All changes below were made before any run.
+
+Fixed, each with a regression test in `runtime/tests/test_latent_hub.py`:
+
+1. *(high)* A part was checked by path and then reopened by the loader, so other bytes could be loaded than the ones checked. `read_verified` now opens the file once and returns the bytes it checked; nothing returns a path to load from.
+2. *(high)* The library handed out its own records, and `fetch` took a raw record and joined its file name to the folder. The library now keeps a private copy and hands out copies; every file function validates the record first; a part is stored under its SHA-256, so no manifest text reaches the file system and two parts cannot share a name. File names in a manifest are compared without case.
+3. *(medium)* Only the first address was checked for https. Redirects to anything else are refused, and a base address with a query, fragment or credentials is refused.
+4. *(medium)* A list or object where a key belongs crashed a lookup. Keys are type-checked first; `schema` must be the integer 1; the alignment rule must be 1 or 2; a build now lists its weights and tokenizer digests and its key must be their digest.
+5. *(medium)* `plan.py` echoed an unknown design name. It no longer does. Refusals are built only from validated records.
+6. *(medium)* In a pivot hub, a hand-off that starts or ends at the pivot is one direct mapper and needs a route entry of its own; with only chained pairs measured it is refused. The doc now says L5's result for that mapper is its entry. `through` refuses a part the library does not hold.
+7. *(high)* `split` returned the live mapper as the decoder and a float32 encoder. Both parts are now copies in the mapper's type and on its device, the decoder holds no encoder weights, and the size test counts the live module.
+8. *(medium)* `chain` took equal shapes and token ids as proof of a common pivot. It now takes each leg's pivot build key and alignment rule and refuses a mismatch. The decoder checks every batch dimension. The test computes the first leg on its own.
+11. *(medium)* `plan.py` gave sizes for a model with fewer layers than slots and hours for a library of one. Both are refused.
+
+Fixed in the text:
+
+9. *(high)* The verdicts could shift with which routes existed. This section now names the required routes of each step, gives "no verdict" for a missing comparator, separates "loses quality" (the interval of `hub − direct` is below zero) from "inconclusive", and fixes the bootstrap seed, the item order and the mismatched donor. Comparator checkpoint ids are written here before each run.
+10. *(medium)* Wording: all 300 items fitting the Qwen2.5-3B tokenizer is expected, not established, and the runner counts it; the carries-the-passage rule is M2b-S's and L5's, not L4's; 0.460 is the text summary, not the receiver reading the passage (0.778); the pivot diagnostic uses the same pivot tokens and second mapper as the chain.
+12. *(medium)* The manifest could not stop parts of two hubs being mixed, and the canary was optional. The canary is now required. Binding each file to its hub needs the hub id and build key inside the file's own header and a check at load; that is specified in mapper-hub.md section 5 and built in T1d with the loader.
+
+Not done, and why:
+
+- Finding 2 also asked for a folder protected against symbolic links and junctions. The stored name is now a digest and the bytes are checked at every read, so a redirected folder can make a load fail but cannot make it load other bytes. Hardening the folder itself goes with the pull command in T1d.
+- Finding 8 also asked for chain tests built through `make_pair` with real tokenizers and padding. Those need tokenizer files, which this card does not download. T1b's runner checks, per item, that both alignments keep the same pivot tokens, and counts refusals.
+- Finding 11 also asked for the size table to be generated. It is computed with `plan.py` and the test fixes the M2b-S total; the table says it covers these four builds only.
+
+Suites after the fixes: hub tests 51 (38 without torch, 13 skipped; all 51 pass in WSL with torch on the CPU). Runtime suite, `node scripts/check.mjs`, `npm run -s test:graph` and `node --test tests/*.test.mjs`: see the pull request.
 
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 

@@ -61,7 +61,7 @@ Qwen2.5-1.5B suits the role: Apache-2.0, a small cache (2 KV heads), and the rec
 | A hub on a neutral axis (characters or fixed slots) | Removes the sender's spans from the message, but needs a resampling step nobody has tested. The sender axis with L3's alignment is already audited |
 | Hidden states instead of the cache | The receiver is driven through its cache either way, so hidden states only change the encoder's input. No evidence it helps; the cache path is the one with a passing eval |
 | A closed-form shared space (anchors, rotations) | L4 measured the closed-form route on these models: 0 of 28 checks passed |
-| Text | The baseline: 0.460 F1 against 0.872 for the mapper (M2b-S) |
+| A text summary | The baseline: the sender's 40-word summary scored 0.460 F1 against 0.872 for the mapper (M2b-S) |
 
 ## 2. Training
 
@@ -103,7 +103,7 @@ Defined in full in [evals.md](evals.md), T1a. In short:
 - **Pass rule per route, fixed before any run.**
   1. Carries the passage: `hub − mismatched` and `hub − zeroed` have paired 95% intervals above zero.
   2. Beats the text summary: `hub − t2t` has its interval above zero.
-  3. Keeps direct quality: the lower end of the paired 95% interval of `hub − direct` is above −0.05 F1.
+  3. Keeps direct quality: the lower end of the paired 95% interval of `hub − direct` is above −0.05 F1. A route that misses this is "loses quality" only when the whole interval is below zero, and "inconclusive" otherwise.
 - **Three steps, cheapest first.**
   1. The chain of L5's mappers through Qwen2.5-1.5B. Eval only.
   2. A jointly trained split hub on Phi-3.5, Qwen2.5-1.5B and Qwen2.5-3B, against up to five L5 direct mappers.
@@ -152,9 +152,9 @@ Three of L2's eight models cannot be trained on this machine at all (Mistral-7B 
 | --- | --- | --- |
 | Compute per hand-off | The same as a direct mapper: it is the same function. M2b-S measured 52 ms for the mapper in a 426 ms hand-off | Two mapper passes and two alignments. Roughly 55 ms more; not measured |
 | Extra memory | None beyond the two parts | The pivot's embedding table, about 0.5 GB for Qwen2.5-1.5B |
-| Load | Two files of 11 to 191 MB, each hashed before loading | Two files of 64 to 202 MB |
+| Load | An encoder of 11 to 151 MB and a decoder of 50 to 191 MB, each hashed before loading | Two mappers of 64 to 202 MB each |
 
-Load time is not measured. It is bounded by reading and hashing at most 400 MB, and is part of the step 1 report.
+Load time is not measured and is part of the step 1 report. For these four builds a route reads and hashes at most 400 MB; the format allows a part of up to 1 GiB. The sizes are weights on disk, not peak memory.
 
 ## 5. The library
 
@@ -180,19 +180,22 @@ One JSON file, shipped inside the npm package, so the package's own integrity co
 | --- | --- |
 | `hub` | Its id, kind (`split` or `pivot`), slots, width, alignment rule, the token cap the parts were trained with, the document format, and the pivot's build key for a pivot hub |
 | `builds` | Each build key with the model's name, revision, quantisation, cache type, shape and licence |
-| `parts` | One encoder and one decoder per build: file name, SHA-256, size, the result of its own gate, and the card that measured it |
-| `routes` | Every measured ordered pair: passed or failed, its F1, and the card |
-| `canary` | A synthetic passage, a question and the expected answer |
+| `builds` detail | Each build also lists the SHA-256 of its weights and tokenizer files, and its key must be the digest of all of it, so a manifest cannot claim a key it does not match |
+| `parts` | One encoder and one decoder per build: file name, SHA-256, size, the result of its own gate, and the card that measured it. In a pivot hub a part is a whole direct mapper: "encoder" is the mapper into the pivot's cache, "decoder" the mapper out of it |
+| `routes` | Every measured ordered pair: passed or failed, its F1, and the card. In a pivot hub a pair with the pivot at one end is one direct mapper, and its entry is that mapper's own result (L5's) |
+| `canary` | A synthetic passage, a question and the expected answer. Required |
 
 The files themselves are not in the package: 0.6 GB is too large for it.
 
 ### Download and load
 
 - **Download is a command the user runs,** for example `context-ledger mappers pull` for the models they have. The runtime never fetches on its own (AGENTS.md section 6: no background collection).
-- `fetch` reads over https only, stops when a file exceeds its declared size, and keeps the file only when size and SHA-256 match. A file that fails is deleted.
-- **Every load checks again.** The library folder is writable by other local programs, so `verify` hashes a part before it is loaded.
+- `fetch` reads over https only, refuses a redirect to anything else, stops when a file exceeds its declared size, and keeps the file only when size and SHA-256 match. A file that fails is deleted.
+- **A part is stored under its SHA-256,** never under a name from the manifest.
+- **Every load checks again.** The library folder is writable by other local programs. `read_verified` opens the file once and returns the bytes it checked, and the loader reads those bytes, not the path.
 - **Format: safetensors.** The file holds tensors and no code. Today's checkpoints are `torch.save` files loaded with `weights_only=True`.
-- **Canary.** After loading a route's parts for the first time, the runtime hands off the manifest's passage and checks the answer. A part that fails is not used.
+- **Each file names its hub.** Its header carries the hub id, the role and the build key, and the loader refuses a file whose header does not match the manifest entry. This stops parts of two hubs being mixed. It is specified here and built with the loader in T1d.
+- **Canary.** After loading a route's parts for the first time, the runtime hands off the manifest's passage and checks the answer. A route that fails is not served. The canary does not say which of the two parts is at fault.
 
 ### How `latent_transfer` picks the parts
 

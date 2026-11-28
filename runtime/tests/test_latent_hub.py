@@ -10,8 +10,8 @@ import tempfile
 import unittest
 
 from latent_hub import plan
-from latent_hub.library import (LibraryError, MAX_PART_BYTES, Library, NotCovered, build_key, canary_passes, fetch,
-                                verify)
+from latent_hub.library import (LibraryError, MAX_PART_BYTES, HttpsOnly, Library, NotCovered, build_key,
+                                canary_passes, fetch, local_name, part_url, read_verified)
 
 try:
     import torch
@@ -37,9 +37,16 @@ def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def build_of(model, quantisation="bf16", revision="rev1"):
+    return {"model": model, "revision": revision, "weights": {"model.safetensors": digest(model + quantisation)},
+            "quantisation": quantisation, "kvDtype": "bf16", "tokenizer": {"tokenizer.json": digest("tok" + model)},
+            "shape": [28, 2, 128]}
+
+
 def key_of(model, quantisation="bf16", revision="rev1"):
-    return build_key(model, revision, {"model.safetensors": digest(model + quantisation)}, quantisation, "bf16",
-                     {"tokenizer.json": digest("tok" + model)}, [28, 2, 128])
+    build = build_of(model, quantisation, revision)
+    return build_key(build["model"], build["revision"], build["weights"], build["quantisation"], build["kvDtype"],
+                     build["tokenizer"], build["shape"])
 
 
 A, B, C = key_of("org/model-a"), key_of("org/model-b"), key_of("org/model-c")
@@ -52,8 +59,7 @@ def part(role, build, gate="passed", data=None):
 
 
 def manifest(kind="split", **changes):
-    builds = {key: {"model": name, "revision": "rev1", "quantisation": "bf16", "kvDtype": "bf16",
-                    "shape": [28, 2, 128], "licence": "Apache-2.0"}
+    builds = {key: {**build_of(name), "licence": "Apache-2.0"}
               for key, name in ((A, "org/model-a"), (B, "org/model-b"), (C, "org/model-c"))}
     spokes = (A, B, C) if kind == "split" else (B, C)
     hub = {"id": "hub-v1", "kind": kind, "slots": 8, "dim": 384, "alignment": 2, "maxTokens": 256,
@@ -79,10 +85,17 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([plan.parts_for_one_more(8, design) for design in plan.DESIGNS], [16, 2, 2])
 
     def test_refuses_what_it_does_not_know(self):
-        for call in (lambda: plan.parts(1, "split"), lambda: plan.parts(4, "star"),
-                     lambda: plan.mappers_per_handoff("star")):
+        for call in (lambda: plan.parts(1, "split"), lambda: plan.parts(4, "star"), lambda: plan.parts(True, "split"),
+                     lambda: plan.mappers_per_handoff("star"), lambda: plan.gpu_hours(1, "split", 3),
+                     lambda: plan.gpu_hours(4, "star", 3), lambda: plan.encoder_params((4, 2, 128)),
+                     lambda: plan.decoder_params((7, 2, 128), 64)):
             with self.assertRaises(ValueError):
                 call()
+
+    def test_a_refusal_does_not_echo_the_design(self):
+        with self.assertRaises(ValueError) as caught:
+            plan.parts(4, "evil" + chr(0x1b) + "[31m")
+        self.assertNotIn("evil", str(caught.exception))
 
     def test_a_direct_mapper_is_its_encoder_plus_its_decoder(self):
         # 100.5M is the M2b-S mapper as trained and logged (docs/evals.md, M2b-S, run 1).
@@ -219,6 +232,52 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(sorted(library.offered()), sorted([(A, B), (A, C), (C, A), (C, B)]))
         self.assertEqual(Library(manifest()).through("encoder", B), sorted([(B, A), (B, C)]))
 
+    def test_through_refuses_a_part_the_library_does_not_have(self):
+        pivot = Library(manifest("pivot"))
+        for role, key in (("encoder", A), ("decoder", A), ("encoder", key_of("org/none")), ("encoder", ["x"]), ("hub", B)):
+            with self.assertRaises(LibraryError):
+                pivot.through(role, key)
+        self.assertEqual(pivot.through("decoder", C), sorted([(A, C), (B, C)]))
+
+    def test_pivot_legs_are_routes_of_their_own(self):
+        # Codex finding 6: with only the chained pairs measured, a hand-off that ends at the
+        # pivot is one direct mapper and needs that mapper's own entry.
+        body = manifest("pivot")
+        body["routes"] = [r for r in body["routes"] if A not in (r["sender"], r["receiver"])]
+        library = Library(body)
+        self.assertEqual(sorted(library.offered()), sorted([(B, C), (C, B)]))
+        with self.assertRaises(NotCovered) as caught:
+            library.route(B, A)
+        self.assertEqual(caught.exception.reason, "route_unmeasured")
+
+    def test_what_the_library_hands_out_cannot_change_it(self):
+        body = manifest()
+        library = Library(body)
+        body["parts"][0]["gate"] = "failed"
+        body["routes"].clear()
+        route = library.route(A, B)
+        route["encoder"]["sha256"] = "0" * 64
+        route["measured"]["status"] = "failed"
+        library.builds[A]["model"] = "evil"
+        library.hub["id"] = "other"
+        again = library.route(A, B)
+        self.assertEqual(again["encoder"]["sha256"], part("encoder", A)["sha256"])
+        self.assertEqual((again["measured"]["status"], again["hub"]), ("passed", "hub-v1"))
+        self.assertEqual(library.describe(A).split(" ")[0], "org/model-a")
+
+    def test_keys_that_are_not_strings_are_refused_not_crashed_on(self):
+        library = Library(manifest())
+        for bad in (["x"], {"a": 1}, 3.5):
+            for pair in ((bad, A), (A, bad), (bad, bad)):
+                with self.assertRaises(NotCovered) as caught:
+                    library.route(*pair)
+                self.assertEqual(caught.exception.reason, "bad_request")
+
+    def test_same_build_needs_no_part(self):
+        body = manifest()
+        body["parts"] = [p for p in body["parts"] if p["build"] != B]
+        self.assertEqual(Library(body).route(B, B)["kind"], "self")
+
     def test_untested_part_is_not_used(self):
         body = manifest()
         body["parts"][0]["gate"] = "unmeasured"
@@ -258,6 +317,20 @@ class ManifestTest(unittest.TestCase):
 
     def test_bad_manifests_are_refused(self):
         self.refused(manifest(schema=2))
+        self.refused(manifest(schema=1.0))
+        self.refused(manifest(schema=True))
+        self.refused({k: v for k, v in manifest().items() if k != "canary"})
+        body = manifest(); body["hub"]["alignment"] = 3; self.refused(body)
+        body = manifest("pivot"); body["hub"]["pivot"] = ["x"]; self.refused(body)
+        body = manifest("pivot"); body["hub"]["pivot"] = None; self.refused(body)
+        body = manifest(); body["parts"][0]["build"] = ["x"]; self.refused(body)
+        body = manifest(); body["routes"][0]["sender"] = {"a": 1}; self.refused(body)
+        body = manifest(); body["routes"][0]["f1"] = True; self.refused(body)
+        body = manifest(); body["parts"][1]["file"] = body["parts"][0]["file"].upper(); self.refused(body)
+        # A build whose key is not the digest of its own files and settings.
+        body = manifest(); body["builds"][A]["quantisation"] = "awq-int4"; self.refused(body)
+        body = manifest(); body["builds"][A]["weights"] = {"model.safetensors": digest("other")}; self.refused(body)
+        body = manifest(); del body["builds"][A]["tokenizer"]; self.refused(body)
         self.refused(manifest(extra=1))
         self.refused({k: v for k, v in manifest().items() if k != "routes"})
         self.refused(manifest(library="bad name"))
@@ -298,6 +371,8 @@ class Response(io.BytesIO):
 
 
 class FetchTest(unittest.TestCase):
+    BASE = "https://example.invalid/lib"
+
     def setUp(self):
         self.folder = tempfile.mkdtemp()
         self.data = os.urandom(3000)
@@ -313,46 +388,88 @@ class FetchTest(unittest.TestCase):
     def left_behind(self):
         return sorted(os.listdir(self.folder))
 
+    def stored(self):
+        return os.path.join(self.folder, local_name(self.part))
+
     def test_a_matching_file_is_kept_and_not_downloaded_twice(self):
-        path = fetch(self.part, "https://example.invalid/lib/", self.folder, self.opener(self.data))
-        self.assertEqual(self.calls, ["https://example.invalid/lib/" + self.part["file"]])
-        with open(path, "rb") as handle:
-            self.assertEqual(handle.read(), self.data)
-        self.assertEqual(fetch(self.part, "https://example.invalid/lib", self.folder, self.opener(b"")), path)
+        path = fetch(self.part, self.BASE + "/", self.folder, self.opener(self.data))
+        self.assertEqual(self.calls, [self.BASE + "/" + self.part["file"]])
+        self.assertEqual(path, self.stored())
+        self.assertEqual(read_verified(self.folder, self.part), self.data)
+        self.assertEqual(fetch(self.part, self.BASE, self.folder, self.opener(b"")), path)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.left_behind(), [self.part["file"]])
+        self.assertEqual(self.left_behind(), [self.part["sha256"] + ".part"])
 
     def test_wrong_bytes_are_not_kept(self):
-        for data in (self.data[:-1] + b"x" if self.data[-1:] != b"x" else self.data[:-1] + b"y", self.data[:-1],
-                     self.data + b"more", b""):
+        flipped = bytes([self.data[0] ^ 1]) + self.data[1:]
+        for data in (flipped, self.data[:-1], self.data + b"more", b""):
             with self.assertRaises(LibraryError):
-                fetch(self.part, "https://example.invalid/lib", self.folder, self.opener(data))
+                fetch(self.part, self.BASE, self.folder, self.opener(data))
             self.assertEqual(self.left_behind(), [])
 
-    def test_a_damaged_file_on_disk_is_replaced(self):
-        target = os.path.join(self.folder, self.part["file"])
-        with open(target, "wb") as handle:
-            handle.write(b"tampered")
-        with self.assertRaises(LibraryError):
-            verify(target, self.part)
-        fetch(self.part, "https://example.invalid/lib", self.folder, self.opener(self.data))
-        self.assertEqual(verify(target, self.part), target)
+    def test_a_damaged_file_on_disk_is_refused_and_then_replaced(self):
+        for damaged in (b"tampered", bytes(len(self.data))):      # wrong size; right size, wrong content
+            with open(self.stored(), "wb") as handle:
+                handle.write(damaged)
+            with self.assertRaises(LibraryError):
+                read_verified(self.folder, self.part)
+        fetch(self.part, self.BASE, self.folder, self.opener(self.data))
+        self.assertEqual(read_verified(self.folder, self.part), self.data)
 
-    def test_same_size_wrong_content_fails_verify(self):
-        target = os.path.join(self.folder, self.part["file"])
-        with open(target, "wb") as handle:
+    def test_the_bytes_that_were_checked_are_the_bytes_that_load(self):
+        # Codex finding 1: a path that passed a check can hold other bytes by the time a
+        # loader opens it. read_verified returns the checked bytes, so a swap changes nothing.
+        fetch(self.part, self.BASE, self.folder, self.opener(self.data))
+        loaded = read_verified(self.folder, self.part)
+        with open(self.stored(), "wb") as handle:
             handle.write(bytes(len(self.data)))
-        with self.assertRaises(LibraryError) as caught:
-            verify(target, self.part)
-        self.assertIn("SHA-256", str(caught.exception))
+        self.assertEqual(hashlib.sha256(loaded).hexdigest(), self.part["sha256"])
         with self.assertRaises(LibraryError):
-            verify(os.path.join(self.folder, "absent"), self.part)
+            read_verified(self.folder, self.part)
 
-    def test_only_https(self):
-        for url in ("http://example.invalid/lib", "file:///tmp/lib", "https://example.invalid/a b", None):
+    def test_missing_file_and_a_folder_in_its_place(self):
+        with self.assertRaises(LibraryError):
+            read_verified(self.folder, self.part)
+        os.mkdir(self.stored())
+        with self.assertRaises(LibraryError):
+            read_verified(self.folder, self.part)
+
+    def test_no_manifest_text_reaches_the_file_system(self):
+        # Codex finding 2: a raw part record with a path for a name is refused before any file call.
+        for name in ("../escape", "sub/enc", "CON" + chr(92) + "x", "", "a" * 200, None):
+            bad = dict(self.part, file=name)
+            for call in (lambda: fetch(bad, self.BASE, self.folder, self.opener(self.data)),
+                         lambda: read_verified(self.folder, bad), lambda: local_name(bad)):
+                with self.assertRaises(LibraryError):
+                    call()
+        for change in (dict(sha256="../../x"), dict(bytes=MAX_PART_BYTES + 1), dict(bytes=True), dict(extra=1)):
+            with self.assertRaises(LibraryError):
+                fetch(dict(self.part, **change), self.BASE, self.folder, self.opener(self.data))
+        self.assertEqual((self.calls, self.left_behind()), ([], []))
+        # Reserved device names are harmless: the stored name is the digest, never the manifest's.
+        fetch(dict(self.part, file="NUL"), self.BASE, self.folder, self.opener(self.data))
+        self.assertEqual(self.left_behind(), [self.part["sha256"] + ".part"])
+
+    def test_only_https_addresses(self):
+        for url in ("http://example.invalid/lib", "file:///tmp/lib", "https://example.invalid/a b", None,
+                    "https://example.invalid/lib?x=1", "https://example.invalid/lib#frag",
+                    "https://user:pw@example.invalid/lib", "https:///lib", "ftp://example.invalid/lib",
+                    "https://example.invalid/lib" + chr(0x202e)):
             with self.assertRaises(LibraryError):
                 fetch(self.part, url, self.folder, self.opener(self.data))
         self.assertEqual(self.calls, [])
+        self.assertEqual(part_url("https://example.invalid", self.part), "https://example.invalid/" + self.part["file"])
+
+    def test_a_redirect_away_from_https_is_refused(self):
+        # Codex finding 3: urllib follows a redirect to http unless told not to.
+        import urllib.error
+        import urllib.request
+        handler, request = HttpsOnly(), urllib.request.Request(self.BASE + "/x")
+        for target in ("http://example.invalid/x", "ftp://example.invalid/x", "file:///etc/passwd"):
+            with self.assertRaises(urllib.error.HTTPError):
+                handler.redirect_request(request, None, 302, "Found", {}, target)
+        follow = handler.redirect_request(request, None, 302, "Found", {}, "https://mirror.invalid/x")
+        self.assertEqual(follow.full_url, "https://mirror.invalid/x")
 
 
 class HubCase(unittest.TestCase):
@@ -407,13 +524,43 @@ class SplitTest(HubCase):
 
     @no_grad
     def test_part_sizes_add_up_to_the_mapper(self):
-        from latent_hub.hub import decoder_state, split
+        from latent_hub.hub import split
         from latent_transfer.mapper import parameter_count
-        encoder, _ = split(self.direct)
-        decoder_size = sum(value.numel() for name, value in decoder_state(self.direct).items() if name != "sigma")
+        encoder, decoder = split(self.direct)
+        decoder_size = parameter_count(decoder)       # the live module, which holds no encoder weights
+        self.assertFalse(any(".mem." in name for name in decoder.state_dict()))
         self.assertEqual(parameter_count(encoder) + decoder_size, parameter_count(self.direct))
         self.assertEqual(parameter_count(encoder), plan.encoder_params(self.SENDER, dim=32, slots=4))
         self.assertEqual(decoder_size, plan.decoder_params(self.RECEIVER, 24, dim=32, ffn=64, slots=4))
+
+    @no_grad
+    def test_split_stands_alone_and_keeps_the_mappers_type(self):
+        # Codex finding 7: the decoder was the live mapper, and the encoder was always float32.
+        from latent_hub.hub import split
+        mapper = self.mapper(self.SENDER, self.RECEIVER, 24, 0).double()
+        encoder, decoder = split(mapper)
+        self.assertEqual({p.dtype for p in encoder.parameters()}, {torch.float64})
+        keys, values = [k.double() for k in self.keys], [v.double() for v in self.values]
+        want = mapper.scaled(*mapper(self.embeds.double(), self.mask, keys, values, self.pos, self.allowed))
+        for parameter in mapper.parameters():
+            parameter.zero_()                          # the parts must not notice
+        mapper.sigma.zero_()
+        got = decoder.scaled(*decoder(self.embeds.double(), self.mask, encoder(keys, values), self.pos, self.allowed))
+        for a, b in zip(want[0] + want[1], got[0] + got[1]):
+            self.assertTrue(torch.equal(a, b))
+        self.assertGreater(float(want[0][0].abs().sum()), 0)
+
+    @no_grad
+    def test_a_row_of_one_is_not_spread_over_the_batch(self):
+        from latent_hub.hub import split
+        encoder, decoder = split(self.direct)
+        hub = encoder(self.keys, self.values)
+        for args in ((self.embeds, self.mask, hub, self.pos[:1], self.allowed),
+                     (self.embeds, self.mask, hub, self.pos, self.allowed[:1]),
+                     (self.embeds, self.mask, hub[:1], self.pos, self.allowed),
+                     (self.embeds, self.mask[:1], hub, self.pos, self.allowed)):
+            with self.assertRaises(ValueError):
+                decoder(*args)
 
     @no_grad
     def test_any_encoder_fits_any_decoder_of_the_same_hub(self):
@@ -453,8 +600,8 @@ class SplitTest(HubCase):
         keys, values = decoder(self.embeds, self.mask, encoder(self.keys, self.values), self.pos, self.allowed)
         sum(k.pow(2).mean() + v.pow(2).mean() for k, v in zip(keys, values)).backward()
         self.assertTrue(all(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in encoder.parameters()))
-        self.assertGreater(float(self.direct.inp.weight.grad.abs().sum()), 0)
-        self.assertTrue(all(block.mem.weight.grad is None for block in self.direct.blocks))
+        self.assertGreater(float(decoder.mapper.inp.weight.grad.abs().sum()), 0)
+        self.assertTrue(all(p.grad is None for p in self.direct.parameters()))
         self.assertTrue(all(p.grad is None for p in bystander.parameters()))
 
 
@@ -482,7 +629,7 @@ class ChainTest(HubCase):
         from latent_hub.hub import chain
         args = dict(first=self.first, second=self.second, pivot_embeds=self.pivot_embeds, receiver_embeds=self.embeds,
                     sender_keys=keys or self.keys, sender_values=self.values, to_pivot=self.to_pivot,
-                    from_pivot=self.from_pivot)
+                    from_pivot=self.from_pivot, legs=({"pivot": A, "alignment": 2}, {"pivot": A, "alignment": 2}))
         args.update(changes)
         return chain(**args)
 
@@ -491,6 +638,14 @@ class ChainTest(HubCase):
         pivot_keys, pivot_values, keys, values = self.run_chain()
         self.assertEqual((len(pivot_keys), tuple(pivot_keys[0].shape)), (4, (2, 2, 6, 16)))
         self.assertEqual((len(keys), tuple(keys[0].shape)), (6, (2, 2, 7, 8)))
+        # The first leg computed on its own, not taken from the chain's return value.
+        ones = torch.ones(2, 6, dtype=torch.long)
+        raw = self.first(self.pivot_embeds, ones, self.keys, self.values, self.to_pivot.sender_pos,
+                         self.to_pivot.cross_allowed)
+        alone = self.first.scaled(*raw)
+        for a, b in zip(alone[0] + alone[1], pivot_keys + pivot_values):
+            self.assertTrue(torch.equal(a, b))
+        self.assertFalse(torch.equal(pivot_keys[0], raw[0][0]), "the hub state is at the pivot's scale")
         pos, allowed = self.from_pivot.sender_pos, self.from_pivot.cross_allowed
         want = self.second.scaled(*self.second(self.embeds, torch.ones(2, 7, dtype=torch.long), pivot_keys, pivot_values,
                                                pos, allowed))
@@ -525,6 +680,15 @@ class ChainTest(HubCase):
         with self.assertRaises(ValueError) as caught:
             self.run_chain(second=self.direct)
         self.assertIn("do not share a pivot", str(caught.exception))
+
+    def test_legs_trained_for_another_pivot_build_or_alignment_rule_are_refused(self):
+        # Codex finding 8: the same shapes and token ids do not prove the same pivot.
+        with self.assertRaises(ValueError) as caught:
+            self.run_chain(legs=({"pivot": A, "alignment": 2}, {"pivot": B, "alignment": 2}))
+        self.assertIn("do not share a pivot", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            self.run_chain(legs=({"pivot": A, "alignment": 1}, {"pivot": A, "alignment": 2}))
+        self.assertIn("alignment rules", str(caught.exception))
 
 
 if __name__ == "__main__":

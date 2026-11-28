@@ -14,15 +14,21 @@ DIM, FFN, SLOTS = 384, 1536, 8
 def layer_groups(num_layers, slots):
     """The same split as latent_transfer.mapper.layer_groups, which needs torch to import.
     A test holds the two together."""
+    if type(num_layers) is not int or type(slots) is not int or slots < 1 or num_layers < slots:
+        raise ValueError("Every slot needs at least one layer: a model must have as many layers as the hub has slots.")
     return [list(range(b * num_layers // slots, (b + 1) * num_layers // slots)) for b in range(slots)]
+
+
+def _check(models, design):
+    if type(models) is not int or models < 2:
+        raise ValueError("A library needs at least two models.")
+    if design not in DESIGNS:
+        raise ValueError(f"Unknown design. Known: {', '.join(DESIGNS)}.")
 
 
 def parts(models, design):
     """Trained files for a library of `models` models."""
-    if models < 2:
-        raise ValueError("A library needs at least two models.")
-    if design not in DESIGNS:
-        raise ValueError(f"Unknown design: {design}. Known: {', '.join(DESIGNS)}.")
+    _check(models, design)
     return {"direct": models * (models - 1), "split": 2 * models, "pivot": 2 * (models - 1)}[design]
 
 
@@ -33,8 +39,7 @@ def parts_for_one_more(models, design):
 
 def mappers_per_handoff(design, through_pivot=True):
     """Mapper passes one hand-off runs. A pivot hub runs two unless one end is the pivot."""
-    if design not in DESIGNS:
-        raise ValueError(f"Unknown design: {design}. Known: {', '.join(DESIGNS)}.")
+    _check(2, design)
     return 2 if design == "pivot" and through_pivot else 1
 
 
@@ -80,5 +85,6 @@ def gpu_hours(models, design, hours_per_mapper):
     """Training time when every part costs what one direct mapper costs. For the split hub
     this is an assumption (one encoder and one decoder per step, as many steps per part as
     a direct mapper gets), stated in docs/mapper-hub.md and not measured."""
+    _check(models, design)
     units = {"direct": models * (models - 1), "split": models, "pivot": 2 * (models - 1)}[design]
     return units * hours_per_mapper
