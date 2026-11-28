@@ -6194,3 +6194,23 @@ Capping the number of sequences did not make anything faster on this card: every
 Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
 
 Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
+
+## K1 — Project context graph (defined 2026-11-27, before the code)
+
+AGENTS.md section 1 asks every new session to read `docs/handoff.md`, `docs/delivery-board.md`, `docs/evals.md` and `docs/architecture.md`: about 895 KB on 2026-11-27, of which the eval log is 740 KB. K1 gives a session the part that concerns its card, with the lines to open for the rest.
+
+### What is tested and the expected result
+
+Synthetic board, handoff, eval and architecture texts written inside `tests/project-context.test.mjs`; one test also runs the command on this repository's own docs.
+
+- **Cards.** Every board table row becomes a card with its ID, title, owner, branch or PR, scope, state and its line in `docs/delivery-board.md`, wherever the row stands in the file; the header and separator rows do not. A `\|` inside a cell does not split it.
+- **Sections.** Every `## ` heading of the handoff notes and the eval log, and every `## ` and `### ` heading of the architecture notes, becomes a section with its first and last line and the date in its heading, if it has one. A `#` inside a fenced code block is not a heading.
+- **Links.** A section is linked to a card when the card's ID stands in it as a whole word (`P1` is not found in `P1a`), when it says `Cycle 4` or `cycle 4` and a card `C4` exists, or when it names the card's PR number. A link from the heading is marked `about`; a link from the body is marked `mentions`.
+- **Briefing for a card.** `node scripts/project-context.mjs P4d` prints the card, then the sections about it newest first (each with file and lines and its first words), then the sections that mention it, the repository files those sections name, and the other cards they name. The ID is matched without regard to case.
+- **Briefing for a question.** Words that are not a card ID rank cards and sections by how many of the words they contain, a heading or card title counting more than a body.
+- **Budget.** `--budget N` keeps the briefing to about N tokens (four characters to a token); the default is 1500. The last line says how many sections were left out and of which kind, and it is printed when nothing was left out too (the G9b finding: a briefing that is silent about what it dropped is read as complete).
+- **Overview.** With no argument: the number of cards per state, every card that is not Done with its owner, and the newest dated checkpoints.
+- **No stale copy.** The command reads the four files on every run and writes nothing.
+- **Terminal safety.** Control, format and bidi characters in the docs reach the terminal escaped, in the text output and in `--json`.
+- **On this repository.** The command finds as many cards as the board has data rows and as many handoff sections as the file has `## ` headings outside code fences, and a briefing with the default budget is under 8 KB.
+- **Not in the package.** The script is under `scripts/`, uses Node built-ins and `src/text.mjs` only, and is not in the published file list.
