@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { handoffMarkdown } from '../src/handoff.mjs';
 import { findSecrets, maskedPreview, redactSession, redactText } from '../src/secrets.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
@@ -626,4 +627,257 @@ test('P4b narrowed: a prefix is hidden when the labelled match covers only part 
   assert.equal(text.slice(finding.start, finding.end), secret);
   assert.equal(maskedPreview(text, finding), '…');
   assert.equal(redactText(text), 'aws_secret_access_key = [REDACTED aws-access-key-id]');
+});
+
+test('P4d: a value found once is removed wherever else it appears in the session', () => {
+  const password = ['Zx9q', 'Wm3v', 'Lt7p', 'Rk2s'].join('');
+  const quoted = ['Ab12', ' Cd34', 'xy'].join('');
+  const session = {
+    id: 'b'.repeat(64), provider: 'claude', source: `notes-${password}.jsonl`,
+    messages: [
+      { role: 'user', line: 1, text: `set password=${password} today.` },
+      { role: 'assistant', line: 2, text: `I copied ${password} into the env file, and ${fake['github-token']}.` },
+      { role: 'user', line: 3, text: `token: "${quoted}" and later ${quoted} again` },
+      { role: 'user', line: 4, text: `push with ${fake['github-token']}` },
+      { role: 'user', line: 5, text: 'password=ab12x then ab12x again, a short value' },
+      { role: 'assistant', line: 6, text: 'Nothing to hide here, today.' },
+    ],
+  };
+  const { session: redacted, findings } = redactSession(session);
+  const shown = JSON.stringify(redacted);
+  for (const value of [password, quoted, fake['github-token']]) assert.ok(!shown.includes(value), value.slice(0, 4));
+  assert.equal(redacted.source, 'notes-[REDACTED assigned-secret].jsonl');
+  assert.equal(redacted.messages[1].text, 'I copied [REDACTED assigned-secret] into the env file, and [REDACTED github-token].');
+  assert.equal(redacted.messages[2].text, 'token: "[REDACTED assigned-secret]');
+  // The rest of the line after a name is cut, but its other words are not searched for.
+  assert.equal(redacted.messages[5], session.messages[5]);
+  // A value shorter than six characters is removed only where it was found.
+  assert.equal(redacted.messages[4].text, 'password=[REDACTED assigned-secret]');
+  assert.deepEqual(findings.map(({ line, kind }) => [line, kind]), [
+    [null, 'assigned-secret'], [1, 'assigned-secret'], [2, 'assigned-secret'], [2, 'github-token'],
+    [3, 'assigned-secret'], [4, 'github-token'], [5, 'assigned-secret'],
+  ]);
+  // A copy shows no prefix; a format found where it stands still does.
+  assert.deepEqual(findings.filter(finding => finding.line === 2).map(finding => finding.preview), ['…', 'ghp_…']);
+  assert.equal(findings.find(finding => finding.line === 4).preview, 'ghp_…');
+});
+
+test('P4d: a copy that overlaps a finding widens it, and the longer of two values is matched whole', () => {
+  const short = ['Qw8e', 'Rt5y', 'Ui'].join('');
+  const long = short + ['Op3a', 'Sd'].join('');
+  const session = {
+    id: 'c'.repeat(64), provider: 'codex', source: 'x.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `secret=${short}` },
+      { role: 'user', line: 2, text: `api_key=${long}` },
+      { role: 'assistant', line: 3, text: `kept ${long} and ${short}` },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[2].text, 'kept [REDACTED assigned-secret] and [REDACTED assigned-secret]');
+});
+
+test('P4d: a found value is also removed from an agent turn\'s author and recipient', () => {
+  const password = ['Pl4y', 'Gr0u', 'nd77'].join('');
+  const session = {
+    id: 'd'.repeat(64), provider: 'codex', source: 'agents.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `db password=${password}` },
+      { role: 'agent', line: 2, author: `/root/${password}`, recipient: '/root/worker', text: 'Synthetic: picked it up.' },
+    ],
+  };
+  const { session: redacted, findings } = redactSession(session);
+  assert.equal(redacted.messages[1].author, '/root/[REDACTED assigned-secret]');
+  assert.equal(redacted.messages[1].recipient, '/root/worker');
+  assert.equal(redacted.messages[1].text, 'Synthetic: picked it up.');
+  assert.ok(!JSON.stringify(redacted).includes(password));
+  assert.deepEqual(findings.map(({ line, kind }) => [line, kind]), [[1, 'assigned-secret'], [2, 'assigned-secret']]);
+  assert.equal(session.messages[1].author, `/root/${password}`, 'the input is not changed');
+});
+
+test('P4d review: a passphrase, a later key-like word and an escaped quote are matched as copies', () => {
+  const phrase = ['correct', 'horse', 'battery', 'staple'].join(' ');
+  const keyWord = ['def1', '2345', '6789'].join('');
+  const BS = String.fromCodePoint(92);
+  const quotedRaw = ['ab', BS, '"cd', 'efgh1234'].join('');
+  const quotedDecoded = ['ab', '"cd', 'efgh1234'].join('');
+  const session = {
+    id: 'e'.repeat(64), provider: 'claude', source: 'x.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `password: ${phrase}` },
+      { role: 'assistant', line: 2, text: `say ${phrase} now` },
+      { role: 'user', line: 3, text: `password: abc ${keyWord}` },
+      { role: 'assistant', line: 4, text: `later ${keyWord}` },
+      { role: 'user', line: 5, text: `password: "${quotedRaw}"` },
+      { role: 'assistant', line: 6, text: `as written ${quotedRaw} and decoded ${quotedDecoded} end` },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[1].text, 'say [REDACTED assigned-secret] now');
+  assert.equal(redacted.messages[3].text, 'later [REDACTED assigned-secret]');
+  assert.equal(redacted.messages[5].text, 'as written [REDACTED assigned-secret] and decoded [REDACTED assigned-secret] end');
+});
+
+test('P4d review: the copy search is one pass per field, not one per value', () => {
+  const messages = Array.from({ length: 20000 }, (_, index) => ({ role: 'user', line: index + 1, text: `token=${('k' + index).padEnd(12, 'Q')}9z` }));
+  messages.push({ role: 'assistant', line: 9999, text: 'x'.repeat(4 * 1024 * 1024) });
+  const started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'f'.repeat(64), provider: 'claude', source: 'y.jsonl', messages });
+  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, 20000);
+  // One indexOf per value took about 8 s on the Windows dev laptop; one pass, under 1 s.
+  assert.ok(seconds < 4, `${seconds} s`);
+});
+
+test('P4d review 2: copies of values merged into one finding, spaced passphrases and escaped bearer values', () => {
+  const BS = String.fromCodePoint(92);
+  const word = ['Viol', 'etLa', 'rk'].join('');
+  const session = {
+    id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl',
+    messages: [
+      // A password and a GitHub token on one line merge into one github-token finding.
+      { role: 'user', line: 1, text: `password=${word} with ${fake['github-token']}` },
+      { role: 'assistant', line: 2, text: `${word} and a${fake['github-token']}` },
+      { role: 'user', line: 3, text: 'password=Amber  Fox91 followed by prose' },
+      { role: 'assistant', line: 4, text: 'again Amber  Fox91 here' },
+      { role: 'user', line: 5, text: `"Authorization": "Bearer ${BS}u0051uartzOwl77"` },
+      { role: 'assistant', line: 6, text: 'QuartzOwl77 later' },
+    ],
+  };
+  const { session: redacted } = redactSession(session);
+  assert.equal(redacted.messages[1].text, '[REDACTED github-token] and a[REDACTED github-token]');
+  assert.equal(redacted.messages[3].text, 'again [REDACTED assigned-secret] here');
+  assert.equal(redacted.messages[5].text, '[REDACTED bearer-token] later');
+});
+
+test('P4d review 2: an agent turn\'s heading never shows a found value, in author or recipient', () => {
+  const value = ['Rook', 'Tide', '42'].join('');
+  const session = {
+    id: 'a'.repeat(64), provider: 'codex', source: 'agents.jsonl',
+    messages: [
+      { role: 'user', line: 1, text: `secret: ${value}` },
+      { role: 'agent', line: 2, author: '/root/lead', recipient: `/root/${value}`, text: 'Synthetic: hand-over.' },
+    ],
+  };
+  const markdown = handoffMarkdown(redactSession(session).session);
+  assert.ok(!markdown.includes(value));
+  assert.ok(markdown.includes('## agent /root/lead to /root/\\[REDACTED assigned-secret\\] · line 2'), markdown);
+});
+
+test('P4d review 2: many values that share their first characters stay linear', () => {
+  const count = 20000;
+  const messages = Array.from({ length: count }, (_, index) => ({ role: 'user', line: index + 1, text: `token=shared${index.toString(36).padStart(5, '0')}Q` }));
+  messages.push({ role: 'assistant', line: count + 1, text: 'shared_'.repeat(count) });
+  const started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'y.jsonl', messages });
+  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, count);
+  // Grouping values by their first six characters grew with the square (5 s at 8,000 in
+  // Codex's run); the matcher takes under 1 s.
+  assert.ok(seconds < 4, `${seconds} s`);
+});
+
+test('P4d review 3: nested keys keep their boundaries, long passphrases match whole, and suffix and crossing matches merge', () => {
+  const token = ['gh', 'p_', 'A1'.repeat(18)].join('');
+  const m = (line, text) => ({ role: 'user', line, text });
+  const cases = [
+    [[m(1, 'password=orchidvault Authorization: Bearer lavendergarden'), m(2, 'lavendergarden')], '[REDACTED assigned-secret]'],
+    [[m(1, `password=orchidvault (${token})/suffix`), m(2, 'X' + token)], 'X[REDACTED github-token]'],
+    [[m(1, 'password=amber birch cedar dune elm frost grove heath indigoorchard is rotated weekly'),
+      m(2, 'amber birch cedar dune elm frost grove heath indigoorchard')], '[REDACTED assigned-secret]'],
+    [[m(1, 'password=violetgarden'), m(2, 'password=northvioletgardenend'), m(3, 'northvioletgarden!')], 'north[REDACTED assigned-secret]!'],
+    [[m(1, 'password=violetgarden'), m(2, 'password=gardennorth'), m(3, 'violetgardennorth')], '[REDACTED assigned-secret]'],
+  ];
+  for (const [messages, expected] of cases) {
+    const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages });
+    assert.equal(session.messages.at(-1).text, expected, messages.at(-1).text);
+  }
+});
+
+test('P4d review 3: one very long finding adds a bounded amount to the copy search', () => {
+  const text = 'password=synthetic9' + 'a'.repeat(1_000_000);
+  const before = process.memoryUsage().heapUsed;
+  const { session, findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [{ role: 'user', line: 1, text }] });
+  const grown = (process.memoryUsage().heapUsed - before) / 2 ** 20;
+  assert.equal(session.messages[0].text, 'password=[REDACTED assigned-secret]');
+  assert.equal(findings.length, 1);
+  // A trie node per character of the whole value took about 290 MiB in Codex's run.
+  assert.ok(grown < 64, `${grown} MiB`);
+});
+
+test('P4d review 4: a quoted Bearer value, many findings in one message and many key-like words in one stay bounded', () => {
+  const m = (line, text) => ({ role: 'user', line, text });
+  const quoted = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    m(1, '"Authorization": "Bearer SYNTHETIC-PHRASE","note":"example"'), m(2, 'Copied SYNTHETIC-PHRASE'),
+  ] }).session;
+  assert.equal(quoted.messages[1].text, 'Copied [REDACTED bearer-token]');
+
+  const lines = Array.from({ length: 40000 }, (_, index) => 'password=z' + index.toString(36).padStart(7, '0')).join('\n');
+  let started = process.hrtime.bigint();
+  const { findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [m(1, lines)] });
+  let seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  assert.equal(findings.length, 40000);
+  // Looking each candidate's finding up from the start took about 3.8 s in Codex's run.
+  assert.ok(seconds < 3, `${seconds} s`);
+
+  const words = Array.from({ length: 10000 }, (_, index) => index.toString(36).padStart(6, '0') + 'Ab' + 'x'.repeat(91)).join(' ');
+  const before = process.memoryUsage().heapUsed;
+  const wide = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [m(1, 'password=' + words)] });
+  const grown = (process.memoryUsage().heapUsed - before) / 2 ** 20;
+  assert.equal(wide.findings.length, 1);
+  // An entry per key-like word took about 220 MiB in Codex's run; the budget is per candidate.
+  assert.ok(grown < 64, `${grown} MiB`);
+});
+
+test('P4d review 5: a quoted value full of escapes is still searched for decoded', () => {
+  const BS = String.fromCodePoint(92);
+  const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password="' + (BS + 'u0051').repeat(44) + '"' },
+    { role: 'assistant', line: 2, text: 'Copied ' + 'Q'.repeat(44) },
+  ] });
+  assert.equal(session.messages[1].text, 'Copied [REDACTED assigned-secret]');
+});
+
+test('P4d review 6: a second named value on a line, and a long decoded passphrase, are searched for whole', () => {
+  const BS = String.fromCodePoint(92);
+  const tail = 'lilac maple cedar birch spruce poplar willow juniper hemlock chestnut sycamore hawthorn sequoia magnolia rhododendron';
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=alphaPrim token=ZephyrMosaic72' },
+    { role: 'assistant', line: 2, text: 'ZephyrMosaic72' },
+  ]), '[REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=alphaPrim secret=lavendergarden' },
+    { role: 'assistant', line: 2, text: 'got lavendergarden' },
+  ]), 'got [REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: `password=${BS}u0061 ${tail}` },
+    { role: 'assistant', line: 2, text: `a ${tail}` },
+  ]), '[REDACTED assigned-secret]');
+});
+
+test('P4d review 7: a quoted value after a further name in JSON, and many names on one line', () => {
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: '{"password":"firstphrase","token":"violetorchid","note":"synthetic"}' },
+    { role: 'assistant', line: 2, text: 'Copied violetorchid today.' },
+  ]), 'Copied [REDACTED assigned-secret] today.');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=firstphrase token=secondphrase token=thirdphrase ' + 'a'.repeat(370) + ' token=violetorchid' },
+    { role: 'assistant', line: 2, text: 'Copied violetorchid today.' },
+  ]), 'Copied [REDACTED assigned-secret] today.');
+});
+
+test('P4d review 8: a decoded value after a long span, and a value in a query string', () => {
+  const BS = String.fromCodePoint(92);
+  const value = ['violetorchid', 'mapleforest', 'indigomeadow', 'lavenderwillow', 'junipercedar'].join('');
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + 'a'.repeat(437) + ' token="' + BS + 'u0076' + value.slice(1) + '"' },
+    { role: 'assistant', line: 2, text: value },
+  ]), '[REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=violetorchid&user=alice' },
+    { role: 'assistant', line: 2, text: 'violetorchid' },
+  ]), '[REDACTED assigned-secret]');
 });

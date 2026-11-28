@@ -367,18 +367,25 @@ async function importT3(args) {
 }
 
 async function verifyCommand(dir, fingerprint) {
-  const { problems, files, createdAt, session, fingerprint: signer, reviews } = await verifyBundle(dir, { fingerprint });
+  const { problems, files, createdAt, session, fingerprint: signer, reviews, redaction, version } = await verifyBundle(dir, { fingerprint });
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
     throw new Error('Verification failed.');
   }
   const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
-  // Card P3b: version 2 says what the review chain was when it was signed.
+  // Card P3b: version 2 and later say what the review chain was when it was signed.
   const chain = reviews
     ? `Review chain at signing: ${reviews.events} ${reviews.events === 1 ? 'event' : 'events'}, head ${reviews.head}`
     : 'Review chain at signing: not recorded (a version 1 bundle)';
+  // Card P4d: version 3 says what was redacted. The scanner name passed an exact check.
+  const redacted = redaction === null ? `not recorded (a version ${version} bundle)`
+    : `${redaction.findings} ${redaction.findings === 1 ? 'replacement' : 'replacements'}, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
-    '\nKey fingerprint: ' + signer + '\n' + chain);
+    '\nKey fingerprint: ' + signer + '\n' + chain + '\nRedaction: ' + redacted);
+  if (redaction === null) {
+    console.error('Warning: this bundle was signed before hand-offs were redacted. ' +
+      'Its hand-off was not checked for secrets; read it with care before you pass it on.');
+  }
   if (fingerprint === undefined) {
     console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
       'and run verify again with --fingerprint.');
@@ -586,9 +593,30 @@ async function signCommand(sessionId, signDir) {
   // Load the key first, so a missing key fails before anything is read or written.
   const privateKey = await loadSigningKey(signingKeyPath());
   const { session, reviews } = await readLedgerSession(ledgerDatabasePath(), sessionId);
-  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(session) + '\n', privateKey, reviews });
+  // Card P4d: what is signed is always the redacted hand-off; there is no way to opt out.
+  const { session: redacted, findings } = redactSession(session);
+  const bundle = buildBundle({
+    sessionId, markdown: handoffMarkdown(redacted) + '\n', findings: findings.length, privateKey, reviews,
+  });
   await writeBundle(signDir, bundle);
-  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
+  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\n' + redactionLine(findings, sessionId) +
+    '\nKey fingerprint: ' + bundle.fingerprint);
+}
+
+/** The sender's summary of what signing redacted: counts only, never a value or preview. */
+function redactionLine(findings, sessionId) {
+  if (findings.length === 0) {
+    return 'Redacted: nothing; the secret checks found no value. They cannot find every secret, so read handoff.md before you send it.';
+  }
+  // Counted by transcript line (one message each), with the source name named apart.
+  const lines = new Set(findings.filter(finding => finding.line !== null).map(finding => finding.line)).size;
+  const source = findings.some(finding => finding.line === null);
+  const where = [lines ? `${lines} transcript ${lines === 1 ? 'line' : 'lines'}` : '', source ? 'the source name' : '']
+    .filter(Boolean).join(' and ');
+  // A marker can cover several values that sat together, so the count is of replacements.
+  return `Redacted: ${findings.length} ${findings.length === 1 ? 'replacement' : 'replacements'} in ${where}, ` +
+    'each a [REDACTED <kind>] marker. ' +
+    `Run npm run ledger -- redact ${sessionId} to see where. Read handoff.md before you send it.`;
 }
 
 // The hand-off renderer keeps ZWNJ, ZWJ and tabs; the redaction view escapes every format

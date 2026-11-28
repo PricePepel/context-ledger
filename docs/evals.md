@@ -4627,6 +4627,86 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
+
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 16. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+
+| Eval | Expected |
+| --- | --- |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. A value found once (six characters or more) is also replaced where it is pasted again without its name. There is no option to sign without redaction. |
+| Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
+| Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
+| Sender sees the count, not the values | `--sign` prints how many replacements it made on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
+| Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
+| Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
+| Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
+### P4d results (2026-11-22)
+
+- **All rows:** pass. `tests/sign.test.mjs` (the P4d tests at its end, and the P4a tests updated for the new version) and `tests/secrets.test.mjs` (the copy rule).
+- **Version number changed by the merge with P3b (2026-11-22).** P3b (#70) merged first and took manifest version 2 for the review chain head. P4d therefore writes version 3: P3b's `reviews` plus `redaction`. Where the rows above say version 2, read version 3. Where they say version 1, read versions 1 and 2: both are bundles from before P4d, verify with the not-redacted warning, and are tested. `tests/signed-review-head.test.mjs` now expects version 3 and the `Redaction:` line. A focused Codex check of the merge (of d21b7a0) found no high or medium issue; its three low doc findings are fixed: the OpenSSL checklist requires no `redaction` in versions 1 and 2, the `reviews verify` text no longer says it repeats `verify`'s warnings, and the `verifyBundle` comment names `reviews`.
+- **Codex review, round 1** (of de72f08):
+  - (high) A value found by its name (`password=…`) stayed in the signed hand-off where a later message pasted it bare: redaction cut matched spans, not values. Fixed in `redactSession`: a found value of six characters or more is also replaced everywhere else in the session (source name included), the longer of two values first. Tests: the signed fixture pastes its password into a later message, and scanner tests cover copies, quoted values, overlaps and the short-value limit.
+  - (medium) The session ID is the unkeyed SHA-256 of the original transcript, so a receiver who could rebuild every other byte could confirm a guess of a short redacted value. Not changed, since the session identity is outside this card. It is recorded as a residual in ADR-9a and `docs/signed-handoff.md`.
+  - (low) The sender's summary called transcript records and the source name "lines". It now says `in N transcript lines and the source name`.
+  - (low) The receiver docs said "whole, non-negative count" (the limit is 2^53 − 1) and did not mention placeholder values. The OpenSSL manual check did not give the exact `redaction` keys. All three corrected.
+  - (low) Test gaps, all filled:
+    - The test that version 1 lists exactly one file now runs on version 1 and version 2.
+    - The version 1 test signs a genuinely unredacted hand-off.
+    - A malformed record is now checked through the CLI as well (exit 1, nothing on stdout).
+    - A changed count under the old signature now fails the signature check.
+    - The sender output is checked for key prefixes as well as for pieces of the values.
+  - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
+- **Codex round 2** did not run: Codex hit its usage limit during the round. It is owed, against the head of the branch.
+- **Independent Claude review** (a separate code-reviewer agent, not shown the implementation notes), of the round 1 fix e04e948. No high finding:
+  - (medium) A value after a name was searched for only by its first word, so a passphrase pasted again kept its later words. Fixed: copies are searched for the first one to eight words, the whole tail and any later word that mixes letters and digits.
+  - (medium) The copy search cuts the same text inside longer words and in prose (`password: secret` hides every `secret`). Kept, since that errs toward hiding, and documented in ADR-9a and `docs/signed-handoff.md`.
+  - (medium) The copy search ran one `indexOf` per value per field: 20,000 values over 8 MiB took 39 s. Fixed with one pass per field that looks positions up by their first six characters: 0.8 s for that input. A test bounds 20,000 values over 4 MiB.
+  - (low) A quoted value with an escaped quote was cut short at the escape. Fixed: the quoted part is found with the scanner's own quote rules, and searched for as written and decoded.
+  - (low) A copy in another letter case, with an invisible character inside or in another Unicode normalization, is not found. Documented as a residual.
+  - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
+  - Each fix has a test in `tests/secrets.test.mjs`.
+- **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
+- **Codex review, round 2** (of 49f03f7):
+  - (high) A password and a token on one line merge into one finding, and the copy search took only the whole merged span, so a bare copy of either value survived. Fixed: every word in a finding that mixes letters and digits, and its first one to eight words, are searched for, whatever the finding's kind.
+  - (high, not a leak) A source name `password=<session ID>` is replaced in the source name, but the ID still shows as the session ID. The ID is public by design, so a value that equals it was never secret. Documented in `docs/signed-handoff.md`.
+  - (medium) Copies of a passphrase written with two spaces were missed, because the prefixes were joined with one space. So was a Bearer value with an escape after a quote that comes before `Bearer`. Fixed: prefixes are cut from the text as written, and every value is searched for with its escapes decoded too.
+  - (medium) Grouping values by their first six characters was quadratic for values that share them: 5 s at 8,000 values. Replaced with one Aho-Corasick pass over all values per field: 0.4 s at 20,000. A test bounds it. Memory grows with the number of matches; that is documented.
+  - (low, not changed) A literal `[REDACTED assigned-secret]` in the transcript, after `password=assigned-secret`, becomes a nested marker. The value is still removed.
+  - (low, not changed) A password that is a key format's public prefix (`password=sk-ant-`) still shows that prefix in a key's `redact` preview. The prefix is public text, the same for every key of that format.
+  - (low) The OpenSSL check said "a whole number of 0 or more". It now gives the upper bound. The docs now name agent authors and recipients as scanned.
+  - (low) Tests:
+    - Every malformed redaction record is now checked through the CLI as well.
+    - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
+- **Codex review, round 3** (of 5ecc8b0):
+  - (high) A key or Bearer value nested in a longer finding lost its own boundaries when candidates merged, so a copy of it glued to other text survived. Fixed: copies are searched for each accepted candidate before the merge, under the kind of the finding that holds it.
+  - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
+  - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
+  - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
+- **Codex review, round 4** (of c940dcc):
+  - (high) A JSON `"Bearer …"` value was searched for without its quote, because the quote stands before `Bearer`, not the value. An all-letter value with JSON after it was then never matched. Fixed: the scanner hands its quote to the copy search.
+  - (medium) Each candidate looked up its finding from the start of the message: 40,000 findings in one message took 3.8 s. Fixed with one walk over both lists, which are sorted by start.
+  - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
+  - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
+  - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
+- **Codex review, round 5** (of be3a2f2): no medium finding.
+  - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
+  - (low) The README still called the count a count of values. It now says replacements.
+  - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
+- **Codex review, round 6** (of 97d5b68): no medium finding.
+  - (high) A second named value on the same line (`password=a token=b`) was searched for only as part of a whole word, because the scanner reads one lead per line. Fixed: the value after every further name inside a finding is an entry of its own.
+  - (high) Decoded prefixes were each charged to the budget, so a long decoded passphrase lost its last words. Fixed: each text is decoded once, and its decoded words count as written ones do. Budgets are now 512 each for the span, the values inside it and the decoded forms.
+  - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
+  - (low) Two passages still said "values replaced". They now say replacements.
+  - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
+- **Codex review, round 7** (of 94fea13): no medium or low finding.
+  - (high) A quoted value after a further name in JSON (`"token":"violetorchid"`) ran on past its closing quote, and JSON has no spaces to end a word, so a bare copy survived. Fixed: such a value stops at its closing quote or at the next name, and values can also end just before a quote or separator.
+  - (high) Several names on one line each took the whole rest of the line, so their overlapping suffixes used up the budget before a later value was reached. Fixed: these values stop at the next name and never overlap. The span, the quoted part, these values, key-like words and decoded forms each have their own 512-character budget. Both cases are tested.
+- **Codex review, round 8** (of d75e427). These fixes are not reviewed again: every finding since round 2 has been in this best-effort copy layer, not in signing, verification or the manifest.
+  - (high) A long decoded span used the shared decoded budget, so a nested decoded value was never searched for. Fixed: each kind of entry has its own decoded budget.
+  - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
+  - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
@@ -5848,3 +5928,340 @@ Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc
 - `npx playwright test`: 61 passed, 1 skipped (run at 40db050; later commits change only Python under `runtime/latent_transfer/` and its test).
 - Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), rerun on the final commit.
 - After merging `main` at c3be893 (2026-11-27, with L4's `statebridge` files and tests): `node scripts/check.mjs` no findings (323 files); the runtime suite 345 tests OK on Windows (102 skipped without torch) and 345 OK in WSL with torch, none skipped, on CPU; the rule 1 comparison equal again. L4's code reaches the alignment only through `TransferPair` with a checkpoint, which loads rule 1, so its recorded numbers do not depend on this card.
+
+## L2 — Cross-model comparison harness (defined 2026-11-26, before the code)
+
+The latent transfer (M2b-S) is measured on one pair, and the reading pool on four families one at a time. This card adds one harness that asks the same questions of N open-weight models with the same arms, so every later mapper lands in a table that already holds its text baselines. No mapper is trained here.
+
+**Harness:** `runtime/latent_compare/`, torch and transformers in the WSL venv, one model on the GPU at a time (two for the mapper pair). `python -m latent_compare.run all --out <dir>` from `runtime/` reproduces the table; each phase saves its file, so a stopped run resumes.
+
+**Models (candidates):** Qwen2.5-1.5B, Qwen2.5-3B and Phi-3.5-mini in bf16; Qwen2.5-7B (FP8), Llama-3.1-8B, Mistral-7B v0.3 and Granite-3.1-8B (4-bit, compressed-tensors) from the checkpoints already on this machine. A checkpoint that does not load in torch is dropped and named in the result; at least five must run. Licence, tokenizer family and KV shape are recorded per model.
+
+**Arms, for every (sender, receiver) pair, on the same items, greedy, 24 new tokens:**
+
+| Arm | What the receiver gets | Bytes handed over |
+| --- | --- | --- |
+| `text` | The passage, in its own chat template (upper reference; no sender) | UTF-8 passage |
+| `closed` | No passage (floor) | 0 |
+| `t2t` | The sender's summary (at most 40 words, 96 new tokens, the M2b-S request) in place of the passage | UTF-8 summary |
+| `self_cache` | Same model only: the sender prefills the prompt up to the end of the passage, its KV cache is serialized, read back and continued by the receiver with the question. No mapper | Serialized cache |
+| `swat`, `mismatched`, `zeroed` | Only where a mapper exists (Phi-3.5-mini to Qwen2.5-1.5B, checkpoint `ade79c34041fd529`): the mapped sender cache, the cache of another item's passage, and a zeroed sender cache, in M2b-S's own prompt format, with that format's `text` beside them | Sender cache and mapped cache, both reported |
+
+Every other cross-model cell of the latent table reads "no mapper yet".
+
+**Main set:** 200 SQuAD v1.1 validation questions, seed 0, passages of at most 384 tokens on every tokenizer in the registry. Token F1 and exact match (SQuAD normalization), each difference with a paired bootstrap 95% interval (10,000 resamples), mean time end to end per item (sender work plus receiver work, CUDA synchronized, after a warm-up) and mean bytes handed over.
+
+**Edge-case groups** (arms `text`, `t2t` from the model's own summary and `self_cache`; the mapper pair also runs `swat` where its prompt format allows):
+
+| Group | Items | Expected |
+| --- | --- | --- |
+| `long_passage` | 20 passages of about 3,000 tokens built from SQuAD paragraphs, the answer's paragraph first (10) or last (10), at a context of 2,048 tokens (an emulated serving limit, since a real 32k to 128k context does not fit beside the weights) | No prompt exceeds the limit; every record says it was truncated and how many passage tokens were kept; answer-first items score near the main set, answer-last items near the `closed` floor |
+| `tiny_passage` | 6 one-word passages and 4 empty passages, with an abstain instruction | Every arm returns a record with no error, including a cache hand-off whose passage adds no tokens; one-word items are answered; empty items should abstain |
+| `non_english_emoji` | 12 synthetic passages (Russian, Chinese, Japanese, Arabic, Hindi, Uzbek, Spanish, German, and English with emoji including joined sequences) | No error; bytes are counted in UTF-8; scored by containment without whitespace, because token F1 treats an unspaced sentence as one token |
+| `unanswerable` | 20 SQuAD questions with a passage from another article and 20 answerable controls, same abstain instruction | Abstain rate on the first half and F1 on the second, per model and arm |
+| `no_system_role` | The first 40 main items asked with a system instruction | A template with no system role (it raises, or drops the text) is detected, and the instruction opens the user turn instead; F1 is compared with the same items without it |
+
+**Checks decided before the run:**
+
+| Check | Pass when |
+| --- | --- |
+| Hand-off is faithful | For every model, `self_cache` gives the same answer text as `text` on at least 95% of main items, and the paired F1 interval contains zero. Both arms feed the same tokens; only where the prefix cache was computed differs. |
+| The mapper result holds on this set | In the Phi-3.5-mini to Qwen2.5-1.5B cell, `swat` beats `mismatched`, `zeroed` and that pair's `t2t`, each interval above zero. Its F1 is reported beside M2b-S's 0.872 (300 items, another sample). |
+| Coverage | At least five models complete every arm and group, and the table marks every pair without a mapper. |
+| Edge cases | Every item of every group has a record or a named, expected refusal; none stops the run. |
+
+Not covered, by decision: new mappers, budget-matched compaction, vLLM serving of these arms (the hand-off needs direct access to the cache), more than one task, and batch sizes above one.
+
+### L2 results (measured 2026-11-26 and 2026-11-27, RTX 5080 16 GB, WSL)
+
+One command reproduces everything below: in `runtime/`, `~/venvs/latent/bin/python -m latent_compare.run all --out ~/l2-compare/run1`. The run took about 5.5 hours of GPU time for eight models. Per-item files stay on the GPU machine; only the aggregates below are committed. Intervals are paired bootstrap 95% intervals over items, 10,000 resamples. Every arm ran with 0 errors and 0 missing records.
+
+**Verdicts on the four checks decided before the run:**
+
+| Check | Result | What was measured |
+| --- | --- | --- |
+| Hand-off is faithful | **Fail** | Three of the six torch models give the same answer text from their own handed-over cache on at least 95% of items (Qwen2.5-1.5B 96.0%, Qwen2.5-3B 98.5%, Mistral-7B 98.0%). Three do not: Qwen2.5-0.5B 93.0%, Granite-3.1-2B 90.5%, Phi-3.5-mini 86.5%. The F1 difference is at most 0.009 for every model, and its interval contains zero for five of the six; Granite's is −0.009 [−0.021, −0.001]. |
+| The mapper result holds on this set | Pass | Phi-3.5-mini to Qwen2.5-1.5B: `swat` F1 0.859 beats `mismatched` by +0.717 [+0.659, +0.771], `zeroed` by +0.857 [+0.812, +0.897] and the pair's `t2t` by +0.414 [+0.345, +0.482]. M2b-S measured 0.872 on 300 other items. |
+| Coverage | Pass | Eight models complete every arm that can run for them; the latent table marks 55 of 64 cells "no mapper yet". |
+| Edge cases | Pass | 122 edge items per model, 0 errors, 0 missing. The only refusals are the named one: the cache arm of the two models served by vLLM. |
+
+The faithful check fails as written, and the threshold was not moved after the run. The size of the effect is small: answers differ in wording on 1.5% to 13.5% of items while F1 moves by less than 0.01. The cause was not isolated. The saved bytes are read back unchanged (`torch.save`, `weights_only` load), so the difference must come from computing the prefix alone and then the question on top of it, instead of both in one forward pass, in bf16. That explanation was not tested. A follow-up arm that reuses the cache in memory without saving, and a float32 run of one model, would separate the two.
+
+**The final model set, and why it differs from the brief.** The brief named Qwen2.5-1.5B, 3B and 7B, Phi-3.5-mini, Llama-3.2-3B or Llama-3.1-8B AWQ, Granite 3.1 and Mistral-7B v0.3. Eight models ran. Six load in torch as bf16, so their cache can be handed over: Qwen2.5-0.5B (added as the receiver under 2B), Qwen2.5-1.5B, Qwen2.5-3B, Phi-3.5-mini, Granite-3.1-2B and Mistral-7B v0.3. Two are 4-bit AWQ checkpoints that transformers cannot load with this venv, so vLLM 0.33 serves them: Qwen2.5-7B and Llama-3.1-8B. The table "Where the model set differs from the brief" below gives the reason for each change.
+
+**How to read the rows served by vLLM (qwen7, llama8).** They receive the same token ids as a torch model would, greedy, one request at a time, with prefix caching off and repetition penalty 1.0. They differ in three ways that are not the model: another engine, a loopback HTTP call per answer, and 4-bit weights. Their times are therefore not comparable with the torch rows. vLLM does not give a client its KV cache, so `self_cache` reads "not possible through vLLM" for them; this is a named refusal, not a missing record.
+
+All times are warm, serial, batch size one, on one GPU, and include building the prompt. They describe this configuration and are not a serving benchmark.
+
+#### Models
+
+| Key | Checkpoint | Weights | Runs in | Licence | Tokenizer | Chat template | System role | KV shape (layers × KV heads × head dim) | Cache per token | Declared context |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | `Qwen/Qwen2.5-0.5B-Instruct` | bf16 | torch | Apache-2.0 | byte-level BPE, 151k (Qwen2) | ChatML | yes | 24 × 2 × 64 | 12.3 kB | 32768 |
+| qwen1.5 | `Qwen/Qwen2.5-1.5B-Instruct` | bf16 | torch | Apache-2.0 | byte-level BPE, 151k (Qwen2) | ChatML | yes | 28 × 2 × 128 | 28.7 kB | 32768 |
+| qwen3 | `Qwen/Qwen2.5-3B-Instruct` | bf16 | torch | Qwen Research (non-commercial) | byte-level BPE, 151k (Qwen2) | ChatML | yes | 36 × 2 × 128 | 36.9 kB | 32768 |
+| qwen7 | `Qwen/Qwen2.5-7B-Instruct-AWQ` | 4-bit AWQ | vllm | Apache-2.0 | byte-level BPE, 151k (Qwen2) | ChatML | yes | 28 × 4 × 128 | 57.3 kB | 32768 |
+| phi3.5 | `microsoft/Phi-3.5-mini-instruct` | bf16 | torch | MIT | SentencePiece BPE, 32k (Llama-2 style) | Phi-3 | yes | 32 × 32 × 96 | 393.2 kB | 131072 |
+| granite2 | `ibm-granite/granite-3.1-2b-instruct` | bf16 | torch | Apache-2.0 | byte-level BPE, 49k (GPT-2 style) | Granite 3 | yes | 40 × 8 × 64 | 81.9 kB | 131072 |
+| mistral7 | `mistralai/Mistral-7B-Instruct-v0.3` | bf16 | torch | Apache-2.0 | SentencePiece BPE, 32.8k (Mistral v3) | Mistral [INST] | yes | 32 × 8 × 128 | 131.1 kB | 32768 |
+| llama8 | `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4` | 4-bit AWQ | vllm | Llama 3.1 Community | byte-level BPE, 128k (tiktoken style) | Llama 3 | yes | 32 × 8 × 128 | 131.1 kB | 131072 |
+
+#### Where the model set differs from the brief
+
+| What | Why |
+| --- | --- |
+| Qwen2.5-7B and Llama-3.1-8B in torch | the AWQ and GPTQ checkpoints need `gptqmodel` or `optimum`, which the venv does not have; both run through vLLM instead, without the cache hand-over arm |
+| Qwen2.5-7B (FP8, RedHatAI) in torch | decompresses to 14.2 GiB of dense bf16 weights; real prompts filled the GPU (15.97 of 16 GiB) and 200 summaries did not finish in 28 minutes |
+| Granite-3.1-8B (4-bit, RedHatAI w4a16) | loads, then decompresses to 15.9 GiB of dense weights and spills to host memory (352 s for one answer); Granite-3.1-2B runs instead |
+| Mistral-7B v0.3 (4-bit, RedHatAI w4a16) | GPTQ format; the bf16 checkpoint runs in torch instead |
+| Llama-3.2-3B | gated on Hugging Face and this machine has no token; Llama-3.1-8B stands for the family |
+
+#### Main set: reading the passage, and the same model's cache handed over
+
+| Model | `text` F1 / EM | `closed` F1 | `self_cache` F1 / EM | `self_cache` − `text` F1 (95%) | Same answer | `text` ms | `self_cache` ms end to end | of which load + answer | `text` bytes | `self_cache` bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | 0.606 / 0.390 | 0.110 | 0.604 / 0.390 | -0.002 [-0.019, +0.015] | 0.930 | 275 | 335 | 8 + 286 | 746 B | 2.3 MB |
+| qwen1.5 | 0.706 / 0.465 | 0.171 | 0.700 / 0.455 | -0.006 [-0.018, +0.003] | 0.960 | 388 | 447 | 10 + 376 | 746 B | 5.4 MB |
+| qwen3 | 0.826 / 0.655 | 0.166 | 0.825 / 0.655 | -0.001 [-0.005, +0.001] | 0.985 | 404 | 477 | 12 + 362 | 746 B | 6.9 MB |
+| qwen7 | 0.863 / 0.700 | 0.210 | not possible through vLLM | — | — | 193 | — | — | 746 B | — |
+| phi3.5 | 0.465 / 0.120 | 0.135 | 0.464 / 0.120 | -0.002 [-0.011, +0.007] | 0.865 | 848 | 1019 | 40 + 781 | 746 B | 74.1 MB |
+| granite2 | 0.358 / 0.080 | 0.119 | 0.348 / 0.065 | -0.009 [-0.021, -0.001] | 0.905 | 1167 | 1251 | 20 + 1106 | 746 B | 20.8 MB |
+| mistral7 | 0.511 / 0.185 | 0.120 | 0.510 / 0.185 | -0.001 [-0.002, +0.000] | 0.980 | 988 | 1106 | 19 + 904 | 746 B | 24.2 MB |
+| llama8 | 0.831 / 0.615 | 0.202 | not possible through vLLM | — | — | 191 | — | — | 746 B | — |
+
+#### Main set: `t2t` F1, sender's summary (rows) read by receiver (columns)
+
+| Sender \ receiver | qwen0.5 | qwen1.5 | qwen3 | qwen7 | phi3.5 | granite2 | mistral7 | llama8 | Summary ms | Summary bytes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | 0.465 | 0.489 | 0.560 | 0.571 | 0.293 | 0.245 | 0.345 | 0.544 | 2282 | 354 B |
+| qwen1.5 | 0.341 | 0.400 | 0.464 | 0.473 | 0.240 | 0.215 | 0.298 | 0.418 | 2418 | 275 B |
+| qwen3 | 0.358 | 0.411 | 0.427 | 0.411 | 0.226 | 0.207 | 0.261 | 0.415 | 2710 | 231 B |
+| qwen7 | 0.389 | 0.384 | 0.475 | 0.456 | 0.216 | 0.225 | 0.284 | 0.457 | 785 | 208 B |
+| phi3.5 | 0.371 | 0.429 | 0.488 | 0.479 | 0.228 | 0.226 | 0.300 | 0.463 | 3277 | 230 B |
+| granite2 | 0.390 | 0.479 | 0.548 | 0.551 | 0.278 | 0.245 | 0.341 | 0.519 | 5219 | 299 B |
+| mistral7 | 0.445 | 0.485 | 0.566 | 0.555 | 0.299 | 0.224 | 0.360 | 0.545 | 4831 | 349 B |
+| llama8 | 0.434 | 0.427 | 0.524 | 0.535 | 0.245 | 0.234 | 0.317 | 0.485 | 826 | 220 B |
+
+#### Main set: `t2t` − `text` F1 with paired 95% interval
+
+| Sender \ receiver | qwen0.5 | qwen1.5 | qwen3 | qwen7 | phi3.5 | granite2 | mistral7 | llama8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | -0.141 [-0.205, -0.077] | -0.217 [-0.281, -0.152] | -0.266 [-0.322, -0.209] | -0.292 [-0.352, -0.235] | -0.172 [-0.214, -0.130] | -0.113 [-0.148, -0.079] | -0.166 [-0.210, -0.123] | -0.287 [-0.344, -0.230] |
+| qwen1.5 | -0.264 [-0.330, -0.198] | -0.306 [-0.368, -0.244] | -0.362 [-0.428, -0.296] | -0.391 [-0.453, -0.329] | -0.225 [-0.268, -0.182] | -0.142 [-0.180, -0.106] | -0.213 [-0.260, -0.167] | -0.412 [-0.471, -0.353] |
+| qwen3 | -0.247 [-0.306, -0.188] | -0.295 [-0.358, -0.230] | -0.399 [-0.459, -0.336] | -0.452 [-0.514, -0.389] | -0.239 [-0.280, -0.199] | -0.150 [-0.187, -0.115] | -0.250 [-0.300, -0.200] | -0.416 [-0.477, -0.356] |
+| qwen7 | -0.216 [-0.281, -0.151] | -0.322 [-0.384, -0.260] | -0.351 [-0.414, -0.289] | -0.407 [-0.469, -0.344] | -0.249 [-0.291, -0.207] | -0.132 [-0.168, -0.097] | -0.227 [-0.272, -0.181] | -0.374 [-0.436, -0.309] |
+| phi3.5 | -0.234 [-0.293, -0.178] | -0.277 [-0.343, -0.210] | -0.338 [-0.399, -0.277] | -0.385 [-0.448, -0.320] | -0.237 [-0.279, -0.195] | -0.132 [-0.170, -0.097] | -0.211 [-0.254, -0.169] | -0.368 [-0.428, -0.308] |
+| granite2 | -0.216 [-0.275, -0.156] | -0.227 [-0.292, -0.163] | -0.278 [-0.341, -0.214] | -0.312 [-0.372, -0.253] | -0.188 [-0.227, -0.148] | -0.112 [-0.145, -0.081] | -0.170 [-0.211, -0.130] | -0.312 [-0.370, -0.253] |
+| mistral7 | -0.161 [-0.218, -0.103] | -0.221 [-0.285, -0.157] | -0.260 [-0.319, -0.202] | -0.308 [-0.372, -0.245] | -0.166 [-0.207, -0.124] | -0.133 [-0.170, -0.098] | -0.150 [-0.194, -0.106] | -0.286 [-0.344, -0.227] |
+| llama8 | -0.172 [-0.232, -0.113] | -0.280 [-0.341, -0.217] | -0.302 [-0.364, -0.240] | -0.328 [-0.393, -0.264] | -0.220 [-0.262, -0.177] | -0.123 [-0.158, -0.090] | -0.194 [-0.240, -0.147] | -0.346 [-0.408, -0.284] |
+
+#### Main set: `t2t` time end to end, ms (summary written, then read)
+
+| Sender \ receiver | qwen0.5 | qwen1.5 | qwen3 | qwen7 | phi3.5 | granite2 | mistral7 | llama8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | 2590 | 2662 | 2728 | 2472 | 3152 | 3432 | 3293 | 2458 |
+| qwen1.5 | 2763 | 2837 | 2880 | 2616 | 3307 | 3537 | 3419 | 2598 |
+| qwen3 | 2996 | 3042 | 3084 | 2884 | 3574 | 3863 | 3690 | 2871 |
+| qwen7 | 1094 | 1118 | 1139 | 952 | 1655 | 1920 | 1743 | 944 |
+| phi3.5 | 3580 | 3604 | 3618 | 3442 | 4134 | 4409 | 4214 | 3439 |
+| granite2 | 5527 | 5551 | 5581 | 5396 | 6065 | 6357 | 6196 | 5385 |
+| mistral7 | 5127 | 5168 | 5215 | 5008 | 5685 | 5994 | 5810 | 5002 |
+| llama8 | 1138 | 1192 | 1230 | 990 | 1707 | 1969 | 1792 | 990 |
+
+#### Latent hand-over F1, sender (rows) to receiver (columns)
+
+| Sender \ receiver | qwen0.5 | qwen1.5 | qwen3 | qwen7 | phi3.5 | granite2 | mistral7 | llama8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | 0.604 (own cache, no mapper) | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet |
+| qwen1.5 | no mapper yet | 0.700 (own cache, no mapper) | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet |
+| qwen3 | no mapper yet | no mapper yet | 0.825 (own cache, no mapper) | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet |
+| qwen7 | no mapper yet | no mapper yet | no mapper yet | not possible through vLLM | no mapper yet | no mapper yet | no mapper yet | no mapper yet |
+| phi3.5 | no mapper yet | **0.859** (mapper) | no mapper yet | no mapper yet | 0.464 (own cache, no mapper) | no mapper yet | no mapper yet | no mapper yet |
+| granite2 | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | 0.348 (own cache, no mapper) | no mapper yet | no mapper yet |
+| mistral7 | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | 0.510 (own cache, no mapper) | no mapper yet |
+| llama8 | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | no mapper yet | not possible through vLLM |
+
+#### Mapper pair phi3.5>qwen1.5 (checkpoint `ade79c34041fd529`, M2b-S)
+
+M2b-S measured `swat` F1 0.872 on 300 items of another sample. The mapper path cuts a document to 384 tokens: 0 of 200 main items were cut.
+
+| Arm | F1 | EM | Containment | ms end to end | Bytes handed over | n | Errors |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `text_m2b` | 0.755 | 0.575 | 0.850 | 391 | 783 B | 200 | 0 |
+| `swat` | 0.859 | 0.760 | 0.845 | 397 | 77.2 MB sender cache, 4.8 MB mapped | 200 | 0 |
+| `mismatched` | 0.142 | 0.065 | 0.075 | 386 | 77.2 MB sender cache, 4.8 MB mapped | 200 | 0 |
+| `zeroed` | 0.003 | 0.000 | 0.000 | 1096 | 77.2 MB sender cache, 4.8 MB mapped | 200 | 0 |
+| `t2t_m2b` | 0.445 | 0.305 | 0.420 | 3581 | 230 B | 200 | 0 |
+
+| Difference | F1 (95%) | EM (95%) |
+| --- | --- | --- |
+| `swat-mismatched` | +0.717 [+0.659, +0.771] | +0.695 [+0.625, +0.760] |
+| `swat-zeroed` | +0.857 [+0.812, +0.897] | +0.760 [+0.700, +0.820] |
+| `swat-t2t_m2b` | +0.414 [+0.345, +0.482] | +0.455 [+0.375, +0.535] |
+| `swat-text_m2b` | +0.104 [+0.051, +0.155] | +0.185 [+0.110, +0.255] |
+| `swat-harness_text` | +0.153 [+0.096, +0.208] | +0.295 [+0.215, +0.375] |
+| `swat-harness_t2t` | +0.430 [+0.361, +0.496] | +0.485 [+0.405, +0.560] |
+
+| Edge group (answerable items) | `text_m2b` hit | `swat` hit | `swat` F1 | Items | Cut to 384 tokens | Errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| long_passage | 0.500 | 0.450 | 0.503 | 20 | 20 | 0 |
+| tiny_passage | 1.000 | 1.000 | 1.000 | 10 | 0 | 0 |
+| non_english_emoji | 1.000 | 1.000 | 1.000 | 12 | 0 | 0 |
+
+#### Edge cases (each cell: `text` / `self_cache` / `t2t` from the model's own summary)
+
+| Model | Long, answer first F1 | Long, answer last F1 | Kept of passage tokens | Largest prompt | One word hit | Empty abstains | Non-English and emoji hit | Unanswerable abstains | Control F1 | Control wrongly abstains | Errors or missing |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | 0.632 / 0.632 / 0.210 | 0.162 / 0.146 / 0.188 | 1949 of 3121 | 2006 | 1.000 / 1.000 / 1.000 | 0.250 / 0.250 / 0.500 | 0.917 / 0.917 / 0.833 | 0.200 / 0.200 / 0.200 | 0.699 / 0.696 / 0.433 | 0.050 / 0.050 / 0.150 | 0 |
+| qwen1.5 | 0.810 / 0.810 / 0.137 | 0.192 / 0.192 / 0.088 | 1949 of 3121 | 2006 | 1.000 / 1.000 / 0.167 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 | 0.674 / 0.695 / 0.423 | 0.100 / 0.100 / 0.400 | 0 |
+| qwen3 | 0.786 / 0.786 / 0.441 | 0.121 / 0.173 / 0.022 | 1949 of 3121 | 2006 | 1.000 / 1.000 / 0.667 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 | 0.961 / 0.961 / 0.499 | 0.000 / 0.000 / 0.300 | 0 |
+| qwen7 | 0.762 / — / 0.333 | 0.030 / — / 0.047 | 1949 of 3121 | 2006 | 1.000 / — / 0.500 | 0.750 / — / 0.750 | 1.000 / — / 1.000 | 1.000 / — / 1.000 | 0.843 / — / 0.367 | 0.100 / — / 0.450 | 0 |
+| phi3.5 | 0.765 / 0.765 / 0.314 | 0.234 / 0.235 / 0.045 | 1970 of 3560 | 2007 | 1.000 / 1.000 / 0.833 | 0.000 / 0.000 / 0.250 | 1.000 / 1.000 / 1.000 | 0.400 / 0.400 / 0.500 | 0.345 / 0.344 / 0.246 | 0.000 / 0.000 / 0.050 | 0 |
+| granite2 | 0.420 / 0.420 / 0.134 | 0.224 / 0.224 / 0.057 | 1914 of 3762 | 2006 | 0.667 / 0.667 / 0.833 | 1.000 / 1.000 / 0.500 | 0.917 / 0.917 / 1.000 | 0.250 / 0.250 / 0.500 | 0.405 / 0.403 / 0.320 | 0.000 / 0.000 / 0.150 | 0 |
+| mistral7 | 0.534 / 0.534 / 0.282 | 0.046 / 0.046 / 0.058 | 1970 of 3462 | 2007 | 0.833 / 0.833 / 0.667 | 0.000 / 0.000 / 0.000 | 1.000 / 1.000 / 1.000 | 0.050 / 0.050 / 0.000 | 0.448 / 0.448 / 0.383 | 0.000 / 0.000 / 0.000 | 0 |
+| llama8 | 0.910 / — / 0.520 | 0.129 / — / 0.036 | 1944 of 3018 | 2006 | 1.000 / — / 0.000 | 0.000 / — / 0.000 | 1.000 / — / 1.000 | 1.000 / — / 1.000 | 0.904 / — / 0.642 | 0.000 / — / 0.200 | 0 |
+
+#### Edge case: a system instruction
+
+| Model | Template has a system role | `text` F1 with the instruction | Against the same items without it (95%) | `self_cache` F1 | Same answer | Errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| qwen0.5 | yes | 0.742 | +0.151 [+0.026, +0.277] | 0.731 | 0.950 | 0 |
+| qwen1.5 | yes | 0.803 | +0.117 [+0.024, +0.214] | 0.802 | 0.900 | 0 |
+| qwen3 | yes | 0.870 | +0.045 [-0.004, +0.103] | 0.846 | 0.950 | 0 |
+| qwen7 | yes | 0.861 | +0.013 [-0.043, +0.069] | — | — | 0 |
+| phi3.5 | yes | 0.777 | +0.361 [+0.269, +0.457] | 0.752 | 0.925 | 0 |
+| granite2 | yes | 0.871 | +0.547 [+0.457, +0.633] | 0.863 | 0.925 | 0 |
+| mistral7 | yes | 0.809 | +0.223 [+0.117, +0.332] | 0.809 | 1.000 | 0 |
+| llama8 | yes | 0.894 | +0.084 [+0.026, +0.149] | — | — | 0 |
+
+#### Checks
+
+| Check | Result | Detail |
+| --- | --- | --- |
+| handoffFaithful | Fail | models: {'qwen0.5': False, 'qwen1.5': True, 'qwen3': True, 'phi3.5': False, 'granite2': False, 'mistral7': True} |
+| mapperHolds | Pass | applicable: True, pairs: {'phi3.5>qwen1.5': True} |
+| coverage | Pass | complete: 8, models: 8, dropped: [] |
+| edgeCases | Pass | errors: {'qwen0.5': 0, 'qwen1.5': 0, 'qwen3': 0, 'qwen7': 0, 'phi3.5': 0, 'granite2': 0, 'mistral7': 0, 'llama8': 0}, missing: {'qwen0.5': 0, 'qwen1.5': 0, 'qwen3': 0, 'qwen7': 0, 'phi3.5': 0, 'granite2': 0, 'mistral7': 0, 'llama8': 0}, latent: {'phi3.5>qwen1.5': 0} |
+
+#### What the tables show
+
+- **Reading the passage.** `text` F1 runs from 0.358 (Granite-3.1-2B) to 0.863 (Qwen2.5-7B). The low rows are mostly answer style, not reading: Phi-3.5-mini, Granite and Mistral answer in sentences, so exact match is 0.08 to 0.19. With a system instruction asking for the shortest span (the `no_system_role` group), Granite goes from 0.324 to 0.871 and Phi from 0.416 to 0.777 on the same 40 items. `closed` (no passage) stays at 0.11 to 0.21, so the passage is what answers the questions.
+- **Own cache handed over.** F1 matches `text` to within 0.009 for all six torch models. It costs 2.3 MB to 74.1 MB against 746 bytes of text, and is slower end to end (for example 447 ms against 388 ms for Qwen2.5-1.5B), because the prefix is still computed once and the bytes are saved and loaded. On one machine with one reader, handing over a model's own cache saves nothing; it is the reference for the mapper arm.
+- **Text summary.** Every one of the 64 sender and receiver pairs loses F1 against reading the passage, by 0.112 to 0.452, with every interval below zero. Summaries are 208 to 354 bytes. Writing one takes 0.8 s (vLLM) to 5.2 s (Granite), which is most of the `t2t` time.
+- **Mapped cache, Phi-3.5-mini to Qwen2.5-1.5B.** `swat` 0.859 is above the receiver reading the document itself on the mapper path (`text_m2b` 0.755, +0.104 [+0.051, +0.155]) and far above the summary (0.445). It hands over 77.2 MB of sender cache, 4.8 MB after mapping, against 783 bytes of text, in 397 ms. No other cross-model cell has a mapper.
+- **Long passage.** At an emulated 2,048-token context each model keeps 1,914 to 1,970 of 3,018 to 3,762 passage tokens, and the largest prompt is 2,006 or 2,007 tokens. With the answer in the first paragraph F1 is 0.42 to 0.91; with it in the last, 0.03 to 0.23, because the cut removes it. Nothing fails; the loss is silent unless the record's `truncated` field is read.
+- **Empty and one-word passages.** A one-word passage is read correctly by six of eight models (hit 1.0); Granite 0.667 and Mistral 0.833. On an empty passage Qwen2.5-1.5B, Qwen2.5-3B and Granite always abstain, while Phi-3.5-mini, Mistral and Llama-3.1-8B never do.
+- **Non-English and emoji.** Hit rate 0.917 to 1.0 for `text` across Russian, Chinese, Japanese, Arabic, Hindi, Uzbek, Spanish, German and emoji items; the cache arm gives the same rates.
+- **Unanswerable questions.** Qwen2.5-1.5B, 3B, 7B and Llama-3.1-8B abstain on all 20; Qwen2.5-0.5B 0.20, Granite 0.25, Phi 0.40, Mistral 0.05. Abstention is counted strictly (the reply must be exactly "not in passage"), so a refusal in other words counts as an answer. After a summary, receivers wrongly abstain on answerable controls up to 45% of the time.
+- **No system role.** All eight chat templates accept a system role, so the path that moves the instruction into the user turn did not run on a real model. It is covered by unit tests with a template that raises and one that drops the text. Gemma, the usual example of such a template, is gated on Hugging Face and this machine has no token.
+
+#### What was not run, and why
+
+- **Latent arms for 55 cross-model pairs:** no mapper exists and the card forbids training one. The table says "no mapper yet".
+- **Cache hand-over for Qwen2.5-7B and Llama-3.1-8B:** vLLM does not expose the cache, and the 4-bit checkpoints do not load in torch with this venv (`gptqmodel` or `optimum` is missing). Adding either package is a dependency decision that was not taken here.
+- **Llama-3.2-3B:** gated, no token on this machine.
+- **Granite-3.1-8B and the FP8 Qwen2.5-7B in torch:** both decompress to dense weights that fill 16 GB (details in the table above).
+- **A template without a system role on a real model:** see the last bullet above.
+- **The cause of the faithful-check failure:** not isolated; see the verdicts.
+- **Batch sizes above one, more than one task, several GPUs, budget-matched compaction:** out of scope by the definition.
+
+Two limits are accepted and unchanged. The `mismatched` control swaps the receiver's document as well as the sender's cache, as `latent_transfer.evaluate` does, so it measures "wrong passage" and not "wrong cache alone". The summaries of Qwen2.5-1.5B, Qwen2.5-3B and Phi-3.5-mini were written before prompt building was moved inside the timer; their summary time is short by about 1 ms of about 2,500.
+
+#### Review (Codex, read-only, a different model from the author)
+
+| Round | Findings | Outcome |
+| --- | --- | --- |
+| 1 | 2 high, 5 medium, 3 low | All fixed, each with a regression test: phase files carry a fingerprint of the item set and a stale file is refused; a receiver reruns when a new sender's summaries appear; the checks count missing records and errors; the mapper check is three comparisons; the mismatched control never pairs an item with its own passage; abstention is exact; prompt building is inside every arm's time. |
+| 2 | 2 high, 2 medium, 1 low | All fixed with tests: a model that fails to load no longer stops `all`; what differs from the brief is named in the report; the mapper checkpoint's id is verified; the latent phase resumes. |
+| 3 | 2 high, 4 medium, 2 low | All fixed with tests: the vLLM engine refuses a port another server answers on and checks that its own model is listed; an engine is closed on any failure; only the vLLM cache refusal is excused by the checks; a failure note wins over an older file; the mapper cut ends on the receiver's last whole token; repetition penalty 1.0 and prefix caching off for vLLM; the end-of-turn token is not counted. |
+| 4 | 2 high, 2 medium | All fixed with tests: a server this run starts is served under a random name, so another run's server with the same checkpoint cannot pass for it; closing sends both SIGTERM and SIGKILL to the whole process group even when the leader has exited; only the cache arm with the exact named reason is an excused refusal, any other refusal counts as an error; `all` runs a model again from the start after its last attempt failed, instead of clearing the note and reusing older files. |
+| 5 | 3 medium | All fixed with tests: receive and mapper files record a stamp of the summaries they read and are run again when a sender's summaries are written again; a report on a subset of models is not graded on a mapper pair outside it; SIGTERM unwinds the run so the vLLM server is stopped. |
+| 6 | 2 medium, 1 low | All fixed with tests: the report leaves out, and names, a receiver or pair whose answers read summaries that were since written again; an interruption while the server is being closed still kills its process group; the mapper check reads "Not applicable" for a subset with no mapper pair. |
+| 7 | 3 medium, 1 low | All fixed with tests: a mapper pair whose model was dropped still fails the mapper check instead of reading "Not applicable"; an expected pair with no current result counts as missing in the edge check; a single `summaries` or `receive` command runs a failed model again and only a successful receive clears its note; the vLLM log is closed after the signals, not before. |
+| 8 | 3 medium | Two fixed with tests: a mapper pair whose model failed is skipped and named instead of passing on an older file; a failed single `summaries` or `receive` command records the failure. The third (the mapper check reading "Not applicable" after summaries were rewritten) did not reproduce: a test shows the check fails as it should. No confirming round was run after round 8; rounds 5 to 8 each found only medium issues in rerun and resume paths that the measured run did not take. |
+
+Rounds 4 to 8 were fixed after the measured run. None of their findings applied to it: one run at a time under the GPU lock, no failed phase, every summary written before the receivers that read it. The report rebuilt with the final code gives the same tables. The changed vLLM start and stop (a served name per run, the stricter kill, the SIGTERM handler) are unit-tested and the `--served-model-name` flag was checked against `vllm serve --help`, but they were not run again on the GPU.
+
+**Repeated findings (AGENTS.md section 4, step 5).** No finding repeats an entry of an earlier card in this file; the repeats are between this card's own rounds, and there are three kinds.
+
+- *A saved phase file taken as the current result without a check that another path made* (round 1: another item set; round 3: a failure note; round 5: summaries written again, in the phases; round 6: the same in the report; round 8: a mapper file of a failed model). This became an API change: `run.saved_summaries`, `run.saved_receive` and `run.saved_latent` are the only readers of a saved file, used by the phases and by the report alike, so a check added once holds on every path. `ReaderTest` parses `run.py` and fails if `existing` is called anywhere else or a phase folder is loaded by another route. A `scripts/check.mjs` rule was not used: the rule is about one Python module, and the test states it more exactly than a text pattern could.
+- *A vLLM server left running* (round 3: a failure before the engine was returned; round 4: a worker outliving the leader; rounds 5 to 7: SIGTERM at three different points). The API already has one stop path, `VllmEngine.close()`, called from a `finally` in both phases; the later findings were about signal timing inside that one path, each fixed there with a test. No text pattern can find a window between two statements, and no further API change would close one, so no rule was added.
+- *A check verdict counted on the wrong evidence* (rounds 1, 2, 3, 4, 7, 8). Each was a different condition of `report.checks` (missing records, errors, refusals, a dropped model, a skipped pair). These are logic errors in one function with no shared shape for a pattern; each has a `CheckTest` case that builds the failing evidence and asserts the verdict.
+
+No human review was requested: the card does not touch security, export or signing.
+
+Suites after the last change (2026-11-27, on the final code with `origin/main` at a3f9a83 merged in): `node scripts/check.mjs` 324 files, no findings; `npm run -s test:graph` 9 pass; `node --test tests/*.test.mjs` 725 pass, 12 skipped; in `runtime/`, `python -m unittest discover -s tests -t .` 334 run, 66 skipped (torch and jinja2 checks), of which `tests.test_latent_compare` is 95, passing on Windows and in WSL; `npx playwright test` 70 pass, 1 skipped, 1 failed: `features.spec.mjs` "swarm-run" (card H11, code this card does not touch) failed in the full run and passed when that spec was run again on its own (9 of 9).
+
+## L1 — Serving levers measured (defined 2026-11-26, before the code)
+
+Card L1. `docs/latent-gpu-plan.md` ranks the levers for running 100 agents on one 16 GB RTX 4090 Laptop GPU, but every number in it is computed or estimated. This card measures them on the laptop (vLLM 0.33.0, WSL2 Ubuntu 24.04), with synthetic data only. The GPU is shared with other sessions through a lock folder, so each run is short and the server is stopped before the lock is released.
+
+### What is measured
+
+A driver, `evals/latent/serving-levers.mjs` (pure helpers in `serving-lib.mjs`), fires N agents at once at one vLLM server. Each agent sends the same system prompt and shared context (the swarm's incident instructions, `src/swarm-task.mjs`, plus an optional shared handbook of K tokens) followed by its own incident report, and asks for the swarm's JSON answer. It reports, per run: wall time until the last agent finishes, agents answered, correct and verified answers (the swarm's own checks), completion tokens per second (aggregate), prompt tokens per second, the prefix-cache hit rate (vLLM `prefix_cache_hits / queries`, delta over the run), peak KV-cache use (polled from `/metrics`), peak GPU memory (`nvidia-smi`, polled), and preemptions. From the server's startup log it reads weights memory, CUDA-graph memory, KV-cache tokens and the maximum concurrency vLLM states. The swarm in `src/swarm.mjs` is also run once at 100 agents (`SWARM_CONCURRENCY=100`) as a cross-check of the driver.
+
+### Rows
+
+1. Baseline, Qwen2.5-7B-Instruct-AWQ, 25, 50 and 100 agents.
+2. vLLM native KV offload (`--kv-offloading-backend native --kv-offloading-size`), same counts. If this version lacks it, the row says so.
+3. FP8 KV: whether Qwen2.5-7B AWQ can run it (calibrated or per-token-head scales), and otherwise the 14B AWQ, with memory and accuracy on the latent dev set (`perf.mjs`, 8 questions × 3).
+4. `--max-num-seqs` 32, 64 and 100 at 100 agents.
+5. Edge cases: more agents than the KV cache holds, a very long shared prefix, a cold start (first request after the server starts).
+
+### Acceptance
+
+- Unit tests (`node:test`) for the pure helpers: startup-log parsing, run summary and the server-argument builder. They run without a GPU.
+- Every row has measured numbers or a stated reason why it cannot be measured here; nothing is estimated and every figure is marked measured.
+- A lever is recommended for the default setup only if it helps its target metric (time to finish, KV capacity or peak GPU memory) without losing correct answers against the baseline in the same session.
+- The figures are for one laptop GPU, one 7B model and one synthetic task, and the doc says so.
+
+### Results — L1 (2026-11-26 and 27)
+
+All figures **measured** on the RTX 4090 Laptop (16 GB), vLLM 0.33.0 in WSL2, Qwen2.5-7B-Instruct-AWQ unless a row says 14B, `--gpu-memory-utilization 0.85`, prefix caching on, one synthetic task (the swarm's incident reports). Agent runs come from `evals/latent/serving-levers.mjs` (the runs were made with the version before the review fixes, which changed only the token averages, the hit-rate rule and timeouts); dev-set rows come from `perf.mjs`; startup figures come from vLLM's log and a wall clock. Every agent starts at the same moment; each run's prefix is salted so a run's hit rate is its own sharing, except the two-wave rows, which repeat their salt on purpose. "Plan-shaped" agents carry about 4,010 prompt tokens each (about 3.0K shared handbook plus 1.0K unique) and answer in at most 160 tokens.
+
+Startup log, baseline: weights 5.29 GiB, CUDA graphs 0.61 GiB (0.37 + 0.24), KV pool 7.32 GiB = 137,136 tokens (max concurrency 4.19× at 32,768 tokens), engine start 25 s. GPU memory reads 14,328–14,742 MiB (about 14.0–14.4 GiB) at every agent count because vLLM reserves its pool at start; the KV-use column is what moves.
+
+| Row | Agents | Wall s | Completion tok/s | Prefix-cache hits | Peak KV use | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 baseline, swarm task (~370 tokens) | 1 / 25 / 50 / 100 | 1.31 / 2.06 / 2.83 / 4.84 | 40 / 641 / 926 / 1085 | 0 / 79% / 82% / 82% | 0.3% / 2% / 4% / 8% | all |
+| 1 baseline, plan-shaped | 25 / 50 / 100 | 11.9 / 21.0 / 42.6 | 111 / 125 / 123 | 71% / 72% / 73% | 23% / 43% / 82% | all |
+| 1 swarm cross-check (`src/swarm.mjs`, concurrency 100) | 100 | 4.58 | — | 81% | 9% | 100/100 |
+| 2 native KV offload, 6 GiB, plan-shaped | 25 / 50 / 100 | 16.5 / 31.1 / 90.8 | 80 / 84 / 58 | 71% / 72% / 73% | 25% / 47% / 91% | all |
+| 2 offload, over capacity (100 × ~5.4K tokens), wave 1 then the same prompts again | 100 | 141.9 then 140.3 | 37 | 53.5% then 54.1% | 96% then 97% | 96/100 both |
+
+Row 2 findings: `--kv-offloading-backend native --kv-offloading-size N` exists in this vLLM. N is limited by `/dev/shm` (7.8 GiB free here: 8 GiB failed at start, 6 GiB worked). It cost KV capacity (pool 137,136 → 123,040 tokens), start time (about 4.5 minutes from process start to ready, against 45–125 s for the other starts) and speed (100 plan-shaped agents took 90.8 s against 42.6 s). Repeating the same 100 prompts after they no longer fit gained nothing (hit rate 54.1% against 53.5%), so on this machine offload did not help; the no-offload over-capacity run below confirms it.
+
+**Row 3, FP8 KV cache.** vLLM 0.33 lists `--kv-cache-dtype` types that compute their own scales per token and head (`fp8_per_token_head`, `int8_per_token_head`, `int4_per_token_head`) next to the plain `fp8`; its `--help` has no flag to calibrate scales, so calibrated scales for the 7B were **not produced** here. All FP8 runs use `--attention-backend TRITON_ATTN`. Dev set = `questions.json`, 8 questions × 3 rounds = 24 reads through `perf.mjs`; 14B runs use strict citations and max length 8192 (the cycle 11 B setup). "Both" = correct and cited.
+
+| Model, KV type | KV pool tokens | Dev set both / correct / cited (of 24) | Read s p50 | Swarm task, 100 agents |
+| --- | --- | --- | --- | --- |
+| 7B AWQ, auto | 137,136 | 18 / 21 / 21 | 5.6 | 100/100 correct |
+| 7B AWQ, `fp8_per_token_head` | 238,640 (1.74×) | 0 of 8 reads (1 round; every read refused, 0/8) | n/a | 0 of 100 usable answers (garbled JSON) |
+| 14B AWQ, auto | 17,104 | 21 / 21 / 24 | 18.0 | not run |
+| 14B AWQ, `fp8` | 34,112 (2.0×) | 22 / 22 / 24 | 14.9 | not run |
+| 14B AWQ, `fp8_per_token_head` | 20,480 (1.2×) | 18 / 20 / 22 | 14.4 | not run |
+
+Findings: the per-token-head scales do not rescue the 7B (it breaks on both the swarm task and the dev set), so the plan's "calibrated scales should fix that" stays untested and is not supported by this run. On the 14B the plain `fp8` doubled the KV pool and lost no answers (22 against 21 of 24; one round of 24 reads per setting, so one answer of difference says nothing about run-to-run variation); `fp8_per_token_head` gave only 1.2× because it stores a scale per token and head, and lost 3 of 24. For the 14B `perf.mjs` also reported "vLLM restarted during the run" for the per-token-head run, so its whole-run counters are not used.
+
+**Row 4, `--max-num-seqs`, 100 agents on the 7B** (same prompts; default is 256):
+
+| max-num-seqs | Swarm task wall s / tok/s | Plan-shaped wall s / tok/s | Plan-shaped peak KV use | KV pool tokens | GPU MiB peak | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| default (256) | 4.84 / 1085 | 42.6 / 123 | 82% | 137,136 | 14742 | 100/100 both |
+| 100 | 5.72 / 917 | 47.1 / 112 | 87% | 128,944 | 13966 | 100/100 both |
+| 64 | 6.22 / 844 | 46.1 / 114 | 57% | 130,544 | 13924 | 100/100 both |
+| 32 | 7.34 / 716 | 44.8 / 117 | 29% | 132,128 | 14028 | 100/100 both |
+
+Capping the number of sequences did not make anything faster on this card: every cap was slower than the default, and it freed about 0.7 GiB of GPU memory (smaller CUDA-graph set) but also shrank the KV pool by 4–6%. The plan's "start with `--max-num-seqs 32` and measure" is answered: do not start there for 100 short agents.
+
+**Row 5, edge cases (7B, default settings, no offload unless stated).**
+
+| Case | Result |
+| --- | --- |
+| More agents than the KV cache holds: 100 agents × about 5.4K tokens (544K prompt tokens in total, about 3K of them shared, against a 137K-token pool) | Nothing failed or was preempted: vLLM queued the extra work. 100/100 answered, 96/100 correct, all 100 verified, 104.4 s (second identical wave 104.7 s), peak KV use 85%, prefix-cache hit rate 53.5% then 54.1%. With 6 GiB offload the same two waves took 141.9 s and 140.3 s. |
+| Very long shared prefix: one 23.5K-token handbook for every agent | 1 agent: 11.5 s (prefill of the prefix, 2,034 prompt tokens/s). 25 agents: 16.3 s, hit rate 95.7%. 100 agents: 29.9 s, hit rate 98.7%, peak KV use 26%, 100/100 answered and verified but only 87/100 correct (accuracy fell with the long context; the short-context runs were 100/100). |
+| Cold start | Process start to answering `/v1/models`: about 45–125 s across the starts here, with the engine's own "init engine" line at 25 s (first start, warm compile cache), 42–88 s later; offload start about 4.5 minutes. The first request after the server was ready took 1.07 s against 0.98 s for the next, one pair, so it shows no large first-request penalty but does not rule out a small one. |
+
+Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
+
+Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
