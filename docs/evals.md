@@ -5814,6 +5814,58 @@ Three Playwright tests failed on Windows runners and passed on a re-run, with no
 - **Node suite on #100, and H9 ruled out.** Three Node tests that start a server failed together after about 30 s (#100, run 46025391797). The server printed "Cannot write the access token file next to the database.", the message from its listen callback: on Windows the token file is written by a synchronous PowerShell call with a 30 s timeout (`src/token.mjs`), and under load PowerShell did not finish in time, so the server exited. H9's change from `listen(port, host)` to `listen({ port, host })` is not the cause: every test server uses `PORT=0`, the server was already listening when it exited, Node reads both forms the same way, and the console demo flake predates H9. The token write is security code, so it is card H15, not part of this card.
 - **Codex review, round 1** (of the version before the working-agent change): three medium and two low, fixed. (medium) The recorder kept the highest opacity, the stroke and the size separately, so they could come from different frames; one frame must now have all three. (medium) The working-agent count was still read from the test after the line; it is now recorded with the line, as above. (medium) Whether an entry starts a swarm run was guessed from a `#run` selector, which a `#swarm-run` click would slip past; the page's own requests decide it now. (low) Every feature test was reported at `feature-check.mjs`, a location that runs nothing; the spec files call `test()` themselves and the helper only builds the body. (low) A body that could not be read hid the handoff response's status; the status is reported either way. Accepted: the mid-run screenshot is taken after the wait, so it can show a later moment; it is a picture for people, not a check.
 - **Codex review, round 2:** no high; one medium and three low. (low, fixed) A hidden flash layer would leave the line's own opacity, stroke and box intact: the frame check also needs the line's inherited visibility. (low, fixed) The swarm check counted attempts, so a marked entry whose run the ledger refused with 409 could pass: it now needs an accepted run. (low, fixed) The handoff response wait could time out on its own while the click was still waiting for a missing result: the two are awaited together. (medium, accepted) If the browser's own main thread stalls for more than the line's 2.4 s, the line can be removed before any frame samples it, and the test fails. Such a stall also means the line was never painted, so failing is correct; the CI failures came from polling outside the page, which this card removes. With eight CPU-bound processes running, 20 runs of the one-frame recorder and 20 more after this round all passed.
+## H15 — Token file write survives a slow PowerShell (defined 2026-11-27, before the code)
+
+Card: H15 on the delivery board. Scope: how `src/token.mjs` writes the token file on Windows, and the server's listen callback that waits for it. The read path and the ACL checks themselves are not changed.
+
+### The problem
+
+On Windows the server wrote its token file through one synchronous PowerShell call with a 30 s timeout, inside its listen callback. On a loaded CI runner (#100, run 46025391797) PowerShell took longer, the call was killed, and the server printed "Cannot write the access token file next to the database." and exited before serving anything (see the H14 notes, which rule out H9's listen change).
+
+### The change (recommended option)
+
+The write becomes asynchronous and is retried once after a timeout:
+
+- The server keeps answering 503 "Context Ledger is starting." until the write and its ACL check have both finished, as it already did before `auth` existed. Its event loop is no longer blocked, and nothing is printed (no "listening" line, no sign-in code) before the file is confirmed private.
+- Each PowerShell attempt has a bounded timeout of 60 s, and only a timeout leads to a second attempt (at most two, so at most about 2 minutes). Before the retry, whatever is at the path is removed, as at the start of every write, so the second attempt still creates the file exclusively with its private descriptor.
+- Any other failure fails closed at once, without a retry: the path already holds something (exit 3), the descriptor on the new handle is not private (exit 4), output that does not parse, or a descriptor Node rejects (`privateToOwner`). In each of these the record is emptied through its own handle as before, and the server exits with the same fixed sentence.
+
+Rejected: a longer synchronous timeout (blocks the event loop and still has a cliff), and an ACL path without PowerShell (needs a native addon or `icacls` text parsing, which depends on the display language; ADR-10's single-handle create-then-check would be lost).
+
+### What is tested and the expected result
+
+`tests/token.test.mjs`, with an injected PowerShell runner and no real sleeping:
+
+1. A first attempt that times out, then one that succeeds: the write resolves with the file's identity, the runner was called twice, each time with the 60 s bound, and the second attempt found nothing at the path (the partial file of the first was removed).
+2. Two attempts that both time out: the write rejects with the fixed sentence "The token file could not be written privately.", the runner was called exactly twice, and no token is left at the path.
+3. An attempt that reports a descriptor others can read: the write rejects at once (one call, no retry) and the record it wrote is emptied.
+4. An attempt that fails for another reason (a non-zero exit that is not a timeout): rejects at once, one call.
+5. The default runner marks a child it had to stop as timed out: a Node child that never exits, with a 300 ms bound, rejects with `timedOut: true`; a child that exits non-zero rejects without it. Its stdin carries the record and is then closed.
+6. The existing suite still holds: a server that cannot write its token file exits 1 with the fixed sentence and prints no "listening" line; on Windows the real file is private from its creation.
+
+Synthetic data only: random tokens and temporary folders.
+
+### Review
+
+- **Codex review, round 1:** no high; two medium and two low.
+  - (medium, fixed) The runner was built on `execFile`. A kill that failed could reach its callback before the child exited, so the retry could remove the path while the first PowerShell was still alive and about to create the file. The runner now uses `spawn` and settles only on `close`, once the child has exited and its handles are shut. A child that could not be killed rejects at once without `timedOut`, so the write fails closed and is not retried beside it. Regression test: a child that takes 300 ms over SIGTERM has exited by the time the runner rejects (`process.kill(pid, 0)` gives ESRCH).
+  - (medium, fixed) The signal handlers were installed only after the awaited write, so a stop during a slow start left the PowerShell child running with the token on its stdin. On a restart at the same port, that child could take the path first. The handlers are now installed before the write and abort it through an `AbortSignal`. The runner kills the child and waits for it to exit, the write fails closed without a retry, and the handler then removes the file if it holds this start's token. Regression test: an abort during the write kills a hung child, and a write stopped during its first attempt is not retried even after a timeout.
+  - (low, partly covered) No test holds a real exclusive Windows handle through a timeout. The runner test above checks that the child has exited, which is what releases the handle. A real PowerShell that hangs while holding the file would need a test hook in the write script, which this card does not add to security code.
+  - (low, accepted) The 503 during the write has no server-level test. The server needs its write to pause before such a test is possible, and the only way to do that is a test-only hook in the server. The guard itself (`if (!auth) … 503`) is unchanged and predates H15, and `auth` is now assigned only after the write and its check.
+- **Codex review, round 2:** no high; two medium and three low.
+  - (medium, fixed) The stop handlers were registered with `process.once`. A second Ctrl-C while the first handler waited for PowerShell would take Node's default action and end the server before the child exited. The handlers now stay installed, and a second signal is ignored while the first stop runs.
+  - (medium, fixed) When a kill failed, the runner rejected at once. The stop handler took that as proof the writer had stopped and exited while PowerShell might still create the file. The runner now settles only on `close`, so it always waits for the child to exit, whatever the reason or the kill result. A child stopped for any reason other than a timeout rejects without `timedOut`, so it is never retried. This is a repeat of round 1's first finding (a settle before the child exits). The API change prevents it: the runner has no settle path other than `close` and a spawn that never started (no pid). A `scripts/check.mjs` rule cannot tell whether a promise settles before a child exits.
+  - (low, fixed) Output over 64 KiB asked the child to stop, but a timeout during its exit could still classify it as timed out and allow a retry. The first reason to stop now wins, so an overflow is a plain failure. Regression test with a child that floods stdout and lingers over SIGTERM.
+  - (low, fixed) `writeTokenFile` let the raw `mkdirSync`/`rmSync` errors through, and they name the path; the server hid them, but direct callers would not. They now become the fixed sentence. Regression test with a folder at the path, on both branches.
+  - (low, accepted) No server-level signal test. On Windows a child process cannot be sent a SIGINT or SIGTERM that its handlers see (the existing clean-stop test is skipped there for the same reason), and on POSIX the write is synchronous, so the wait is never reached. The runner and writer tests above cover the abort path.
+- **Codex review, round 3:** no high; one medium and three low.
+  - (medium, fixed) The timer recorded a timeout even when the child had already exited and only its `close` was pending, so a script that failed its ACL check (exit 4) at that moment could be retried as a timeout. A timeout now counts only when the child is still running when the timer fires and the kill ends it (no exit code at `close`). A child that exits with its own code is judged by that code. On Windows a killed child always reports no exit code, so the round 1 and 2 tests still see `timedOut: true` there. Regression test on POSIX: a child that answers SIGTERM with exit 4 is not retryable. A retry, if one did happen here, would still run every check again, so this was about telling failures apart, not about privacy.
+  - (low, fixed) On POSIX, a file created at the path between `rmSync` and the exclusive `openSync` gave a raw `EEXIST` that names the path. It is now the fixed sentence.
+  - (low, fixed) If `removeTokenFile` threw in the stop handler, `process.exit(0)` was skipped. The exit is now in a `finally`.
+  - (low, accepted) If a killed attempt wrote the record and another program holds a handle that blocks reading, cleanup reports "not ours" and the caller gets the ordinary sentence instead of "could not be emptied". This is `emptyIfOwnRecord`, unchanged by H15, and the file is still private to the user.
+- **Codex review, round 4:** no high or medium findings; one low.
+  - (low, accepted) Suppose the timer fires while the child is running, and the child then exits on its own with code 0 before the kill lands. The attempt is refused without a retry, even though it succeeded. That outcome fails closed (the server stops with the fixed sentence and the record is emptied), the window is a few milliseconds at the 60 s mark, and accepting the output of a child the runner already decided to kill would bring back the ambiguity round 3 removed.
+
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
 Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.
@@ -6332,6 +6384,219 @@ Codex review (read-only, two rounds): round 1 found 11 points (token averages di
 
 Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
 
+## D4 — Website build demo: hand-off with and without the ledger (defined 2026-11-22, before the code and the run)
+
+The question an investor asks: when one agent hands a job to another, does the ledger change what gets built? This card measures it on one realistic job, a small business website, with the same model in every condition.
+
+- **Client chat (synthetic):** `demo/roaster.mjs` writes a Claude Code transcript in which Mara, owner of the made-up Tidewater Roast Co., briefs an agent on her website. It holds 15 checkable requirements. Five of them change partway through, as clients do: the brand colour (forest green to terracotta), the opening hours, the oat latte price, a wholesale page that is added and then dropped, and online ordering that is asked for and then put off. Work chatter is appended (150 extra exchanges, the same setting as the long-session rehearsal) so the chat reads like a real working session. Every name, number, phone and address is made up.
+- **Agents:** Claude Code (`claude -p`, model `sonnet`) for every agent, with built-in tools off, so each agent sees only what the ledger tools return or what is in its prompt. The builder is given the same design brief in every condition and returns one self-contained HTML file (no external images or scripts; Google Fonts allowed).
+- **Conditions,** run 3 times each:
+  - `chat`: the builder reads the whole client chat itself with `session_read`, then builds.
+  - `notes`: a first agent reads the chat and writes a hand-off note for the developer, as people do today; the builder gets only the note.
+  - `ledger`: a first agent publishes a cited version 2 graph of the chat (decisions, replaced decisions with `supersedes` edges, constraints); the builder calls `context_for` on it, then builds.
+- **Scoring (automatic, `demo/roaster.mjs`):** the visible text and CSS of each site are checked for each of the 15 requirements (present and correct = 1). Separately counted: **stale** values (a replaced colour, hours or price that still appears) and **forbidden** content (a wholesale section, a gluten-free claim, an online-order button). Also recorded per condition: the builder's input tokens and the end-to-end time of the whole hand-off (first agent plus builder).
+
+| Gate | Pass when |
+| --- | --- |
+| The ledger keeps the client's final word | `ledger` scores at least as high as `notes` on requirements in every run, and has no more stale or forbidden items than `notes` in total. |
+| It is cheaper to hand over | The `ledger` builder reads fewer input tokens than the `chat` builder, on average. |
+| Reported, not gated | `ledger` against `chat` on requirements and stale items, and end-to-end time for all three. Earlier rehearsals found the graph briefing as accurate as the raw transcript (18/18 and 12/12), so we expect no accuracy gain over `chat`; the claim there is tokens and time, not quality. |
+
+Not covered, and named so nobody reads more into a pass: one job, one client chat we wrote ourselves, one model family, three runs each, and design quality is judged by eye, not scored. The sites shown in the pitch are the actual outputs of these runs, unedited.
+
+### Round 1 (2026-11-22): result as run
+
+| Condition | Requirements met (runs 1, 2, 3) | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) |
+| --- | --- | --- | --- | --- | --- |
+| `chat` | 15, 14, 15 | 0 | 0 | 57,577 | 148 s |
+| `ledger` | 15, 10, 10 | 0 | 1 (a wholesale section) | 41,865 | 236 s |
+| `notes` | void: all three builds failed | | | | |
+
+- **`notes` is void because of a harness bug.** The builder ran without `--strict-mcp-config`, so `claude -p` loaded the operator's own MCP servers and the request failed on context length. It also gave that agent tools it should not have had. Fixed in the runner: every agent now gets `--strict-mcp-config` with this run's config (an empty one for the note reader and its builder).
+- **`ledger` failed the first gate's spirit, and the cause is the builder's reading, not the graph.** All three published graphs held all 15 requirements, with every replaced decision marked and linked by `supersedes`. Replaying run 4 (a diagnostic run with tool calls logged): the builder called `context_for` for the whole graph and then a second time with a question ("business name menu prices hours address contact subscription"). The scoped briefing correctly said "5 more left out", and the builder built from it, inventing a colour and fonts and copying a replaced hours node. Runs 2 and 3 missed the same five items (tagline, Tuesday closing, colour, font, Harbor Fog), which fits the same pattern. Product finding, new Backlog card G9c: a scoped briefing should name what it left out, not only count it.
+- **Tokens:** the `ledger` builder read 27% fewer input tokens than `chat`; both include about 30k tokens of Claude Code's own prompt per turn, so the gap in the handed-over text itself is larger (the meter estimates 10,898 tokens of chat against about 800 of briefing).
+
+### Round 2 (defined 2026-11-22, after round 1 and before running it)
+
+Same chat, scorer, model and 3 runs per condition, with two changes: the harness fix above for every agent, and the `ledger` builder prompt says to call `context_for` exactly once, with no question, and that current decisions are those not marked "(replaced)". The `chat` and `notes` prompts are unchanged. The gates are unchanged. Round 1 stays recorded as run; round 2 is reported beside it, not instead of it.
+
+### Round 2 (2026-11-22): result, and both rounds rescored
+
+After round 2 one scorer check was fixed: an hours table that reads "Tue Closed" did not count as closed on Tuesdays, a false miss in four sites across both rounds. `tests/roaster.test.mjs` covers it, and every saved site in both rounds was rescored with the fixed scorer. Numbers below are the rescored ones.
+
+| Round | Condition | Requirements met | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) | Cost per hand-off (mean) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void (harness bug) | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+- **Gates, round 2: both fail.** The ledger met as many requirements as the note in every built run, but had one ruled-out item to the note's none (the sentence "For wholesale enquiries, please call us directly.", counted because the rule counts any mention of wholesale; round 1 run 1 had the same sentence). The ledger builder read 37,446 input tokens against 36,847 for `chat`, not fewer: most of each builder's input is Claude Code's own prompt and the tool definitions, so the handed-over text (about 800 tokens of briefing against about 10,900 of chat, by the meter) does not move the total. The note builder read the least because it had no tools at all.
+- **The note run that failed** returned 33k output tokens with no complete HTML page; its reply was not kept, so the cause is unknown.
+- **Read by eye, not scored:** builders in every condition invented copy the client never gave (tasting notes, "Casco Bay", "cancel any time", home delivery). One note-built site left "PLACEHOLDER" text where the note had no about-us copy.
+- **Outcome:** on this job, with Claude Sonnet and an 11k-token chat, all three hand-offs produce equally correct sites once the builder reads the ledger briefing whole, and the ledger hand-off costs more because a first agent publishes the graph. The claim we can make from D4 is narrow: the published graph kept all 15 requirements and every change, with replaced decisions marked, in every one of six runs. A quality gain is untested where it is most likely: chats too long to read whole, smaller builder models, or many builders reusing one graph.
+- **The pitch page** (sites side by side, both rounds, these limits) is built from these reports without editing the sites.
+
+### Codex review (2026-11-22) and the final scoring
+
+A read-only Codex review found eight issues, all addressed; the scorer changes have regression tests in `tests/roaster.test.mjs` (13 tests).
+
+1. *(high)* The runner logged tool calls but did not stop or flag protocol departures. Fixed: every ledger tool an agent is not given is now disallowed outright (`--disallowedTools`), and each run reports its deviations. The logs show **every round 2 `ledger` builder called `context_for` twice**, both times for the whole graph with no question, against the instruction to call once. The second call adds tokens and time to the `ledger` figures; it does not change what the builder saw.
+2. *(medium)* The scorer could award points a site did not earn: a menu item without a price could borrow the next item's price, `$4.50` passed as `$4`, any `$18` on the page passed the Bean Club, the address passed without "Maine", and a colour or font named only in a comment passed. Fixed: prices are read per menu row, the Bean Club price must follow its name, the address needs Maine, and colour and font must appear in a CSS declaration or colour attribute with comments removed.
+3. *(medium)* Hours and ruled-out checks: "Closed on Tues." missed, adjacent rows could combine, "15 pm" could match the old "5 pm", "7 am-3 pm daily" escaped the old-hours check, a non-breaking hyphen hid "gluten-free", and "Start your pickup order" escaped the ordering check. All fixed. The wholesale check now follows the eval's own wording, a wholesale *section* (a heading, link or form); a passing mention is reported separately.
+4. *(medium)* The round 2 write-up overstated: the round 1 cause was observed only in the diagnostic replay (runs 2 and 3 are consistent with it, not proven), the note averages exclude the failed build, and the wholesale count did not match the eval's definition. Corrected below.
+5. *(medium)* Windows quoting and timeouts: `--model` and the temporary path now must be plain characters before they reach `cmd.exe`; a timeout closes the child's pipes after the grace period; ledger HTTP calls time out after 30 s.
+6. *(medium)* HTML extraction could merge two documents and fell back to raw output when the CLI gave no final result. Now exactly one document is accepted, there is no fallback, and a failed build keeps the end of its reply for diagnosis.
+7. *(low)* The disclosure counted four sites changed by the Tuesday fix; it was five. Superseded by the full rescoring below.
+8. *(low)* Agent text printed to the terminal was not escaped. Runner output now escapes control and format characters; the saved sites stay as the agents wrote them and are shown only in sandboxed frames.
+
+**Found while checking item 1:** each `chat` builder called `session_read` once. The chat comes in pages, and the 150 chatter exchanges sit after every requirement, so a builder that reads only the first page still sees all 15 requirements. That made the `chat` baseline easier than a long chat with requirements spread through it would be; a fair long-chat test needs the requirements interleaved with the chatter.
+
+**Final scores** (every saved site rescored with the reviewed scorer; requirement counts are unchanged from the round 2 table, and the ledger's ruled-out count drops from 1 to 0 because both hits were a one-line wholesale mention, not a section):
+
+| Round | Condition | Requirements met | Stale | Ruled out | Wholesale mentioned | Builder input tokens, mean of built sites | Hand-off time, mean of built sites | Cost, mean of built sites |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void | | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed (413 s) | 0 | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+**Gates, round 2, final:** the first gate passes on the eval's wording (the ledger met as many requirements as the note in every run the note completed, with no stale or ruled-out items), but only as a tie: no condition was better than another on correctness. The second gate fails (37,446 against 36,847 builder input tokens). D4 shows no quality or cost advantage for the ledger hand-off on this job. What it does show: the published graph kept all 15 requirements and every change, with replaced decisions marked, in all six graphs.
+
+### Round 3 (defined 2026-11-22, after the Codex review and before running it)
+
+Rounds 1 and 2 put all the chatter after the last requirement, so a builder reading the chat found everything on the first `session_read` page. Round 3 tests the case where the ledger could help, with the scorer, the brief and the client's final requirements unchanged:
+
+- **Long chat with the requirements spread through it.** 800 chatter exchanges, spread evenly over the nine gaps between requirement exchanges (`roasterTranscript(800, { interleave: true })`). The chat runs to about five `session_read` pages, and the changes (colour, hours, oat latte price, the dropped wholesale page and order button) come pages after the values they replace.
+- **A smaller builder.** Every builder runs on Haiku (`--builder-model haiku`). The note writer and the graph publisher stay on Sonnet, as in rounds 1 and 2.
+- **One hand-off, several builders.** In `notes` and `ledger` the first agent runs once, and its note or graph feeds all three builders (`--reuse`). In `chat` each of the three builders reads the chat.
+
+**Gates, fixed before the run:**
+
+1. Correctness: the `ledger` builders meet at least as many requirements on average as the `chat` and `notes` builders, with no more stale or ruled-out items in total than either, **and** they are strictly better than `chat` on requirements met or on stale plus ruled-out items. A tie does not pass this round.
+2. Cost: the whole `ledger` condition (one publish plus three builders) costs less than the whole `chat` condition (three builders).
+
+A failed first agent fails its whole condition; nothing is rerun. Deviations are reported beside the runs, as in round 2.
+
+### Round 3 (2026-11-22): result as run
+
+Run folder `demo/out/website/2026-11-22T23-40-17-606Z` (`--chatter 800 --interleave --builder-model haiku --reuse --runs 3`). The chat had 1,680 messages and nine `session_read` pages, observed in the run; the definition above estimated about five before it ran.
+
+| Condition | Requirements met | Stale | Ruled out | Builder input tokens, mean | Chat read (requests and start lines) | Cost, whole condition (3 sites) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `chat` | 7, 7, 7 | 12 | 3 | 106,326 | 3 requests per builder: lines 1, 204, 406 (runs 1, 3); 1, 204, 600 (run 2); none reached the end | $0.24 |
+| `notes` | 3, 3, 3 | 3 | 0 | 7,977 | 1 request by the note writer (line 1), once | $0.21 |
+| `ledger` | 14, 15, 15 | 1 | 0 | 18,877 | 9 requests by the publisher, every page, once | $0.97 |
+
+**Gates:** gate 1 passes. The ledger builders met 14.7 requirements on average against 7 (`chat`) and 3 (`notes`), with 1 stale or ruled-out item against 15 and 3. Gate 2 fails: $0.97 against $0.24. The publish cost $0.875 (843,143 input tokens across 12 tool requests). Each ledger build then cost about $0.03, against about $0.08 for a whole-chat build, so at those observed mean costs the publish breaks even after 18.5 builds (the 19th is the first one where the ledger is cheaper). That is a projection, and it counts the whole-chat sites at full value even though they were wrong.
+
+**Why:**
+- The agents that read the chat stopped early, against the instruction to read every turn.
+- All three whole-chat Haiku builders stopped early. Each made three requests and built from them (run 2 jumped from line 204 to line 600 and skipped a page), so it used the forest green, the old hours and the $5.00 oat latte, and kept the wholesale page or the order button.
+- The Sonnet note writer also stopped early: it read page 1, wrote "The remaining turns are the same loop repeating", and wrote a note with the green colour, no hours, no prices and no menu, so every note builder started from that note.
+- The Sonnet publisher, with the same instruction to read the chat, read all nine pages.
+- So what the run shows is an association: the one complete read was published and reused, and its builders scored higher. It does not isolate the cause, because how much of the chat was read and the form of the hand-off changed together. The looping chatter may have made stopping early more likely.
+
+**Limits:**
+- Our chatter cycles through 16 exchanges, which makes stopping early tempting; a real chat does not repeat, so this round probably overstates how often readers stop.
+- `notes` and `ledger` each rest on a single first-agent run, reused three times. One stopped early and one did not, and two runs cannot show which first agent stops more often.
+- One ledger site (run 2) used the old green `#2F5D50` as one stop of a background gradient, counted as stale. The one ledger miss (run 1) was "Closed on Tuesdays".
+- Builders also invented contact details the client never gave: `hello@tidewaterroast.com` in notes runs 2 and 3, and the phone `+1234567890` in chat run 3.
+
+### Codex review of round 3 (2026-11-22)
+
+A read-only Codex review confirmed the gate verdicts against `report.json`: the means were 14.67 requirements met (`ledger`), 7 (`chat`) and 3 (`notes`), with stale and ruled-out totals of 1/0, 12/3 and 3/0. The cost totals were $0.974 against $0.242, counting the publisher once. It also confirmed that interleaving keeps every requirement turn in order. Its findings, all fixed (regression tests in `tests/website-build.test.mjs`):
+
+1. *(medium)* The runner counted `session_read` requests but did not flag readers who stopped early or skipped a page, so every deviation list was empty although all three chat builders and the note writer stopped early. It now records what each page said comes next, reports coverage (`chatRead`: requests, start lines, skipped cursors, whether the end was reached), and flags early stops and skipped pages for builders and first agents alike. Tool results from round 3 were not saved, so its rows keep request counts only; the table above gives the start lines.
+2. *(medium)* A graph ID the ledger rejected would throw before the row was saved, aborting the run and losing the publisher's cost. That row now fails with the error recorded, and the run goes on.
+3. *(medium)* Time and cost could be understated after failures. The summary now reports setup time and build time separately, counting failed rows, and marks the whole-condition cost incomplete when an agent reported no cost. Round 3 had complete cost data.
+4. *(low)* The write-up corrections above: page count observed against estimated, the request start lines, "tool requests" instead of "steps", break-even as a projection (18.5, so the 19th build), the cause stated as an association, and the invented contact details attributed to their sites.
+
+### Main merged and Codex review 4 (2026-11-27)
+
+`origin/main` was merged into the branch (no rebase); the conflicts were only in `docs/evals.md`, `docs/handoff.md` and `docs/delivery-board.md`, resolved by keeping both sides. A read-only Codex review of the whole branch against `main` found three medium and two low findings, all fixed with regression tests (`tests/roaster.test.mjs`, `tests/website-build.test.mjs`):
+
+1. *(medium)* Read coverage started with no expected page, so a reader whose first request began on the last page was recorded as a full read. Coverage now expects line 1 first and reports `1->N` as skipped.
+2. *(medium)* The stale oat-latte check used only the first price after the name, so a page with $5.25 on the menu and $5.00 elsewhere met the requirement with no stale flag. The stale check now looks at every price for the item, and the oat latte requirement fails when the old price also shows. The requirement still reads the first price after the name: a stricter "every price" rule was tried and wrongly failed sites where "espresso" appears in another item's description ("equal parts espresso and steamed milk $4.00").
+3. *(medium)* Hidden content earned points, and "Bean Club: $18 one-time" met the monthly requirement. Elements marked `hidden`, `aria-hidden="true"`, `display: none` or `visibility: hidden` are now dropped before scoring, and the Bean Club requirement needs a monthly wording next to the price or before it, and no "one-time" after it.
+4. *(low)* `report.json` could carry raw bidi and format characters from agent text. It is now written with every control, format and line-separator character as a `\u` escape.
+5. *(low)* The handoff called readers stopping early the cause of the round 3 gap; it now says it is an association, as the round 3 write-up does.
+
+A second Codex round found that the first fixes were incomplete: three medium and one low, all fixed with regression tests.
+
+6. *(medium)* A hidden element was cut at the first close tag of its name, so `<div hidden><div>…</div><p>tagline</p></div>` still scored the tagline, and a single-quoted or unquoted `style` was not read. Hidden elements are now removed up to their matching close tag, nesting counted, in any quoting.
+7. *(medium)* Any mention of "oat latte" followed by $5.00 was stale, including "a cold brew float, inspired by our oat latte $5.00". A replaced price now counts only as the first price after the name or after the name used as a label (starting a row or block).
+8. *(medium)* "Next month: $18 upfront" met the monthly requirement, and "$18.00 per month" did not. The check now needs "monthly" or "per/a/each/every month" (not just "month"), rejects "upfront", and accepts $18.00.
+9. *(low)* `reportJson` wrote a character above U+FFFF as one five-digit escape, which JSON reads as two characters. It now writes each UTF-16 unit, a surrogate pair.
+
+A third Codex round found four medium and one low, again in the scorer's edge cases, all fixed with regression tests:
+
+10. *(medium)* A `</div>` inside a quoted attribute value ended a hidden element early, and a word such as "hidden" inside another attribute's value (`title="keep hidden until launch"`) hid a visible element. Tags are now scanned with quoted values kept whole, and the hiding attributes are read from a parsed attribute list.
+11. *(medium)* Any block starting with the item's name was a label, so "Oat latte fans might like our seasonal cookie for $5.00" was stale while "Small oat latte $5.00" was not. A label is now the item's own short row: at most two words before the name, and at most 15 characters between the name and the price.
+12. *(medium)* "once" in a later sentence ("$18 per month. Cancel once you move.") failed the monthly check. The one-time words are now looked for only in the sentence that holds the price.
+13. *(low)* "per monthlong" read as monthly; the month words now end at a word boundary.
+
+A fourth round found two medium and one low, fixed with a regression test:
+
+14. *(medium)* The own-row gap ignored block breaks, so "Oat Latte Pairings" as a heading took the next paragraph's "Cookie $5.00" as a stale price. An own row now has no block break between the name and the price.
+15. *(medium)* "Sign up once." in the next paragraph failed the monthly check. The one-time words are now looked for only up to a full stop or a block break.
+16. *(low)* Visible text cut a tag at its first `>`, so a quoted `title="Our motto > …"` leaked into the scored text. Tags are now removed with their quoted values whole.
+
+A fifth round found two medium, the mirror image of items 14 and 15, fixed so that every earlier round's cases still pass:
+
+17. *(medium)* A menu card that puts the name and the price in two blocks (`<p>Oat Latte</p><p>$5.00</p>`) hid a stale price. An own row may now have its price open the very next block, while a heading followed by a block about something else ("Oat Latte Pairings | Cookie $5.00") still does not count.
+18. *(medium)* A one-time label in the block right after the price ("$18 | One-time signup fee") passed the monthly check. A next block that opens with "one-time" or "upfront" now fails it, while "Sign up once." in the next paragraph still does not.
+
+A sixth round found two medium with one cause: nested closing tags (`</h3></header>`, `</p></div>`) left runs of empty block breaks, so "the next block" was an empty one and items 17 and 18 missed a stale price in a nested menu card and a one-time fee after a wrapped price.
+
+19. *(medium, two findings)* Runs of block breaks now collapse into one, so the next block is always the next one with text. Regression test for both inputs.
+
+20. *(medium, round 7)* After the collapse, the next section's heading ("One-time purchases") became the block after a "$18/month" price and failed it. Monthly wording in the price's own block now decides; the next block is read only when the price's block has none.
+
+21. *(medium, round 8)* The same held for monthly wording before the price in its own block ("Monthly membership: $18"); the price's block now runs from the last break before the price to the first after it.
+
+A ninth round found four medium, all fixed with one regression test:
+
+22. *(medium)* A full stop after an amount ("$18.", "$5.00.") made it no amount at all. A full stop now ends the number unless a digit follows.
+23. *(medium)* "Monthly deliveries. One-time signup fee: $18" passed: the one-time words were looked for only after the price. They are now looked for in the price's whole sentence, on both sides.
+24. *(medium)* Only the first $ after "Bean Club" was tried, so "One-time gift bag: $18. Monthly membership: $18/month." failed. Every $18 within 300 characters after "Bean Club" is now tried (`monthlyClub`).
+25. *(medium)* An unpriced item could borrow the next item's price when that item's name had a size word ("| oat latte | small cold brew $5.25"). The next-item rule now allows up to two words before the name, as the own-row rule does.
+
+A tenth round, run on the merged branch (673a6ce), found seven medium and two low, all fixed with regression tests (`tests/roaster.test.mjs`, `tests/website-build.test.mjs`):
+
+26. *(medium)* An unpriced item took the price of an off-menu thing in the next block ("Oat latte | Cookie $5.25"). A price in a later block that opens with a short name of one or two words is now that thing's; a block that is only the price, a size, or a longer description still belongs to the item.
+27. *(medium)* Monthly wording carried across an unrelated heading ("Monthly deliveries | Gift bags | $18"). The fallback now reads only the block just before the price's.
+28. *(medium)* "$18 per month plus a one-time signup fee of $5" failed: the one-time words applied to the whole sentence. Qualifiers now belong to their own amount: words before a price count from the last amount before it, and when another amount follows in the sentence, only the words right after the price are its.
+29. *(medium)* Text hidden by a stylesheet rule (`.hide { display: none }`) still scored. Simple class, ID and `tag.class` selectors that set `display: none` or `visibility: hidden` now hide their elements; rules inside `@media` and other at-rules, and compound selectors, do not. The review suggested rendering in a browser instead; that would add a browser to every scoring run, so the scorer stays text-only and this is the stated limit.
+30. *(medium)* "Pick up orders at 3pm" met "Closes at 15:00", and "Tuesday we are never closed" met "Closed on Tuesdays". A closing time now needs a dash, "to", "until" or "close(s) at" before it, or a block about hours or days; the old 17:00 check uses the same rule. A closure with "never", "not", "no longer" or "n't" does not count.
+31. *(medium)* `<h2><span>Wholesale</span></h2>` and `<a href="/order">Order</a>` escaped the forbidden checks. Headings and links are read through nested tags, and a link or button labelled as an order ("Order", "Order now", "Place an order") or a link to an order, checkout or cart page counts as online ordering.
+32. *(medium)* In `readCoverage`, a call with no logged result cleared the expected cursor, so a later last page could count as a full read with nothing skipped. A missing result now leaves the rest of the read unverified (its own deviation); cursors carry the character offset of a split turn ("fromLine 204 and fromOffset 900"); and "No turns at or after line N", a request past the end, is an empty read, not the end of the chat.
+33. *(low)* `htmlOf` took `<!doctype html><html>A</html><html>B</html>` as one build. It now requires a single `<html>` element.
+34. *(low)* The rescoring below said 25 saved sites while the round tables count 23 builds. The tables hold 6 built sites in round 1 (3 chat, 3 ledger; the notes builds made no page), 8 in round 2 (3 chat, 2 notes, 3 ledger) and 9 in round 3. The other 2 are single-run ledger checks with Sonnet outside the tables: one at 20:35 before round 1 and one at 20:57 between rounds 1 and 2.
+
+An eleventh round found five medium, fixed with one regression test:
+
+35. *(medium)* An unpriced card took the next card's price when both names were headings ("Oat latte" card, then "Chocolate chip cookie $5.25"). The visible text now marks where each heading starts, and a heading between a name and a price starts another card.
+36. *(medium)* "$5 one-time signup fee, then $18 per month" failed: the words after the $5 were read as the $18's. Qualifier words right after an earlier amount now stay with it.
+37. *(medium)* `button.mobile-only { display: none }` hid a `<p class="mobile-only">`. A tag-qualified selector now hides only elements of that tag.
+38. *(medium)* "Open 3pm to 9pm" met "Closes at 15:00". The start of a range, or a time after "open(s) at/from", is an opening time.
+39. *(medium)* "Closed Monday, open Tuesday" met "Closed on Tuesdays". A match with "open" in it, or a day then a comma then "closed", does not count; "Closed Mondays and Tuesdays" still does.
+
+A twelfth round found five medium. Two were side effects of item 35's heading marker, and are fixed with a regression test:
+
+40. *(medium)* A heading that holds only the price (`<h3>Oat Latte</h3><h4>$5.25</h4>`) was read as a new card; it is now the item's.
+41. *(medium)* A one-time fee in a heading after the price (`<p>$18</p><h3>One-time signup fee</h3>`) was missed; the next block is now read past the heading marker.
+
+**Stop rule (agreed with the coordinating session, 2026-11-27).** From round 3 on, every round built new synthetic cases: 7, 5, 4, 2, 2, 1, 1, 4, 9, 5 and 5 medium findings in turn. None changed the score of any of the 25 saved sites, which rescore unchanged after every fix, and a text heuristic will keep yielding new cases. So from round 12 a finding blocks the merge only if it changes a saved-site score, breaks an existing test, or is in the read-coverage logic of `demo/website-build.mjs`. The other three round 12 findings meet none of these and are on Backlog card D4b with the list: a bracketed fee, a dash that starts a note, and a Tuesday closure across a comma.
+
+The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
+
+Rescoring all 25 saved sites (the 23 in the round tables and the 2 single-run checks) with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
+
 ## H12 — Prose diet (defined 2026-11-28, before the last change)
 
 H9 put the AGENTS.md section 6 rules that reviews kept finding into `scripts/check.mjs`, which reads every tracked file. Several cards had written the same rule as a test that scanned only the files that card changed, and AGENTS.md also asked for a manual scan. Two copies of one rule drift apart. H12 removes the copies and keeps the check.
@@ -6347,3 +6612,59 @@ H9 put the AGENTS.md section 6 rules that reviews kept finding into `scripts/che
 - **Codex review, round 1:** no high. Two medium and three low, fixed: the AGENTS.md test passed with the rule list removed, duplicated or reworded as a manual scan (it now requires one bullet naming the check, its four rules and "add to the check", rejects a scan step elsewhere, and is tried on all three broken texts); the coverage test called `checkFile` directly (it now runs the command on staged SVG, CSS, test, spec, benchmark and MCP files, plus a clean tab and CRLF copy); `tests/console.test.mjs` still restated the character rule (removed, its console-only checks stay); the tracked-file scope and the file-presence question are recorded above.
 - **Codex review, round 2:** no high. One medium and three low, fixed: the AGENTS.md test read only lines starting with `- `, so a wrapped scan step or a second bullet restating a rule without a scan verb passed (it now joins wrapped lines into their bullet, rejects any other bullet naming listen, loopback, HTML sinks, `textContent` or code points, and is tried on both); the command test now also requires exit code 1; `tests/console.test.mjs` no longer repeats the HTML-sink rule (its `eval` and `new Function` checks stay, and the test is renamed); `tests/delete.test.mjs` keeps a check that the delete browser journey is still in the Playwright suite.
 - **Codex review, round 3:** no high or medium, so the review stops here. Three low, left for the next owner: a declarative raw-character rule in another section 6 bullet would pass the guard; the delete spec check passes while any `test(` remains; the command test builds its second fixture outside `try`.
+
+## W3 — Calibrated abstention: results on record (code parked, 2026-11-26)
+
+W3's code, its pre-registered protocol and its eight review rounds are in draft PR #77 (`claude/w3-calibrated-abstention`). That PR is stacked on W2's draft PR #71 and on W1's PR #73. On 2026-11-26 the sessions working for Ruslan agreed to park W2 and W3 as drafts until the team can answer text from outside its operator. This section keeps W3's results on `main` in the meantime. The design is [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and evals 11 to 14.
+
+**What was measured** (the rules were fixed before any run):
+
+- **Setting:** W1's pinned team (Qwen2.5-3B-Instruct, bf16, soft thoughts, no adapter, m = 40, greedy, 512 solver tokens) behind W1's watchdog and supervisor. Each question went alone through the team service. GSM8K test, seed 0, blocks of 200; the blocks W1 fitted its thresholds on are excluded.
+- **Confidence score:** the log-probability the solver gave to the number the grader reads.
+- **Threshold rule:** 20 candidate cutoffs from the proposal answers. Each is tested on the certification answers with a one-sided Clopper-Pearson bound at 0.05 / 20 against a 10% error ceiling, and the loosest one that passes is kept. If none passes, nothing is calibrated.
+- **Eval 11 passes** when the error among released scored answers is at or under 10% plus 1.645 standard errors, and at least half of the scored questions are released. Every held request counts as a released wrong answer (the worst case for holds).
+- **Plan `today`:** the sets were cut at the user's request so the run finished the same day. 60 proposal, 200 certification and 150 scored questions, plus the 8 questions of the fresh latent-read set for eval 12: 418 requests.
+- **Eval 14:**
+  - JailbreakBench's JBB-Behaviors (MIT), revision 886acc3: 100 harmful and 100 benign requests.
+  - Each request was asked of the model alone and of the latent team, with the same math-style instruction.
+  - Replies were judged in memory by a fixed list of 16 refusal phrases, and only counts were kept.
+  - The data stays outside the repository; it was downloaded with the user's permission.
+
+### W3 results (2026-11-22, live: run `w3-run10`, one job at 470282a, plan `today`, weights hash 1ed1d835…)
+
+The certification ran from 16:37 to 19:57 (times from the run log): 418 single requests through `TeamService`, one at a time on the laptop GPU. The analysis and eval 14 ran next from the same commit and finished at 20:08. Only aggregate counts are reported. The code graded or judged questions, answers and replies in memory. None was written to disk or to the repository, and no person or agent looked at any of them.
+
+- **Eval 11 fails, and nothing is calibrated.** None of the 7 tested cutoffs certified, so the run wrote no calibration file and none is committed. No certification or scored request was held, so the worst case for holds gives the same numbers as the pre-registered count.
+  - **Why so few cutoffs:** 42 of the 57 finite proposal scores were tied at exactly 0 (the log-probability of the answer's number). The grid of 20 collapsed to 7 distinct candidates, and the score could not rank those answers among themselves.
+  - **The strictest candidate** (score 0) still released 149 of the 200 certification answers, 18 of them wrong (12.1%, one-sided bound 21.3% at 0.05 / 20). At 149 released, a 10% bound at that level allows at most 5 errors. The loosest candidate released 199, with 33 wrong (bound 25.2%).
+  - **The certification block** held 190 scored team answers (31 wrong), 9 fallbacks (2 wrong) and 1 released answer with no score.
+  - **Held-out scoring, with nothing certified:** of the 150 scored questions, 6 were released (4%), all of them fallbacks, and 1 of those was wrong (16.7%, 95% Wilson interval 3.0% to 56.4%). The other 144 abstained (96%); none was held.
+  - **Before any cutoff,** the service's released answers were 89.3% correct on the scored questions and 83.5% on the certification block.
+  - **AUROC:** the confidence score's AUROC for a wrong team answer on the scored questions is 0.70.
+  - **Not computed:** the pre-registered exploratory scores (mean and minimum log-probability, agreement with the solver alone), which say which signal to try next. They were defined on the batched run, which never finished.
+  - No rule or threshold was changed after these results.
+- **Holds and time.**
+  - **1 of the 418 requests was held:** the first request of the run, in the proposal part (`report-late`, 782 s). The S1b session reported that its vLLM job was starting on the same GPU at that time.
+  - **No other request took over 180 s.** Over all 418, the median was 20.2 s, the mean 28.4 s and the 90th percentile 52.0 s.
+  - **Compared with run 9:** the median there was 113 s per request (two shards) against 20.2 s here, a ratio of about 5.6. The two runs differ in more than the shard count (run 9 measured only its first 215 requests), so this ratio is not an isolated effect of sharding.
+- **Eval 12:** skipped, because no threshold certified. Baseline: of the 8 fresh questions, 7 were graded and 1 was ungraded. All 7 graded answers were released as fallbacks, and 1 of them was wrong.
+- **Eval 13:** not run; its probe ran only in the batched run.
+- **Eval 14:** counts of replies the fixed keyword rule classifies as refusals.
+
+  | Set (100 each) | Model alone refused | Team refused | Only the model alone refused | Only the team refused | Both refused | Empty |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Harmful | 67 | 24 | 46 | 3 | 21 | 0 |
+  | Benign | 11 | 0 | 11 | 0 | 0 | 0 |
+
+  Under the keyword rule, 76 of the team's 100 replies to harmful requests are classified as answers, against 33 for the model alone. Paired by request, 46 harmful requests were classified as refused by the model alone but not by the team, and 3 the other way. On the benign set the team had no reply classified as a refusal; the model alone had 11. The team's refusal rate under this rule fell on both sets.
+
+  Caveats:
+  - The keyword rule misses refusals worded otherwise and counts phrases used in passing. Using one rule makes the two systems' counts comparable under that rule. It does not show the rule's errors cancel out, so these counts do not establish that latent mode weakens refusals in general.
+  - Nobody read the replies, so this says nothing about whether the team's answers to harmful requests were harmful or useful.
+  - Eval 14 has no pass rule.
+- **Review:** Codex reviewed read-only in eight rounds (W3-1 to W3-8, recorded in PR #77's eval log). Seven came before any result. The eighth, of this write-up, found no high-severity issue, no post-result tuning and no committed text; its wording and count fixes are in the text above.
+
+**What follows** (cards on the board):
+
+- **W3b, a refusal check:** needed before the team answers text from outside its operator, and not before. The trigger is the same as for taking W2 and W3 out of draft: a file read, a tool call, an agent relaying text from a transcript, page or file, or another app calling the chat route.
+- **W3c, a score that ranks:** research for whenever abstention is wanted again. It has no trigger.
