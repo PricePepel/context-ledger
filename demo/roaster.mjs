@@ -203,11 +203,13 @@ function pricesOf(text, item) {
     const dollar = rest.indexOf('$');
     const between = rest.slice(0, Math.max(dollar, 0));
     // Another item starts a new row when its name opens a block as a short label ("| cold brew $"
-    // or "| cold brew |"), not when a description sentence begins with it ("| espresso cut with…").
-    const label = name => new RegExp(`\\|\\s*${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
+    // or "| small cold brew |", up to two words before the name), not when a description sentence
+    // begins with it ("| espresso cut with…").
+    const label = name => new RegExp(`\\|\\s*([\\p{L}-]+\\s+){0,2}${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
-    const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
+    // A full stop after the amount ends the sentence ("$5.00."); it is not part of the number.
+    const amount = /^\$\s?(\d+(?:\.\d{2})?)(?!\d|\.\d)/u.exec(rest.slice(dollar));
     // A label is the item's own short row: it opens a block, with at most two words before the
     // name ("| small oat latte $5.00") and a short gap to the price ("| oat latte (16 oz) $5.00").
     // The price may also open the very next block, as in a menu card ("| oat latte | $5.00").
@@ -229,6 +231,38 @@ const priced = (item, amount, replaced = []) => p =>
   priceOf(p.text, item) === amount && !replaced.some(old => shows(p.text, item, old));
 const day = String.raw`\btues?(day)?s?\b`;
 
+const oneTime = /one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u;
+const monthlyAfter = /^\s*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u;
+const monthlyAnywhere = /\bmonthly\b|\b(per|a|each|every) month\b/u;
+
+/**
+ * Whether the page prices the Bean Club at $18 a month. Every $18 within 300 characters after
+ * "Bean Club" is tried, so a one-time $18 before the monthly one does not hide it. For each:
+ * - "one-time", "once" or "upfront" in the price's own sentence fails it ("One-time signup
+ *   fee: $18", "$18 upfront"); a sentence ends at a full stop or a block break.
+ * - Monthly wording in the price's own sentence passes it ("$18/month", "Monthly membership:
+ *   $18"), whatever the next block says (it may be the next section's heading).
+ * - Otherwise the next block decides: it fails when it opens with "one-time" or "upfront"
+ *   ("$18 | One-time signup fee") and passes when it opens with monthly wording ("$18 | per
+ *   month"); failing both, monthly wording earlier after "Bean Club" passes it.
+ */
+function monthlyClub(text) {
+  for (const price of text.matchAll(/\$\s?18(?:\.00)?(?!\d|\.\d)/gu)) {
+    const start = text.lastIndexOf('bean club', price.index);
+    if (start < 0 || price.index - start > 300) continue;
+    const before = text.slice(start + 'bean club'.length, price.index);
+    const after = text.slice(price.index + price[0].length, price.index + price[0].length + 30);
+    const sentenceBefore = before.split('|').pop().split(/[.!?]\s/u).pop();
+    const [own, next = ''] = after.split('|');
+    const sentenceAfter = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
+    if (oneTime.test(sentenceBefore) || oneTime.test(sentenceAfter)) continue;
+    if (monthlyAfter.test(own) || monthlyAnywhere.test(sentenceBefore)) return true;
+    if (/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next)) continue;
+    if (monthlyAfter.test(next) || monthlyAnywhere.test(before)) return true;
+  }
+  return false;
+}
+
 /** The client's final word: 15 requirements, each a test on the page. */
 export const requirements = [
   ['Business name Tidewater Roast Co.', p => p.text.includes('tidewater roast co')],
@@ -245,25 +279,8 @@ export const requirements = [
   ['Oat latte $5.25', priced('oat latte', 5.25, [5])],
   ['Cold brew $4.75', priced('cold brew', 4.75)],
   ['Features the Harbor Fog blend', p => p.text.includes('harbor fog')],
-  // Monthly, not just $18: "/mo", "a month", "per month" or "monthly" right after the price, or
-  // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" in the same
-  // sentence after it.
-  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) => {
-    // The sentence ends at a full stop or a block break ("| sign up once." is another paragraph),
-    // but a block right after the price that opens with "one-time" or "upfront" labels the price
-    // ("$18 | one-time signup fee").
-    // Monthly wording in the price's own block wins over the next block, which may be the next
-    // section's heading ("$18/month | one-time purchases").
-    const [own, next = ''] = after.split('|');
-    const sentence = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
-    const monthlyWords = /^\s*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u;
-    if (/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence)) return false;
-    const monthlyBefore = /\bmonthly\b|\b(per|a|each|every) month\b/u;
-    // The price's block runs from the last break before the price to the first one after it.
-    if (monthlyWords.test(own) || monthlyBefore.test(before.split('|').pop())) return true;
-    return !/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next) &&
-      (monthlyWords.test(next) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
-  })],
+  // Monthly, not just $18: see monthlyClub.
+  ['Bean Club, $18 a month', p => monthlyClub(p.text)],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
   ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],
 ];

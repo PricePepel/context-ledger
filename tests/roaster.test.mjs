@@ -256,3 +256,15 @@ test('review 4, round 8: monthly wording before the price in its own block also 
     '<section><h2>Bean Club</h2><p>Monthly membership: $18</p></section><section><h2>One-time purchases</h2><p>Buy a bag in store.</p></section>');
   assert.deepEqual(scoreSite(page).missed, []);
 });
+
+test('review 4, round 9: trailing full stops, earlier sentences, a second $18 and sized item names', () => {
+  const name = 'Bean Club, $18 a month';
+  const club = text => scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', text)).missed.includes(name);
+  assert.equal(club('<p>Monthly membership costs $18.</p>'), false);
+  assert.equal(club('<p>Monthly deliveries. One-time signup fee: $18</p>'), true);
+  assert.equal(club('<p>One-time gift bag: $18. Monthly membership: $18/month.</p>'), false);
+  const period = scoreSite(good.replace('<p>Our signature', '<p>Oat latte $5.00.</p><p>Our signature'));
+  assert.ok(period.stale.includes('Old oat latte price $5.00'));
+  const borrowed = scoreSite(good.replace('<li>Oat latte <b>$5.25</b></li><li>Cold brew $4.75</li>', '<li>Oat latte</li><li>Small cold brew $5.25</li>'));
+  assert.ok(borrowed.missed.includes('Oat latte $5.25'));
+});

@@ -6290,6 +6290,13 @@ A sixth round found two medium with one cause: nested closing tags (`</h3></head
 
 21. *(medium, round 8)* The same held for monthly wording before the price in its own block ("Monthly membership: $18"); the price's block now runs from the last break before the price to the first after it.
 
+A ninth round found four medium, all fixed with one regression test:
+
+22. *(medium)* A full stop after an amount ("$18.", "$5.00.") made it no amount at all. A full stop now ends the number unless a digit follows.
+23. *(medium)* "Monthly deliveries. One-time signup fee: $18" passed: the one-time words were looked for only after the price. They are now looked for in the price's whole sentence, on both sides.
+24. *(medium)* Only the first $ after "Bean Club" was tried, so "One-time gift bag: $18. Monthly membership: $18/month." failed. Every $18 within 300 characters after "Bean Club" is now tried (`monthlyClub`).
+25. *(medium)* An unpriced item could borrow the next item's price when that item's name had a size word ("| oat latte | small cold brew $5.25"). The next-item rule now allows up to two words before the name, as the own-row rule does.
+
 The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
 
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
