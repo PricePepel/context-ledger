@@ -4707,6 +4707,20 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
   - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
 
+## P4e: copy search checks long values whole (2026-11-27)
+
+Card P4e, branch `ruslan/p4d-copy-budget`, from `main` after #69. #69 was merged at 445e9e4 before the fixes for its last Codex review reached it, so they come here. Synthetic inputs only (`tests/secrets.test.mjs`, `tests/sign.test.mjs`, `tests/signed-review-head.test.mjs`, tests named P4d review 9 to 11).
+
+- **Expected:** a name late in a long line is searched; a bare copy of a long value is replaced whole; every copy that `main` removed is still removed; a session past any of four budgets (2^20 matcher nodes, 2^26 confirm characters, 2^24 collected characters, 2^20 copies) is refused and `handoff --sign` writes nothing; `reviews verify --bundle` warns on a version 1 or 2 bundle.
+- **Codex review of #69 at 445e9e4:** two medium (late names and long tails unchecked; no session-wide memory bound), three low (the reviews-verify warning, format joiners kept in exported text, a widening test that did not widen). All fixed with tests except the joiners, which predate P4d and are kept on purpose by `visibleText`; left for a Backlog card.
+- **Codex round 2 (of 0809bbe):** four medium (a quadratic trailing-punctuation regex, a filter over every end per confirmation, an endpoint list per repeated copy, a lost decoded prefix), two low. All fixed with tests.
+- **Codex round 3 (of 273af4d):** one high (a copy that `main` removed was kept, because ends were worked out on the whole value), one medium (millions of short copies, also on `main`), two low. All fixed with tests; the high and medium tests fail on 273af4d.
+- **Codex round 4 (of fb72723):** three medium (a value collected as a decoded form was never decoded itself; one 64 Ki assignment used the confirm budget against itself; direct findings unbounded, also on `main`), four low (duplicate-value ends, marker kinds, a weak widening test, the scanner name). All fixed in ee18e3c with tests that fail on fb72723; new bundles say `context-ledger-secrets/2` and `/1` still verifies.
+- **Codex round 5 (of ee18e3c):** no high, and no replacement `main` makes is lost. Two low fixed in 0fd0209 (test strength). Three medium **open**, all availability: the budgets can refuse a session `main` signs (27,000 short distinct values pass the node budget on `main` and hit it here; 450 long values sharing a 990-character prefix use up the confirm budget; the direct-findings limit applies only after one field's findings are built). They fail closed, so nothing is signed half-checked. Fixing them needs a compact trie, shared confirmation work and a limit inside the P4b scanner.
+- **Accepted open findings (2026-11-28):** Ruslan accepted these three availability findings and approved the merge of #112 ("Yes, merge all three", for P1f #65, H15 #108 and P4e #112, in his own chat, relayed by the coordinating session). The inputs that reproduce them: 9,000 messages with three distinct 46-character `password=` values each (node budget); 450 values of `Ab9` repeated 330 times plus a distinct 46-character suffix (confirm budget); a line `pwd=a` repeated 2^20 + 1 times (direct findings are counted only after the field's findings are built). In each case `handoff --sign` refuses and writes nothing.
+- **Suites on ee18e3c:** `npm run -s test:graph` 9 pass; `node scripts/check.mjs` no findings; `node --test tests/*.test.mjs` 778 pass, 0 fail, 12 skipped; `npx playwright test` 70 pass, 1 skipped, 1 fail (`handoff.spec.mjs`, the H14 flake; it passes 3 of 3 on rerun, and P4e does not touch plain `handoff`).
+- **Earlier suites:** on the #69 merge, `npm run -s test:graph` pass, `node scripts/check.mjs` no findings, `node --test tests/*.test.mjs` 741 pass, 12 skipped, 5 fail under load (two sign tests and three Windows token tests; the sign tests pass alone, the token tests are H15), `npx playwright test` 66 pass and 5 timeouts, which pass on rerun (10 of 10). On 14a0948: the secrets, sign and review-head files pass (117), check clean.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
@@ -4727,6 +4741,56 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## P1f — Origin-scoped browser credential (defined 2026-11-21, before the code)
+
+The P1e review's open high finding: browsers send the P1e session cookie to every port on 127.0.0.1, so any program serving a page on another local port (another user's server, a container with a published port, a dev server) receives the cookie and can replay it from a native client. P1f replaces the cookie with a secret that only the ledger's own origin (scheme, host and port) can read. Synthetic transcripts only.
+
+Threat model change: a page or server on another port of 127.0.0.1 or localhost no longer receives any credential. Not protected, as before: same-user malware that reads the token file or the browser profile, root or an administrator, script running in the ledger's own origin (the strict CSP and `textContent` rendering stay the control), and a sign-in link someone else opens first.
+
+| Eval | Expected |
+| --- | --- |
+| No cookie | The server never sets a session cookie and never reads one: a request whose only credential is a cookie, including a live session secret sent as a P1e-style `context_ledger_<port>` cookie, is 401 on every guarded route. A successful redemption clears an old P1e cookie for the port (`Max-Age=0`). |
+| Sign-in page | `GET /login?code=…` serves a static sign-in page and uses up nothing. Its script takes the code from the address, removes it from the address bar and history entry, and sends it once to `POST /api/session` as JSON from the ledger's own Origin. |
+| Redeem | `POST /api/session` with one valid code answers `{ session, expiresInSeconds }` (a fresh 32-byte secret, not the token, 12 hours) and uses the code up. A used, expired, unknown or malformed code, the token itself, a missing or foreign Origin, or a body that is not one `code` string is refused (401, or 403 for the Origin) and mints nothing. It is open without the bearer token, like the sign-in page. |
+| Header credential | Every guarded route except `POST /api/login` (which mints codes with the bearer token only) accepts the session in an `X-Context-Ledger-Session` header in place of the bearer token, with the same checks as before (Host, Origin on writes). A wrong, malformed, expired or earlier-start session is 401. The node-review route still takes only a browser session (not the bearer), with its Origin and `Sec-Fetch-Site` rules. |
+| Origin-scoped storage | The browser app and the console keep the session in the ledger origin's `localStorage` and send it on every API request; a page on another port can neither read it nor receive it. On a 401 the page forgets it and shows the sign-in help. A Playwright test serves a page from a second local port, loads it in the signed-in browser and checks that it received no cookie or session header and cannot read the ledger's storage. |
+| Suites | Every node test and Playwright spec that used the cookie passes with the header. Node, graph, Playwright and Python suites pass. ADR-10's text and the README describe the header credential. |
+
+**Results — P1f (2026-11-21, Windows):** the six rows pass. A human security review is still required before merge (AGENTS.md section 4).
+
+- **No cookie:** pass. `src/token.mjs` reads no Cookie header. A live session sent as `context_ledger_<port>` is 401, in `tests/token.test.mjs` and `tests/node-review.test.mjs`. A successful redemption answers `Set-Cookie: context_ledger_<port>=; …; Max-Age=0`, and Playwright shows a planted P1e cookie gone after sign-in.
+- **Sign-in page:** pass. `GET /login?code=…` is a static page with `Referrer-Policy: no-referrer` that does not echo the code and uses up nothing (its code still redeems afterwards). In the browser the code leaves the address bar and the history entry, and the page's script, style and redemption requests carry no Referer.
+- **Redeem:** pass. Each code works once. A used, unknown, malformed or non-string code, the token, a body other than exactly `{"code":"…"}` (extra keys, arrays, `null`, repeated or escaped keys, other spacing) gives 401 and uses nothing up. A foreign, `null` or missing Origin gives 403; `text/plain` gives 415; over 1 KiB gives 413, both declared and chunked. `GET` and `PUT /api/session` are guarded routes.
+- **Header credential:** pass. The session reads and, with the same Origin, writes; a wrong, truncated, extended, earlier-start or misnamed header is 401, as is the session sent as a bearer. Room decisions still need `Sec-Fetch-Site`; the node-review route still refuses the bearer token and a session without `Sec-Fetch-Site`.
+- **Origin-scoped storage:** pass. `tests/e2e/auth.spec.mjs` signs in, then serves a page from a second local port. That server receives no cookie and no session header on each visit. Its page cannot read the ledger's data or redeem a fresh code (both fetches blocked) and cannot read a ledger window's storage (denied); the code still signs in afterwards from the ledger's page. A stale stored session is forgotten after its 401.
+- **Suites:** node 526/536 (10 skipped: POSIX-only token cases and the existing port skip), graph check 9/9, Playwright 33/33, Python runtime 239 run, 66 skipped, OK. `src/`, `tests/`, `public/` and `bin/` hold no raw control or format characters.
+- **Codex review, round 1** (`codex exec --sandbox read-only`, of 4db061e): no high or medium finding; five low, all fixed:
+  - (low) A late 401 for an old session could clear a newer sign-in. Fixed: `forget` takes the headers the request was sent with and clears storage only if it still holds that secret.
+  - (low) `JSON.parse` folds repeated keys, so `{"code":"x","code":"<valid>"}` passed the one-key check. Fixed: only the exact `JSON.stringify({ code })` text is accepted; tests cover repeated, escaped and respaced keys and show both codes stay usable.
+  - (low) The tests did not pin `Referrer-Policy` on the sign-in page, the Referer of its subresources, or the streamed body cap. Added.
+  - (low) The cross-port browser test covered only what the other server receives. Added the foreign page's read, redemption and window-storage attempts.
+  - (low) The README, ADR-7c and the threat table still named the cookie or `SameSite=Strict`, and the eval said every guarded route takes a session (`POST /api/login` takes only the bearer). Corrected.
+- **Codex review, round 2** (of f339216): no high or medium finding; confirmed the round 1 fixes and no regression in the token, review or room routes. Four low, all fixed:
+  - (low) Another tab could store a new secret between `forget`'s check and its removal. Fixed: `store` and the compare-and-remove run under one origin-wide Web Lock (`navigator.locks`, present on loopback pages). Playwright checks that a late 401 for an old secret leaves a newer one; the interleaving itself is not reproducible in a test.
+  - (low) The decoder drops a leading BOM, so a BOM-prefixed body passed the exact-text check. Fixed: the raw bytes are compared; a BOM case is in the refused bodies, and the code stays usable.
+  - (low) The cross-port test swallowed the simple POST's failure. Fixed: it now asserts the ledger answered that POST with 403.
+  - (low) The README said every request needs the token, and repeated "sign-in". Corrected, naming the redemption, link-minting and node-review exceptions.
+- **Suites after round 2:** node 526/536 (10 skipped), graph 9/9, Playwright 33/33, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+- **Merge of main (2026-11-23):** I3, P3, P3b, P3c, P4c, S1, S1b, G9b and M2b-S. The swarm page (S1) called the guarded `/api/swarm` routes with a plain `fetch`, so it relied on the P1e cookie and would have got only 401s after P1f. It now loads `/swarm/session.js` (the same file) and sends the header through `ledgerSession`, forgetting the secret after a 401 as the app and console do. `tests/e2e/swarm.spec.mjs` runs against it, and `tests/routes.test.mjs` lists the new static path. P3's node-review test signs in through `POST /api/session`. Suites after the merge: node 616/626 (10 skipped), graph 9/9, Playwright 43/43, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+- **Merge of main (2026-11-27):** 164 commits, among them H9 (invariant checks), H11 (feature map and `scripts/drive.mjs`), H13, H14, L3, the U-series console line (U4 to U11, with the swarm room) and S1b. The static file list moved to `src/static-files.mjs`, so P1f's `/session.js`, `/login`, `/login.js`, `/console/session.js` and `/swarm/session.js` entries moved there (`public/` is in the package's `files`). Two callers on main predated the header credential and are fixed:
+  - The console swarm room (U7, `public/console/swarm-room.mjs`) fetched `/api/swarm` with a plain `fetch`, so a browser signed in only through P1f got a 401 and a room stuck in simulated mode. It now sends the header through `ledgerSession` and forgets the secret after a 401, as the swarm page does. New Playwright test in `tests/e2e/auth.spec.mjs` checks that the room's `GET /api/swarm` carries the session and gets 200; it fails with main's file.
+  - `scripts/drive.mjs` (H11) opened the sign-in link and navigated on at once, which could abort the page's `POST /api/session` and leave it signed out. It now waits for the page to reach `/`. `tests/drive.test.mjs` expected P1e's 303 cookie redirect from `GET /login`; it now checks the static page and that the code redeems once at `POST /api/session`.
+- **Codex review, round 3** (of the merged branch, 88baca7): one medium, three low.
+  - (medium, fixed) The server also answers `Host: localhost`, which may resolve to `::1`, where another local program can take the same port and serve pages of the origin `http://localhost:<port>`; those pages could read a session stored under that origin. Fixed in `src/server.mjs`: under any Host other than `127.0.0.1:<port>` the session header is dropped before any check and `POST /api/session` is refused (403, naming the 127.0.0.1 address) without using up the code. Bearer requests under `localhost` work as before. `drive.mjs --url` takes `127.0.0.1` only. Tests in `tests/token.test.mjs` (refused sign-in, a live session sent to `localhost` reads, writes and reviews nothing, bearer still works) and `tests/drive.test.mjs`; the token test fails without the fix.
+  - (low, open) Without Web Locks, `forget` could still race another tab's `store`. Loopback pages are a secure context, where every current browser has `navigator.locks`; left as it is.
+  - (low, open) Two tests could be sharper: the history check would pass without the early `history.replaceState` (the redirect overwrites the entry too), and the drive test redeems the code from Node rather than the browser. Follow-ups, not blockers.
+- **Codex review, round 4** (of d812504): the round 3 finding is closed (Node lowercases and joins the header, it is dropped before both checks, and the CLI, start-up and Playwright links all use 127.0.0.1). No high or medium. One low, fixed: the `localhost` refusal covered every method on `/api/session`; it now covers only the `POST` that issues a session, with a test that a bearer `GET` is 404 under both names.
+- **Suites after the merge and fixes (2026-11-27, Windows):** node 723 pass, 12 skipped of 738 in one full run; the 3 failures there were load timeouts (a PowerShell `icacls` spawn, a ledger start over 15 s, a perf spawn) and those files pass when run alone (77 pass, 1 skipped), as do the changed token, routes and drive files (39 pass, 5 skipped). Graph 9/9. Playwright 71 pass, 1 skipped; the 2 failures (the handoff test noted under H14, and a Chromium page crash in the cross-port test) pass when run alone. `node scripts/check.mjs`: 333 files, no findings.
+- **Merge of main, third (2026-11-28):** H15 (#108, the token-file write timeout), D4, H12 and R1. Only `docs/architecture.md` (R1 took section 17, so P1f is section 18) and `docs/handoff.md` conflicted. Against H15's `src/token.mjs`, P1f changes only the session parts (header in place of cookie, redemption returns the secret); H15's token-file writing is untouched. Suites: see the PR.
+- **Acceptance (2026-11-28):** Ruslan accepted #65 for merge without the separate human security review, answering "Yes, merge all three" to the coordinating session's question about #65, #108 and #112, which named the missing review. The approval reached this card relayed by that session; he merges or delegates the merge himself.
 
 ## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
 
@@ -5640,6 +5704,58 @@ Nobody had touched #90 since 2026-11-23, and it conflicted with main. Main was m
 - Accepted from P4d (ADR-9a): copies under six characters are not looked for.
 - **Suites at 223f30b with main merged (Windows):** `node scripts/check.mjs` no findings, `npm run -s test:graph` 9/9, `node --test tests/*.test.mjs` 0 failed (13 skipped), `npx playwright test` 72 passed (1 skipped). Still not run between two machines.
 
+## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
+
+R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
+
+### What is tested and the expected result
+
+- **End to end.** `ledger relay serve` prints its address. On ledger A, `ledger share <graph-id> --relay <url>` prints one code. On ledger B, `ledger receive --from <code>` stores the graph with the same ID, as R1's `receive <file>` does, and the relay then holds nothing.
+- **The relay sees only ciphertext.** What the relay holds contains no text of the parcel (a label, a transcript line, the session ID, the graph ID). The parcel is sealed with AES-256-GCM under a key derived from the code's secret, which never reaches the relay.
+- **The code is the key.** A different secret, or a parcel changed by one byte, fails to open, in fixed words, and the ledger is unchanged. A sealed parcel opens only as the version it was sealed as.
+- **One parcel per code.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
+- **A failed receive keeps the parcel.** If B refuses the parcel (for example its graph links to a graph B lacks), the relay still holds it, so B can receive the missing graph and try again.
+- **The relay's own limits.** A request without a bearer token of the right shape is refused (401). A body over the limit is refused (413) without being held. The relay holds at most a fixed number of parcels and bytes and refuses more (507). A parcel expires after 24 hours. Unknown paths give 404 and other methods 405. Responses never echo a token or a body.
+- **The relay cannot reach a ledger.** `src/relay.mjs` imports only Node built-ins. It opens no database and reads no file.
+- **Loopback by default.** `relay serve` listens on 127.0.0.1 unless `--host` names another address, and then says the address must be reachable only by people you trust. `share` warns when the relay address in a code is loopback, since the other machine cannot reach it.
+- **Fixed words on failure.** An unreachable relay, a relay that is not one (wrong health reply), a malformed code, and a missing parcel each give one fixed sentence. Nothing from the network reaches the terminal unescaped, and the code's secret is never printed by `receive`.
+- **R1 is unchanged.** `share --out` and `receive <file>` work as before; `--out` and `--relay` cannot be combined, and neither can a file and `--from`.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/relay.test.mjs`.
+- No new dependency: `node:crypto` (HKDF-SHA-256, AES-256-GCM) and `node:http`.
+- `docs/parcels.md` describes the relay, the code, and what an attacker on the network can and cannot do.
+
+### R2 results (2026-11-23)
+
+- `tests/relay.test.mjs` 14/14: sealing and opening; the code's one spelling; the relay's store, fetch and delete; refusals without a token and to web pages; the size, count, byte and time limits; uploads that must declare a length and count while they arrive; expiry on an idle relay; the imports of `src/relay.mjs`; a relay that is absent, of another version, endless, oversized or redirecting; an upload stored but not confirmed; and the three commands end to end with a relay process and two ledgers, including a parcel the ledger refuses and one changed on the way.
+- Found while building: on Windows an answer sent while the sender is still writing is lost with the connection, so the sender saw a broken connection instead of the reason. A refused upload is now read to its end and dropped (up to 16 MiB) before the relay answers.
+- **Independent security review (a Claude subagent that did not write the code, round 1):** no high. Four medium and six low; all fixed with tests except two noted below.
+  - (medium) Uploads still arriving were not counted, so 64 stalled senders could make the relay hold about 500 MiB while it reported nothing held. A PUT must now declare its length (411 otherwise), and its bytes and its place count against the limits until it ends or breaks off.
+  - (medium) A reader that never read kept its connection for good, and 64 of them shut everyone out. A socket idle for a minute is closed, and each connection carries one request.
+  - (medium) `checkRelay` read the health answer without a limit, so a relay, or someone on an `http` path, could fill the sender's memory. It reads one kilobyte, asks for no compression, and gives up after 10 seconds.
+  - (medium) The code was called one-time, and it is not: fetching does not empty the box, and the 24 hours are kept only by the relay. The command, the docs and ADR-20 now say that whoever has the code can read the parcel and that it must stay secret for good.
+  - (low) The redirect test would have passed with redirects followed; it now redirects to a live second listener and checks that nothing arrives there, for all four calls. The imports test now reads every kind of import and checks what a fresh process loads.
+  - (low) Expiry ran only when a request with a token arrived. A timer now sweeps an idle relay.
+  - (low) The relay checked no Origin, so a page that reached a loopback relay by its own name could fill it. A request that names an origin is refused.
+  - (low) An upload stored but not confirmed left a box nobody held a code for. The sender now deletes the box when the upload fails.
+  - (low) One 30 second limit covered a whole transfer and reported a slow link as an unreachable relay. A transfer has 3 minutes and its own sentence.
+  - (low) `isLoopback` missed `localhost.`, `*.localhost` and the IPv4-mapped form. Added.
+  - Not changed: the timeouts and the connection limit have no test of their own (they are Node settings), and the eval's claim that nothing from the network reaches the terminal rests on the code printing only fixed sentences, which the hostile-relay cases exercise.
+- **Suites after the security review, with R1 and main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 712/723 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. The relay and both ledgers ran on one machine; a transfer between two machines has not been tried.
+
+### Refresh with main and R1, and a fresh Codex review (2026-11-27 and 28)
+
+R1 (with main) was merged in after each R1 change. A read-only Codex review of this PR's own diff (`ruslan/r1-parcels...HEAD`) found one medium and five lows over two rounds, all fixed with tests that fail without the fix; round 2 found no high or medium.
+
+- Medium: a box deleted or expired while a slow download was still sending it freed its room at once, so new uploads could hold more memory than the limit. Those bytes stay counted until the last download ends, and one download has 3 minutes in all (`limits.downloadMs`). The tests drive the relay's handler with a response that never finishes, because Windows takes a whole 8 MiB reply into its own buffers.
+- Low: the client read an answer that said it was compressed (fetch unpacks it anyway); such an answer is now refused unread, and the header is compared exactly (round 2 found the first pattern let `sidentity` through).
+- Low: `receive --from` promised a relay that refused the delete would drop its copy in 24 hours, and stated a delete it can only report; both sentences now say what is known.
+- Main's H9 `loopback-only` check flags `relay serve --host`, the one listener ADR-20 allows beyond loopback. `scripts/check.mjs` names it by file and exact arguments, once; the same call anywhere else, or twice, is still a finding. Low, not changed: the exemption follows the argument text, not the function it sits in.
+- Low, not changed: response bodies the client does not need are left to the transfer timeout instead of being cancelled.
+- **Suites with R1 and main merged (Windows):** see the R1 refresh entry; the relay ran on one machine only.
+
 ## H9 — Repo-wide invariant checks (defined 2026-11-26, before the code)
 
 Codex reviews of earlier cards came back to the same AGENTS.md section 6 rules again and again: raw control, format or bidi characters (83 mentions in this file), HTML built from strings in the browser, and servers that must stay on loopback. Each card added its own scan for the files it changed. H9 puts those rules in one script, `scripts/check.mjs`, which runs first in CI on every tracked file, so a break is caught at once and reviews can spend their rounds on judgment. The idea comes from the talk "All Code Is Slop (Except Mine)" (Lauren Tan, AI Engineer, 2026-11-14): every correction an agent needs twice becomes a check, and the check's message says what to do instead. Synthetic inputs only.
@@ -6331,6 +6447,56 @@ Capping the number of sequences did not make anything faster on this card: every
 Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
 
 Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
+
+## K1 — Project context graph (defined 2026-11-27, before the code)
+
+AGENTS.md section 1 asks every new session to read `docs/handoff.md`, `docs/delivery-board.md`, `docs/evals.md` and `docs/architecture.md`: about 895 KB on 2026-11-27, of which the eval log is 740 KB. K1 gives a session the part that concerns its card, with the lines to open for the rest.
+
+### What is tested and the expected result
+
+Synthetic board, handoff, eval and architecture texts written inside `tests/project-context.test.mjs`; one test also runs the command on this repository's own docs.
+
+- **Cards.** Every board table row becomes a card with its ID, title, owner, branch or PR, scope, state and its line in `docs/delivery-board.md`, wherever the row stands in the file; the header and separator rows do not. A `\|` inside a cell does not split it.
+- **Sections.** Every `## ` heading of the handoff notes and the eval log, and every `## ` and `### ` heading of the architecture notes, becomes a section with its first and last line and the date in its heading, if it has one. The text under a file's `# ` title, before its first section, is a section too. A `#` inside a fenced code block is not a heading.
+- **Two layouts.** Beside each file the command reads the folder of the same name (`docs/evals/*.md` beside `docs/evals.md`, and the same for the handoff and architecture notes), so a later split into one file per card does not break it. A section in `docs/evals/p4d.md` is about card P4d whatever its headings say, and is cited by that file and its lines. Either the file or the folder may be missing.
+- **Links.** A section is linked to a card when the card's ID stands in it as a whole word (`P1` is not found in `P1a`), when it says `Cycle 4` or `cycle 4` and a card `C4` exists, or when it names the card's PR number. A link from the heading is marked `about`; a link from the body is marked `mentions`.
+- **Briefing for a card.** `node scripts/project-context.mjs P4d` prints the card, then the sections about it newest first (each with file and lines and its first words), then the sections that mention it, the repository files those sections name, and the other cards they name. The ID is matched without regard to case.
+- **Briefing for a question.** Words that are not a card ID rank cards and sections by how many of the words they contain, a heading or card title counting more than a body.
+- **Budget.** `--budget N` (200 to 1,000,000; default 1500) keeps the briefing to N tokens at four characters to a token, counted in the UTF-16 units of the escaped text a terminal is sent, for any input. The last line says how many items were left out and of which kind, and it is printed when nothing was left out too (the G9b finding: a briefing that is silent about what it dropped is read as complete). A list cut by a fixed cap says so itself ("24 of 31", "the 12 best of 30 cards") and is not blamed on the budget. The card's title is cut first and its board line leads the next line, so the citation survives the smallest budget.
+- **Overview.** With no argument: the number of cards per state, every card that is not Done with its owner, and the newest dated checkpoints.
+- **No stale copy.** The command reads the four files on every run and writes nothing.
+- **Terminal safety.** Control, format and bidi characters in the docs reach the terminal escaped, in the text output and in `--json`.
+- **On this repository.** The command finds as many cards as the board has data rows and as many handoff sections as the file has `## ` headings outside code fences, and a briefing with the default budget is under 8 KB.
+- **Not in the package.** The script is under `scripts/`, uses Node built-ins and `src/text.mjs` only, and is not in the published file list.
+
+### Results (2026-11-27)
+
+`node --test tests/project-context.test.mjs`: 23 of 23 pass. On this repository's docs (82 cards; 1,061 KB in the four files on this branch, of which the eval log is 881 KB):
+
+| Run | Output | Against reading the four files |
+| --- | --- | --- |
+| No argument: what is open | 2.8 KB | about 380 times smaller |
+| `K1`, default budget | 2.0 KB | about 530 times smaller |
+| `P4d`, default budget | 2.3 KB | about 460 times smaller |
+| `--json`, the whole graph | 281 KB | cards, sections and links; no section text |
+
+Each run takes well under a second and reads the files again. The numbers are sizes only: whether a session does its work as well from the briefing as from the files was not measured.
+
+Local suites: `node scripts/check.mjs` no findings; `npm run -s test:graph` and `node --test tests/*.test.mjs` pass, except that `tests/paging.test.mjs` and `tests/sign.test.mjs` hit the 300 s file limit, in the full run and again alone, while a dozen other sessions used the machine (no test in them failed; K1 touches neither file nor the code they test, and CI runs both); the Python runtime checks pass (440 tests, 102 skipped). Playwright was not run locally: K1 changes no browser or server code, and CI runs it.
+
+**Codex review, round 1** (read-only): one high, four medium, four low. Fixed, each with a test under "Codex review, round 1":
+
+- High: a range such as `H9007199254740992–H9007199254740992` never ended, because adding one no longer changes a number of that size. Ranges now need safe integers at most 30 apart.
+- Medium: a briefing could be longer than its budget (code points cut, UTF-16 units charged; a floor of 40 characters per forced line; escaping after the count). Sizes are now those of the escaped text and forced lines are dropped and counted when there is no room.
+- Medium: fixed caps (40 sections, 12 cards, 24 files, 8 notes) dropped items while the last line said nothing was left out, and the omission line was not last. This repeats the G9b finding in this file. No `scripts/check.mjs` pattern can tell a cap from any other `slice`, so the fix is in the API: every list item goes through `Briefing.add`, `group` or `cap`, which count what they do not print, and the omission line is the last line.
+- Medium: a three-backtick line closed a four-backtick code block, so a heading inside the block became a section. A block now closes only on its own mark, at least as long, with nothing after it.
+- Medium: the cards named in the heading of a section about the card were not listed with it. They are now.
+- Low: a first cell that is only an ID; ranges that run downwards; an ID after a letter of another script; a PR number that names a card with no ID; `--root --json` and a budget of 400 digits. All fixed.
+- Declined, on purpose: rows without outer pipes are not read (every board row has them, and looser matching would read prose as rows); files and related cards are not taken from sections that only mention the card (a note that mentions six cards names the files of all six). Those sections are still cited under "Mentioned in".
+
+**Codex review, round 2:** no high; one medium and three low, fixed, each with a test under "Codex review, round 2": a 300-character title used the whole of a 200-token budget and pushed out the card's line number (the title is now cut to 120 and the citation leads its line; a question is cut to 160); the advice to raise the budget was given for the 12-card cap, which no budget lifts; `e` + U+0301 + `P1` linked card P1 (combining marks now count as part of a word); "2 section about its".
+
+**Codex review, round 3** (the round 2 fixes only): no high or medium, so the review stops here. It ran 8,060 briefings in memory; every one stayed within four characters per token of its budget and the longest last line was 156 characters.
 
 ## D4 — Website build demo: hand-off with and without the ledger (defined 2026-11-22, before the code and the run)
 

@@ -33,8 +33,12 @@ function renderRows(container, entries, createRow) {
   container.replaceChildren(fragment);
 }
 
-async function request(path, options) {
-  const response = await fetch(path, options);
+// P1f: every API request carries the sign-in session from session.js; a 401 means the
+// ledger no longer knows it (a restart, or 12 hours), so it is forgotten.
+async function request(path, options = {}) {
+  const headers = ledgerSession.headers(options.headers);
+  const response = await fetch(path, { ...options, headers });
+  if (response.status === 401) await ledgerSession.forget(headers);
   const body = await response.json();
   if (!response.ok) throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), { status: response.status });
   return body;

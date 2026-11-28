@@ -56,6 +56,11 @@ test('the command lists features, and refuses an unknown one or a remote URL', a
   const remote = await run(process.execPath, [script, 'swarm', '--url', 'https://example.com']).then(() => null, error => error);
   assert.equal(remote?.code, 1);
   assert.match(remote.stderr, /--url must be a loopback ledger/u);
+  // P1f review: localhost may reach ::1, and the ledger issues browser sessions only for
+  // the 127.0.0.1 origin.
+  const named = await run(process.execPath, [script, 'swarm', '--url', 'http://localhost:4317']).then(() => null, error => error);
+  assert.equal(named?.code, 1);
+  assert.match(named.stderr, /--url must be a loopback ledger, such as http:\/\/127\.0\.0\.1:4317\./u);
 });
 
 test('the command starts its own ledger on loopback, signs in once, and cleans up', async () => {
@@ -63,10 +68,20 @@ test('the command starts its own ledger on loopback, signs in once, and cleans u
   try {
     assert.match(ledger.origin, /^http:\/\/127\.0\.0\.1:\d+$/u);
     assert.ok(ledger.link.startsWith(`${ledger.origin}/login?code=`));
+    // P1f: the link is the static sign-in page; its script trades the code once at
+    // POST /api/session, from the ledger's own origin, for a session secret.
     const page = await fetch(ledger.link, { redirect: 'manual' });
-    assert.equal(page.status, 303, 'the one-time link signs in');
-    const again = await fetch(ledger.link, { redirect: 'manual' });
-    assert.notEqual(again.status, 303, 'and works only once');
+    assert.equal(page.status, 200, 'the link opens the sign-in page');
+    const code = new URL(ledger.link).searchParams.get('code');
+    const redeem = () => fetch(new URL('/api/session', ledger.origin), {
+      method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/json', Origin: ledger.origin },
+      body: JSON.stringify({ code }),
+    });
+    const first = await redeem();
+    assert.equal(first.status, 200, 'the one-time code signs in');
+    assert.match((await first.json()).session, /^[A-Za-z0-9_-]{43}$/u);
+    assert.equal((await redeem()).status, 401, 'and works only once');
   } finally {
     await ledger.stop();
   }

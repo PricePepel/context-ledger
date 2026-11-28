@@ -27,6 +27,35 @@ Next owner:
 3. Copy-compute overlap (prefetch on a second CUDA stream) is untested.
 4. The Codex review is still owed: Codex was at its usage limit, so a Claude subagent reviewed instead (11 findings, fixed or recorded in the eval). One check needs the GPU: compare the resident loader's logits with `from_pretrained`.
 
+## Current checkpoint: K1 project context graph (2026-11-27)
+
+PR #109, branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
+
+- `node scripts/project-context.mjs`: cards per state, every card that is not Done, the newest dated notes here.
+- `node scripts/project-context.mjs <card ID>`: the card, the sections whose heading names it (newest first, with their first words), the files those sections name, the other cards named with it, and the sections that only mention it.
+- `node scripts/project-context.mjs <words>`: cards and sections that contain the words. `--budget <tokens>` (default 1500), `--json` for the whole graph, `--root <folder>`.
+- It finds a card by its ID in a `## ` heading, by `Cycle N`, by a range such as H1–H5, by the card's PR number, or by the file name in the per-card layout (`docs/evals/p4d.md`), which it reads beside the single files in case H12 splits them. **Write the card ID and a YYYY-MM-DD date in the heading of every new section here and in the eval log**, or the map will list the section only under "Mentioned in".
+- It is a map of where to read. It has no model in it, so a decision written in prose under a heading that names no card is found only by a word search.
+
+What it showed on its first run: the board row of P4d still says In progress though PR #69 is merged, and the row of S1 says "Review", which is not one of the five states.
+
+Next: K2 on the board (serve this graph through the ledger's own `context_for`). Eval and both Codex rounds: `docs/evals.md`, "K1".
+
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
+
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §18).
+
+- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
+- `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
+- The CLI, the MCP adapter and the link format are unchanged.
+- Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
+- 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
+- **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
+## Current checkpoint: R2 relay refreshed and reviewed (2026-11-28)
+
+PR #91 (`ruslan/r2-relay`) is stacked on #90 and goes after it; it has R1 and main merged and two rounds of Codex review fixed (in [evals](evals.md) under R2, "Refresh with main and R1"). The relay now keeps counting a deleted parcel's bytes until its downloads end and cuts a download after 3 minutes; the client refuses compressed answers. `scripts/check.mjs` exempts `relay serve`'s one `--host` listen. It adds a listener beyond loopback and encryption, so Ruslan reviews and merges it himself, after #90.
+
 ## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
 
 PR #90 (`ruslan/r1-parcels`) has main merged, six rounds of Codex review fixed (in [evals](evals.md) under R1, "Refresh with main"), and green suites. It goes before #91 (R2), which is stacked on it. Changed behaviour: `share` scans the whole session together with the graph's own text, a line-cited parcel carries and stores `l:<line>` keys, and publishing a graph holds the write lock. Two mediums are accepted and written down there. It adds an export path, so Ruslan reviews and merges it himself.
@@ -38,6 +67,10 @@ Next owner: R3 (sync), and several keys per turn if the accepted placeholder cas
 Branch `ruslan/h12-prose-diet`. Where `scripts/check.mjs` enforces a rule, the repository no longer says it a second time. Five tests that scanned a card's own files for raw control or format characters are gone (the check reads every tracked file), and `tests/check.test.mjs` shows it covers the SVG, CSS and test files they read. AGENTS.md section 6 names the check and its rules once and says to add a rule to it instead of restating one; `tests/agents-rules.test.mjs` keeps that text. History in `docs/evals.md` and the dated entries here are unchanged.
 
 Next owner: when a card adds a check rule, delete any test or doc line that restated it in the same PR. Splitting `docs/evals.md` and this file into one file per card was discussed and is not part of H12; it would touch every open PR, so it needs its own card once the open PRs have merged. If it happens, keep what card K1's parser reads: each file named by its card ID or with the ID in a `#` or `##` heading, dates as YYYY-MM-DD in the heading, and `docs/delivery-board.md` as the one table.
+
+## Current checkpoint: P4e copy-search fixes after #69 (2026-11-27)
+
+#69 (P4d, redacted signed hand-off) was merged at 445e9e4 before its last review fixes reached it. Branch `ruslan/p4d-copy-budget` carries them: copies of long values are confirmed whole, `main`'s bounded entries are kept so nothing it removed is kept, and four session budgets refuse a session rather than sign it half-checked (ADR-9a in architecture section 16; evals under P4e). Codex rounds 4 and 5 ran; three availability findings stay open (the budgets can refuse a session `main` signs; nothing is signed half-checked), and Ruslan accepted them on 2026-11-28 and approved the merge. Next owner: if a real session is refused, harden the budgets (a compact trie, shared confirmation work, a finding cap inside the P4b scanner); evals under P4e list the inputs.
 
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 
@@ -96,13 +129,21 @@ Next owner: H15. The Node suite on #100 failed because the server's Windows toke
 
 Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
 
+## Current checkpoint — R2 relay: send a parcel between two machines (2026-11-23)
+
+- **What changed.** `ledger relay serve [--host] [--port]` runs a mailbox for sealed parcels (`src/relay.mjs`). `ledger share <graph-id> --relay <url>` seals R1's parcel and prints a code; `ledger receive --from <code>` fetches, opens and stores it, then deletes the relay's copy (`src/relay-client.mjs`, `src/cli.mjs`).
+- **The ledger server is unchanged.** It still binds to loopback. The relay is the one program here that may listen on another address, only with `--host`. It imports only Node built-ins and opens no database; `tests/relay.test.mjs` checks that.
+- **Decisions** are ADR-20 in `docs/architecture.md` §17. User docs are the relay section of `docs/parcels.md`. Stacked on R1's branch.
+- **Needs a human security review** before merge: a listener beyond loopback, and encryption (HKDF-SHA-256, AES-256-GCM from `node:crypto`).
+- **Next.** R3: sync room choices and review events since a cursor through the same relay. Later cards: sign parcels with the P4a key, relay access control, a Docker image for the relay.
+
 ## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
 
 - **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
 - **Schema version 8** adds `session_excerpts`. A row marks a session that holds only received lines; its summaries say `excerpts: true`, and the library and the hand-off label it. Importing the full transcript later replaces the excerpts and keeps their keys.
 - **Decisions** are ADR-19 in `docs/architecture.md` §17. User docs are `docs/parcels.md`. Tests are `tests/parcel.test.mjs` and `tests/e2e/parcel.spec.mjs`.
 - **Needs a human security review** before merge: it adds an export path and a schema step.
-- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a one-time code). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
+- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a code that opens the parcel). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
 
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 
@@ -793,7 +834,7 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
 
 - Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
-- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in session (a header since P1f) and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
 - **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
 
 ## Current checkpoint — P5d clean-install eval (2026-11-21)

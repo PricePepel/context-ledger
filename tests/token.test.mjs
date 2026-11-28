@@ -142,12 +142,20 @@ const bearer = token => ({ Authorization: `Bearer ${token}` });
 const cli = (args, env) => execute(process.execPath, ['src/cli.mjs', ...args], { env: { ...process.env, ...env } })
   .then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }), error => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }));
 
-async function signInCookie(server) {
+// P1f: the sign-in page posts its one-time code to /api/session from the ledger's own
+// origin and keeps the session secret it gets back; it sends it as a header.
+const codeOf = path => path.slice('/login?code='.length);
+const redeem = (server, code, headers = {}) => raw(server.port, { method: 'POST', path: '/api/session', body: JSON.stringify({ code }),
+  headers: { 'Content-Type': 'application/json', Origin: server.origin, ...headers } });
+const sessionHeaders = session => ({ 'X-Context-Ledger-Session': session });
+const oldCookieCleared = port => [`context_ledger_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`];
+
+async function signInSession(server) {
   const minted = await raw(server.port, { method: 'POST', path: '/api/login', headers: bearer(server.token) });
   assert.equal(minted.status, 200);
-  const signedIn = await raw(server.port, { path: minted.body.path });
-  assert.equal(signedIn.status, 303);
-  return signedIn.headers['set-cookie'][0].split(';')[0];
+  const signedIn = await redeem(server, codeOf(minted.body.path));
+  assert.equal(signedIn.status, 200);
+  return signedIn.body.session;
 }
 
 test('each start writes a fresh 32-byte token next to the database, owner-only, and never prints it', async t => {
@@ -211,12 +219,14 @@ test('a server that cannot write its token file stops with a fixed sentence that
   assert.equal(output.includes('listening'), false);
 });
 
-test('every guarded request needs the exact token or a live session cookie', async t => {
+test('every guarded request needs the exact token or a live browser session in its header', async t => {
   const place = await temporary(t);
   const server = await place.start();
   const { port, token } = server;
   const get = headers => raw(port, { path: '/api/sessions', headers });
   assert.equal((await get(bearer(token))).status, 200);
+  const live = await signInSession(server);
+  assert.equal((await get(sessionHeaders(live))).status, 200);
   const wrong = [
     {},
     { Authorization: token },
@@ -230,6 +240,14 @@ test('every guarded request needs the exact token or a live session cookie', asy
     { Cookie: `context_ledger_${port}=${token}` },
     { Cookie: `token=${token}` },
     { Cookie: `context_ledger_${port}=${'A'.repeat(43)}` },
+    // P1f: cookies are not read at all, so a live session sent as one is nothing.
+    { Cookie: `context_ledger_${port}=${live}` },
+    { Authorization: `Bearer ${live}` },
+    sessionHeaders(token),
+    sessionHeaders('A'.repeat(43)),
+    sessionHeaders(`${live}x`),
+    sessionHeaders(live.slice(0, -1)),
+    { 'X-Context-Ledger-Sessions': live },
   ];
   for (const headers of wrong) {
     const response = await get(headers);
@@ -247,7 +265,7 @@ test('every guarded request needs the exact token or a live session cookie', asy
   assert.deepEqual({ status: foreign.status, body: foreign.body }, { status: 403, body: { error: 'Import requires the same origin.' } });
 });
 
-test('the browser signs in once with a short-lived code and then uses an HttpOnly, SameSite=Strict cookie', async t => {
+test('the browser signs in once with a short-lived code and then sends its session in a header, never a cookie', async t => {
   const place = await temporary(t);
   const server = await place.start();
   const { port, origin, token } = server;
@@ -256,8 +274,15 @@ test('the browser signs in once with a short-lived code and then uses an HttpOnl
   const startLink = server.output().match(/Sign in to the browser app \(one use, within 60 seconds\): (http:\/\/127\.0\.0\.1:\d+(\/login\?code=[A-Za-z0-9_-]{43}))\n/u);
   assert.ok(startLink, server.output());
   assert.equal(startLink[1].includes(token), false);
-  const atStart = await raw(port, { path: startLink[2] });
-  assert.equal(atStart.status, 303);
+  // GET /login is the static sign-in page: it uses up nothing and sets nothing.
+  const page = await raw(port, { path: startLink[2] });
+  assert.equal(page.status, 200);
+  assert.match(page.headers['content-type'], /^text\/html; charset=utf-8$/u);
+  assert.equal(page.headers['set-cookie'], undefined);
+  // Its own subresource requests send no Referer that could carry the code.
+  assert.equal(page.headers['referrer-policy'], 'no-referrer');
+  assert.equal(page.body.includes(codeOf(startLink[2])), false, 'the page does not echo the code');
+  assert.equal((await redeem(server, codeOf(startLink[2]))).status, 200, 'the start-up code still works after the page load');
 
   // `npm run ledger -- login` prints a new one.
   const printed = await cli(['login'], { PORT: String(port), CONTEXT_LEDGER_DB: place.database });
@@ -267,42 +292,71 @@ test('the browser signs in once with a short-lived code and then uses an HttpOnl
   assert.equal(link[1], origin);
   assert.notEqual(link[3], token);
 
-  const signedIn = await raw(port, { path: link[2] });
-  assert.equal(signedIn.status, 303);
-  assert.equal(signedIn.headers.location, '/');
-  const [cookie] = signedIn.headers['set-cookie'];
-  assert.match(cookie, new RegExp(`^context_ledger_${port}=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200$`, 'u'));
-  const session = cookie.split(';')[0];
-  assert.equal(session.includes(token), false, 'the cookie is not the token');
+  const signedIn = await redeem(server, link[3]);
+  assert.equal(signedIn.status, 200);
+  assert.deepEqual(Object.keys(signedIn.body), ['session', 'expiresInSeconds']);
+  assert.equal(signedIn.body.expiresInSeconds, 43200);
+  const { session } = signedIn.body;
+  assert.match(session, secret);
+  assert.notEqual(session, token, 'the session is not the token');
+  // No cookie is set; a P1e cookie of this port, if the browser still has one, is removed.
+  assert.deepEqual(signedIn.headers['set-cookie'], oldCookieCleared(port));
   assert.equal(signedIn.headers['cache-control'], 'no-store');
   assert.equal(signedIn.headers['referrer-policy'], 'no-referrer');
 
-  // The cookie reads and, with the same Origin, writes; the decisions route takes it.
-  assert.equal((await raw(port, { path: '/api/sessions', headers: { Cookie: `other=1; ${session}` } })).status, 200);
-  const imported = await raw(port, { method: 'POST', path: '/api/import', headers: { Cookie: session, 'Content-Type': 'application/json', Origin: origin },
+  // The header reads and, with the same Origin, writes; sent as a cookie it is nothing.
+  const browser = sessionHeaders(session);
+  assert.equal((await raw(port, { path: '/api/sessions', headers: browser })).status, 200);
+  assert.equal((await raw(port, { path: '/api/sessions', headers: { Cookie: `context_ledger_${port}=${session}` } })).status, 401);
+  const imported = await raw(port, { method: 'POST', path: '/api/import', headers: { ...browser, 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source: 'vela.jsonl', transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: 'Plan the synthetic Vela review.' } }) }) });
   assert.equal(imported.status, 200);
-  const foreignWrite = await raw(port, { method: 'POST', path: '/api/import', body: '{}', headers: { Cookie: session, 'Content-Type': 'application/json', Origin: 'https://foreign.example' } });
+  const foreignWrite = await raw(port, { method: 'POST', path: '/api/import', body: '{}', headers: { ...browser, 'Content-Type': 'application/json', Origin: 'https://foreign.example' } });
   assert.equal(foreignWrite.status, 403);
 
-  // A code works once; an unknown, malformed, repeated or missing code gives no cookie.
+  // A code works once; a used, unknown or malformed code, or the token, gives no session.
   const linkFailure = { error: 'This sign-in link was already used, has expired or is not valid. Run npm run ledger -- login for a new one.' };
-  const fresh = async () => (await raw(port, { method: 'POST', path: '/api/login', headers: bearer(token) })).body.path.slice('/login?code='.length);
-  const [first, second] = [await fresh(), await fresh()];
-  for (const path of [link[2], startLink[2], `/login?code=${'A'.repeat(43)}`, '/login?code=short', '/login', `/login?code=${token}`,
-    `/login?code=${first}&code=${second}`]) {
-    const again = await raw(port, { path });
-    assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, path);
-    assert.equal(again.headers['set-cookie'], undefined, path);
+  const fresh = async () => codeOf((await raw(port, { method: 'POST', path: '/api/login', headers: bearer(token) })).body.path);
+  for (const code of [link[3], codeOf(startLink[2]), 'A'.repeat(43), 'short', token, '', 42]) {
+    const again = await redeem(server, code);
+    assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, String(code));
+    assert.equal(again.headers['set-cookie'], undefined, String(code));
   }
-  // Two codes in one link are refused without using up either.
-  for (const code of [first, second]) assert.equal((await raw(port, { path: `/login?code=${code}` })).status, 303);
+  // A body that is not one code string redeems nothing and uses up nothing.
+  const [first, second] = [await fresh(), await fresh()];
+  for (const body of [{}, { code: first, extra: 1 }, [first], { code: [first] }, null, first, { code: first, code2: second }]) {
+    const again = await raw(port, { method: 'POST', path: '/api/session', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', Origin: origin } });
+    assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, JSON.stringify(body));
+  }
+  // Repeated or escaped keys, which JSON.parse would fold into one valid code, are refused
+  // too, as is any spelling other than the page's own JSON.stringify({ code }).
+  for (const text of [`{"code":"${second}","code":"${first}"}`, `{"code":"x","code":"${first}"}`, `{"\\u0063ode":"${first}"}`,
+    `{ "code": "${first}" }`, `{"code":"${first}"}\n`, `${String.fromCodePoint(0xFEFF)}{"code":"${first}"}`, `{"code":"${first.slice(0, 5)}\\u00${first.charCodeAt(5).toString(16)}${first.slice(6)}"}`]) {
+    const again = await raw(port, { method: 'POST', path: '/api/session', body: text, headers: { 'Content-Type': 'application/json', Origin: origin } });
+    assert.deepEqual({ status: again.status, body: again.body }, { status: 401, body: linkFailure }, text);
+  }
+  assert.equal((await raw(port, { method: 'POST', path: '/api/session', body: '{"code":', headers: { 'Content-Type': 'application/json', Origin: origin } })).status, 400);
+  // From another origin, or with no Origin at all, a code is refused and not used up.
+  for (const headers of [{ Origin: 'http://127.0.0.1:1' }, { Origin: 'null' }, {}]) {
+    const foreign = await raw(port, { method: 'POST', path: '/api/session', body: JSON.stringify({ code: first }), headers: { 'Content-Type': 'application/json', ...headers } });
+    assert.deepEqual({ status: foreign.status, body: foreign.body }, { status: 403, body: { error: 'Signing in requires the same origin.' } }, JSON.stringify(headers));
+  }
+  assert.equal((await raw(port, { method: 'POST', path: '/api/session', body: `{"code":"${first}"}`, headers: { 'Content-Type': 'text/plain', Origin: origin } })).status, 415);
+  // Over 1 KiB is refused whether the length is declared or the body is streamed in chunks.
+  const big = JSON.stringify({ code: 'A'.repeat(2048) });
+  for (const headers of [{ 'Content-Length': String(Buffer.byteLength(big)) }, { 'Transfer-Encoding': 'chunked' }]) {
+    const tooBig = await raw(port, { method: 'POST', path: '/api/session', body: big, headers: { 'Content-Type': 'application/json', Origin: origin, ...headers } });
+    assert.deepEqual({ status: tooBig.status, body: tooBig.body }, { status: 413, body: { error: 'Signing in exceeds the 1 KiB request limit.' } }, JSON.stringify(headers));
+  }
+  for (const code of [first, second]) assert.equal((await redeem(server, code)).status, 200, 'refused attempts used up nothing');
+  // Only POST is open: GET /api/session is a guarded route like any other.
+  assert.deepEqual((await raw(port, { path: '/api/session' })).body, signIn);
 
-  // A cookie alone can confirm a room proposal only as a same-origin browser request.
-  const party = async (name, text) => (await raw(port, { method: 'POST', path: '/api/import', headers: { Cookie: session, 'Content-Type': 'application/json', Origin: origin },
+  // A session alone can confirm a room proposal only as a same-origin browser request.
+  const party = async (name, text) => (await raw(port, { method: 'POST', path: '/api/import', headers: { ...browser, 'Content-Type': 'application/json', Origin: origin },
     body: JSON.stringify({ provider: 'claude', source: `${name}.jsonl`, transcript: JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) }) })).body.session;
   const post = (path, data, headers = {}) => raw(port, { method: 'POST', path, body: JSON.stringify(data),
-    headers: { Cookie: session, 'Content-Type': 'application/json', Origin: origin, ...headers } });
+    headers: { ...browser, 'Content-Type': 'application/json', Origin: origin, ...headers } });
   const leo = await party('leo', 'Leo plans the synthetic Vela launch.');
   const ali = await party('ali', 'Ali reviews the synthetic Vela launch.');
   const packet = (session, name, extra = {}) => ({ version: 2, sessionId: session.id, party: name, nodes: [{ id: 'goal', kind: 'goal', label: 'Vela launch', evidenceLines: [1] }], edges: [], ...extra });
@@ -314,13 +368,13 @@ test('the browser signs in once with a short-lived code and then uses an HttpOnl
   const decided = await post(`/api/rooms/${room.id}/decisions`, choice, { 'Sec-Fetch-Site': 'same-origin' });
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
   assert.equal(decided.body.room.proposals[0].choices.leo, 'confirm');
-  const noCookie = await raw(port, { method: 'POST', path: `/api/rooms/${room.id}/decisions`, body: JSON.stringify(choice),
+  const noSession = await raw(port, { method: 'POST', path: `/api/rooms/${room.id}/decisions`, body: JSON.stringify(choice),
     headers: { 'Content-Type': 'application/json', Origin: origin, 'Sec-Fetch-Site': 'same-origin' } });
-  assert.equal(noCookie.status, 401);
+  assert.equal(noSession.status, 401);
 
-  // Codes are minted with the token only: not with a cookie, not without anything.
-  const withCookie = await raw(port, { method: 'POST', path: '/api/login', headers: { Cookie: session } });
-  assert.deepEqual({ status: withCookie.status, body: withCookie.body },
+  // Codes are minted with the token only: not with a session, not without anything.
+  const withSession = await raw(port, { method: 'POST', path: '/api/login', headers: browser });
+  assert.deepEqual({ status: withSession.status, body: withSession.body },
     { status: 403, body: { error: 'Sign-in links are made with the access token: run npm run ledger -- login.' } });
   assert.equal((await raw(port, { method: 'POST', path: '/api/login' })).status, 401);
   const minted = await raw(port, { method: 'POST', path: '/api/login', headers: bearer(token) });
@@ -332,15 +386,54 @@ test('the browser signs in once with a short-lived code and then uses an HttpOnl
   // A restart forgets every session and code.
   await server.stop();
   const restarted = await place.start();
-  const stale = await raw(restarted.port, { path: '/api/sessions', headers: { Cookie: session.replace(`_${port}=`, `_${restarted.port}=`) } });
+  const stale = await raw(restarted.port, { path: '/api/sessions', headers: browser });
   assert.equal(stale.status, 401);
   assert.equal(server.output().includes(token), false);
+  assert.equal(server.output().includes(session), false);
+});
+
+// P1f Codex review: localhost may reach ::1, where another program can listen on the same
+// port and serve pages of the origin http://localhost:<port>, which could read a session
+// stored there. A session is issued and honoured for http://127.0.0.1:<port> only.
+test('under the name localhost no browser session is issued or honoured; the bearer token still works', async t => {
+  const place = await temporary(t);
+  const server = await place.start();
+  const { port, token } = server;
+  const local = `localhost:${port}`;
+  const minted = await raw(port, { method: 'POST', path: '/api/login', headers: bearer(token) });
+  const code = codeOf(minted.body.path);
+  const refused = await redeem(server, code, { Host: local, Origin: `http://${local}` });
+  assert.deepEqual({ status: refused.status, body: refused.body }, { status: 403, body: { error: `Sign in at http://127.0.0.1:${port}, not localhost.` } });
+  assert.equal(refused.headers['set-cookie'], undefined);
+  // The refusal used nothing up: the code still signs in at 127.0.0.1.
+  const signedIn = await redeem(server, code);
+  assert.equal(signedIn.status, 200);
+  const browser = sessionHeaders(signedIn.body.session);
+  assert.equal((await raw(port, { path: '/api/sessions', headers: browser })).status, 200);
+  // The same live session sent to the localhost name reads nothing and writes nothing.
+  assert.equal((await raw(port, { path: '/api/sessions', headers: { ...browser, Host: local } })).status, 401);
+  const write = await raw(port, { method: 'POST', path: '/api/import', body: '{}',
+    headers: { ...browser, Host: local, 'Content-Type': 'application/json', Origin: `http://${local}` } });
+  assert.equal(write.status, 401);
+  // Nor does a bearer request carrying it count as a browser for the review route (P2c).
+  const review = await raw(port, { method: 'POST', path: `/api/graphs/${'a'.repeat(64)}/reviews`, body: '{}',
+    headers: { ...browser, ...bearer(token), Host: local, 'Content-Type': 'application/json', Origin: `http://${local}`, 'Sec-Fetch-Site': 'same-origin' } });
+  assert.deepEqual({ status: review.status, body: review.body }, { status: 403, body: { error: 'Nodes are reviewed by people in the browser, signed in.' } });
+  assert.equal((await raw(port, { path: '/api/sessions', headers: { ...bearer(token), Host: local } })).status, 200);
+  // GET /login is a static page on either name; under localhost its POST is what is refused.
+  assert.equal((await raw(port, { path: '/login', headers: { Host: local } })).status, 200);
+  // Round 2: only the POST that issues a session is refused; other methods answer as on
+  // 127.0.0.1 (no such route).
+  for (const name of [local, `127.0.0.1:${port}`]) {
+    const probe = await raw(port, { path: '/api/session', headers: { ...bearer(token), Host: name } });
+    assert.deepEqual({ status: probe.status, body: probe.body }, { status: 404, body: { error: 'Not found.' } }, name);
+  }
 });
 
 test('codes expire after 60 seconds and sessions after 12 hours; both are bounded in number', () => {
   let now = 1_000_000;
   const auth = createAuth({ token: 'T'.repeat(43), port: 4317, now: () => now });
-  const cookieOf = setCookie => ({ headers: { cookie: setCookie.split(';')[0] } });
+  const sessionOf = id => ({ headers: { 'x-context-ledger-session': id } });
   assert.equal(codeLifetimeMs, 60_000);
   assert.equal(sessionLifetimeMs, 12 * 3_600_000);
 
@@ -349,13 +442,15 @@ test('codes expire after 60 seconds and sessions after 12 hours; both are bounde
   assert.equal(auth.redeem(late), undefined, 'a code at its expiry is refused');
   const early = auth.mintCode();
   now += codeLifetimeMs - 1;
-  const setCookie = auth.redeem(early);
-  assert.ok(setCookie);
-  assert.equal(auth.allowed(cookieOf(setCookie)), true);
+  const id = auth.redeem(early);
+  assert.match(id, secret);
+  assert.equal(auth.allowed(sessionOf(id)), true);
+  assert.equal(auth.signedIn(sessionOf(id)), true);
+  assert.equal(auth.allowed({ headers: { cookie: `context_ledger_4317=${id}` } }), false, 'a cookie is not read');
   now += sessionLifetimeMs - 1;
-  assert.equal(auth.allowed(cookieOf(setCookie)), true);
+  assert.equal(auth.allowed(sessionOf(id)), true);
   now += 1;
-  assert.equal(auth.allowed(cookieOf(setCookie)), false, 'a session at its expiry is refused');
+  assert.equal(auth.allowed(sessionOf(id)), false, 'a session at its expiry is refused');
 
   // Only the newest 32 codes stay valid, and only the newest 64 sessions.
   const codes = Array.from({ length: 40 }, () => auth.mintCode());
@@ -363,13 +458,14 @@ test('codes expire after 60 seconds and sessions after 12 hours; both are bounde
   assert.ok(auth.redeem(codes[39]));
   const sessions = [];
   for (let index = 0; index < 70; index += 1) sessions.push(auth.redeem(auth.mintCode()));
-  assert.equal(auth.allowed(cookieOf(sessions[0])), false);
-  assert.equal(auth.allowed(cookieOf(sessions[69])), true);
+  assert.equal(auth.allowed(sessionOf(sessions[0])), false);
+  assert.equal(auth.allowed(sessionOf(sessions[69])), true);
 
   // The bearer check takes only the exact token.
   assert.equal(auth.bearer({ headers: { authorization: `Bearer ${'T'.repeat(43)}` } }), true);
   assert.equal(auth.allowed({ headers: { authorization: `Bearer ${'T'.repeat(42)}U` } }), false);
   assert.equal(auth.allowed({ headers: {} }), false);
+  assert.equal(auth.signedIn({ headers: { authorization: `Bearer ${'T'.repeat(43)}` } }), false, 'the token is not a browser session');
 });
 
 test('the CLI sends the token from the file named by CONTEXT_LEDGER_DB, and its errors name no token or path', async t => {
