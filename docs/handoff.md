@@ -10,7 +10,7 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 
 ## Current checkpoint: K1 project context graph (2026-11-27)
 
-Branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
+PR #109, branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
 
 - `node scripts/project-context.mjs`: cards per state, every card that is not Done, the newest dated notes here.
 - `node scripts/project-context.mjs <card ID>`: the card, the sections whose heading names it (newest first, with their first words), the files those sections name, the other cards named with it, and the sections that only mention it.

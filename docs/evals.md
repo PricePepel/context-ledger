@@ -6242,3 +6242,5 @@ Local suites: `node scripts/check.mjs` no findings; `npm run -s test:graph` and 
 - Declined, on purpose: rows without outer pipes are not read (every board row has them, and looser matching would read prose as rows); files and related cards are not taken from sections that only mention the card (a note that mentions six cards names the files of all six). Those sections are still cited under "Mentioned in".
 
 **Codex review, round 2:** no high; one medium and three low, fixed, each with a test under "Codex review, round 2": a 300-character title used the whole of a 200-token budget and pushed out the card's line number (the title is now cut to 120 and the citation leads its line; a question is cut to 160); the advice to raise the budget was given for the 12-card cap, which no budget lifts; `e` + U+0301 + `P1` linked card P1 (combining marks now count as part of a word); "2 section about its".
+
+**Codex review, round 3** (the round 2 fixes only): no high or medium, so the review stops here. It ran 8,060 briefings in memory; every one stayed within four characters per token of its budget and the longest last line was 156 characters.
