@@ -578,6 +578,8 @@ function storeOn(database) {
 
   const excerptsMismatch = 'This ledger holds excerpts received from another machine under this transcript\'s ID, '
     + 'and the file\'s lines do not match them. Nothing was changed.';
+  const keyClash = 'A graph received from another machine cites one line of this transcript by the key the file gives '
+    + 'another line, so the file was not imported. Nothing was changed.';
 
   /**
    * Card R1 (ADR-19): the full transcript of a session that so far held only excerpts
@@ -600,7 +602,11 @@ function storeOn(database) {
     const kept = old.filter(message => cited.has(message.key));
     const keyAt = new Map(kept.map(message => [message.line, message.key]));
     const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
-    if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
+    // A key a received graph cites can be the file's key of another line: a version 3
+    // parcel's keys are checked only against the lines it carries. The file is refused,
+    // with that reason, rather than the graph losing its citation (accepted in the Codex
+    // review of the refresh, round 4: it needs a forged parcel and changes nothing).
+    if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(keyClash);
     deleteRows.run(id);
     writeRows(id, merged);
     completeSession.run(provider, name, title, merged.length, legacyCopy(merged), searchText, id);
@@ -831,11 +837,12 @@ function storeOn(database) {
           const byKey = new Map(old.map(message => [message.key, message]));
           const byLineHere = new Map(old.map(message => [message.line, message]));
           const lines = new Set(old.map(message => message.line));
-          // One side may key a turn l:<line> (legacy, see legacyKey) and the other by its
-          // UUID or hash. A version 3 graph cites the key, so excerpts here whose legacy key
-          // no stored graph cites take the parcel's key. A version 1 or 2 graph cites only
-          // lines, so its keys are not evidence of anything: the turn on the same line is the
-          // same turn and the key already here is kept (Codex review of the refresh, round 3).
+          // Two sources may key one turn differently: one may be legacy (l:<line>, see
+          // legacyKey), and a line-cited parcel's keys are checked against nothing. A version
+          // 3 graph cites the key, so excerpts here whose key no stored graph cites take the
+          // parcel's key. A version 1 or 2 graph cites only lines, so its keys are not
+          // evidence: the turn on the same line is the same turn and the key already here is
+          // kept (Codex review of the refresh, rounds 3 and 4).
           const citesLines = graph.packet.version !== 3;
           let citedHere;
           const rekey = new Map();
@@ -843,7 +850,7 @@ function storeOn(database) {
           for (const message of incoming) {
             let have = byKey.get(message.key);
             const onLine = have ? undefined : byLineHere.get(message.line);
-            if (onLine && !citesLines && stored.excerpts && legacyKey(onLine.key) && !legacyKey(message.key)
+            if (onLine && !citesLines && stored.excerpts
               && !(citedHere ??= keysCitedByGraphs(session.id)).has(onLine.key)) {
               have = onLine;
               rekey.set(onLine.line, message.key);

@@ -1294,3 +1294,37 @@ test('R1 refresh review 3: a line-cited parcel cannot set a key, and the full tr
     nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }] }] });
   assert.equal(carry(a.store, c.store, v3.id).graph.id, v3.id);
 });
+
+// ---- Codex review of the 2026-11-27 refresh, round 4 ----
+
+test('R1 refresh review 4: a key from a line-cited parcel gives way to a version 3 parcel at once', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const forged = clone(parcel);
+  forged.session.messages[0].key = 'h:' + 'e'.repeat(32);
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(checkParcel(forged));
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { message: key(3) }] }] });
+  const result = carry(a.store, b.store, v3.id);
+  assert.equal(result.graph.id, v3.id);
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), [key(2), key(3)]);
+});
+
+test('R1 refresh review 4: a received graph that cites a line by another line\'s key refuses the file, with that reason', t => {
+  const a = vera(t);
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }] }] });
+  const { parcel } = parcelOf(a.store, v3.id);
+  // Line 2's turn under the key the file gives line 5: nothing in the parcel can show it.
+  const forged = clone(parcel);
+  forged.session.messages[0].key = key(5);
+  forged.graph.packet.nodes[0].evidence = [{ message: key(5) }];
+  forged.graph.id = packetId(forged.graph.packet);
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(checkParcel(forged));
+  const dump = b.dump();
+  assert.throws(() => b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) }),
+    error => error instanceof ConflictError && error.message === 'A graph received from another machine cites one line of this transcript by the key the file gives another line, so the file was not imported. Nothing was changed.');
+  assert.equal(b.dump(), dump);
+});
