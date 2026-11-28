@@ -4627,6 +4627,86 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
+
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 16. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+
+| Eval | Expected |
+| --- | --- |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. A value found once (six characters or more) is also replaced where it is pasted again without its name. There is no option to sign without redaction. |
+| Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
+| Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
+| Sender sees the count, not the values | `--sign` prints how many replacements it made on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
+| Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
+| Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
+| Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
+### P4d results (2026-11-22)
+
+- **All rows:** pass. `tests/sign.test.mjs` (the P4d tests at its end, and the P4a tests updated for the new version) and `tests/secrets.test.mjs` (the copy rule).
+- **Version number changed by the merge with P3b (2026-11-22).** P3b (#70) merged first and took manifest version 2 for the review chain head. P4d therefore writes version 3: P3b's `reviews` plus `redaction`. Where the rows above say version 2, read version 3. Where they say version 1, read versions 1 and 2: both are bundles from before P4d, verify with the not-redacted warning, and are tested. `tests/signed-review-head.test.mjs` now expects version 3 and the `Redaction:` line. A focused Codex check of the merge (of d21b7a0) found no high or medium issue; its three low doc findings are fixed: the OpenSSL checklist requires no `redaction` in versions 1 and 2, the `reviews verify` text no longer says it repeats `verify`'s warnings, and the `verifyBundle` comment names `reviews`.
+- **Codex review, round 1** (of de72f08):
+  - (high) A value found by its name (`password=…`) stayed in the signed hand-off where a later message pasted it bare: redaction cut matched spans, not values. Fixed in `redactSession`: a found value of six characters or more is also replaced everywhere else in the session (source name included), the longer of two values first. Tests: the signed fixture pastes its password into a later message, and scanner tests cover copies, quoted values, overlaps and the short-value limit.
+  - (medium) The session ID is the unkeyed SHA-256 of the original transcript, so a receiver who could rebuild every other byte could confirm a guess of a short redacted value. Not changed, since the session identity is outside this card. It is recorded as a residual in ADR-9a and `docs/signed-handoff.md`.
+  - (low) The sender's summary called transcript records and the source name "lines". It now says `in N transcript lines and the source name`.
+  - (low) The receiver docs said "whole, non-negative count" (the limit is 2^53 − 1) and did not mention placeholder values. The OpenSSL manual check did not give the exact `redaction` keys. All three corrected.
+  - (low) Test gaps, all filled:
+    - The test that version 1 lists exactly one file now runs on version 1 and version 2.
+    - The version 1 test signs a genuinely unredacted hand-off.
+    - A malformed record is now checked through the CLI as well (exit 1, nothing on stdout).
+    - A changed count under the old signature now fails the signature check.
+    - The sender output is checked for key prefixes as well as for pieces of the values.
+  - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
+- **Codex round 2** did not run: Codex hit its usage limit during the round. It is owed, against the head of the branch.
+- **Independent Claude review** (a separate code-reviewer agent, not shown the implementation notes), of the round 1 fix e04e948. No high finding:
+  - (medium) A value after a name was searched for only by its first word, so a passphrase pasted again kept its later words. Fixed: copies are searched for the first one to eight words, the whole tail and any later word that mixes letters and digits.
+  - (medium) The copy search cuts the same text inside longer words and in prose (`password: secret` hides every `secret`). Kept, since that errs toward hiding, and documented in ADR-9a and `docs/signed-handoff.md`.
+  - (medium) The copy search ran one `indexOf` per value per field: 20,000 values over 8 MiB took 39 s. Fixed with one pass per field that looks positions up by their first six characters: 0.8 s for that input. A test bounds 20,000 values over 4 MiB.
+  - (low) A quoted value with an escaped quote was cut short at the escape. Fixed: the quoted part is found with the scanner's own quote rules, and searched for as written and decoded.
+  - (low) A copy in another letter case, with an invisible character inside or in another Unicode normalization, is not found. Documented as a residual.
+  - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
+  - Each fix has a test in `tests/secrets.test.mjs`.
+- **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
+- **Codex review, round 2** (of 49f03f7):
+  - (high) A password and a token on one line merge into one finding, and the copy search took only the whole merged span, so a bare copy of either value survived. Fixed: every word in a finding that mixes letters and digits, and its first one to eight words, are searched for, whatever the finding's kind.
+  - (high, not a leak) A source name `password=<session ID>` is replaced in the source name, but the ID still shows as the session ID. The ID is public by design, so a value that equals it was never secret. Documented in `docs/signed-handoff.md`.
+  - (medium) Copies of a passphrase written with two spaces were missed, because the prefixes were joined with one space. So was a Bearer value with an escape after a quote that comes before `Bearer`. Fixed: prefixes are cut from the text as written, and every value is searched for with its escapes decoded too.
+  - (medium) Grouping values by their first six characters was quadratic for values that share them: 5 s at 8,000 values. Replaced with one Aho-Corasick pass over all values per field: 0.4 s at 20,000. A test bounds it. Memory grows with the number of matches; that is documented.
+  - (low, not changed) A literal `[REDACTED assigned-secret]` in the transcript, after `password=assigned-secret`, becomes a nested marker. The value is still removed.
+  - (low, not changed) A password that is a key format's public prefix (`password=sk-ant-`) still shows that prefix in a key's `redact` preview. The prefix is public text, the same for every key of that format.
+  - (low) The OpenSSL check said "a whole number of 0 or more". It now gives the upper bound. The docs now name agent authors and recipients as scanned.
+  - (low) Tests:
+    - Every malformed redaction record is now checked through the CLI as well.
+    - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
+- **Codex review, round 3** (of 5ecc8b0):
+  - (high) A key or Bearer value nested in a longer finding lost its own boundaries when candidates merged, so a copy of it glued to other text survived. Fixed: copies are searched for each accepted candidate before the merge, under the kind of the finding that holds it.
+  - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
+  - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
+  - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
+- **Codex review, round 4** (of c940dcc):
+  - (high) A JSON `"Bearer …"` value was searched for without its quote, because the quote stands before `Bearer`, not the value. An all-letter value with JSON after it was then never matched. Fixed: the scanner hands its quote to the copy search.
+  - (medium) Each candidate looked up its finding from the start of the message: 40,000 findings in one message took 3.8 s. Fixed with one walk over both lists, which are sorted by start.
+  - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
+  - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
+  - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
+- **Codex review, round 5** (of be3a2f2): no medium finding.
+  - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
+  - (low) The README still called the count a count of values. It now says replacements.
+  - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
+- **Codex review, round 6** (of 97d5b68): no medium finding.
+  - (high) A second named value on the same line (`password=a token=b`) was searched for only as part of a whole word, because the scanner reads one lead per line. Fixed: the value after every further name inside a finding is an entry of its own.
+  - (high) Decoded prefixes were each charged to the budget, so a long decoded passphrase lost its last words. Fixed: each text is decoded once, and its decoded words count as written ones do. Budgets are now 512 each for the span, the values inside it and the decoded forms.
+  - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
+  - (low) Two passages still said "values replaced". They now say replacements.
+  - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
+- **Codex review, round 7** (of 94fea13): no medium or low finding.
+  - (high) A quoted value after a further name in JSON (`"token":"violetorchid"`) ran on past its closing quote, and JSON has no spaces to end a word, so a bare copy survived. Fixed: such a value stops at its closing quote or at the next name, and values can also end just before a quote or separator.
+  - (high) Several names on one line each took the whole rest of the line, so their overlapping suffixes used up the budget before a later value was reached. Fixed: these values stop at the next name and never overlap. The span, the quoted part, these values, key-like words and decoded forms each have their own 512-character budget. Both cases are tested.
+- **Codex review, round 8** (of d75e427). These fixes are not reviewed again: every finding since round 2 has been in this best-effort copy layer, not in signing, verification or the manifest.
+  - (high) A long decoded span used the shared decoded budget, so a nested decoded value was never searched for. Fixed: each kind of entry has its own decoded budget.
+  - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
+  - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
@@ -6040,6 +6120,80 @@ Rounds 4 to 8 were fixed after the measured run. None of their findings applied 
 No human review was requested: the card does not touch security, export or signing.
 
 Suites after the last change (2026-11-27, on the final code with `origin/main` at a3f9a83 merged in): `node scripts/check.mjs` 324 files, no findings; `npm run -s test:graph` 9 pass; `node --test tests/*.test.mjs` 725 pass, 12 skipped; in `runtime/`, `python -m unittest discover -s tests -t .` 334 run, 66 skipped (torch and jinja2 checks), of which `tests.test_latent_compare` is 95, passing on Windows and in WSL; `npx playwright test` 70 pass, 1 skipped, 1 failed: `features.spec.mjs` "swarm-run" (card H11, code this card does not touch) failed in the full run and passed when that spec was run again on its own (9 of 9).
+
+## L1 — Serving levers measured (defined 2026-11-26, before the code)
+
+Card L1. `docs/latent-gpu-plan.md` ranks the levers for running 100 agents on one 16 GB RTX 4090 Laptop GPU, but every number in it is computed or estimated. This card measures them on the laptop (vLLM 0.33.0, WSL2 Ubuntu 24.04), with synthetic data only. The GPU is shared with other sessions through a lock folder, so each run is short and the server is stopped before the lock is released.
+
+### What is measured
+
+A driver, `evals/latent/serving-levers.mjs` (pure helpers in `serving-lib.mjs`), fires N agents at once at one vLLM server. Each agent sends the same system prompt and shared context (the swarm's incident instructions, `src/swarm-task.mjs`, plus an optional shared handbook of K tokens) followed by its own incident report, and asks for the swarm's JSON answer. It reports, per run: wall time until the last agent finishes, agents answered, correct and verified answers (the swarm's own checks), completion tokens per second (aggregate), prompt tokens per second, the prefix-cache hit rate (vLLM `prefix_cache_hits / queries`, delta over the run), peak KV-cache use (polled from `/metrics`), peak GPU memory (`nvidia-smi`, polled), and preemptions. From the server's startup log it reads weights memory, CUDA-graph memory, KV-cache tokens and the maximum concurrency vLLM states. The swarm in `src/swarm.mjs` is also run once at 100 agents (`SWARM_CONCURRENCY=100`) as a cross-check of the driver.
+
+### Rows
+
+1. Baseline, Qwen2.5-7B-Instruct-AWQ, 25, 50 and 100 agents.
+2. vLLM native KV offload (`--kv-offloading-backend native --kv-offloading-size`), same counts. If this version lacks it, the row says so.
+3. FP8 KV: whether Qwen2.5-7B AWQ can run it (calibrated or per-token-head scales), and otherwise the 14B AWQ, with memory and accuracy on the latent dev set (`perf.mjs`, 8 questions × 3).
+4. `--max-num-seqs` 32, 64 and 100 at 100 agents.
+5. Edge cases: more agents than the KV cache holds, a very long shared prefix, a cold start (first request after the server starts).
+
+### Acceptance
+
+- Unit tests (`node:test`) for the pure helpers: startup-log parsing, run summary and the server-argument builder. They run without a GPU.
+- Every row has measured numbers or a stated reason why it cannot be measured here; nothing is estimated and every figure is marked measured.
+- A lever is recommended for the default setup only if it helps its target metric (time to finish, KV capacity or peak GPU memory) without losing correct answers against the baseline in the same session.
+- The figures are for one laptop GPU, one 7B model and one synthetic task, and the doc says so.
+
+### Results — L1 (2026-11-26 and 27)
+
+All figures **measured** on the RTX 4090 Laptop (16 GB), vLLM 0.33.0 in WSL2, Qwen2.5-7B-Instruct-AWQ unless a row says 14B, `--gpu-memory-utilization 0.85`, prefix caching on, one synthetic task (the swarm's incident reports). Agent runs come from `evals/latent/serving-levers.mjs` (the runs were made with the version before the review fixes, which changed only the token averages, the hit-rate rule and timeouts); dev-set rows come from `perf.mjs`; startup figures come from vLLM's log and a wall clock. Every agent starts at the same moment; each run's prefix is salted so a run's hit rate is its own sharing, except the two-wave rows, which repeat their salt on purpose. "Plan-shaped" agents carry about 4,010 prompt tokens each (about 3.0K shared handbook plus 1.0K unique) and answer in at most 160 tokens.
+
+Startup log, baseline: weights 5.29 GiB, CUDA graphs 0.61 GiB (0.37 + 0.24), KV pool 7.32 GiB = 137,136 tokens (max concurrency 4.19× at 32,768 tokens), engine start 25 s. GPU memory reads 14,328–14,742 MiB (about 14.0–14.4 GiB) at every agent count because vLLM reserves its pool at start; the KV-use column is what moves.
+
+| Row | Agents | Wall s | Completion tok/s | Prefix-cache hits | Peak KV use | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 baseline, swarm task (~370 tokens) | 1 / 25 / 50 / 100 | 1.31 / 2.06 / 2.83 / 4.84 | 40 / 641 / 926 / 1085 | 0 / 79% / 82% / 82% | 0.3% / 2% / 4% / 8% | all |
+| 1 baseline, plan-shaped | 25 / 50 / 100 | 11.9 / 21.0 / 42.6 | 111 / 125 / 123 | 71% / 72% / 73% | 23% / 43% / 82% | all |
+| 1 swarm cross-check (`src/swarm.mjs`, concurrency 100) | 100 | 4.58 | — | 81% | 9% | 100/100 |
+| 2 native KV offload, 6 GiB, plan-shaped | 25 / 50 / 100 | 16.5 / 31.1 / 90.8 | 80 / 84 / 58 | 71% / 72% / 73% | 25% / 47% / 91% | all |
+| 2 offload, over capacity (100 × ~5.4K tokens), wave 1 then the same prompts again | 100 | 141.9 then 140.3 | 37 | 53.5% then 54.1% | 96% then 97% | 96/100 both |
+
+Row 2 findings: `--kv-offloading-backend native --kv-offloading-size N` exists in this vLLM. N is limited by `/dev/shm` (7.8 GiB free here: 8 GiB failed at start, 6 GiB worked). It cost KV capacity (pool 137,136 → 123,040 tokens), start time (about 4.5 minutes from process start to ready, against 45–125 s for the other starts) and speed (100 plan-shaped agents took 90.8 s against 42.6 s). Repeating the same 100 prompts after they no longer fit gained nothing (hit rate 54.1% against 53.5%), so on this machine offload did not help; the no-offload over-capacity run below confirms it.
+
+**Row 3, FP8 KV cache.** vLLM 0.33 lists `--kv-cache-dtype` types that compute their own scales per token and head (`fp8_per_token_head`, `int8_per_token_head`, `int4_per_token_head`) next to the plain `fp8`; its `--help` has no flag to calibrate scales, so calibrated scales for the 7B were **not produced** here. All FP8 runs use `--attention-backend TRITON_ATTN`. Dev set = `questions.json`, 8 questions × 3 rounds = 24 reads through `perf.mjs`; 14B runs use strict citations and max length 8192 (the cycle 11 B setup). "Both" = correct and cited.
+
+| Model, KV type | KV pool tokens | Dev set both / correct / cited (of 24) | Read s p50 | Swarm task, 100 agents |
+| --- | --- | --- | --- | --- |
+| 7B AWQ, auto | 137,136 | 18 / 21 / 21 | 5.6 | 100/100 correct |
+| 7B AWQ, `fp8_per_token_head` | 238,640 (1.74×) | 0 of 8 reads (1 round; every read refused, 0/8) | n/a | 0 of 100 usable answers (garbled JSON) |
+| 14B AWQ, auto | 17,104 | 21 / 21 / 24 | 18.0 | not run |
+| 14B AWQ, `fp8` | 34,112 (2.0×) | 22 / 22 / 24 | 14.9 | not run |
+| 14B AWQ, `fp8_per_token_head` | 20,480 (1.2×) | 18 / 20 / 22 | 14.4 | not run |
+
+Findings: the per-token-head scales do not rescue the 7B (it breaks on both the swarm task and the dev set), so the plan's "calibrated scales should fix that" stays untested and is not supported by this run. On the 14B the plain `fp8` doubled the KV pool and lost no answers (22 against 21 of 24; one round of 24 reads per setting, so one answer of difference says nothing about run-to-run variation); `fp8_per_token_head` gave only 1.2× because it stores a scale per token and head, and lost 3 of 24. For the 14B `perf.mjs` also reported "vLLM restarted during the run" for the per-token-head run, so its whole-run counters are not used.
+
+**Row 4, `--max-num-seqs`, 100 agents on the 7B** (same prompts; default is 256):
+
+| max-num-seqs | Swarm task wall s / tok/s | Plan-shaped wall s / tok/s | Plan-shaped peak KV use | KV pool tokens | GPU MiB peak | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| default (256) | 4.84 / 1085 | 42.6 / 123 | 82% | 137,136 | 14742 | 100/100 both |
+| 100 | 5.72 / 917 | 47.1 / 112 | 87% | 128,944 | 13966 | 100/100 both |
+| 64 | 6.22 / 844 | 46.1 / 114 | 57% | 130,544 | 13924 | 100/100 both |
+| 32 | 7.34 / 716 | 44.8 / 117 | 29% | 132,128 | 14028 | 100/100 both |
+
+Capping the number of sequences did not make anything faster on this card: every cap was slower than the default, and it freed about 0.7 GiB of GPU memory (smaller CUDA-graph set) but also shrank the KV pool by 4–6%. The plan's "start with `--max-num-seqs 32` and measure" is answered: do not start there for 100 short agents.
+
+**Row 5, edge cases (7B, default settings, no offload unless stated).**
+
+| Case | Result |
+| --- | --- |
+| More agents than the KV cache holds: 100 agents × about 5.4K tokens (544K prompt tokens in total, about 3K of them shared, against a 137K-token pool) | Nothing failed or was preempted: vLLM queued the extra work. 100/100 answered, 96/100 correct, all 100 verified, 104.4 s (second identical wave 104.7 s), peak KV use 85%, prefix-cache hit rate 53.5% then 54.1%. With 6 GiB offload the same two waves took 141.9 s and 140.3 s. |
+| Very long shared prefix: one 23.5K-token handbook for every agent | 1 agent: 11.5 s (prefill of the prefix, 2,034 prompt tokens/s). 25 agents: 16.3 s, hit rate 95.7%. 100 agents: 29.9 s, hit rate 98.7%, peak KV use 26%, 100/100 answered and verified but only 87/100 correct (accuracy fell with the long context; the short-context runs were 100/100). |
+| Cold start | Process start to answering `/v1/models`: about 45–125 s across the starts here, with the engine's own "init engine" line at 25 s (first start, warm compile cache), 42–88 s later; offload start about 4.5 minutes. The first request after the server was ready took 1.07 s against 0.98 s for the next, one pair, so it shows no large first-request penalty but does not rule out a small one. |
+
+Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
+
+Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
 
 ## L5 — Mappers for more model pairs (defined 2026-11-27, before any run)
 

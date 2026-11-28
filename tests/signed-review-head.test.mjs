@@ -65,12 +65,13 @@ test('P3b: signing records the review chain, and verify shows it', async t => {
   const context = await ledger(t);
   const bundle = await sign(context);
   const manifest = JSON.parse(readFileSync(join(bundle, 'manifest.json'), 'utf8'));
-  assert.equal(manifest.version, 2);
+  // Version 3 since card P4d, which adds the redaction record beside the review chain.
+  assert.equal(manifest.version, 3);
   assert.deepEqual(manifest.reviews, { events: 2, head: context.head });
 
   const verified = await run(['verify', bundle, '--fingerprint', context.fingerprint], context.env);
   assert.equal(verified.code, 0, verified.stderr);
-  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\n$`, 'u'));
+  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\nRedaction: 0 replacements, by context-ledger-secrets/1\\n$`, 'u'));
   const result = await verifyBundle(bundle, { fingerprint: context.fingerprint });
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.reviews, { events: 2, head: context.head });
@@ -154,7 +155,7 @@ test('P3b: a version 1 bundle still verifies, and says it records no review head
   assert.equal(JSON.parse(readFileSync(join(bundle, 'manifest.json'), 'utf8')).version, 1);
   const verified = await run(['verify', bundle, '--fingerprint', context.fingerprint], context.env);
   assert.equal(verified.code, 0, verified.stderr);
-  assert.match(verified.stdout, /\nReview chain at signing: not recorded \(a version 1 bundle\)\n$/u);
+  assert.match(verified.stdout, /\nReview chain at signing: not recorded \(a version 1 bundle\)\nRedaction: not recorded \(a version 1 bundle\)\n$/u);
   assert.equal((await verifyBundle(bundle)).reviews, null);
   const against = await run(['reviews', 'verify', '--bundle', bundle], context.env);
   assert.notEqual(against.code, 0);

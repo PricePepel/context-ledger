@@ -1,6 +1,9 @@
 // Signed hand-off bundles (card P4a, design ADR-9): raw Ed25519 over an RFC 8785
 // (JCS) manifest of file names, sizes and SHA-256 hashes. The key fingerprint is
 // SHA-256 of the public key's SubjectPublicKeyInfo DER bytes, checked out of band.
+// Version 2 (card P3b) adds `reviews`, the review chain's head; version 3 (card P4d) adds
+// `redaction`: the hand-off was redacted by the secret scanner before signing, and how
+// many replacements it made.
 import {
   createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify,
 } from 'node:crypto';
@@ -9,6 +12,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { scannerName } from './secrets.mjs';
 import { terminalLabel } from './text.mjs';
 
 export const bundleFormat = 'context-ledger-signed-handoff';
@@ -20,6 +24,9 @@ const envelopeFiles = [manifestFile, signatureFile, publicKeyFile];
 const manifestKeys = ['algorithm', 'created_at', 'files', 'format', 'public_key', 'session', 'version'];
 // Card P3b: version 2 adds reviews, the ledger's review chain when the bundle was signed.
 const manifestKeysV2 = [...manifestKeys, 'reviews'].sort();
+// Card P4d: version 3 adds redaction, what the secret scanner replaced before signing.
+const manifestKeysV3 = [...manifestKeysV2, 'redaction'].sort();
+const keysByVersion = new Map([[1, manifestKeys], [2, manifestKeysV2], [3, manifestKeysV3]]);
 const emptyChainHead = '0'.repeat(64);
 const fileNamePattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const createdAtPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -375,16 +382,24 @@ async function checkCurrentAccountOnly(path, ino, hooks) {
 
 // --- Signing --------------------------------------------------------------------
 
-/** Build the bundle in memory: file bytes by name, manifest bytes and signature. */
-export function buildBundle({ sessionId, markdown, privateKey, reviews, now = new Date() }) {
+/**
+ * Build the bundle in memory: file bytes by name, manifest bytes and signature. markdown
+ * must already be redacted when findings (how many replacements the scanner made in it)
+ * is given.
+ */
+export function buildBundle({ sessionId, markdown, findings, privateKey, reviews, now = new Date() }) {
   if (!/^[a-f0-9]{64}$/.test(sessionId)) throw new Error('Invalid session ID.');
   // Card P3b: with the review chain's count and head the manifest is version 2; without, version 1.
   if (reviews !== undefined && !isReviewHead(reviews)) throw new Error('Invalid review chain head.');
+  // Card P4d: with a redaction count as well it is version 3, which the CLI always writes.
+  if (findings !== undefined && (reviews === undefined || !Number.isSafeInteger(findings) || findings < 0)) {
+    throw new Error('Invalid redaction count.');
+  }
   const publicKey = createPublicKey(privateKey);
   const content = [{ name: handoffFile, data: Buffer.from(markdown, 'utf8') }];
   const manifest = {
     format: bundleFormat,
-    version: reviews === undefined ? 1 : 2,
+    version: findings !== undefined ? 3 : reviews === undefined ? 1 : 2,
     algorithm: 'Ed25519',
     created_at: now.toISOString(),
     session: sessionId,
@@ -392,6 +407,7 @@ export function buildBundle({ sessionId, markdown, privateKey, reviews, now = ne
     files: content.map(({ name, data }) => ({ name, bytes: data.length, sha256: sha256Hex(data) })),
   };
   if (reviews !== undefined) manifest.reviews = { events: reviews.events, head: reviews.head };
+  if (findings !== undefined) manifest.redaction = { scanner: scannerName, findings };
   const manifestBytes = Buffer.from(canonicalJson(manifest), 'utf8');
   const signature = sign(null, manifestBytes, privateKey);
   if (!verify(null, manifestBytes, publicKey, signature)) throw new Error('The new signature did not verify.');
@@ -485,15 +501,25 @@ function isReviewHead(reviews) {
 // Returns the manifest's public key, or undefined when the manifest is malformed.
 function checkManifest(manifest) {
   if (!isPlainObject(manifest)) return;
-  if (manifest.version === 1 ? !sameKeys(manifest, manifestKeys) : manifest.version !== 2 || !sameKeys(manifest, manifestKeysV2)) return;
-  if (manifest.version === 2 && !isReviewHead(manifest.reviews)) return;
+  // Version 1 (P4a) has neither record; version 2 (P3b) has the review chain; version 3
+  // (P4d) has the review chain and exactly one redaction record.
+  const keys = keysByVersion.get(manifest.version);
+  if (!keys || !sameKeys(manifest, keys)) return;
+  if (manifest.version >= 2 && !isReviewHead(manifest.reviews)) return;
+  if (manifest.version === 3) {
+    const { redaction } = manifest;
+    if (!isPlainObject(redaction) || !sameKeys(redaction, ['findings', 'scanner'])) return;
+    // Only this build's scanner is known; a later rule version is a later build's bundle.
+    if (redaction.scanner !== scannerName) return;
+    if (!Number.isSafeInteger(redaction.findings) || redaction.findings < 0) return;
+  }
   if (manifest.format !== bundleFormat || manifest.algorithm !== 'Ed25519') return;
   if (typeof manifest.session !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.session)) return;
   if (typeof manifest.created_at !== 'string' || !createdAtPattern.test(manifest.created_at)) return;
   const created = new Date(manifest.created_at);
   if (Number.isNaN(created.getTime()) || created.toISOString() !== manifest.created_at) return;
-  // Versions 1 and 2 have exactly one content file, handoff.md. A later version that adds
-  // files (P4b's redaction report, say) changes the version number.
+  // Versions 1 to 3 have exactly one content file, handoff.md. A later version that adds
+  // files changes the version number.
   if (!Array.isArray(manifest.files) || manifest.files.length !== 1) return;
   for (const entry of manifest.files) {
     if (!isPlainObject(entry) || !sameKeys(entry, ['bytes', 'name', 'sha256'])) return;
@@ -535,7 +561,9 @@ async function hashFile(path, opened, signedBytes) {
 }
 
 /**
- * Check a bundle folder. Returns { problems, files, fingerprint, createdAt, session };
+ * Check a bundle folder. Returns { problems, files, fingerprint, createdAt, session,
+ * version, reviews, redaction } (reviews is null for version 1, redaction for versions 1
+ * and 2);
  * the bundle is good only when problems is empty. Every problem is a fixed message,
  * plus an escaped file name where one is named. `hooks` (afterList, afterRead) exist
  * only so tests can change the folder at fixed points.
@@ -621,8 +649,9 @@ export async function verifyBundle(folder, { fingerprint } = {}, hooks = {}) {
   result.session = manifest.session;
   result.version = manifest.version;
   // Card P3b: the review chain when it was signed, or null for a version 1 bundle.
-  result.reviews = manifest.version === 2 ? { events: manifest.reviews.events, head: manifest.reviews.head } : null;
+  result.reviews = manifest.version >= 2 ? { events: manifest.reviews.events, head: manifest.reviews.head } : null;
   result.files = manifest.files.map(({ name, bytes }) => ({ name, bytes }));
+  result.redaction = manifest.version === 3 ? { ...manifest.redaction } : null;
   if (expected !== undefined && result.fingerprint.replace(/ /g, '') !== expected) {
     problems.push('The bundle was signed by a different key than the fingerprint names.');
   }
