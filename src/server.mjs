@@ -6,36 +6,12 @@ import { GraphInputError } from './graph.mjs';
 import { LatentError, latentFiles, latentRead, latentTeam, latentTransfer } from './latent.mjs';
 import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './scope.mjs';
 import { createSwarm } from './swarm.mjs';
+import { staticFiles, staticFileUrl } from './static-files.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
 import { codeLifetimeMs, createAuth, newToken, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { installedCommand, printWelcome, startLines } from './welcome.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
-const staticFiles = new Map([
-  ['/', ['index.html', 'text/html']],
-  ['/app.js', ['app.js', 'text/javascript']],
-  ['/styles.css', ['styles.css', 'text/css']],
-  // P1f: the browser's session secret lives in this origin's storage; session.js reads
-  // it for the pages, and the sign-in page turns a one-time code into one.
-  ['/session.js', ['session.js', 'text/javascript']],
-  ['/login', ['login.html', 'text/html']],
-  ['/login.js', ['login.js', 'text/javascript']],
-  // The console (card U1): a fixed list, so no other path under /console/ is served.
-  ['/console', ['console/index.html', 'text/html']],
-  ['/console/', ['console/index.html', 'text/html']],
-  ...['console.css', 'office.css'].map(name => [`/console/${name}`, [`console/${name}`, 'text/css']]),
-  ...['console.mjs', 'office.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
-    .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
-  ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
-  // The same session.js, so the console's files all stay under /console/ (P1f).
-  ['/console/session.js', ['session.js', 'text/javascript']],
-  // The swarm demo (card S1), also a fixed list.
-  ['/swarm', ['swarm/index.html', 'text/html']],
-  ['/swarm/', ['swarm/index.html', 'text/html']],
-  ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
-  ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
-  // The same session.js, so the swarm page signs its API calls like the library (P1f).
-  ['/swarm/session.js', ['session.js', 'text/javascript']],
-]);
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -199,8 +175,8 @@ const linkFailure = 'This sign-in link was already used, has expired or is not v
 const routes = [
   ...[...staticFiles].map(([path, [file, contentType]]) => ({
     method: 'GET', path, handler: async ({ response }) => {
-      const bytes = await readFile(new URL(`../public/${file}`, import.meta.url));
-      response.writeHead(200, { 'Content-Type': `${contentType}; charset=utf-8` });
+      const bytes = await readFile(staticFileUrl(file));
+      response.writeHead(200, { 'Content-Type': contentType.startsWith('font/') ? contentType : `${contentType}; charset=utf-8` });
       response.end(bytes);
       return sent;
     },
@@ -342,6 +318,7 @@ const routes = [
     return latentTeam(input, { latentUrl: latentUrl() });
   } },
   { method: 'GET', path: '/api/swarm', handler: () => swarm.config() },
+  { method: 'GET', path: '/api/swarm/task', handler: () => swarm.task() },
   { method: 'POST', path: '/api/swarm/runs', handler: async ({ request, origin }) => {
     const input = await readJson(request, origin, 'Starting a swarm run');
     return { run: swarm.start(input) };
@@ -379,7 +356,7 @@ function matchRoute(route, pathname) {
 
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
-  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');
 
@@ -429,7 +406,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '127.0.0.1', () => {
+server.listen({ port, host: '127.0.0.1' }, () => {
   const localPort = server.address().port;
   // The plain token lives only in this callback and in the file; auth keeps its digest.
   const token = newToken();
@@ -449,6 +426,17 @@ server.listen(port, '127.0.0.1', () => {
       process.exit(0);
     });
   }
-  console.log(`Context Ledger listening at http://127.0.0.1:${localPort}`);
-  console.log(`Sign in to the browser app (one use, within ${codeLifetimeMs / 1000} seconds): http://127.0.0.1:${localPort}${'/login?code=' + auth.mintCode()}`);
+  // Card U9: at a terminal these lines arrive inside the welcome; piped, they are the same
+  // two plain lines as before. The server is already listening when this runs. Card U11:
+  // a terminal also gets the steps to sign in, naming the login command of this install.
+  printWelcome({
+    title: 'local, on this machine',
+    lines: startLines({
+      port: localPort,
+      code: auth.mintCode(),
+      seconds: codeLifetimeMs / 1000,
+      installed: installedCommand(process.argv[1]),
+    }),
+    footer: 'Keep this window open while you or your agents use the ledger. Ctrl-C stops it.',
+  }).catch(() => { /* the terminal went away; the server keeps running */ });
 });

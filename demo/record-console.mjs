@@ -25,7 +25,8 @@ const startDeadlineMs = 15_000;
 /** The console's own files, the only requests a take may make; the demo needs no API. */
 export const consoleFiles = new Set(['/console/', '/console/console.css', '/console/office.css', '/console/console.mjs',
   '/console/office.mjs', '/console/model.mjs', '/console/source.mjs', '/console/brain.mjs', '/console/evidence.mjs',
-  '/console/demo-recording.json']);
+  '/console/office-furniture.mjs', '/console/sprites.mjs', '/console/agent-marks.mjs', '/console/ctm-band.mjs',
+  '/console/panels.mjs', '/console/review.mjs', '/console/swarm-room.mjs', '/console/swarm-agent.mjs', '/console/demo-recording.json']);
 
 export function allowedRequest(url, origin, method = 'GET') {
   const parsed = new URL(url);

@@ -19,7 +19,7 @@ import { bearer, ledgerToken } from './ledger-auth.mjs';
 const fixtureRoot = fileURLToPath(new URL('../evals/latent/fixture', import.meta.url));
 const securityHeaders = {
   'cache-control': 'no-store',
-  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
 };
@@ -135,7 +135,7 @@ test('the server request table answers every probe as before', async t => {
   };
 
   // Static files: GET only, exact paths only.
-  for (const [path, type, start] of [['/', 'text/html', '<!doctype html>'], ['/app.js', 'text/javascript', ''], ['/styles.css', 'text/css', '']]) {
+  for (const [path, type, start] of [['/', 'text/html', '<!doctype html>'], ['/app.js', 'text/javascript', ''], ['/styles.css', 'text/css', ''], ['/pixel.css', 'text/css', '']]) {
     const response = await expect(`GET ${path}`, state.get(path), 200);
     assert.equal(response.headers['content-type'], `${type}; charset=utf-8`);
     assert.ok(response.body.toLowerCase().startsWith(start), path);

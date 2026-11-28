@@ -136,3 +136,14 @@ test('a page on another local port receives no credential and cannot read the se
     other.close();
   }
 });
+
+test('the console swarm room asks the ledger with the browser session', async ({ page }) => {
+  // Merge of main into P1f: the swarm room (card U7) arrived after #65 and fetched without
+  // the session header, so a browser signed in only by P1f got a 401 and a simulated room.
+  const asked = page.waitForResponse(answer => new URL(answer.url()).pathname === '/api/swarm' && answer.request().method() === 'GET');
+  await page.goto('/console/');
+  const answer = await asked;
+  expect(answer.request().headers()['x-context-ledger-session']).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  expect(answer.status()).toBe(200);
+  await expect(page.locator('#swarm-status')).not.toContainText('Could not ask the ledger');
+});

@@ -3640,7 +3640,7 @@ Terms used below. A **party** is the `party` of a version 2 graph (the session I
 - **Read-only: pass.** The Playwright demo and live tests record every request: all are GET. The demo makes requests only under `/console/` (it never calls the API). A node test also refuses any POST, PUT, PATCH or DELETE in the console modules.
 - **Office: pass.** Two rooms (Claude Code, Codex), one character per party, labelled with the party and its state in text and shape (desk for working, "?" bubble for waiting, dimmed for idle). Live, only parties that published today. Node tests pin the states on the recording (Ali working right after her publish, then waiting on her question; at the end Leo waiting for Ali and Ali idle after Leo's answer by link) and the today filter. The office module was written by a subagent against a fixed interface.
 - **Ledger graph: pass,** with one change of scope written down here: live, the graph holds the parties that published today, the same as the office. Pops and flash lines happen only when `onGraph` applies a published graph. Node tests pin what moves on each recorded publish (new, changed, linked), that a changed recipient or changed cited lines count as a change, that superseded decisions are struck, and that questions answered inside their graph or by an equivalent link show as answered. G7 is not built, so every node has `data-mark="none"`; the e2e test checks all 11 demo nodes.
-- **Evidence in one click: pass.** One click, or Enter on a focused node (focus stays on the node; the panel announces through a status region), shows the cited turns with the turn before and after. The e2e test checks lines L26 to L29 for "The ledger stays on port 4317", with L27 and L28 highlighted. A live graph whose label holds `<img src=x onerror=…>` and whose transcript holds a right-to-left override renders as text: no `img` element, no script run, and the override shown as `‮`, with the same escape rule as `src/text.mjs` (a node test compares the two on 14 samples).
+- **Evidence in one click: pass.** One click, or Enter on a focused node (focus stays on the node; the panel announces through a status region), shows the cited turns with the turn before and after. The e2e test checks lines L26 to L29 for "The ledger stays on port 4317", with L27 and L28 highlighted. A live graph whose label holds `<img src=x onerror=…>` and whose transcript holds a right-to-left override renders as text: no `img` element, no script run, and the override shown as `\u202e`, with the same escape rule as `src/text.mjs` (a node test compares the two on 14 samples).
 - **Numbers: pass.** At the end of the demo: 6 hand-offs, ≈ 1,546 tokens saved (estimate), 1 superseded decision. A node test computes each from the recording independently, and checks that a graph from two days ago counts as neither a hand-off nor a saving today.
 - **Live updates: pass.** The e2e test publishes a graph while the page is open and sees it within 3.5 s. `tests/console-live.test.mjs` drives the poller against a fake ledger: the first read pages back to the start of today (250 graphs over 3 pages, plus 40 from yesterday, gives 3 list reads and 4 graph reads), a poll with nothing new is one list read, failed reads are retried, and a meter is read after its graph.
 - **Demo mode: pass.** `/console/?demo` plays 6 publishes over 34 s, with Replay. The recording is rebuilt by the real store and compared with the committed file (line ends aside).
@@ -3668,6 +3668,40 @@ Terms used below. A **party** is the `party` of a version 2 graph (the session I
   - (medium) The new flash assertion sampled the opacity once and could catch the fade-in. It now waits up to 2 s for an opacity above 0.5. The console spec then passed three runs in a row.
   - Accepted: an answer still closes a question reused with the same ID, words, recipient and cited lines from another transcript (that is the same question as far as the graph can tell). The pop kept after a meter reply and the proof following a transcript switch have no browser test.
 - **Suites (Windows):** `npm run -s test:graph` 9/9; node 214/215 (one skipped), was 191/192 on `main`; Python runtime 192 run, 50 skipped, OK; Playwright 17/17 (4 new).
+## G7 — Quoted or inferred nodes (defined 2026-11-17, before the code)
+
+When an agent publishes a graph, each node is marked **quoted** or **inferred**. Quoted means the transcript lines the node cites hold what its label claims, by the same floor the latent findings use (`isGrounded` in `src/latent.mjs`): every number and quoted literal in the label appears in the cited lines, at least one code name does when the label has any, and otherwise at least one content word does. Inferred means they do not, so a reader should open the cited lines before trusting the node. A label with nothing to compare (only short or common words) is inferred too: a node needs positive evidence to be quoted. It is a floor, not proof that a label is true.
+
+### What is tested (synthetic transcripts only)
+
+- **Publish:** a graph with a node whose label repeats its cited line ("Use port 4317", citing "the ledger stays on port 4317") and a node whose label adds a number the line does not hold ("Retry 5 times", citing "retry a few times") is stored with `quotedNodeIds` naming the first and `inferredNodeIds` naming the second, in the graph's canonical node order. Both v1 and v2 graphs are marked.
+- **Cited text:** only the cited lines count. A label whose facts are on another line of the same transcript is inferred.
+- **Graphs from before G7:** a stored graph without marks gets them when the same packet is published again; its ID and creation time do not change. A graph that is never republished stays unmarked, and every reader treats it as unmarked rather than as inferred.
+- **`context_for`:** an inferred node's line ends its citation with `, inferred`, and the briefing then says once what inferred means, in its last section so that the stable prefix does not move. A graph with only quoted nodes reads byte for byte as it did before G7.
+- **Browser:** the room view shows "quoted" or "inferred" next to each node's kind, as text, and nothing for an unmarked node. A Playwright check covers a room with one node of each.
+- **Read API:** `GET /api/graphs/:id` and `graph_read` return the two lists with the graph; the room API puts the mark on each node.
+
+### Acceptance
+
+- The four suites pass (`npm run -s test:graph`, `node --test tests/*.test.mjs`, `npx playwright test`, and the Python runtime checks).
+- No new runtime dependency and no schema version change.
+- Codex reviews the change read-only; findings are fixed with tests or recorded here.
+
+### G7 results (2026-11-17)
+
+- **Built:** `src/grounding.mjs` marks each node at publish time with `isGrounded` from `src/latent.mjs`. A node is quoted only with positive evidence. The payload gains `quotedNodeIds` and `inferredNodeIds`; the packet and graph ID do not change. Graphs stored before G7 get their marks when the same packet is published again (`ON CONFLICT DO UPDATE` only when the stored payload has none; ID, row, `created_at` and `party` unchanged). `context_for` ends an inferred node's citation with `, inferred` and explains the mark once, in the state section. The room API puts `grounding` on each node, and the room view shows it beside the kind. MCP paging pages the two lists after the links.
+- **Tests:** `tests/grounding.test.mjs` (11), three new `isGrounded` cases in `tests/latent.test.mjs`, the room spec (one new test, three new assertions), and the graph paging test with marks.
+- **Codex review, round 1** (of 983b8a4). Five findings, all fixed in e9d625f:
+  - (medium) The mark lists were paged before the nodes, so a backfill renumbered items under a client part way through reading. They are paged last now.
+  - (medium) The floor was too loose: `4317` matched `4317.5`, `retryCount` matched `retryCounter`, and an all-Han label passed on unrelated English. Numbers and code names must now stand alone, other scripts match by letter pairs, and a label with nothing to compare is inferred.
+  - (medium) The legend sat above the stable sections, so the first inferred action moved the cached prefix. It is in the state section now, and a test checks the prefix.
+  - (low) The all-quoted test only checked that "inferred" was absent. It now compares the whole briefing with main's output byte for byte.
+  - (low) There was no browser test for unmarked nodes, and the room paging fixture had no marks. Both are added.
+- **Round 2** (of e9d625f): all five fixes hold. Three more findings, fixed in 6137a8c: `café` passed on the `ca` of `cache` (a letter pair must now hold a non-ASCII letter); number and name boundaries ignored accented letters and Arabic-Indic digits; and the legend overstated what "inferred" means.
+- **Round 3** (of 6137a8c): those fixes hold, and Codex found nothing looser than `main` for ASCII labels, in either G7 or the latent check. Two more Unicode cases were fixed in the next commit: a Unicode suffix on the label's own token (`4317٥`, `retryCounté`), and combining marks (a name followed by U+0301, and Devanagari vowel signs). A new test also caught a regression from round 2, which the same commit fixes: a cited `$retry_limit` had stopped matching `retry_limit`.
+  - Accepted, not changed: the header line "Labels are quoted data from the source" stays, even when some nodes are inferred. Changing it when the first inferred node appears would move the cached prefix (round 1, third finding). Changing it for every briefing would break the byte-for-byte promise for all-quoted graphs. The state section's legend says what inferred means.
+- **Suites (Windows):** `npm run -s test:graph` 9/9; node 204/205 (one skipped), was 191/192 on `main`; Playwright 14/14 (one new); Python runtime 192 run, 50 skipped, OK.
+
 
 ## U3 — 60-second demo video (defined 2026-11-17)
 
@@ -3705,6 +3739,10 @@ A brand guide for the console (U1), the video (U3) and other pages, built on the
 ### What is tested
 
 `tests/brand.test.mjs` checks the site's colours (Soft Violet included), contrast for every pair the guide names in both sets, that the dark set sets every one of those variables itself, that the ratios the guide prints are the computed ones, the SVG rules above with an allowlist of elements, attributes and colours, and that the guide's file links exist. It does not check the CTM site's stylesheet itself, or how Pip looks. The poses were also rendered with Playwright on Paper and on Charcoal and checked by eye.
+
+### Acceptance
+
+- The four suites pass.
 
 ## D1 — T3 Code integration (defined 2026-11-17)
 
@@ -3792,6 +3830,124 @@ A guide, `docs/integrations/capy.md`, for adding Context Ledger as an MCP server
   - (low) Codex saw low resemblance to Capy's capybara, but a plausible one to Tinky Winky (purple round body, pale belly, head ornament, carried item). Pip is now an index card with a folded corner and ruled lines, which ties it to the ledger and drops the round body and belly. The guide says to avoid both. The human sign-off stays, with a side-by-side check.
 - **Codex, round 2** (of 9bc136c): the CSP, dark-set, ID, small-size, tag, cheek and wording fixes hold, all 19 printed ratios are correct, and Codex saw no close resemblance between the redrawn Pip and Tinky Winky or Capy. Fixed in the next commit: (medium) the SVG test now checks every fill and stroke value and the root's required attributes; (medium) the ratio test checks each table cell against its own pair and the three lime figures one by one; (low) the colour list names White and the two extra illustration colours; (low) the round 1 count is four medium findings, not five.
 - **Still owed:** a person on the team signs off on Pip's look.
+## U4 — Console polish (defined 2026-11-18, before implementation)
+
+Source: issue #48 and Ali's choices (2026-11-18): the vendor pixel sprites instead of Pip, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34). The console stays read-only and CSP-safe. Synthetic data only: the demo recording from the Orbit transcripts.
+
+| Eval | Expected |
+| --- | --- |
+| Brand tokens | The console loads `docs/brand/tokens.css` (one source, served at `/console/tokens.css`), and `console.css` and `office.css` take their colours and type from `--ctm-*` variables. The only colour literals left are the Claude room's two sprite colours in `office.css`. A node test checks that every `var(--ctm-…)` the console uses is defined in `tokens.css`. |
+| Vendor sprites | Each agent in the office is a pixel sprite on a 16 × 20 grid of SVG `rect`s: Clawd for Claude Code, the purple pet for Codex, and a neutral bot for any other provider. The sprite is chosen by the party's provider. No image file and no style attribute. |
+| Poses | Working: the sprite sits at a laptop. Waiting: a "?" bubble over it. Idle: dimmed. The state is also text under the name and in the `aria-label`, so it never relies on colour or shape alone. |
+| Quoted and inferred | A node is quoted when its graph's `quotedNodeIds` names it and inferred when `inferredNodeIds` does; the console reads the lists from `GET /api/graphs/:id`. A graph without the lists leaves its nodes unmarked (neutral), never inferred. The word "quoted" or "inferred" shows beside the kind, so the mark is text as well as colour. In the demo, the rebuilt recording carries the lists (every demo node is quoted). A live e2e test publishes one quoted and one inferred node and checks both. |
+| Codex agent turns | In the evidence pane, an I3 agent turn is labelled "Agent /root/worker to /root", with control and format characters in the paths shown as escapes, the same rule as the library view. |
+| Unchanged | Read-only (every request a GET), the U1 screenshots, the 375 px phone layout with no sideways scroll, and the 300 KB page budget all still hold. |
+| Screenshots | The console spec saves the finished demo and the evidence pane with the new look into `docs/console/`. |
+| Trademark note | The sprites are vendor trademarks drawn for a local build; the PR says so and says to swap them for the neutral bot before anything public. |
+
+### U4 results (2026-11-18, macOS)
+
+- **Brand tokens: pass.** `/console/tokens.css` serves `docs/brand/tokens.css` byte for byte; nearby paths are 404. A node test checks that every `--ctm-*` variable the console uses is in `tokens.css`, that every `var()` in the console CSS is defined somewhere, and that the only colour literals left are the Claude room's two sprite colours.
+- **Vendor sprites and poses: pass.** Unit test: each sprite stays on the 16 × 20 grid, and unknown sources (including `constructor` and `__proto__`) get the bot. E2E: one Claude and one Codex sprite in the finished demo, made of `rect`s, with no style attribute.
+- **Quoted and inferred: pass.** The demo's 11 nodes are all quoted. The live e2e test publishes "Use port 4317" (quoted) and "Retry 5 times" (inferred) and checks the mark, the word and the `aria-label`. A unit test checks that a graph without the lists stays unmarked.
+- **Codex agent turns: pass.** The live e2e test cites an I3 `agent_message` and sees "Agent /root/worker to /root". A unit test checks that a bidi override and a newline in a path are escaped.
+- **Unchanged: pass.** The page is read-only, renders at 375 px, and stays under 300 KB. Screenshots 01 to 06 and `perf.json` are in [docs/console/](console/).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only; Codex CLI was not installed on this machine). One medium, one eval gap and two low findings, all fixed:
+  - (medium) The desk legs used `--office-dark`, which the token change had removed, so they drew nothing. They are fixed, and a new test fails on any undefined `var()`; it fails on the old CSS.
+  - (eval gap) The first wording promised both marks in the demo. The eval now says the live test covers inferred, which is the honest case: the demo transcripts cite their own words.
+  - (low) The laptop hid the sprite's face. It sits lower now.
+  - (low) A JSDoc comment was in the wrong place after the move. It is fixed.
+- **Suites (macOS, Node 26):** node 248/249. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, which fails the same way on `ruslan/console-v0`. Playwright 21/21. `npm run -s test:graph` passes.
+
+## P3 — Reviewer UI prototype (defined 2026-11-18, before implementation)
+
+Source: issue #48. A person can approve, edit or reject a node beside its evidence. It is a prototype: Ruslan decides what each action means (who may approve, whether an edit makes a new version, what a reject keeps), so nothing here writes to the ledger. It is shown only in the console's demo mode (`/console/?demo`), on the synthetic recording.
+
+Terms: a **review** is one person's decision on one node of one graph snapshot, keyed by graph ID and node ID. A new publish of the party is a new graph ID and so starts unreviewed. That is the simplest reading, and it is Ruslan's to change.
+
+| Eval | Expected |
+| --- | --- |
+| Demo only | In demo mode the evidence panel shows a Review block once a node is open: **Approve**, **Edit**, **Reject**, and a line saying the decision stays in this browser and is a prototype. In live mode there is no Review block and no review code runs. |
+| Approve and reject | Approve or Reject marks the node: the word "approved" or "rejected" in the node's meta and its `aria-label`, plus a class for the colour. The panel says what was decided, with an **Undo** button that clears it. A rejected node keeps its label, struck through. |
+| Edit | Edit opens a text box holding the current label. Save keeps the new text (trimmed, 1 to 300 characters, no control or format characters) as the node's shown label, with "edited" in its meta. The evidence panel shows the original label too. Cancel or an empty save changes nothing. The new label is set with `textContent`. |
+| Browser only | Reviews are kept in `localStorage` under one key, and the page still sends only GET requests. A stored value that is not valid JSON, has the wrong shape, or names an unknown decision is ignored, not thrown. If `localStorage` throws (private mode), reviewing still works for the session. |
+| Survives a replay and a reload | Reviews stay after **Replay demo** and after a page reload, because the recording's graph IDs do not change. |
+| Keyboard | Every review control is a button reachable by Tab. After a decision, focus stays in the Review block. |
+| Tests | Node tests for the store (save, undo, edit rules, bad stored data, a throwing storage). A Playwright test approves, edits and rejects three demo nodes, reloads, sees all three, undoes one, checks that live mode has no Review block, and saves a screenshot. |
+
+### P3 results (2026-11-18, macOS)
+
+- **Demo only: pass.** In demo mode the Review block appears once a node is open. Live mode has no Review block and never fetches `review.mjs`, because the demo loads it with a dynamic import.
+- **Approve and reject: pass.** The decision shows in the node's meta, its `aria-label` and its class. A rejected label is struck through. Undo clears the decision.
+- **Edit: pass.** An empty save is refused with a message. `Pair with Ali <b>tonight</b>` is kept and shown as text, with no `b` element created. The evidence heading keeps the original label.
+- **Browser only: pass.** Every request is a GET. Bad stored data, a throwing storage and `null` storage are covered by the node tests, and the e2e test covers invalid JSON in `localStorage`.
+- **Survives a replay and a reload: pass.** **Keyboard: pass.** Approve, Reject and Save move focus to Undo; Undo and Cancel move it to Edit.
+- Screenshot: [docs/console/07-review.png](console/07-review.png).
+- **Independent review** (Claude Sonnet as `ecc:code-reviewer`, read-only). One medium and two low findings, all fixed with tests:
+  - (medium) After a republish under a new graph ID with the node unchanged, the panel kept the old graph ID. It still said "approved", and a new decision was saved to the old snapshot. The panel now follows every republish. A Playwright test approves Leo's goal mid-demo and sees the review start fresh after his next publish; the test fails on the old code.
+  - (low) An open edit form lost its text when the same node was picked again. Showing the same snapshot again is now a no-op, and there is a test for it.
+  - (low) Live mode loaded `review.mjs` although none of it ran. It is now imported only in demo mode, and the live test checks that no request for it is made.
+- **Suites (macOS, Node 26):** node 253/254 (the one failure is the same `tests/mcp.test.mjs` test that fails on `ruslan/console-v0`); Playwright 26/26; `npm run -s test:graph` passes.
+
+## U4b — Furnished pixel office (defined 2026-11-19, before implementation)
+
+Source: Ali's lookbook pick "pixel sprites at desks" (`refs/virtual-office.png`) and his preview choices of 2026-11-19: a top-down office with the mood of his isometric reference (navy walls, windows with daylight, lamps, a whiteboard), his blue cloud Codex character, and a hat or prop per agent role. Stacked on U4 (#51). Synthetic data only: the demo recording and the live e2e graphs.
+
+| Eval | Expected |
+| --- | --- |
+| Furnished rooms | Each room (Claude Code: wood floor; Codex: tiled floor) has 6 desks with a monitor and chair, bookshelves, plants, windows with daylight on the floor, ceiling lamps, a whiteboard, a kitchen with a water cooler, and a lounge with a sofa and rug. |
+| Seated when working | A working agent sits at its desk: its feet are at `seatAt(desk)`, it is drawn behind the desk, and that desk's monitor is lit. A unit test checks the position for each desk. |
+| Beside when waiting | A waiting agent stands at `besideDesk(desk)` with a "?" bubble, and its monitor is off. A unit test checks the position stays inside the work area and clear of the next desk. |
+| Lounge when idle | An idle agent stands at `loungeSpot(n)` in the lounge, in the order the idle agents arrive. A unit test checks every lounge spot is inside the lounge. |
+| Same API and limits | `createOffice(svg)` still returns `{update, anchor, pulse}`; at most 6 agents per room, picked by the same `RANK` order, with a "+n" chip for the rest. The state word and the `aria-label` stay on each agent. |
+| Roles | An agent label with a role word (plan, build, test, review, doc, scout and close words) gets that role's accessory: notebook, hard hat, flask, glasses (a magnifier on Codex), pencil or safari hat. No match, no accessory. Unit tests cover the words and that `constructor` or `__proto__` match nothing harmful. |
+| CSP-safe and read-only | Built with `createElementNS`, positions through CSSOM `style.setProperty`, text through `textContent`, no style attribute in the office, every request a GET. |
+| Colours | `office.css` takes every colour from `--ctm-*` tokens; the office materials are new tokens in `docs/brand/tokens.css`. The only literals in `office.css` stay the Claude room's two colours. Every `var()` is defined. |
+| Logo and favicon | The header shows the CTM logo instead of the "CTM" text, and the page has a favicon. Until Ali sends the logo file, both are the Pip SVG, marked as a placeholder. The new static path is on the server's fixed list. |
+| Budget and phone | Added assets stay under 300 KB; at 375 px there is no sideways scroll. |
+| Screenshots | `docs/console/` gets the empty, mid-run, finished (`/console/?demo`) and phone views. |
+
+### U4b results (2026-11-19, macOS)
+
+- **Preview approved** by Ali on 2026-11-19 after three rounds: his Codex character, role props, and the mood of his isometric reference on the top-down layout (`docs/console/preview/approved-*.png`).
+- **Furnished rooms, seated, beside and lounge: pass.** Unit tests check every seat, beside-desk spot and lounge spot against the work area and lounge bounds. An e2e test drives every state and role in both rooms, and checks the spots, layers, lit monitors, state words and `aria-label`s. Screenshot `07-office-states.png`.
+- **Same API and limits: pass.** The e2e test checks that desks stay put when others leave, that a seventh and eighth Codex agent show "+2", that removed agents leave no label behind, and that the existing demo, live and pulse tests still pass.
+- **Roles: pass.** Unit tests cover the role words, whole words only, and `constructor` and `__proto__`.
+- **CSP-safe and read-only, colours, budget and phone: pass.** No style attribute inside an agent. Every request is a GET. `office.css` keeps only the two Claude colours. The added assets are about 36 KB. At 375 px there is no sideways scroll.
+- **Logo and favicon: pass, with a placeholder.** `/console/logo.svg` serves Pip byte for byte. The CSP gained `img-src 'self'`, and the pinned header test is updated. A human should check this change.
+- **Independent review** (Claude Sonnet as `code-reviewer`, read-only). It found no high-severity issues, two medium and three low. The fixes:
+  - (medium) An agent jumped instead of walking when it changed layer between desk and lounge. It now moves to the new layer first, then animates. The e2e test checks for a running transform transition and fails on the old code.
+  - (medium) Role words matched inside other words, so "codex" and "claude-code" got a hard hat. Roles now match whole words only, with regression cases in the unit table.
+  - (low) A second `createOffice` on the same SVG left the old `ResizeObserver` running. It is now disconnected.
+  - (low) No test covered `update()` over time. The e2e test above now does.
+- **Suites (macOS, Node 26):**
+  - node: 252/253. The one failure is `malformed transport input…` in `tests/mcp.test.mjs`, the known failure on every branch.
+  - Playwright: 22/22.
+  - `npm run -s test:graph` passes.
+
+## U6 — Pixel console and agent crew (defined 2026-11-20, before implementation)
+
+Card U6 on `ali/u6-pixel-console`, stacked on U4b (#55). Ali approved the light pixel lookbook (option 1, fonts pick A) and the Mark bot crew (each agent's official logo on a robot's screen face) on 2026-11-20. Synthetic demo data only.
+
+| Eval | Expected |
+| --- | --- |
+| Local fonts | `/console/fonts/{jersey-15,inter-tight,silkscreen}.woff2` are on the server's fixed list, served as `font/woff2` from `docs/brand/fonts` with their OFL licences beside them. The CSP adds only `font-src 'self'`. The page uses them (`document.fonts.check` is true once loaded) and no request leaves the loopback host. |
+| Light pixel look | No `ctm-dark` class. Headings and buttons use Jersey 15, reading text uses Inter Tight, one-word tags use Silkscreen. Frames and buttons have stepped corners. |
+| Activity replaces the tiles | The three number tiles are gone. Hand-offs, tokens saved and superseded decisions are counters on the activity heading, with the same values and IDs as before; the activity list keeps its items. |
+| Panel switches (added by Ali mid-card) | Activity sits under the evidence in the right column. Header buttons switch Evidence and Activity off and on (`aria-pressed`), the choice survives a reload, both off gives the graph the full width, and selecting a node turns Evidence back on. |
+| Mark bots | `sprites.mjs` has a sprite for 14 more agents (Cursor, OpenCode, Gemini CLI, GitHub Copilot, Windsurf, Kimi Code, DeepSeek, Qwen Code, Mistral Vibe, Cline, Warp, Zed, MiniMax, Ollama): one robot body in the vendor's brand colour, with the vendor's official mark (Simple Icons path, brand hex) on its screen. Every pixel stays on the 16 x 20 grid, role props still fit, and the office draws the mark for any agent whose provider has one. Claude Code and Codex are unchanged. |
+| CTM band | A short strip at the bottom: the letters C, T and M as 5 x 7 pixel blocks, the Claude and Codex crew with their role props, and the Mark bots on the ground. It is built with `createElementNS` and CSSOM only. Clicking or pressing Enter on a crew member shows a speech bubble with its name. The letters stamp in once when the band scrolls into view, and nothing moves under `prefers-reduced-motion`. |
+| Nothing else changes | The office API, the evidence panel and the demo behave as before. No raw control or format characters, no `innerHTML` in console modules, no sideways scroll at 375 px, and every suite passes. |
+
+
+### U6 results (2026-11-20)
+
+- Node tests: 415 pass; the 3 failures are the known local ones that also fail on the base (malformed transport input, relative CODEX_HOME, wide rowids and UTF-16). Playwright: every console journey passes, including the new U6 ones (fonts, counters, band crew and bubble, panel switches, bad or blocked storage, phone crop); 1 skipped (the I3 agent-turn `fixme`). Runtime Python: 2 timing failures (`test_four_worker_reads_release_their_slots`, `test_parallel_reads_all_succeed`) that also fail on the untouched base.
+- Independent review: Codex CLI was not installed on this machine, so a separate reviewer subagent (not the implementing session) reviewed the commit. No high or medium findings; font routes, CSP, `innerHTML` and inline styles all clean. Fixed with regression tests: stored panel state is validated (a non-object is ignored); the band's name is announced through a persistent `role="status"` node; tests now cover corrupt and blocked storage, the Space key and the phone crop. Accepted: the counters hide with the Activity panel (that is the switch's point), and the band's observers live for the page's lifetime.
+- Still needs a human review: the CSP `font-src 'self'` change and the trademark note (ADR 15).
+- Live check on a scratch ledger (2026-11-20), with two of Ali's own transcripts (one Claude Code, one Codex) and graphs citing their lines; nothing from them is committed. The console showed both agents in the right rooms. A new publish appeared within one poll. Evidence opened the cited real line, and a paraphrased fact was marked inferred. Nothing loaded from outside the loopback host, and the phone layout had no sideways scroll. Security probes all held. The server listens on 127.0.0.1 only. Without a token the API returns 401. A spoofed or DNS-rebinding Host returns 403. A cross-site POST with a valid token returns 403. Font path traversal, OFL text files and the folder return 404. The CSP adds only `font-src 'self'`. HTML in a fact renders as text, and a label with a bidi override is refused at publish. Found and fixed one bug, from U4b: newly added office agents slid in from the room's top-left corner, which was most visible on a phone. They now appear at their spot, covered by a regression test that fails without the fix.
+- Ali's follow-up from the live check: the live Activity list was empty until a new publish arrived after the page opened. Graphs read on first load are now listed too, each with its own publish time (with a date when it is not today), newest first, without flashes or pulses. Covered by an e2e test that fails without the change.
+
 
 - Codex reviews the guide read-only against T3's documentation; findings are fixed or recorded here.
 - A person who runs T3 follows the guide once and records the result here.
@@ -4575,6 +4731,286 @@ Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 
 
 Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
 
+## L4 — Training-free alignment, StateBridge-style (defined 2026-11-26, before the code)
+
+M2b-S trains one mapper per sender and receiver pair, which does not scale to 5 to 8 models. StateBridge (arXiv 2608.13317) claims a hand-off with no training. This card reads the paper, builds the cross-model version it does not test, and measures it on the M2b-S questions with a mismatched control.
+
+### What the paper does, and what it does not
+
+Read in full on 2026-11-26, with the authors' code (`YanwenPneg/StateBridge`, commit `3f6bf54`, Apache-2.0) read only to confirm the formulas. No code is reused; the implementation here is written from the paper's equations.
+
+**What it does.** A sender writes a message as usual. The final-layer hidden states `S` of the last `K = 64` generated tokens are kept, together with the input embeddings `R` of those same tokens. Both are centred and whitened (ridge `λ = 1e-3`), a rotation `Q` is found in closed form (`Q = UVᵀ` from the SVD of `S_wᵀR_w`), and the result is put back on the embeddings' scale and mean. Each vector is then scaled to the mean norm of the vocabulary embeddings and moved 30% of the way to its nearest vocabulary embedding. The `K` vectors are placed in front of the receiver's prompt as input embeddings.
+
+**What it measures.** A four-agent pipeline (planner, critic, refiner, judge) on GSM8K, AIME24/25, GPQA-Diamond, ARC-Challenge, MedQA, MBPP+ and HumanEval+, with Qwen3-4B, 8B, 32B and OLMo3-7B-Think. Accuracy or pass@1 against a single agent, a text pipeline and LatentMAS. It reports the best or tied-best score on 22 of 26 model and task pairs and, per model, an average gain of 2.4 to 2.9 points over the baseline with the best average, sampled at temperature 0.6.
+
+**What it does not do.**
+
+- **No two different models.** In every run all agents are the same model. The conclusion says so: "Our current setting assumes a shared model and a fixed prefix length", and names different models as future work. The paper has no measurement of a hand-off between two models.
+- **The map is fitted on each message, against that message's own tokens.** It is not a map between two spaces that is fitted once. The receiver side of the fit, `R`, is the embedding of the text the sender just wrote. Between two models with different tokenizers there is no such `R` without sending the text.
+- **No mismatched control.** Random noise is the only replacement-prefix control in its ablation table. It also ablates each component and shows one plan-recovery example, but nothing tests whether the prefix of another example scores the same, and nothing compares the prefix with the plain embeddings of the same tokens.
+- **No intervals, one sampled run per cell,** and `K` and `α` were chosen on MedQA with Qwen3-4B, one of the reported cells.
+- **No timing table** and no receiver below 4B.
+
+**A property of the arithmetic we expect, to be checked before any claim.** The fit uses `K = 64` rows in a space of 2,560 or more dimensions. After centring, 64 rows span at most 63 directions. Whitening sets every one of those directions to the same length on both sides, so the two whitened point sets differ by a rotation exactly, and the rotation maps one onto the other with no residual. Putting the scale back then returns `R` itself (with each singular value `δ` changed to `√(δ² + Kλ)`), whatever `S` was. If that holds, the prefix the paper sends is a function of the decoded tokens only: the last 64 tokens of the text, slightly rescaled, and the hidden states add nothing. This card checks it twice: a unit test on random matrices, and on real states by swapping in another passage's hidden states while keeping the tokens (`per-message, states swapped` below). It is stated here as a prediction, not a finding. *(Superseded on 2026-11-27, before the measured runs: the collapse is not exact in general; see "Corrections before the measured runs" for the two conditions.)*
+
+### What is built
+
+New files only: `runtime/latent_transfer/statebridge.py` (the arithmetic), `runtime/latent_transfer/statebridge_anchors.py` and `statebridge_stats.py` (standard library: vocabulary anchors, intervals, the table), `runtime/latent_transfer/statebridge_eval.py` (the runner) and `runtime/tests/test_statebridge.py`. `align.py` is not edited.
+
+Because the paper's per-message fit has no meaning between two tokenizers, the cross-model version fits one map per pair, once, in closed form:
+
+- **Anchor map (the card's primary).** Anchors are the vocabulary entries both tokenizers share (same text, same word-start marker). The sender side of an anchor is its row in the sender's output embedding (the final layer's states are read by that matrix); the receiver side is its row in the receiver's input embedding. Centre, whiten (ridge `1e-3` × the mean eigenvalue, because the paper's absolute `1e-3` is larger than the eigenvalues of an embedding matrix), rotate (`UVᵀ`, semi-orthogonal when the two widths differ), put back the receiver's scale and mean. No text and no forward pass is needed.
+- **Calibrated map (secondary).** The same closed form, fitted on real sender states instead of output-embedding rows: the sender reads 400 SQuAD *train* passages (seed 0; none is in the evaluation set), and each final-layer state whose own most likely next token is an anchor is paired with the receiver's embedding of that token. Still no gradient step; it needs a few seconds of sender time per pair.
+
+Then, as in the paper: norm calibration to the receiver's mean embedding norm and anchoring with `α = 0.3` over the receiver's whole vocabulary. The vectors go where the passage would be: after the receiver's `Read this passage.` header and before the question (the paper puts them at position 0; its code has the same insertion option).
+
+Two sources of sender states, each with both maps:
+
+- **Summary states (the paper's source).** The sender writes the same 40-word summary as the `t2t` arm; the states of its last 64 generated tokens are sent.
+- **Passage states.** The sender only reads the passage, as in M2b-S; the state at every passage position is sent. No generation, so this is the fast variant. The paper does not do this.
+
+### Arms
+
+Same 300 SQuAD v1.1 validation questions as M2b-S (seed 0, passages that fit 256 tokens for Phi-3.5-mini and Qwen2.5-1.5B, the cap the M2b-S run used; the runner checks the IDs against the M2b-S run on the GPU machine and stops if they differ), greedy, 24 new tokens, the same prompts, token F1 and containment from `latent_transfer.data`.
+
+| Arm | What the receiver gets |
+| --- | --- |
+| `text` | the passage |
+| `closed` | no passage |
+| `t2t` | the sender's 40-word summary as text |
+| `anchor/summary` (primary) | anchor map of the summary states |
+| `anchor/summary` mismatched | the same from the next item's passage |
+| `anchor/summary` zeroed | the same with the sender states set to zero |
+| `calibrated/summary`, `anchor/passage`, `calibrated/passage` | each with its own mismatched control |
+| `swat` (Phi-3.5-mini to Qwen2.5-1.5B only) | the trained M2b-S mapper, checkpoint `ade79c34041fd529` |
+| `per-message` (pairs with one tokenizer only) | the paper's own fit: summary states against the receiver's embeddings of the summary's last 64 tokens, `λ = 1e-3` |
+| `per-message, states swapped` | the same tokens, the hidden states of the next item |
+| `per-message` mismatched | tokens and states of the next item |
+| `tokens` | the receiver's embeddings of the summary's last 64 tokens, untouched |
+
+Pairs (all cached on the laptop, none needs a trained mapper except for the `swat` arm):
+
+| Pair | Why |
+| --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | the M2b-S pair; two families, two tokenizers, receiver below 2B |
+| Qwen2.5-3B → Qwen2.5-1.5B | one tokenizer, receiver below 2B |
+| Phi-3.5-mini → Qwen2.5-3B | two families, receiver above 2B |
+| Qwen2.5-1.5B → Qwen2.5-3B | one tokenizer, small to large |
+| Qwen2.5-3B → Qwen2.5-3B | the paper's own setting (one model) |
+| Qwen2.5-3B → Qwen2.5-0.5B, Phi-3.5-mini → SmolLM2-360M | edge: very small receivers; the second is the lowest tokenizer overlap available |
+
+Llama-3.2-3B is not on the machine and is gated; it is left out and named here.
+
+Reported for every arm: mean F1, containment, mean answer words, mean end-to-end milliseconds (summary arms include the sender writing the summary; passage arms include the sender's forward pass; the one-off map fit is reported apart). For every aligned arm: the paired difference to its mismatched control, to `t2t` and to `closed`, with a paired bootstrap 95% interval (10,000 resamples, seed 0). For every pair: how many anchors, what share of each vocabulary they cover, and on anchors held out of the fit, how often the mapped sender row lands nearest its own receiver row.
+
+### Pass rule (fixed before any run)
+
+For a pair and a variant, the aligned prefix **passes** when both hold:
+
+1. it beats its mismatched control: the 95% interval of `aligned − mismatched` F1 is above zero;
+2. it is at least as good as the text summary: mean F1 of `aligned` ≥ mean F1 of `t2t` (the interval is reported; "clearly better" only if it is above zero).
+
+The primary variant is `anchor/summary`. The other three are named in advance and judged by the same rule; because that is four tries per pair, a pass by a secondary variant with an interval that nearly touches zero counts as "needs a repeat", not a pass. `per-message` is judged apart: it is defined only where the tokenizer is shared, and a pass there says nothing about cross-model use if `states swapped` scores the same.
+
+The verdict is one of: "use it", "use it only for pairs like X", or "does not carry content here". Failing is an acceptable outcome and will be reported as such. No parameter is tuned on the 300 questions; `K`, `α` and `λ` are the paper's.
+
+### Edge cases
+
+- **Receiver below 2B:** Qwen2.5-1.5B (two pairs), Qwen2.5-0.5B, SmolLM2-360M.
+- **Low tokenizer overlap:** Phi-3.5-mini (32k SentencePiece) to Qwen (151k byte-level BPE) and to SmolLM2 (49k). The anchor count and coverage are reported for each.
+- **Emoji and non-English text:** eight hand-written synthetic passages (emoji, Russian, Uzbek, Chinese, Arabic, mixed) with one question each, in `runtime/latent_transfer/statebridge_edge.json`, run through every applicable arm of the Phi-3.5-mini → Qwen2.5-1.5B pair (no per-message arms: two tokenizers). Eight items give no interval; counts are reported, plus the share of each passage's sender tokens that have an anchor.
+
+### Corrections before the measured runs (2026-11-27)
+
+Made after the smoke runs (6 or 8 items, tiny models) and a Codex review of the code, and before any of the 300-question results below existed. No full-run result had been seen when these were written.
+
+- **Passage cap.** The first draft of this section said 384 tokens. The ID check against the M2b-S run failed, which showed that M2b-S used 256. The runner's default is now 256 and the IDs match.
+- **Plain greedy.** The first runner used the receiver's generation defaults, and Qwen ships a repetition penalty of 1.1. M2b-S decodes by plain argmax, so the runner now sets the penalty to 1.0. A test covers it. The sender's summary is written with the sender's defaults, as in M2b-S's `t2t`.
+- **Which state belongs to a token.** "The states of the last 64 generated tokens" means, here and in the authors' code, the state each token was *read from* (the position before it), not the state at the token's own position.
+- **The prediction about the per-message fit needs two conditions** (Codex, high). For `K` rows the argument assumes (a) the centred states span all `K − 1` row directions with covariance eigenvalues far above the ridge, and (b) the reference rows have full rank, 63 for 64 rows. Under both, the output is the reference with its singular values changed as described, up to a term that shrinks as the states grow against the ridge; it is exact only in that limit. A reference of lower rank leaves spare directions, which the rotation fills at the ridge's scale (at most `√(Kλ)` ≈ 0.25 in Frobenius norm each) in a direction picked by the states and by the SVD routine; repeated tokens are one source of lower rank. So the prediction becomes: the prefix is the token embeddings plus a small state-dependent part. The unit tests now cover both conditions, and the run measures how large that part is on real summaries and whether it changes answers.
+- **Mismatched control.** It is the next item *with a different passage*. Of the 300 questions, 23 share a passage with another one, so "the next item" alone could have handed the control the right passage.
+- **States swapped** is compared with the own-states fit at the same number of rows (`per-message, same rows`), so a shorter prefix cannot pass for a hidden-state effect.
+- **Zeroed** sets the sender states to zero and keeps the summary's length. It tests the values of the states, not the length of the prefix.
+- **"Nearly touches zero"** for a secondary variant is a lower bound below 0.02 F1. `per-message` is judged apart and has no such threshold.
+- **Timing.** Controls are not timed. `t2t` and the summary arms share one measured summary time, which includes collecting the hidden states that `t2t` does not need (a small cost that counts against text). When a summary comes from the cache of an earlier pair with the same sender, its time is the one measured then.
+- **Edge items** get means only: no interval and no verdict from eight items.
+
+### Unit tests (written with the code)
+
+Standard library: anchor keys across SentencePiece and byte-level vocabularies, duplicates and broken byte tokens; the paired bootstrap; the pass rule; the table. With torch (skipped without it, like the rest of `latent_transfer`): the fit recovers a known rotation between spaces of equal and unequal width, `Q` has orthonormal columns, the whitened covariances are the identity, norm calibration and anchoring match hand values, the zeroed prefix is constant, the collapse property above, and on a tiny random model the injected prefix of a text's own embeddings decodes exactly like the text.
+
+One command reproduces a pair's table: `python -m latent_transfer.statebridge_eval --sender <id> --receiver <id> --out <file>` from `runtime/` (add `--checkpoint` for the `swat` arm), and `python -m latent_transfer.statebridge_stats <file>...` prints the tables below from the saved files.
+
+### Result (2026-11-27)
+
+Seven pairs on the 16 GB laptop GPU (WSL, bf16, batch 1), 300 SQuAD v1.1 validation questions each, the same IDs as the M2b-S run (checked by the runner), greedy. Parameters as fixed above: `K = 64`, `α = 0.3`, `λ = 1e-3`; nothing was tuned. The aggregate tables in this document are what is committed; the per-item run files stay in `~/l4-statebridge/` on the GPU machine. On Phi-3.5-mini → Qwen2.5-1.5B the runner reproduces M2b-S: `text` 0.779 (M2b-S 0.778), `t2t` 0.461 (0.460), `swat` 0.872 (0.872).
+
+**Verdict: does not carry content here; it does not replace the mapper.** Of the three verdicts fixed above this is the one that applies, and it needs its two parts kept apart. None of the 28 pair and variant checks meets the rule, and all 28 score below the sender's text summary. The two anchor variants, including the primary `anchor/summary`, do not beat their mismatched control on any pair (14 of 14 intervals include zero), and the primary is below the receiver with no passage at all in six of the seven pairs. The two calibrated variants do carry a trace of the right passage: they beat their mismatched control in 11 of 14 checks, by 0.045 to 0.172 F1. That trace is far from usable: they are 0.22 to 0.38 F1 below the text summary everywhere, and against no passage at all 1 of 14 intervals is above zero, 4 are below and 9 include zero. On the pair this card is about, Phi-3.5-mini → Qwen2.5-1.5B, the best aligned variant scores 0.192, the text summary 0.461, no passage 0.191, and the trained mapper 0.872. The paper's own per-message fit, judged apart on the two pairs where it was run, beats its mismatched control by +0.31 and +0.40 F1 and fails the rule because its mean is 0.010 and 0.025 below `t2t`; its differences from the plain embeddings of the same tokens are small with intervals that include zero. It needs a token-by-token match with the receiver's vocabulary, which two different tokenizers do not have. Keep the trained mapper for cross-model hand-offs; where no mapper exists, send text.
+
+**Baselines and the primary variant (mean token F1, 300 questions):**
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | its mismatched | its zeroed | `swat` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.779 | 0.461 | 0.191 | 0.135 | 0.138 | 0.143 | 0.872 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.779 | 0.441 | 0.191 | 0.011 | 0.012 | 0.139 | – |
+| Phi-3.5-mini → Qwen2.5-3B | 0.871 | 0.539 | 0.211 | 0.060 | 0.054 | 0.028 | – |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.871 | 0.418 | 0.211 | 0.004 | 0.006 | 0.000 | – |
+| Qwen2.5-3B → Qwen2.5-3B | 0.871 | 0.472 | 0.211 | 0.010 | 0.005 | 0.143 | – |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.716 | 0.444 | 0.124 | 0.097 | 0.093 | 0.111 | – |
+| Phi-3.5-mini → SmolLM2-360M | 0.418 | 0.359 | 0.106 | 0.100 | 0.098 | 0.105 | – |
+
+**The pass rule, every variant (paired F1 difference with its 95% interval, 10,000 resamples):**
+
+| Pair | Variant | F1 | minus mismatched | minus `t2t` | minus `closed` | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/summary` | 0.135 | -0.003 [-0.018, +0.013] | -0.326 [-0.378, -0.274] | -0.056 [-0.089, -0.024] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/summary` | 0.192 | +0.062 [+0.028, +0.098] | -0.269 [-0.321, -0.216] | +0.001 [-0.038, +0.039] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/passage` | 0.134 | +0.008 [-0.005, +0.022] | -0.327 [-0.379, -0.275] | -0.057 [-0.087, -0.027] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/passage` | 0.178 | +0.045 [+0.017, +0.075] | -0.282 [-0.336, -0.229] | -0.013 [-0.046, +0.020] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/summary` | 0.011 | -0.001 [-0.010, +0.009] | -0.430 [-0.477, -0.383] | -0.180 [-0.215, -0.147] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/summary` | 0.218 | +0.097 [+0.060, +0.135] | -0.223 [-0.272, -0.174] | +0.027 [-0.013, +0.068] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/passage` | 0.006 | -0.002 [-0.011, +0.006] | -0.435 [-0.482, -0.388] | -0.185 [-0.221, -0.151] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/passage` | 0.172 | +0.045 [+0.013, +0.077] | -0.269 [-0.323, -0.216] | -0.019 [-0.056, +0.017] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/summary` | 0.060 | +0.006 [-0.009, +0.021] | -0.479 [-0.534, -0.426] | -0.150 [-0.189, -0.113] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/summary` | 0.159 | +0.090 [+0.059, +0.123] | -0.381 [-0.434, -0.328] | -0.052 [-0.092, -0.012] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/passage` | 0.072 | +0.019 [-0.006, +0.045] | -0.467 [-0.523, -0.413] | -0.139 [-0.176, -0.102] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/passage` | 0.161 | +0.105 [+0.073, +0.137] | -0.379 [-0.437, -0.322] | -0.050 [-0.085, -0.016] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/summary` | 0.004 | -0.002 [-0.006, +0.001] | -0.414 [-0.466, -0.363] | -0.206 [-0.246, -0.169] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/summary` | 0.178 | +0.114 [+0.077, +0.152] | -0.240 [-0.291, -0.189] | -0.032 [-0.072, +0.007] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/passage` | 0.005 | +0.004 [-0.001, +0.012] | -0.413 [-0.465, -0.361] | -0.205 [-0.245, -0.168] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/passage` | 0.144 | +0.079 [+0.049, +0.112] | -0.274 [-0.328, -0.221] | -0.067 [-0.101, -0.033] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/summary` | 0.010 | +0.005 [-0.002, +0.014] | -0.462 [-0.512, -0.411] | -0.201 [-0.240, -0.163] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/summary` | 0.234 | +0.172 [+0.129, +0.216] | -0.238 [-0.287, -0.189] | +0.023 [-0.026, +0.072] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/passage` | 0.003 | +0.000 [+0.000, +0.000] | -0.468 [-0.519, -0.419] | -0.207 [-0.247, -0.170] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/passage` | 0.141 | +0.084 [+0.055, +0.115] | -0.331 [-0.386, -0.277] | -0.070 [-0.109, -0.032] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/summary` | 0.097 | +0.004 [-0.017, +0.023] | -0.347 [-0.400, -0.295] | -0.027 [-0.054, -0.002] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/summary` | 0.174 | +0.068 [+0.032, +0.106] | -0.270 [-0.321, -0.219] | +0.050 [+0.016, +0.084] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/passage` | 0.095 | +0.004 [-0.011, +0.019] | -0.349 [-0.401, -0.297] | -0.029 [-0.056, -0.004] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/passage` | 0.139 | +0.022 [-0.009, +0.054] | -0.305 [-0.357, -0.253] | +0.015 [-0.015, +0.045] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/summary` | 0.100 | +0.003 [-0.006, +0.012] | -0.259 [-0.302, -0.217] | -0.005 [-0.024, +0.013] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/summary` | 0.107 | +0.007 [-0.008, +0.023] | -0.253 [-0.295, -0.211] | +0.001 [-0.019, +0.021] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/passage` | 0.086 | -0.001 [-0.008, +0.006] | -0.273 [-0.316, -0.231] | -0.020 [-0.038, -0.001] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/passage` | 0.099 | +0.010 [-0.003, +0.024] | -0.260 [-0.303, -0.217] | -0.007 [-0.028, +0.014] | fail |
+
+**Containment** (share of answers that contain a gold answer; it does not reward short answers, and tells the same story):
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.860 | 0.437 | 0.137 | 0.073 | 0.120 | 0.087 | 0.110 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.860 | 0.400 | 0.137 | 0.003 | 0.153 | 0.000 | 0.107 |
+| Phi-3.5-mini → Qwen2.5-3B | 0.873 | 0.487 | 0.143 | 0.033 | 0.090 | 0.050 | 0.100 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.873 | 0.370 | 0.143 | 0.000 | 0.100 | 0.000 | 0.070 |
+| Qwen2.5-3B → Qwen2.5-3B | 0.873 | 0.390 | 0.143 | 0.000 | 0.163 | 0.000 | 0.063 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.700 | 0.377 | 0.073 | 0.047 | 0.100 | 0.037 | 0.077 |
+| Phi-3.5-mini → SmolLM2-360M | 0.607 | 0.380 | 0.040 | 0.067 | 0.083 | 0.053 | 0.067 |
+
+**The maps.** Anchors are vocabulary entries both tokenizers have. "Held-out vocabulary rows" is the share of anchors kept out of the fit whose mapped sender output-embedding row lands nearest its own receiver row. "In the run" is the share of prefix positions whose nearest receiver row is the anchor of the token the sender state predicts.
+
+| Pair | Anchors | Share of sender / receiver vocabulary | Passage tokens with an anchor | Anchor map, held-out vocabulary rows | Calibrated map, held-out states | In the run: `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 26,211 | 82% / 17% | 82% | 0.84 | 0.49 | 0.07 | 0.35 | 0.00 | 0.44 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.23 | 0.40 | 0.05 | 0.46 |
+| Phi-3.5-mini → Qwen2.5-3B | 26,211 | 82% / 17% | 82% | 0.86 | 0.50 | 0.08 | 0.36 | 0.01 | 0.44 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.10 | 0.34 | 0.06 | 0.46 |
+| Qwen2.5-3B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 1.00 | 0.49 | 0.69 | 0.41 | 0.56 | 0.47 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 150,194 | 99% / 99% | 100% | 0.91 | 0.49 | 0.10 | 0.38 | 0.02 | 0.47 |
+| Phi-3.5-mini → SmolLM2-360M | 18,594 | 58% / 38% | 81% | 0.81 | 0.47 | 0.01 | 0.29 | 0.00 | 0.40 |
+
+What these diagnostics show, without isolating a cause: the two vocabulary tables do line up under one rotation, with 81% to 100% of held-out rows landing on their own row across families and sizes. Real final-layer states sent through the same map land on the right row 0% to 23% of the time between different models (10% or less in ten of the twelve cases), so a hidden state does not behave like an output-embedding row. Maps fitted on real states agree more often (29% to 47%), and those are the variants that more often beat their mismatched control. High agreement alone is not enough: in the same-model pair the anchor map lands 56% to 69% of positions on the right row and the receiver still scores 0.01. After anchoring, 70% of each vector's weight is still the mapped state; how far that leaves the prefix from what a receiver was trained to read was not measured.
+
+**Time end to end (mean ms per question; the one-off fits apart):**
+
+| Pair | `text` | `t2t` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` | `swat` | Anchor fit (s) | Calibrated fit (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 316 | 3,267 | 3,400 | 3,326 | 589 | 481 | 385 | 9.1 | 63.8 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 334 | 3,167 | 3,784 | 3,251 | 1,041 | 488 | – | 12.0 | 45.6 |
+| Phi-3.5-mini → Qwen2.5-3B | 336 | 3,314 | 3,388 | 3,366 | 521 | 542 | – | 10.5 | 69.8 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 331 | 2,434 | 2,760 | 2,507 | 602 | 481 | – | 12.0 | 33.6 |
+| Qwen2.5-3B → Qwen2.5-3B | 338 | 3,207 | 3,984 | 3,242 | 1,470 | 654 | – | 15.9 | 47.8 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 200 | 3,078 | 3,228 | 3,133 | 460 | 378 | – | 8.4 | 42.3 |
+| Phi-3.5-mini → SmolLM2-360M | 576 | 3,462 | 3,707 | 3,636 | 921 | 843 | – | 5.1 | 60.0 |
+
+The summary variants cost what the text summary costs, because the sender writes the same summary first (a mean of 3.0 s for Phi-3.5-mini, 2.9 s for Qwen2.5-3B and 2.1 s for Qwen2.5-1.5B, from the summary cache), plus 50 to 330 ms end to end on the five pairs that ran alone; the stages inside that overhead were not timed apart. The passage variants skip the writing and take 0.38 to 1.47 s (0.38 to 0.92 s without the two pairs that also ran the per-message arms, whose CPU fits shared the process). Every passage-arm mean is above the receiver reading the passage itself, and on the Phi pair both are above the trained mapper's 385 ms. The fits are a one-off per pair: 5 to 16 s for the anchor map and 34 to 70 s for the calibrated one, against hours for a trained mapper. That is the method's one real advantage, and it does not help if the result cannot be read.
+
+**The paper's own per-message fit** (run on two of the four pairs that share a tokenizer):
+
+| Pair | `per-message` | mismatched | `tokens` | `t2t` | minus mismatched | minus `tokens` | minus `t2t` | same rows minus states swapped | Same answer with swapped states | Prefix change when states are swapped (mean / max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.430 | 0.124 | 0.426 | 0.441 | +0.306 [+0.257, +0.357] | +0.004 [-0.001, +0.011] | -0.010 [-0.027, +0.004] | -0.003 [-0.017, +0.009] | 279 of 300 | 7.2% / 13.4% |
+| Qwen2.5-3B → Qwen2.5-3B | 0.447 | 0.046 | 0.448 | 0.472 | +0.401 [+0.351, +0.451] | -0.001 [-0.006, +0.003] | -0.025 [-0.046, -0.005] | -0.006 [-0.016, +0.002] | 280 of 300 | 7.5% / 14.5% |
+
+- **It scores like the tokens' own embeddings.** `per-message` and `tokens` (the receiver's embeddings of the same last 64 summary tokens, untouched, in the same place) differ by −0.001 [−0.006, +0.003] and +0.004 [−0.001, +0.011] F1. An interval that includes zero is not proof of equality; it bounds any difference at about 0.01 F1 here.
+- **Swapping the hidden states changed little.** Keeping the tokens and using the hidden states of another passage, at an equal number of rows, changes the prefix vectors by 7.5% and 7.2% on average (at most 14.5% and 13.4%), the F1 by −0.006 [−0.016, +0.002] and −0.003 [−0.017, +0.009] (own states minus swapped), and leaves 280 and 279 of 300 answers identical. No benefit of the original states was detected. Measured on the cached Qwen2.5-3B summaries: condition (a) holds with room (the smallest state eigenvalue is at least 4,700 times the ridge in every summary), and condition (b) almost never does (the last 64 tokens repeat 9.5 tokens on average, and only 2 of 277 summaries have none), which is where a state-dependent part of this size is expected; the run does not separate repeats from other sources.
+- **It is not better than sending that text.** Against the summary as text (the full summary in the ordinary prompt, where `tokens` and `per-message` carry only its last 64 tokens) it is −0.025 [−0.046, −0.005] in the paper's own same-model setting and −0.010 [−0.027, +0.004] from 3B to 1.5B. By the card's rule it beats its mismatched control and is below `t2t` on the mean in both pairs: fail. 84% of the Qwen2.5-3B summaries are 64 tokens or shorter, so for those the prefix covers the whole summary.
+- `per-message` took 2.6 s and 1.6 s longer end to end than `tokens`. That is our float64 CPU fit, not a measurement of the authors' GPU code.
+
+What this does and does not say about the paper: we did not rerun its benchmarks, its models (Qwen3 and OLMo3 are not on this machine), its four-agent pipeline, its sampling or its prefix placement. What we have is the arithmetic (under the two conditions the output is fixed by the token embeddings, shown by unit tests) and two SQuAD runs on Qwen2.5-3B in which the aligned prefix behaved like the embeddings of its own tokens and the original hidden states made no detectable difference. That makes "the prefix is mostly the decoded tokens" a plausible reading of the method. Where the paper's reported gains over a text pipeline come from remains untested.
+
+### Edge cases
+
+- **Receiver below 2B.** All four pairings with a receiver below 2B fail (Qwen2.5-1.5B twice, Qwen2.5-0.5B, SmolLM2-360M), and so do all three with the 3B receiver. Receiver size was not varied apart from model identity, so this says only that a larger receiver did not rescue the method here. On SmolLM2-360M both calibrated intervals against the mismatched control include zero (+0.007 [−0.008, +0.023] and +0.010 [−0.003, +0.024]).
+- **Low tokenizer overlap.** Phi-3.5-mini shares 26,211 entries with Qwen (82% of its own vocabulary, 17% of Qwen's) and 18,594 with SmolLM2 (58% and 38%); 82% and 81% of SQuAD passage tokens have an anchor. The Qwen pairs share 150,194 (99% of the vocabulary; all but 0.04% of passage tokens have an anchor). They fail too, so near-full overlap did not rescue the method. Overlap was not varied apart from model identity either.
+- **Emoji and non-English text** (8 synthetic items, Phi-3.5-mini → Qwen2.5-1.5B, means only, no interval):
+
+  | Arm | F1 | Containment |
+  | --- | --- | --- |
+  | `text` | 0.780 | 0.875 |
+  | `closed` | 0.042 | 0.000 |
+  | `t2t` | 0.789 | 0.875 |
+  | `anchor/summary` | 0.042 | 0.000 |
+  | `anchor/summary mismatched` | 0.042 | 0.000 |
+  | `calibrated/summary` | 0.050 | 0.000 |
+  | `calibrated/summary mismatched` | 0.025 | 0.000 |
+  | `anchor/passage` | 0.025 | 0.000 |
+  | `anchor/passage mismatched` | 0.025 | 0.000 |
+  | `calibrated/passage` | 0.050 | 0.000 |
+  | `calibrated/passage mismatched` | 0.050 | 0.000 |
+  | `anchor/summary zeroed` | 0.025 | 0.000 |
+  | `swat` | 0.812 | 0.750 |
+
+  Text, the text summary and the trained mapper answer most of these (the mapper misses the mixed-script item and half of one Russian name). Every aligned arm has containment 0 on all eight, at the level of no passage. Only 39% to 71% of these passages' sender tokens have an anchor, against 82% on SQuAD.
+
+### What is not covered
+
+One task (extractive questions over one short passage), one seed, one machine, greedy decoding. No multi-step reasoning task of the kind the paper reports. No Llama pair (gated, not on the machine). The seven pairs reuse the same 300 questions, over 277 distinct passages; the intervals are paired by question and do not account for questions that share a passage, nor for looking at 28 checks at once (with every check failing, that does not change the verdict). The four fixed-map variants are this card's adaptation: their fit targets differ from the paper's, and the token budget of a prefix was not matched to the text summary's. The trained mapper is measured on one pair only. The calibrated map was fitted on states from reading 400 passages, not from writing summaries. `K`, `α` and `λ` were not searched; that was the point of fixing them, and a search on these 300 questions would not be evidence.
+
+### Suites and review
+
+Suites on this branch (Windows): `npm run -s test:graph` 9 of 9; `node --test tests/*.test.mjs` 674 tests, 664 passed, 10 skipped, 0 failed (an earlier run while the GPU was busy lost `tests/paging.test.mjs` to the 300 s per-file limit; alone it passed 17 of 17); `npx playwright test` 61 passed, 1 skipped; runtime `python -m unittest discover -s tests -t .` 275 tests, OK with 85 skipped without torch, and 275 OK with none skipped in the WSL environment that has torch (36 of them are this card's).
+
+**Codex review of the code (read-only, 2026-11-27, before the measured runs):** 11 findings, 3 high. All fixed, or answered in "Corrections before the measured runs", before any 300-question result was used; every run in the tables was made after the fixes.
+
+1. *(high)* The claim that the per-message fit ignores the hidden states needed two conditions (states well above the ridge, reference rows of full rank). Wording corrected; two new tests cover states near the ridge and repeated tokens.
+2. *(high)* The summary cache was keyed by question ID only, so another sender's file could be loaded. Now keyed by sender and passage text, and a file names its sender; test added.
+3. *(high)* The mismatched control was "the next item", and 23 of the 300 questions share a passage with another one. Now the next item with a different passage; test added.
+4. *(medium)* Which state belongs to a token was ambiguous in the eval text. It is the state the token is read from, as in the authors' code; wording fixed, no code change.
+5. *(medium)* The zeroed control keeps the summary's length. Stated; not changed.
+6. *(medium)* Controls were timed and text arms embedded their text outside the timer. Controls are no longer timed and embedding is inside the timer.
+7. *(medium)* The states-swapped comparison mixed prefix lengths. It is now made at an equal number of rows; a summary too short to fit raises an error.
+8. *(medium)* A marginal secondary result was stored as passed. It is now "needs a repeat" and not a pass; test changed.
+9. *(medium)* An edge run produced intervals and a verdict from eight items, and a run without the ID check looked the same as a checked one. Edge runs give means only, and the table header says whether the IDs were checked.
+10. *(low)* A fit on rows without variance divided by zero. It is refused; test added.
+11. *(low)* No test showed that resampling keeps pairs together. Test added.
+
+Two more defects were found by the runner's own checks before any result was used: the passage cap (256, not 384) and the receiver's repetition penalty.
+
+**Codex review of this record (read-only, 2026-11-27, against the raw aggregates of the eight runs):** every table cell and every count in the prose matched the aggregates (0 of 28, 11 of 14, six of seven, 1 above / 4 below / 9 including zero, ten of twelve, 280 and 279 of 300). It agreed that the replacement decision follows from the rule, and raised ten wording findings, 3 high, all applied above; none changed a number or needed code.
+
+1. *(high)* "Does not carry content" blurred the rule's two parts. The verdict now says that the anchor variants show no content signal, the calibrated ones show a trace in 11 of 14 checks, and all 28 are below the text summary.
+2. *(high)* The summary of the per-message fit contradicted the rule's own outcome. It now says: beats its mismatched control, fails on the mean against `t2t`, run on two of the four pairs that share a tokenizer.
+3. *(high)* "The hidden states do not matter" and the sentence about the paper's gains went past the evidence. They now say what was measured (no detectable difference on two runs; an interval that includes zero is not equality) and that the source of the paper's gains is untested.
+4. *(medium)* The correction still claimed exactness and asserted that real states meet the first condition. The conditions are restated as a limit, the first prediction is marked as superseded where it stands, and both conditions were then measured on the cached summaries (smallest state eigenvalue at least 4,700 times the ridge; 2 of 277 summaries without a repeated token).
+5. *(medium)* Timing prose gave ranges that left out two pairs and attributed overheads to stages that were not timed apart. Ranges corrected, summary times taken from the cache, the per-message figure given as end-to-end overhead.
+6. *(medium)* "This is why it fails" was an explanation the diagnostics do not isolate. Reworded as observations; the comparison with no passage is given as its three counts.
+7. *(medium)* The edge conclusions blamed neither size nor overlap on evidence that did not vary them apart from model identity. Reworded.
+8. *(medium)* Missing limits added: shared passages and 28 checks at once, the variants being this card's adaptation, no matched token budget, the mapper on one pair, the share of summaries that 64 tokens cover.
+9. *(low)* Two descriptions of the paper narrowed (what it measures between models; which controls it has).
+10. *(low)* What is committed is stated exactly, the board's scope now names all seven pairings, and the edge arms are "every applicable arm".
+
+No regression test applies to wording; the code and its 36 tests are unchanged since the measured runs.
+
+**Repeated findings (AGENTS.md section 4, step 5).** One kind of finding came back: a claim stronger than its evidence, about the per-message fit (code review, finding 1) and again in the results record (findings 3 and 4). The part that is arithmetic is now held by tests: both conditions of the claim have a unit test, so the code cannot drift from what the text says. The part that is wording has no pattern a `scripts/check.mjs` rule could match, because it is a judgement about whether a sentence follows from a table. What catches it is the second review against the raw aggregates, which this card ran and records above. No other finding repeated. After merging `main` at `a3f9a83` and later, `node scripts/check.mjs` reports no findings on 319 files and the runtime suite still passes.
+
 ## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
 
 For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
@@ -4664,6 +5100,19 @@ The 2026-11-22 live run (S1 above) showed two misleading tiles. "Speed-up" divid
 - (low) The unusable-reply test failed at the warm-up: it now has a valid warm-up and an unusable timed reply, and a new case has a valid baseline followed by every agent failing (no speed-up, the run fails).
 
 Left as is, and named: the cache key cannot see a changed GPU load or a server restart under the same model name. The page shows when the baseline was measured and whether it was reused; restarting the ledger measures it again.
+
+**Live check** (2026-11-22, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, 64 at once, 100 agents, synthetic reports; aggregates only):
+
+| Run | Baseline | Wall time | One after another | Speed-up | Old ratio (agents' own times) | KV peak | KV last sample |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | measured, 0.80 s alone | 5.32 s | 79.9 s | 15.0× | 55.8× | 5.1% | 0% |
+| 2 | reused | 3.56 s | 79.9 s | 22.4× | 50.9× | 5.5% | 0% |
+| 3 | reused | 3.66 s | 79.9 s | 21.8× | 51.5× | 5.2% | 0% |
+| 4 | reused | 3.85 s | 79.9 s | 20.8× | 53.2× | 5.6% | 0% |
+| 5 | reused | 3.66 s | 79.9 s | 21.8× | 51.3× | 5.3% | 0% |
+| page | reused | 3.60 s | 79.9 s | 22.2× | not shown | 5% | not shown |
+
+All 100 agents answered in every run, with 100/100 quotes verified and answers correct on the page run. The first run after a server start is slower (the server is still warming up), so quote a warm run: **about 21–22× faster**. That is a little below the earlier 23–30× estimate because the warm solo time with a shared prefix is 0.80 s, not the 1.05 s mean of the earlier cold single-agent runs. The old figure was 51–56×, more than twice the honest one. The last KV sample was 0% every time, so without the peak the tile would still read 0%; the peak is about 5%. All gates pass.
 
 ## G9b — Scoped briefing says what it left out (defined 2026-11-21, before the code)
 
@@ -4862,3 +5311,507 @@ What is tested: `ledger handoff --sign` and `ledger reviews verify` open the led
   - (low, accepted) Reading a ledger someone switched to WAL mode can create empty `-wal` and `-shm` files beside it, even on a read-only connection; the database file itself is unchanged. The ledger uses the default rollback journal, which creates neither, and the files would hold no ledger content.
   - (low, accepted) The round 3 test calls `refuseNewerSchema` directly rather than racing an upgrade through the CLI. The cleanup path is the one the two concurrent-upgrade tests in tests/projects.test.mjs race (they caught round 2), and `tests/sign.test.mjs` checks the CLI wording for a newer schema. Racing it through the CLI would need a hook inside `openStore`.
 - **Suites after the reviews (Windows, 2026-11-22, with main merged):** `node --test tests/*.test.mjs` 616/616, `npm run -s test:graph` passes, `npx playwright test` 42/42, runtime Python OK (66 skipped). One earlier full run had a timing failure in tests/handoff-bench.test.mjs, which this card does not touch; it passed 12/12 twice on its own.
+
+## U7 — Swarm room in the console (defined 2026-11-23, before the code)
+
+The investor demo shows the swarm on its own page and the Claude Code and Codex agents on the console. U7 puts the swarm on the console too, so one screen shows the offices, the swarm and the ledger facts. It reads the same `/api/swarm` endpoints as `/swarm/` and adds no server behaviour beyond serving one more fixed console file.
+
+### What is tested and the expected result
+
+1. **The room is there.** `/console/` shows a "Local swarm" room with a Run button, a mode badge and a link to `/swarm/`. Without `SWARM_URLS` the badge says Simulated and the room explains that a simulated run's timings are made up.
+2. **A run fills the room.** Pressing Run starts 100 agents (POST `/api/swarm/runs`, the mode the server offers) and the room shows 100 pixel agents. Each takes the state the server reports: queued, running, done and verified, done but its quote not found (dropped), or failed. When the run ends the room shows agents finished, quotes verified and answers correct.
+3. **Honest numbers.** The room shows the speed-up only for a live run that has one, as "about N×" from the server's `speedup` (one agent alone, then all together); a simulated run shows "not measured" for speed-up and marks its wall time simulated. The room never computes a speed-up of its own.
+4. **Safe rendering.** Every model or report string reaches the page through `textContent`; the room builds no HTML from data. A failed or lost run re-enables Run and says why.
+5. **Nothing else changes.** The console's graph, evidence, activity and band keep working, in live and demo mode. The room makes no requests until Run is pressed except `GET /api/swarm`. In demo mode (`/console/?demo`, the recorded replay that makes no requests) the room is hidden. Starting a run is the console's only POST, and only to `/api/swarm/runs`; it writes nothing to the ledger, and a unit test pins that exception.
+
+Synthetic data only: the swarm's generated incident reports.
+
+### Acceptance for the code
+
+- `node:test` for the room's pure summary (state buckets, dropped versus verified, the speed-up text for live and simulated runs, unknown states).
+- Playwright: open `/console/`, run the simulated swarm from the room, wait for it to finish, check 100 agents, the Simulated badge, "not measured" for the speed-up, the counts, the `/swarm/` link and that the graph still renders.
+- The full suites pass, and Codex reviews the change.
+
+### U7 results (2026-11-23)
+
+Built on Ali's U6 console with `main` merged in. On the simulated swarm (the test ledger has no model server): the room shows 100 pixel agents, all finish, the counts match the run's own snapshot, the speed-up reads "not measured" and the wall time is marked simulated. The live path was checked afterwards, once the GPU was free (see the live check below).
+
+- `node:test`: 6 tests in `tests/console-swarm.test.mjs`, and the console's read-only check now pins the one POST to `/api/swarm/runs`.
+- Playwright: 4 U7 tests in `tests/e2e/swarm.spec.mjs` (run and counts, the lost run, the recorded demo, the mode race), 12 of 12 over two repeats in one worker.
+
+**Live check from the room** (2026-11-23, laptop GPU, Qwen2.5-7B-Instruct-AWQ on vLLM, `SWARM_CONCURRENCY=64`, 100 agents, synthetic reports; aggregates only). The room's badge read "Live: Qwen/Qwen2.5-7B-Instruct-AWQ". Every run finished 100 of 100 agents, with 100/100 quotes verified and 100/100 answers correct.
+
+| Run | Started from | Wall time | Speed-up shown |
+| --- | --- | --- | --- |
+| 1 (first after the server start) | room | 5.29 s | about 15× |
+| 2 | room | 3.92 s | about 20× |
+| 3 | room | 3.63 s | about 22× |
+| 4 | room | 3.60 s | about 22× (22.2× on `/swarm/`) |
+| 5 | room, while a second browser took screenshots | 4.10 s | about 20× |
+| 6 | `/swarm/`, while a second browser took screenshots | 3.96 s | 20.2× |
+
+The room's "Open the swarm page" link opened run 4 on `/swarm/` with the same numbers: one after another 80.0 s (100 × 0.80 s alone, baseline reused), KV peak 5%, prefix-cache hits 98%, combined answer matching the truth. Together with the S1b check (20.8–22.4× on warm runs) the figure to quote is **about 20–22×** on a warm server; the first run after a server start shows about 15×.
+
+### Codex review of U7 (2026-11-23)
+
+A read-only Codex review found four medium and three low issues, all fixed with tests:
+
+1. *(medium)* Run could be pressed before the server said which mode it offers, starting a simulated run on a live server. Run is now off until that answer arrives.
+2. *(medium)* A malformed poll answer counted as success, so Run could stay off for good. A snapshot must now be an object with an agents array and a known state; anything else goes through the bounded retry.
+3. *(medium)* The "open the swarm page" link opened an empty page. The link now carries the run (`/swarm/#run=<id>`) and the swarm page opens that run.
+4. *(medium)* The read-only exception checked the method and the path separately. The unit test now binds the POST to its path, and the browser test records every write the console makes: one, `POST /api/swarm/runs`.
+5. *(low)* The room no longer draws the POST acknowledgement as an empty run.
+6. *(low)* A speed-up below 10× keeps one decimal, so a slowdown such as 0.4× is not shown as 0×.
+7. *(low)* On a narrow screen the grid uses ten columns, the state counts are also written in words under the grid, and a long model name wraps.
+
+Test gaps it named are closed: the recorded demo asserts zero API requests and a hidden room; the run test seeds a real graph node and checks the counts against the run's snapshot; the console's own lost-run recovery has a test.
+
+## U8 — One pixel style: library and swarm page (defined 2026-11-23, before the code)
+
+The console has Ali's pixel look (card U6); the library and the swarm page still have their first styles, so the demo looks like three products. U8 gives both the console's look and makes the swarm page explain itself in the order a person would ask: what is the data, what is the task, who does it, who checks it, what does it run on, what came out.
+
+### What is tested and the expected result
+
+1. **One look.** The library (`/`) and the swarm page (`/swarm/`) load the brand tokens and the three local fonts the console uses, sit on the same dotted page in a framed sheet, and use the same pixel buttons and tags. Nothing is fetched from another host.
+2. **The library works as before.** Every library, room, review, delete, hand-off and auth journey passes unchanged: same text, same roles, same IDs. Only the look changes. On a phone the page has no sideways scroll.
+3. **The swarm page tells the story, in order.**
+   - *Dataset:* before any run, the page shows how many reports there are, that they are synthetic, and the first three reports as text (`GET /api/swarm/task`, which returns the report texts only, never the generator's truth).
+   - *Task:* the instructions every agent shares, as text, with the four facts an answer must hold.
+   - *Agents:* one pixel robot per agent, with its state in its colour and in words; working robots move unless the person asked for reduced motion.
+   - *Check:* how an answer is checked (the quote must be in the report and state the downtime; the facts are compared with the generator), said as a rule of the ledger and not as a model, with the verified, left-out and failed counts.
+   - *Runs on:* the model, the server and how many agents run at once, or "Simulated" with no measured numbers.
+   - *Answer:* the combined answer beside the truth, as today.
+4. **Honest numbers and safe text, as before.** A simulated run shows no measured speed-up, and every report, model and error string is set with `textContent`.
+5. **The console's swarm room shows the same pixel robots.**
+
+Synthetic data only.
+
+### Acceptance for the code
+
+- `node:test`: `GET /api/swarm/task` returns the sample and the instructions and no truth; the pixel robot's drawing is a fixed grid with no script or style attribute; route and CSP checks pass with the new files.
+- Playwright: the existing library, room, review and swarm journeys pass unchanged; new checks for the swarm page's dataset and task before a run and the robots after one, and for the library's fonts and frame.
+- The full suites pass, and Codex reviews the change.
+
+### U8 results (2026-11-23)
+
+- The library and the swarm page load `/console/tokens.css`, `/pixel.css` and the console's three fonts, and sit in the same framed sheet as the console. The library's structure, text and IDs are unchanged, and every existing library, room, review, delete, hand-off and auth journey passes.
+- The swarm page shows the dataset (three sample reports from `GET /api/swarm/task`, texts only) and the shared instructions before a run, then one pixel robot per agent, the states in words, the check's counts and what the run ran on. A simulated run still shows no measured speed-up.
+- The console's swarm room draws the same robots. A console test forbids literal colours in `console.css`, so the robot's colours are tokens.
+- `node:test`: the task endpoint (sample equals what agent 1 reads, no truth, needs the token), the robot's grid and its class-only drawing, and `/pixel.css` in the static routes.
+- Playwright: 3 new tests (swarm page story and look, the room's robots, the library's look and phone width).
+
+## U9 — Terminal welcome (defined 2026-11-23, before the code)
+
+Installing and starting the ledger prints plain lines. U9 gives a person at a terminal a short welcome in the product's look, and changes nothing for scripts.
+
+### What is tested and the expected result
+
+1. **At a terminal:** `context-ledger start` draws the CTM pixel mark in the brand colours, then shows its steps (database opened, listening, sign-in link) one after another; `context-ledger install` shows each agent it connects as a step with a tick or a cross.
+2. **Not at a terminal:** when output is piped, or `NO_COLOR` is set, or `TERM` is `dumb`, the output is exactly the plain lines of today: no colour codes, no cursor movement, no delay. Scripts that wait for "listening at" keep working.
+3. **Safe:** the welcome prints only fixed text and values the ledger made (port, link). Anything else printed to the terminal still goes through the existing escaping. The animation never delays the server starting to listen.
+4. **Short:** the whole welcome takes under 1.5 seconds, and `CONTEXT_LEDGER_NO_BANNER=1` turns it off.
+5. **One warning less:** under the installed command (`context-ledger ...`), Node's "SQLite is an experimental feature" warning is not shown above every command. Only that warning is filtered; a checkout's `npm start` is unchanged.
+
+### Acceptance for the code
+
+- `node:test` for the pure frame builder (plain mode has no escape codes; colour mode only uses SGR colour codes and its own fixed cursor moves; the mark is a fixed grid), and for `start` run with piped output giving today's exact lines.
+- The full suites pass, and Codex reviews the change.
+
+### U9 results (2026-11-23)
+
+- At a terminal, `context-ledger start` shows the CTM pixel letters in violet over a lime bar, then its two lines behind coloured pixels, in about 0.8 s; `install` shows its lines the same way. Checked by eye in Windows PowerShell.
+- Piped, with `NO_COLOR`, `TERM=dumb` or `CONTEXT_LEDGER_NO_BANNER=1`, the output is the same plain lines as before: every test that waits for "listening at" passes unchanged, and one new test checks the two lines exactly with no escape codes even under `FORCE_COLOR`.
+- The welcome writes colour codes only (no cursor movement), from fixed text and the caller's own lines. A test strips the colour codes and checks no control or format character is left.
+- Found by its own test: a line state named after an object property (`constructor`) crashed the frame builder; the state lookup now uses its own keys only.
+- Under the installed command Node's SQLite experimental warning is not shown; only that warning is filtered.
+- `node:test`: 6 tests in `tests/welcome.test.mjs`.
+
+### Suites on the stacked branch (U7, U8 and U9 on Ali's U6 with main merged in)
+
+`node --test tests/*.test.mjs`: 636 pass, 10 skipped, 0 fail. Playwright: 61 pass, 1 skipped, 0 fail (run on a second port because another checkout's run held 4318; `auth.spec`, which names the port in its cookie, was run on 4318).
+
+### Live rehearsal on the stacked branch (2026-11-23)
+
+`node demo/rehearse.mjs --runs 1` (Claude Code as Leo, Codex as Ali, one ledger): Leo's agent published 8 nodes in 68 s, Ali's Codex published 4 nodes with 2 links to Leo's in 33 s, the room held 2 proposals, and the hand-off answered 6 of 6 from the transcript (16.8 s) and 6 of 6 from the graph briefing (15.8 s; 323 against 1,814 estimated tokens). A first attempt, run while the whole node suite was also running on the laptop, failed: Ali's Codex reported that the ledger could not read its access token and published nothing. Two direct Codex probes and this rerun on an idle machine all worked, so the cause was load, not the code; the token is read through PowerShell on Windows, with a 30 s limit. For a live demo, run nothing heavy beside it.
+
+### Codex review of U8 and U9 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, four medium and four low. All are fixed with tests. It confirmed that the task endpoint needs the token and omits the truth, that pages and model requests stay on this machine, that report, model and error strings are set as text, that the library's markup, IDs and script are unchanged, and that the welcome writes only colour codes and never delays listening.
+
+1. *(medium, U9)* Install lines were printed as given, and the installer's own escaping keeps U+200C and U+200D. Every caller line now goes through `terminalLine` in both modes; a test sends a line with zero-width, bidi and escape characters through the pipe and the terminal paths.
+2. *(medium, U8)* Each robot on the swarm page was a button with a list-item role, which can hide that it is a button. Each is now a real button inside a list item, named "Agent N, working" (or checked, left out, failed), and a test opens a report from the keyboard.
+3. *(medium, U8)* "Runs on" claimed vLLM, this machine's GPU and that the instructions are stored once. It now says only what the ledger knows: the model names, an OpenAI-compatible server at a loopback address and how many agents run at once. Cache reuse is shown only when the server reported it for that run.
+4. *(medium, U9)* The warning filter matched any experimental warning that mentions SQLite. It now matches Node's exact notice and type, lives in `src/quiet.mjs`, and a subprocess test shows a different SQLite warning and a deprecation warning still print.
+5. *(low, U9)* The install welcome gave every line the same mark, and start had no database step. The installer now returns each agent's own result, so a terminal shows `ok` or `!!` (letters as well as colour) on each agent's line with its details under it; start shows "Database opened" at a terminal only.
+6. *(low, U8)* "What it runs on" moved to its own section after the check and before the answer, and a test asserts the order of the seven sections.
+7. *(low, U8)* The pale swatches of the colour key (queued, working) now have an ink outline.
+8. *(low, U8)* The library's page links are direct children of the masthead again; the extra `nav` landmark is gone.
+
+## U10 — An installed copy has the pixel look (defined 2026-11-23, before the code)
+
+Found while installing the stacked branch as the `context-ledger` command. The terminal welcome appeared, but the console in the browser had no colours, no fonts and no logo. The server reads five files from `docs/brand/` (the colour tokens, the logo and three fonts; cards U4, U4b and U6), and the package list from card P5c ships nothing from `docs/`. A checkout has the folder, so every test passed. The two met when `main` was merged into the U6 console, and the install path in the README (`npm install --global github:PricePepel/context-ledger`) would have shown this to every new user once the console reached `main`.
+
+Seen on the installed copy (a synthetic ledger): the pages loaded, the requests for the logo and the fonts answered 500, the tokens never arrived, and the text fell back to the browser's default font.
+
+### What is tested and the expected result
+
+1. **Everything served ships:** every file on the server's fixed list is in the tarball `npm pack` makes. A file added to the list later without being packaged fails this test.
+2. **Installed copy, real requests:** from a packed tarball in an empty folder, started through npx, every path on the fixed list answers 200 with its content type and a body that is not empty. That includes `/console/tokens.css`, `/console/logo.svg` and the three fonts.
+3. **Nothing else from `docs/` ships:** the tarball gains exactly `docs/brand/tokens.css`, `docs/brand/ctm-logo.svg` and `docs/brand/fonts/` (three fonts and their three Open Font License texts, which must travel with the fonts). No other document, test, fixture or runtime file is added.
+4. **The fixed list stays fixed:** the list moves to a module of its own so a test can read it. Its paths, files and content types do not change, every file on it is inside `public/` or is one of the five brand files, and no other path is served.
+
+### Acceptance for the code
+
+- `node:test` for 1, 3 and 4, and the existing packed-tarball test extended for 2.
+- The full suites pass, Codex reviews the change, and the installed command is checked by eye in a browser.
+
+### U10 results (2026-11-23)
+
+- **Installed copy, by eye:** the build was packed, installed with `npm install --global` from the tarball and started with `context-ledger start` on a synthetic ledger. Before the fix the console's logo and font requests answered 500, the tokens never arrived and the text was the browser's default font. After it, every request answers 200, the three fonts (Jersey 15, Inter Tight, Silkscreen) load and the console, its swarm room and the demo replay look as they do from a checkout.
+- **The tests catch it:** with the package change removed, the new manifest test fails (`docs/brand/tokens.css is served but not packaged`) and the packed-tarball test fails on the first brand file (500 instead of 200). With it, both pass.
+- `node:test`: 3 tests in `tests/package-files.test.mjs`, and the P5c packed-tarball test now requests all 32 paths on the list from the installed copy.
+- Suites on this branch: `node --test tests/*.test.mjs` 644 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After the review fixes below, the two changed test files were run again: 8 pass. Nothing in `runtime/` changed, so the Python checks were not run.
+
+### Codex review of U10 (2026-11-23)
+
+A read-only Codex review found no high or medium issue and two low ones, both in the tests and both fixed. It confirmed with npm's own file list that all 32 paths on the list are packaged and that exactly eight files from `docs/` ship (the five brand files and the three font licences), and that the move keeps exact-path matching, the loopback bind, the Host and Origin checks and the token check, with no new prefix or traversal path.
+
+1. *(low)* The new test looked for npm's CLI only next to `node`. With a distribution's own Node and npm (Debian, Ubuntu) it lives elsewhere, and the test would fail before checking anything. It now also looks where npm says it is (`npm_execpath`) and in the distribution paths, and fails with a plain message if none is found. The P5c helper in `tests/npx-entry.test.mjs` has the same assumption and is left as it is: CI's Node comes from setup-node, which puts npm next to `node`.
+2. *(low)* The widened P5c allowlist admitted any `.txt` or `.woff2` in `docs/brand/fonts/`, so a stray file there passed P5c on its own (the exact list in the new test caught it). P5c now names each of the eight files. Checked by adding a synthetic `draft-notes.txt` to the folder: P5c failed on it, and passed again once it was removed.
+
+## U11 — First start: sign-in steps and the live GPU (defined 2026-11-23, before the code)
+
+Ruslan's first run of the installed command (2026-11-23) raised two questions. The sign-in line gave a link and a time limit, but not what to do with it, and in a terminal 80 columns wide the link broke over two lines. And the swarm room offered only a simulated run while a model server was running on the GPU: the ledger looks for one only when `SWARM_URLS` names it, and the room said "No model server is running" whatever the reason.
+
+### What is tested and the expected result
+
+1. **Sign-in at a terminal:** after "listening at", the welcome shows the steps: open the link in a browser within 60 seconds; the link on a line of its own that fits in 80 columns for any port; Ctrl+click it or copy it into the address bar; where the console is; that the link works once and which command prints a new one (`context-ledger login` under the installed command, `npm run ledger -- login` in a checkout).
+2. **Piped output unchanged:** when output is not a terminal, `start` prints exactly the two plain lines it prints today ("listening at" and the sign-in line), so scripts and tests that read them keep working. Each mode mints one sign-in code.
+3. **The GPU is found on its own:** with `SWARM_URLS` unset or empty, the swarm asks the usual local vLLM address, `http://127.0.0.1:8000/v1`, when a page asks whether live runs are offered. If a model server answers there, the room and the swarm page offer live runs without a restart; if not, a run is simulated. `SWARM_URLS=off` turns live runs off and makes no request at all. A `SWARM_URLS` that names servers works as before, loopback only.
+4. **The reason is shown:** when a run would be simulated, the console's swarm room shows the server's reason, which names the address it tried and how to make runs live, as the swarm page already does. The reason is set as text.
+5. **Tests stay deterministic:** tests that expect a simulated run set `SWARM_URLS=off`, so a model server running on the developer's machine cannot change their result.
+
+### Acceptance for the code
+
+- `node:test` for the start lines in both modes (exact piped lines, terminal lines, the link's width, the login command) and for the swarm setting (unset, empty and `off`, the address asked, the reasons, no request when off).
+- Playwright: the room shows the server's reason for a simulated run.
+- The full suites pass, and Codex reviews the change.
+
+### U11 results (2026-11-23)
+
+- **At a terminal**, `context-ledger start` now shows the steps after "listening at": open the link within 60 seconds, the link on a line of its own two spaces in, Ctrl+click it or copy it, it opens the library, where the console is, and the command for a new link. Checked by eye in Windows Terminal; the link fits in 80 columns for every port (79 at most). The installed command names `context-ledger login`, a checkout `npm run ledger -- login`.
+- **Piped**, the output is the same two plain lines as before, byte for byte; the existing start-up tests in `tests/routes.test.mjs` and `tests/token.test.mjs` pass unchanged, and a new test checks both lines.
+- **Live GPU found on its own:** a ledger started from this branch with `SWARM_URLS` unset, while vLLM ran on the laptop, answered `/api/swarm` with `{"live":true,"models":["Qwen/Qwen2.5-7B-Instruct-AWQ"],"concurrency":32}`. With `SWARM_URLS=off` the room shows "Live runs are turned off (SWARM_URLS=off)." and no request is made.
+- **Deterministic tests:** before the swarm test helper was pinned to `SWARM_URLS=off`, one route test saw live runs on this laptop (vLLM on port 8000). The helper and the browser evals now set it.
+- `node:test`: 5 tests in `tests/welcome.test.mjs` and 5 in `tests/swarm.test.mjs`; the swarm room and page evals in `tests/e2e/swarm.spec.mjs` check the shown reason.
+- Suites before the review fixes: `node --test tests/*.test.mjs` 663 pass, 10 skipped, 0 fail; Playwright 61 pass, 1 skipped, 0 fail. After them: see below.
+
+### Codex review of U11 (2026-11-23)
+
+A read-only Codex review found no high-severity issue, one medium and one low, both fixed with tests that fail without the fix. It confirmed that the probe is a bodyless GET to loopback, that live runs send only the generated synthetic prompts, that redirects are refused, that the room sets the reason as text, that piped output is unchanged, that one code is minted per start and that every test reading the swarm setting now disables live runs, names a server or injects a fake fetch. It noted that any local program on port 8000 can pose as a model server and see the synthetic prompts; that was already true of a server named in `SWARM_URLS`, and nothing else is sent.
+
+1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
+2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
+
+## H9 — Repo-wide invariant checks (defined 2026-11-26, before the code)
+
+Codex reviews of earlier cards came back to the same AGENTS.md section 6 rules again and again: raw control, format or bidi characters (83 mentions in this file), HTML built from strings in the browser, and servers that must stay on loopback. Each card added its own scan for the files it changed. H9 puts those rules in one script, `scripts/check.mjs`, which runs first in CI on every tracked file, so a break is caught at once and reviews can spend their rounds on judgment. The idea comes from the talk "All Code Is Slop (Except Mine)" (Lauren Tan, AI Engineer, 2026-11-14): every correction an agent needs twice becomes a check, and the check's message says what to do instead. Synthetic inputs only.
+
+### What is tested and the expected result
+
+- **Raw invisible characters.** Every tracked file that is not a known binary type (images, fonts) must be UTF-8 and must hold no character of category Cc, Cf, Zl or Zp other than tab, line feed and carriage return. A finding names the file, line, column and code point as `U+XXXX` (never the raw character) and says to write an escape (`\u{...}` in JavaScript, `\u....` in Python, or the escape as text in Markdown). A file that is not UTF-8 is a finding too.
+- **HTML sinks in code.** In `.js`, `.mjs`, `.cjs` and `.html` files outside `node_modules`, no assignment to `innerHTML` or `outerHTML` (reading or comparing them is fine), and none of `insertAdjacentHTML`, `document.write`, `createContextualFragment`, `parseFromString` or `srcdoc` may appear (nor a `srcdoc` attribute in HTML). The message says to build nodes with `createElement` and `textContent`. The rule reads comments and strings as they are, so a sink spelt in one is reported too and the message says to reword it: a lexer that skips comments can be fooled into skipping code (Codex round 2). Test files (in a `test`, `tests` or `__tests__` folder, or named `*.test.*` or `*.spec.*`) and `node_modules` are exempt.
+- **Loopback only.** Every `listen` call in JavaScript outside tests (by dot, a quoted computed key or an optional call) passes the host `'127.0.0.1'`: as the second argument after a literal port number, or as the last `host` of an options object written out as the first argument (which Node then reads instead of the second). A port in a variable must use the options form, since any variable may hold an options object. Any other key in the object (a spread, a computed key, an accessor, or `fd`, `path` or `handle`, which bind elsewhere) makes it count as not loopback; the harmless keys are `port`, `backlog`, `exclusive`, `ipv6Only`, `reusePort`, `readableAll`, `writableAll` and `signal`. Comments inside the argument list are ignored. A call with no host, `0.0.0.0`, `::` or `localhost` is a finding, and the message points to AGENTS.md section 6.
+- **Output.** One line per finding, `path:line:col  rule  message`, then a count; exit code 1 when anything is found, 0 with "check: N files, no findings" otherwise. Paths are printed with control and format characters escaped, as `terminalJson` does.
+- **Today's tree passes.** After the three existing hits are fixed (a raw right-to-left override in this file, a raw BOM in `evals/latent/baseline.mjs`, raw separators in `runtime/tests/test_review_fixes.py`), `node scripts/check.mjs` reports no findings on `main`.
+- **File names.** A tracked name that is not UTF-8, or that holds a raw invisible character, is a finding; the file is still read by its raw bytes. Submodules and symbolic links are skipped.
+- **CI.** The check runs right after checkout and Node setup in the node job in `.github/workflows/e2e.yml` on all three systems, before `npm ci`.
+
+### Acceptance for the code
+
+- `tests/check.test.mjs` covers each rule with a synthetic file that breaks it and one that passes, the escaped output, the exit codes, and the clean run on the repository.
+- No new dependency (Node built-ins and `git ls-files` only). The four suites pass.
+
+### H9 results (2026-11-26)
+
+- **First run on `main`:** 305 tracked files, 7 findings in three files, all real: a raw right-to-left override in this file (it flipped the rest of a line in GitHub's view), a raw BOM inside a regular expression in `evals/latent/baseline.mjs`, and five raw separator and format characters in `runtime/tests/test_review_fixes.py`. All are escapes now, and the tree has no findings.
+- **It caught its own author.** While fixing round 2, a scripted edit wrote three raw control characters (U+0001, U+0002) into `scripts/check.mjs`; the check reported them before the commit.
+- `tests/check.test.mjs` 25/25 on Windows, with one test that needs raw file name bytes skipped there (it runs on Linux CI).
+- **Codex review, round 1:** one high, four medium, three low, all fixed with tests: a `host` nested in another object, or overridden by a later key or a spread, passed; computed `['listen']` and a comment before the arguments were missed; computed `innerHTML` keys, logical assignment and upper-case `SRCDOC` were missed; comments mentioning a sink failed the build; a file name that is not UTF-8 was skipped unread; a submodule stopped the scan; `node_modules` and test files beside the code were not exempt; a lone CR gave the wrong line.
+- **Codex review, round 2:** one high, four medium, two low. The high (a computed `['host']` key, and an options object followed by a host argument, which Node ignores) is fixed with tests. The mediums showed that skipping comments across a whole file lets a regular expression, a template or an HTML attribute hide real code. Rather than a fuller lexer, the code rules now read the text as it is: a sink spelt in a comment or a string is reported, and the message says to reword it. Optional calls (`listen?.(`) are checked, and a valid name starting with U+FEFF is no longer called not UTF-8. Accepted: a string that spells a listen call is reported.
+- **Codex review, round 3:** two high, two medium, one low, all fixed with tests: `listen(options, '127.0.0.1')` with the options in a variable passed (the `(port, host)` form now needs a plain port: a number or a name ending in `port`); a regular expression in the arguments was taken for a comment and hid a spread; a block comment between tokens hid a sink or a listen call; `Object.assign(node, { innerHTML })` and destructuring into `innerHTML` were missed; 200,000 findings in one file crashed the report.
+- **Codex review, round 4:** no high and no crash; two medium and one low, fixed with tests: a name that only ends in `port` (`listenPort`) may hold an options object, so the `(port, host)` form now takes only a number, `port`, `PORT` or a `.port` property; quoted computed keys (`{ ['innerHTML']: x }`, `preview['innerHTML']` as a destructuring target) were missed; a comment after `document` or a line comment before `=` hid a sink. Comments of either kind may now sit between any two tokens.
+- **Codex review, round 5:** no high; two medium and one low, fixed with tests. A variable named `port` may hold options too, so the check stops guessing from names: only a literal port number goes with a host argument, and `src/server.mjs` now calls `listen({ port, host: '127.0.0.1' })`, which Node treats the same way (the talk's "change the API so the mistake cannot be written"). `document?.write(...)` and an HTML property as a `for...of` or `for...in` target are sinks now. `tests/check.test.mjs` 30/30.
+- **Codex review, round 6:** no high; one medium and one low, fixed with tests. An options object with `fd` (or `path` or `handle`) binds there and ignores `host`, so the keys of an options object are now checked against an allowlist (`port`, `backlog`, `exclusive`, `ipv6Only`, `reusePort`, `readableAll`, `writableAll`, `signal`), and anything else, a spread included, counts as not loopback. `write` on a variable holding a document (`doc.write`) is a sink. `tests/check.test.mjs` 32/32.
+- **Codex review, round 7:** no high; two medium and one low, fixed with tests. In browser code (`public/`), which has no streams, any `write()` or `writeln()` call is now a sink, so renaming the document variable no longer hides it; server code keeps the name rule, since streams write there. `setHTMLUnsafe`, `setHTML` and `parseHTMLUnsafe` are sinks. A tracked file replaced by a folder before staging is skipped instead of stopping the scan. `tests/check.test.mjs` 34/34.
+- **Codex review, round 8:** no high; one medium and one low, fixed with tests. The browser `write()` rule now also covers any `.html` page, so an inline script outside `public/` is checked the same way. A parent folder replaced by a file (`ENOTDIR`) is skipped like a deleted file. `tests/check.test.mjs` 36/36.
+- **Codex review, round 9:** no high; one medium and one low, fixed with tests. Browser code moved out of an HTML page into a module elsewhere was checked as server code; now any module a tracked HTML page loads with `<script src>`, and its relative imports, counts as browser code wherever it lives. `execCommand('insertHTML')` is a sink. `tests/check.test.mjs` 38/38.
+- **Codex review, round 10:** no high; two medium and one low, fixed with tests. In browser code the strings `'innerHTML'` and `'outerHTML'` are findings, which catches a dynamic key such as `{ [key]: text }`; `listen` named without being called (`promisify(server.listen.bind(server))`) is a finding, since its host cannot be checked; an unreadable tracked file (`EACCES`) is reported and the scan goes on. Several rules can match one write, so a line gets at most one HTML-sink finding. `tests/check.test.mjs` 39/39.
+- **Codex review, round 11:** no high and no medium, so the review stops here. One low, accepted: a numeric update of `innerHTML` (`++preview.innerHTML`, `preview.innerHTML -= 1`) is not reported; it can only write a number or `NaN`, never transcript text.
+- **What the rounds taught.** Rounds 1 to 3 made the code rules read text as it is rather than trust a home-made lexer; rounds 5 and 6 replaced guesses about variable names with one written-out form (`listen({ port, host: '127.0.0.1' })`, which `src/server.mjs` now uses); rounds 7 to 10 widened the browser rules from names to places (anything in `public/` or loaded by an HTML page). Reaching a sink through a variable, helper or bound method is out of this check's reach by design; human review still covers that.
+- `tests/check.test.mjs` 28/28 on Windows (one Linux-only test skipped). Full suites on Windows (2026-11-26): `node scripts/check.mjs` no findings, `npm run -s test:graph` passes, runtime Python OK (66 skipped); `node --test tests/*.test.mjs` 669 pass and `npx playwright test` 59/60 under heavy load from other sessions on this machine. The two that did not pass were time-outs outside H9's files: `tests/paging.test.mjs` hangs here on unchanged code in both checkouts, and the console demo spec passed on its own rerun. An earlier full run on this branch passed everything (673 node, 61 browser). CI on clean runners is the record.
+
+## H10 — Label lengths in code points (defined 2026-11-26, before the code)
+
+Graph labels are limited to 500 characters by JSON Schema `maxLength`, which counts code points. Code that checks a label with `label.length` counts UTF-16 units, so a label of emoji or other astral characters can be valid in the graph and refused elsewhere. Reviews found this kind of mismatch several times (code point or UTF-16 is mentioned 30 times in this file, for example the P3 edit-label finding). H10 makes it a `scripts/check.mjs` rule. Synthetic inputs only.
+
+### What is tested and the expected result
+
+- **Rule `label-length`.** In code outside tests, the `.length` of a name ending in `label` or `labelText` (also as a property such as `node.label.length`, or a `['label']` key) next to `<`, `<=`, `>` or `>=` is a finding, however the other side is written. Only the exact emptiness tests pass (`length < 1`, `length > 0`, `length >= 1` and their mirror images), where both counts agree. Plural names such as `labels` or `labelParts` are lists and are left out. The message says to count code points with `[...label].length` or `Array.from(label).length`. `[...label].length` and `Array.from(label).length` pass.
+- **Today's tree.** Whatever the rule finds on `main` is fixed to count code points, with a test that a label of 500 astral characters is accepted wherever a graph label of that size is.
+- **Dropped candidate.** The H9 handoff also named "a store connection closed twice". It has no pattern a check can find without understanding the control flow, and `tests/projects.test.mjs` and `tests/readonly-store.test.mjs` already cover it, so H10 leaves it out.
+
+### Acceptance for the code
+
+- `tests/check.test.mjs` covers the rule's failing and passing forms; the repository has no findings; the four suites pass; no new dependency.
+
+### H10 results (2026-11-26)
+
+- **First run on `main`:** one finding, a real bug: `src/latent.mjs` capped latent finding labels at 500 UTF-16 units, so a finding whose label was 500 emoji (valid as a graph label) was dropped. It counts code points now; `tests/latent.test.mjs` "card H10" fails on the old code and passes on the fix.
+- **Codex review, round 1:** no high; two medium and two low. Fixed with tests: other spellings of the limit (`<= (500)`, `node['label'].length`, `getMaxLabel() >= label.length`) were missed, and the blanket exemption for 0 and 1 hid `label.length <= 1` and `1 < label.length`; the rule now flags any comparison next to a label length except the exact emptiness tests. Fixed: `labelParts.length > 3` (an array) was flagged; names must now end in `label` or `labelText`. Accepted (fail-safe): `label.length >= 1.0` and a comparison spelt in a comment are reported. Noted, not changed: the demo console's own label editor (`public/console/review.mjs`) allows 300 code points, a product choice for the demo below the graph limit, not a units mismatch.
+- **Codex review, round 2:** no high; three medium in H10's rule, fixed with tests: a member chain before the label (`500 < node.label.length`), parentheses around the length (`(label.length) > 500`), and a 0 or 1 that starts a longer expression (`label.length < 1 + MAX`) hid a limit. The rule now takes the whole member chain, steps over parentheses, and exempts 0 or 1 only when it stands alone. Two more medium findings came from H10 not yet holding H9's round 7 and 8 commits; merging them fixed both.
+- **Codex review, round 3:** no high; one medium and one low, fixed with tests: a reversed limit on an indexed or called receiver (`500 < graph.nodes[0].label.length`, `500 < getNode().label.length`) was missed, and `label.length > (0)` was flagged. The member chain now takes calls and indexes, and a parenthesized 0 or 1 that stands alone passes.
+- **Codex review, round 4:** no high; two medium and one low in H10's rule, fixed with tests: `label.length < (1) + MAX` and nested receivers (`500 < getNode(getId()).label.length`, `500 < getNode()['label'].length`) were missed, and `return 0 < label.length` was flagged. A 0 or 1 now counts as the whole other side unless arithmetic or a member access touches it, and receivers take one level of nested calls. Two more findings came from H9's round 9 commit not yet merged into H10.
+- **Codex review, round 5:** no high; two medium and one low in H10's rule, fixed with tests: a nested index (`nodes[indexes[0]].label`) and a bracket key ending in `label` (`node['editLabel']`) were missed, and `label.length > 0) ++count` was flagged because the `+` of the next statement was read as part of the limit. Indexes nest one level, bracket keys follow the same name rule as dotted ones, and only the parentheses opened before the 0 or 1 are closed before looking at what follows.
+- **Codex review, round 6:** no high; one medium, fixed with a test: optional indexing before the label (`500 < nodes?.[index]?.label?.length`) hid the limit; the member chain now takes `?.[...]`. One low, accepted: `(0) < label.length` is reported. Treating a parenthesized number before the operator as alone would also pass `f(1) > label.length`, so the rule errs toward reporting.
+- **Codex review, round 7:** no high; one medium, fixed with tests: a reversed limit was missed when the receiver call spanned lines or started with a parenthesized group (`500 < getNode(
+ graph,
+).label.length`, `500 < (node ?? fallback).label.length`). Instead of a longer pattern, the rule now walks left over the whole member chain (names, dots, optional chaining and balanced brackets of any length) before looking for the comparison.
+- **Codex review, round 8:** no high or medium, so the review stops here. `chainStart` always moves left and stops at an unmatched bracket (100,000 extra closing parentheses finish without a hang). One low, fixed with a test: `label.length < 1 << 9` was read as a lone 1; a shift after the number now counts as part of the limit.
+- `tests/check.test.mjs` and `tests/latent.test.mjs` pass on Windows; `node scripts/check.mjs` has no findings.
+
+## H11 — Feature map and screenshot driver (defined 2026-11-26, before the code)
+
+The talk behind H9 gives agents a feature map (the app's features as a person names them, and how to reach each) and one reusable command that drives the running app and saves a screenshot, so a change carries proof of what it does and agents stop working out how to operate the app each time. H11 adds both for the browser app. Synthetic data only: the demo transcripts in `demo/`.
+
+### What is tested and the expected result
+
+- **The map.** `docs/features.json` (version 1) lists every user-facing feature of the library, room, review, console and swarm pages: an id, a name, one line on what it does, a path, and steps (select, upload, fill, click, waitFor) that reach it on an empty ledger, with an optional element to photograph. `loadFeatures` refuses a map with a bad id, a repeated id, a path not starting with `/`, an unknown step or a missing field, naming the entry.
+- **The command.** `node scripts/drive.mjs --list` prints the features. `node scripts/drive.mjs <id> [--out file.png]` starts its own ledger on an empty temporary database (loopback only, live swarm off), signs in with the one-time link the server prints, runs the steps and saves a screenshot, then stops the ledger and removes the folder. `--url` drives a running loopback ledger with the token in `CONTEXT_LEDGER_TOKEN`; a non-loopback URL is refused. An unknown feature is refused with a pointer to `--list`. Output is escaped.
+- **Kept honest.** `tests/e2e/features.spec.mjs` opens every feature in the map against the e2e ledger and photographs it, so a renamed element breaks the build, not the agent.
+
+### Acceptance for the code
+
+- `tests/drive.test.mjs` (map checks, the command's refusals, its own ledger signing in once and stopping) and `tests/e2e/features.spec.mjs` pass; `node scripts/check.mjs` has no findings; no new dependency (Playwright is already a devDependency).
+
+### H11 results (2026-11-27)
+
+- `node scripts/drive.mjs <id>` drove all nine features on its own temporary ledger on Windows and saved each screenshot; `tests/e2e/features.spec.mjs` 9/9 and `tests/e2e/drive-cli.spec.mjs` 1/1 (the command writes a real PNG, prints no sign-in code and leaves no ledger folder); `tests/drive.test.mjs` 7/7.
+- **Codex review, round 1:** no high; five medium and two low.
+  - Fixed with tests: the token request followed redirects and the browser trusted the returned path, so a misbehaving loopback server could send either elsewhere; sign-in is now `redirect: 'manual'` with a strict `/login?code=` answer, feature paths may not start `//` or `/\`, and every browser request off the ledger's origin is aborted. Upload steps could name `../` files; they are limited to fixtures under `demo/`, `tests/fixtures/` and `evals/`. `--out` may not be a network path. A browser that failed to launch left the ledger running; teardown now runs whatever fails. Errors could print the one-time sign-in code; it is redacted. `swarm-run` waited for Simulated without choosing it, so it stalled on a ledger with live models; it now clicks Simulated.
+  - Low, fixed: the command's own screenshot and teardown path had no test (the CLI spec above); `library-search` now also opens the result in the reader.
+  - Low, accepted: `room` and `node-review` show their forms on an empty ledger rather than seeded graphs; seeding graphs belongs to those features' own tests, which already exist.
+- **Codex review, round 2:** no high; four medium and one low, fixed with tests where the platform allows: the browser could follow a redirect off the ledger (the page's origin is now checked after sign-in and after the steps); a mixed-slash network path got past `--out` (two leading slashes of either kind are refused); a fixture could be a link to a file outside the repository (the link's target must be inside too; the test skips where links cannot be made); stopping the driver with Ctrl-C left its ledger running (SIGINT and SIGTERM stop it first); a ledger that died early held the command for 30 seconds (the start timer is cleared). `tests/drive.test.mjs` 9 pass, 1 skipped on Windows.
+- **Codex review, round 3:** no high; three medium and two low. Fixed with tests: ledger requests are now fetched without following redirects and handed back to the browser, so a redirect off the ledger is a new request that the origin check aborts; the stop hook is registered as soon as the ledger is spawned, so a signal during start-up stops it; a ledger that exits by signal is counted as stopped and its folder removed; the early-exit test now starts a real ledger that fails. Accepted (low): a mapped network drive letter such as `Z:` passes `--out`; it is a local path the person chose, and telling it apart needs Windows APIs this script does not use. `tests/drive.test.mjs` 9 pass, 1 skipped on Windows; the browser specs 10/10.
+- **Codex review, round 4:** no high; one medium, fixed: on a ledger with several matching transcripts the search step's click matched more than one result; click steps now take the first match, as waits do. Two low, accepted: Ctrl-C in the instant before the ledger is spawned can leave an empty `ledger-drive-*` folder, and the cleanup tests can be confused by another drive command running at the same moment.
+- **Codex review, round 5:** no high or medium, so the review stops here. One low, fixed with a test: `--url --list` took `--list` as the URL; an option given where a value belongs is refused.
+
+## H13 — A repeated finding becomes a check (defined 2026-11-27, before the change)
+
+H9 and H10 turned review findings that kept coming back into `scripts/check.mjs` rules, and each found real bugs on its first run. H13 makes that the default for every card, so the next repeated finding does not cost another round of review.
+
+### What is tested and the expected result
+
+- **AGENTS.md section 4, step 5** says: a finding is a repeat when an earlier review in `docs/evals.md` reported a break of the same rule or the same misuse of the same API (cite that entry); for a repeat, the fix adds a `scripts/check.mjs` rule, or changes the API so the mistake cannot be written, as well as the regression test; a finding no pattern can catch says why in `docs/evals.md`.
+- **The PR template** lists `node scripts/check.mjs` with the local suites and has a checklist line for it: each repeated finding became a check or an API change, or `docs/evals.md` says why no pattern can catch it.
+- `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
+- **Codex review, round 1:** no high; two medium and two low, fixed: what counts as a repeat was undefined (now: the same rule broken, or the same API misused, as an earlier entry, which the fix cites); the PR checklist let the exception live in the PR instead of `docs/evals.md` (it now points there); the test matched exact wording and missed the exception (it now checks the elements: repeat, cite, check rule or API change, exception recorded in `docs/evals.md`); a blank line at the end of this file.
+- **Codex review, round 2:** no high or medium, so the review stops here. Three low, fixed: the exception now needs that no reliable check rule and no practical API change exists; the test checks the API-change option itself; the H9 handoff line now asks for a check rule as well as the regression test.
+
+## H14 — Windows-only browser test flakes (defined 2026-11-27)
+
+Three Playwright tests failed on Windows runners and passed on a re-run, with no browser code changed: the console demo test (W1 #73, an H9 local run), the handoff test (L3 #96, #101), and the H11 swarm-run feature entry (a local W1 full run). Each failure cost a 30-minute re-run. The card fixes what makes each one depend on timing, not the timeouts.
+
+### What is tested and the expected result
+
+- **Console demo, the read line.** A read line lives 2.4 s, and the test polled for it from outside the page, so a loaded runner could miss every line (#73: not found for 20 s). The page now records each read line as it is added and samples it every frame while it is drawn; the test waits until, in one frame, the first recorded line had opacity above 0.5, a stroke and a non-empty box. Reproduced locally with eight CPU-bound processes: the old test also ran past its 30 s budget, since the 34 s recording plays at speed 1.5 (about 23 s); the test now has 60 s. The same stress run then failed the next line, which waited for exactly one working agent: each publish keeps an agent working for 4 s and the two agents publish 2.7 to 4 s apart at speed 1.5, so that window is short. The recorder also notes which agents were working when the line was added (the office is drawn first), and the test checks that Ali, who published and read, is among them. Only Ali's 20 s publish and Leo's 26 s publish link to the other party, so the first recorded line is Ali's.
+- **H11 swarm-run entry.** A ledger runs one swarm at a time and answers a second with 409. `tests/e2e/swarm.spec.mjs` waits for that slot before each test, but the swarm-run entry in `tests/e2e/features.spec.mjs` ran in parallel with it. Entries that start a run now carry `"runsSwarm": true` in `docs/features.json` and are checked in `swarm.spec.mjs`; `features.spec.mjs` skips them. `tests/e2e/feature-check.mjs` watches `POST /api/swarm/runs` while the page opens the entry: an entry without the mark that asks for a run fails, and so does a marked entry for which the ledger accepted no run (HTTP 200). `tests/drive.test.mjs` checks that the field is a boolean.
+- **Handoff, "Line 2".** Not reproduced: 12 runs under CPU load and 104 runs beside the specs that write the database through the CLI all passed. A candidate cause is in the notes below. The test now waits for the reader's own `GET /api/sessions/<id>` and fails with its status and body when the ledger refuses it, so the next failure says why instead of only "element not found".
+- **Synthetic data:** the repository's demo recording and test fixtures only.
+
+### Notes
+
+- The ledger keeps the rollback journal on purpose (deletes need it) with `busy_timeout = 5000`, and `node:sqlite` is synchronous, so while a CLI process holds the write lock the server's event loop can wait up to 5 s, the same as an assertion's default wait. On Windows, file scanning of the `-journal` file can lengthen that. If the handoff failure comes back with a 500 or a slow response, that is the place to look.
+- **Node suite on #100, and H9 ruled out.** Three Node tests that start a server failed together after about 30 s (#100, run 46025391797). The server printed "Cannot write the access token file next to the database.", the message from its listen callback: on Windows the token file is written by a synchronous PowerShell call with a 30 s timeout (`src/token.mjs`), and under load PowerShell did not finish in time, so the server exited. H9's change from `listen(port, host)` to `listen({ port, host })` is not the cause: every test server uses `PORT=0`, the server was already listening when it exited, Node reads both forms the same way, and the console demo flake predates H9. The token write is security code, so it is card H15, not part of this card.
+- **Codex review, round 1** (of the version before the working-agent change): three medium and two low, fixed. (medium) The recorder kept the highest opacity, the stroke and the size separately, so they could come from different frames; one frame must now have all three. (medium) The working-agent count was still read from the test after the line; it is now recorded with the line, as above. (medium) Whether an entry starts a swarm run was guessed from a `#run` selector, which a `#swarm-run` click would slip past; the page's own requests decide it now. (low) Every feature test was reported at `feature-check.mjs`, a location that runs nothing; the spec files call `test()` themselves and the helper only builds the body. (low) A body that could not be read hid the handoff response's status; the status is reported either way. Accepted: the mid-run screenshot is taken after the wait, so it can show a later moment; it is a picture for people, not a check.
+- **Codex review, round 2:** no high; one medium and three low. (low, fixed) A hidden flash layer would leave the line's own opacity, stroke and box intact: the frame check also needs the line's inherited visibility. (low, fixed) The swarm check counted attempts, so a marked entry whose run the ledger refused with 409 could pass: it now needs an accepted run. (low, fixed) The handoff response wait could time out on its own while the click was still waiting for a missing result: the two are awaited together. (medium, accepted) If the browser's own main thread stalls for more than the line's 2.4 s, the line can be removed before any frame samples it, and the test fails. Such a stall also means the line was never painted, so failing is correct; the CI failures came from polling outside the page, which this card removes. With eight CPU-bound processes running, 20 runs of the one-frame recorder and 20 more after this round all passed.
+## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
+
+Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.
+
+### The rule in use before this card (rule 1)
+
+Read from `align.py`, `batch.py`, `pair.py`, `train.py` and `evaluate.py` on `main` at 6fa6249.
+
+- **Alignment is by character offsets, not by token index.** `batch.spans` tokenizes the same text with each tokenizer (`add_special_tokens=False`, so no BOS or EOS is added on either side) and takes each token's half-open `[start, end)` character span from the fast tokenizer's offset mapping. Each side is truncated to `max_tokens` (384) on its own.
+- **Position.** `align.sender_positions` gives each sender token a fractional position on the receiver's token axis: with `m` the midpoint of the sender token and `j` the last receiver token that starts at or before `m`, the position is `max(0, j + clip((m - a_j) / (b_j - a_j), 0, 1) - 0.5)`. The mapper uses it as the rotary position of that sender token in cross-attention.
+- **Visibility.** Receiver token `j` may read sender token `i` when `end_i <= end_j` (`align.causal_mask`, vectorized in `batch.make_pair`).
+- **When tokens do not line up:**
+  - One sender token over several receiver tokens: the receiver tokens before the last one cannot read it; a receiver token with no visible sender token reads only the mapper's learned "sink" slot.
+  - Several sender tokens inside one receiver token: all are visible to it, at positions inside that token.
+  - After truncation, `cut_to_common_end` keeps, on each side, the tokens ending at or before the smaller of the two last offsets. A token that crosses that offset is dropped without a record, and the tokens of the other side that sit over its characters stay.
+  - A sender token that no receiver token can read stays in the batch and is never used; nothing counts it.
+  - A document with no tokens on one side raises `ValueError`.
+- `train.py` and `evaluate.py` only keep items that fit `max_tokens` on both sides for stage 2, dev F1 and the SQuAD eval, so truncation happens only in stage 1 batches and the held-out NMSE batches.
+
+### What is tested and the expected result
+
+1. **Audit set.** A fixed, synthetic edge-case set in `runtime/latent_transfer/align_audit.py`: leading and repeated white space, CRLF, tabs, emoji and other astral characters (with a joined emoji sequence), combining marks, CJK, Arabic, very long words, numbers, code, special and chat-template token strings, an empty string, and texts where one side's token covers several of the other's and the reverse. Plus a natural-text column: 200 SQuAD validation passages (public data; only counts are recorded).
+2. **Pairs.** At least four of Phi-3.5-mini, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1, with Phi-3.5 to Qwen2.5 (the M2b-S pair) among them. Tokenizers only, on CPU.
+3. **Reported per pair:** Jaccard overlap of the two vocabularies (tokens compared as the bytes they stand for, special tokens left out); the share of texts split at identical boundaries (exact match); the share of sender positions that are one-to-one (same span as a receiver token), one-to-many (the sender token covers several receiver tokens), many-to-one, crossing, and unaligned (no receiver token over its characters, or no receiver token may read it); and, per tokenizer, tokens whose reported span is not the characters the token stands for.
+4. **Expected after the fixes (rule 2):** on every audit text and pair, (a) the two sides cover exactly the same characters, (b) no token of either side is dropped unless the text was truncated, and then both sides stop at a boundary they share, (c) with the same tokenizer on both sides every position is the token's own index and the mask is lower-triangular, including texts with emoji, (d) no sender token is unreadable, and (e) the number of receiver tokens that see no sender token is carried in the batch. An empty document still raises `ValueError`.
+5. **Norm calibration.** Off by default; with the flag off, outputs are bit-identical to before. The arithmetic (scale = target norm / observed norm, per group or per token, padding left out, an optional cap) is unit-tested without torch, and the tensor version is tested against it when torch is present.
+
+### Acceptance for the code
+
+- Rule 1 stays available and is what a checkpoint without a recorded rule loads with, so the M2b-S numbers can be reproduced; new mappers train with rule 2 and record it.
+- Regression tests for each defect, standard library only for `align.py`; checks that need torch or tokenizers skip when those are absent.
+- The four suites pass; Codex review recorded here.
+
+### L3 results (2026-11-26)
+
+Run with `python -m latent_transfer.align_audit --out audit.json` in `runtime/` (WSL, CPU, tokenizers 0.23.3, transformers 5.20.2): 35 synthetic edge-case texts, 200 SQuAD validation passages (seed 0), five tokenizers, all 20 ordered pairs. The Llama, Mistral and Granite tokenizers are the ones shipped in the quantized repositories already in the local cache. No GPU was used and nothing was trained.
+
+**Two changes to the expectations, made after the Codex review (below).**
+
+- 4(c) said the same tokenizer on both sides gives a lower-triangular mask. That holds for whole-character tokens. A token that is a piece of a character (one of an emoji's four byte tokens) now reads the sender's pieces of that character only once the character is complete, so its row is a subset of the lower triangle. The reason: offsets do not say how many bytes of the character a piece holds, and two tokenizers that cut one emoji into different byte groups could otherwise read a byte ahead. Positions are still the token's own index.
+- 4(d) said no sender token is unreadable. It now reads: no sender token that has characters. A token without characters that only the sender has at the very end of the text (nothing on the receiver comes after it) is kept and reported in `sender_unread`. No audited tokenizer produces one.
+
+**How rule 2 ended up, after the review.** Position and visibility are two separate questions. Position comes from the refined spans (`align.refine_spans`). Visibility and truncation come from what the raw offsets say each token touched (`align.ownership`): a sender token is readable once the receiver has finished every character the sender had touched when it wrote that token, and both sides are cut where each has finished exactly what it has touched.
+
+#### What the tokenizers report
+
+| Tokenizer | Vocabulary (special and added tokens left out) | Family | Adds BOS by default | Edge set: tokens | Pieces of a character sharing its span | Span is not the token's characters | Characters no token covers | Same tokenizer both sides fails, rule 1 / rule 2 (of 35 texts) | 200 passages: tokens | Pieces | Wrong span | Fails, rule 1 / rule 2 (of 200) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini | 31,901 | SentencePiece | no | 613 | 44 | 6 | 0 | 10 / 0 | 38,588 | 0 | 1 | 1 / 0 |
+| Qwen2.5 | 151,643 | byte-level BPE | no | 457 | 20 | 5 | 5 | 5 / 0 | 34,258 | 15 | 0 | 3 / 0 |
+| Llama 3.1 | 128,000 | byte-level BPE | yes | 451 | 26 | 0 | 0 | 4 / 0 | 33,189 | 22 | 0 | 5 / 0 |
+| Mistral v0.3 | 31,872 | SentencePiece | yes | 576 | 31 | 5 | 0 | 8 / 0 | 37,588 | 3 | 1 | 2 / 0 |
+| Granite 3.1 | 49,133 | byte-level BPE | no | 516 | 34 | 0 | 0 | 7 / 0 | 41,370 | 51 | 0 | 11 / 0 |
+
+Positions mapped to the wrong characters, all of two kinds:
+
+- **Phi-3.5 and Mistral: the word marker.** When the text (or the stretch after a line break) starts with a character that cannot carry SentencePiece's word marker (a digit, an emoji, a CJK or Arabic character, a line break), the marker is its own token and reports the span of the character after it. Rule 2 gives the marker the first half of that character; no token is dropped.
+- **Qwen2.5: composed characters.** Qwen normalizes "e" + combining accent to one character. The token reports only the base letter's span and the accent is covered by no token (5 characters in the edge set, none in the 200 passages). Rule 2 joins the accent to that token.
+
+No tokenizer returned a zero-width span, out-of-order spans, or any token for the empty string (`make_pair` refuses it under both rules, as before).
+
+Other things the audit showed, recorded and not changed here (none is an alignment defect):
+
+- **Special-token strings inside a passage become real control tokens** on the tokenizer that knows them: Qwen reads `<|im_end|>` typed in a passage as its end-of-turn token; Phi-3.5 and Mistral read `</s>` as end of sequence. The other tokenizers split the same string into plain characters. The spans line up either way, but a passage can carry a control token into the cache. Worth a Backlog card (`split_special_tokens` for passage text).
+- **The ChatML header is plain text to a non-ChatML sender.** M2b documents start with `<|im_start|>user`. Qwen reads `<|im_start|>` as one token; Phi-3.5 reads it as seven. So in M2b-S the sender reads a header it was not trained on, and with Phi as the receiver six tokens per document read no sender token (the 1,200 in the last column below).
+- **BOS.** Llama 3.1 and Mistral add a BOS by default; Phi-3.5, Qwen2.5 and Granite do not. `batch.spans` turns special tokens off for both sides, so a Llama or Mistral model in this pipeline prefills without its BOS. Rule 2 handles a zero-width BOS on one or both sides (tests), so a harness can add it.
+
+#### Pairs
+
+Vocabulary overlap compares tokens as the bytes they stand for. Jaccard cannot exceed the ratio of the two vocabulary sizes (about 0.21 for a 32k and a 150k vocabulary), so the third column gives the share of the smaller vocabulary that the larger one also has. "Same boundaries" is the share of texts both tokenizers cut at identical places. The five kinds are shares of sender positions, on refined spans; each cell is edge set / 200 raw passages.
+
+| Sender to receiver | Vocabulary Jaccard | Smaller vocabulary found in the larger | Same boundaries | One-to-one | One-to-many | Many-to-one | Crossing | Unaligned |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5 to Qwen2.5 | 0.168 | 82.6% | 11.4% / 0.0% | 50.2% / 76.7% | 1.3% / 0.2% | 43.9% / 22.0% | 4.6% / 1.1% | 0.0% / 0.0% |
+| Phi-3.5 to Llama 3.1 | 0.200 | 83.4% | 17.1% / 0.0% | 47.3% / 72.2% | 0.7% / 0.2% | 47.0% / 26.5% | 5.1% / 1.1% | 0.0% / 0.0% |
+| Phi-3.5 to Mistral v0.3 | 0.607 | 75.6% | 54.3% / 0.5% | 82.7% / 89.6% | 1.0% / 0.7% | 15.2% / 7.9% | 1.1% / 1.8% | 0.0% / 0.0% |
+| Phi-3.5 to Granite 3.1 | 0.291 | 57.3% | 17.1% / 0.5% | 62.2% / 82.1% | 1.8% / 7.7% | 32.1% / 6.7% | 3.9% / 3.5% | 0.0% / 0.0% |
+| Qwen2.5 to Phi-3.5 | 0.168 | 82.6% | 11.4% / 0.0% | 67.4% / 86.4% | 19.9% / 10.9% | 5.3% / 1.3% | 7.4% / 1.4% | 0.0% / 0.0% |
+| Qwen2.5 to Llama 3.1 | 0.644 | 85.6% | 48.6% / 28.0% | 79.4% / 94.8% | 3.1% / 0.0% | 16.2% / 5.1% | 1.3% / 0.0% | 0.0% / 0.0% |
+| Qwen2.5 to Mistral v0.3 | 0.190 | 91.7% | 14.3% / 0.0% | 70.0% / 89.5% | 16.8% / 8.6% | 5.7% / 0.9% | 7.4% / 1.0% | 0.0% / 0.0% |
+| Qwen2.5 to Granite 3.1 | 0.233 | 77.2% | 22.9% / 0.0% | 68.5% / 81.5% | 13.6% / 16.1% | 14.4% / 0.9% | 3.5% / 1.5% | 0.0% / 0.0% |
+| Llama 3.1 to Phi-3.5 | 0.200 | 83.4% | 17.1% / 0.0% | 64.3% / 84.0% | 22.6% / 13.2% | 4.2% / 1.3% | 8.9% / 1.5% | 0.0% / 0.0% |
+| Llama 3.1 to Qwen2.5 | 0.644 | 85.6% | 48.6% / 28.0% | 80.5% / 97.9% | 5.5% / 2.0% | 12.4% / 0.1% | 1.6% / 0.0% | 0.0% / 0.0% |
+| Llama 3.1 to Mistral v0.3 | 0.223 | 91.3% | 22.9% / 0.0% | 67.8% / 87.2% | 19.5% / 10.8% | 4.2% / 1.0% | 8.4% / 1.0% | 0.0% / 0.0% |
+| Llama 3.1 to Granite 3.1 | 0.272 | 77.0% | 25.7% / 0.0% | 67.0% / 78.9% | 15.7% / 18.6% | 13.7% / 0.9% | 3.5% / 1.6% | 0.0% / 0.0% |
+| Mistral v0.3 to Phi-3.5 | 0.607 | 75.6% | 54.3% / 0.5% | 88.0% / 92.0% | 6.6% / 3.2% | 4.2% / 2.9% | 1.2% / 1.9% | 0.0% / 0.0% |
+| Mistral v0.3 to Qwen2.5 | 0.190 | 91.7% | 14.3% / 0.0% | 55.6% / 81.6% | 1.4% / 0.1% | 38.2% / 17.5% | 4.9% / 0.8% | 0.0% / 0.0% |
+| Mistral v0.3 to Llama 3.1 | 0.223 | 91.3% | 22.9% / 0.0% | 53.1% / 77.0% | 1.0% / 0.2% | 40.6% / 22.1% | 5.2% / 0.7% | 0.0% / 0.0% |
+| Mistral v0.3 to Granite 3.1 | 0.327 | 62.6% | 25.7% / 0.0% | 69.8% / 82.4% | 1.7% / 9.8% | 24.0% / 5.1% | 4.5% / 2.7% | 0.0% / 0.0% |
+| Granite 3.1 to Phi-3.5 | 0.291 | 57.3% | 17.1% / 0.5% | 73.8% / 76.6% | 13.2% / 1.9% | 7.2% / 18.6% | 5.8% / 3.0% | 0.0% / 0.0% |
+| Granite 3.1 to Qwen2.5 | 0.233 | 77.2% | 22.9% / 0.0% | 60.7% / 67.5% | 5.0% / 0.0% | 31.8% / 31.5% | 2.5% / 1.0% | 0.0% / 0.0% |
+| Granite 3.1 to Llama 3.1 | 0.272 | 77.0% | 25.7% / 0.0% | 58.5% / 63.3% | 4.8% / 0.0% | 33.7% / 35.7% | 2.9% / 1.0% | 0.0% / 0.0% |
+| Granite 3.1 to Mistral v0.3 | 0.327 | 62.6% | 25.7% / 0.0% | 77.9% / 74.9% | 8.7% / 1.4% | 6.8% / 21.5% | 6.6% / 2.2% | 0.0% / 0.0% |
+
+No sender position is unaligned in any pair: every character is under a token on both sides once the spans are refined.
+
+#### Rule 1 against rule 2
+
+"Passages changed" counts the 200 passages behind the M2b ChatML header (the texts the pipeline aligns, no truncation) where rule 2 gives any sender token a different position or visibility than rule 1. The truncation columns cut both sides to 64 tokens to force the case; "lost" is characters under one side's kept tokens and not under the other's.
+
+| Sender to receiver | Passages changed (of 200) | Sender tokens changed | Rule 1 at 64 tokens: dropped / sender tokens nobody reads / characters lost | Rule 2 at 64: dropped / unread / lost / refused | Edge set, rule 1: dropped, lost | Edge set, rule 2: dropped, lost, unread | Receiver tokens that read no sender token, rule 2 (edge / pipeline) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5 to Qwen2.5 | 3 | 14 of 41,646 | 2,731 / 22 / 78 | 2,755 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 1 / 0 |
+| Phi-3.5 to Llama 3.1 | 5 | 12 of 41,646 | 2,002 / 30 / 86 | 2,034 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 2 / 0 |
+| Phi-3.5 to Mistral v0.3 | 1 | 1 of 41,646 | 357 / 8 / 33 | 368 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 5 / 0 |
+| Phi-3.5 to Granite 3.1 | 11 | 33 of 41,646 | 608 / 6 / 70 | 641 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Qwen2.5 to Phi-3.5 | 3 | 14 of 35,658 | 2,731 / 0 / 78 | 2,755 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 24 / 1,200 |
+| Qwen2.5 to Llama 3.1 | 7 | 25 of 35,658 | 706 / 5 / 5 | 711 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 7 / 1,000 |
+| Qwen2.5 to Mistral v0.3 | 3 | 15 of 35,658 | 2,514 / 0 / 81 | 2,537 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 17 / 1,200 |
+| Qwen2.5 to Granite 3.1 | 11 | 33 of 35,658 | 3,099 / 0 / 151 | 3,154 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 9 / 1,000 |
+| Llama 3.1 to Phi-3.5 | 5 | 22 of 35,589 | 2,002 / 0 / 86 | 2,034 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 17 / 0 |
+| Llama 3.1 to Qwen2.5 | 7 | 28 of 35,589 | 706 / 0 / 5 | 711 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 0 / 0 |
+| Llama 3.1 to Mistral v0.3 | 5 | 22 of 35,589 | 1,783 / 0 / 88 | 1,813 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 10 / 0 |
+| Llama 3.1 to Granite 3.1 | 11 | 35 of 35,589 | 2,348 / 0 / 156 | 2,408 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Mistral v0.3 to Phi-3.5 | 1 | 2 of 40,648 | 357 / 1 / 33 | 368 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 11 / 0 |
+| Mistral v0.3 to Qwen2.5 | 3 | 16 of 40,648 | 2,514 / 23 / 81 | 2,537 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 2 / 0 |
+| Mistral v0.3 to Llama 3.1 | 5 | 14 of 40,648 | 1,783 / 30 / 88 | 1,813 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Mistral v0.3 to Granite 3.1 | 11 | 35 of 40,648 | 754 / 1 / 84 | 795 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 4 / 0 |
+| Granite 3.1 to Phi-3.5 | 11 | 50 of 44,170 | 608 / 20 / 70 | 641 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 18 / 0 |
+| Granite 3.1 to Qwen2.5 | 11 | 51 of 44,170 | 3,099 / 53 / 151 | 3,154 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 2 / 0 |
+| Granite 3.1 to Llama 3.1 | 11 | 51 of 44,170 | 2,348 / 58 / 156 | 2,408 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Granite 3.1 to Mistral v0.3 | 11 | 51 of 44,170 | 754 / 29 / 84 | 795 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 10 / 0 |
+
+Over all 20 pairs: rule 1 left 286 sender tokens unread and 1,664 characters under one side only at 64 tokens, and dropped 16 tokens (24 characters) on the untruncated edge set; rule 2 leaves 0, 0 and 0, at the price of 628 more tokens cut (34,432 against 33,804) because both sides now stop at a shared whole-character boundary. Expectations 4(a) to 4(e) hold on every text and pair.
+
+#### Defects fixed
+
+1. **Pieces of one character shared one span.** With the same tokenizer on both sides, all pieces of an emoji took the last piece's position, and the first piece could read the later ones (10 of 35 edge texts for Phi-3.5, 11 of 200 passages for Granite). Fixed: `align.refine_spans` divides the character among its tokens in order for the position, and no piece reads the character until it is complete.
+2. **A token ending inside a character overlapped the next token** (Granite), and **the word marker claimed the next character** (Phi-3.5, Mistral). Same fix.
+3. **Characters no token covers** (Qwen's composed accents): the composed token could not read the sender's accent token, the sender's composed token could be read by a receiver token that had seen only the base letter, and when the text ended in one, rule 1 dropped the sender's last token without a record. Fixed: uncovered characters belong to the token before them.
+4. **Truncation left tails over different text.** Fixed by `align.common_cut`: both sides stop where each has finished exactly what it has touched, and the two agree.
+5. **Nothing said what did not line up.** The batch now carries `sender_unread`, `receiver_blind` and `dropped`.
+
+Each has a regression test in `runtime/tests/test_align.py` (standard library only for the span arithmetic). An oracle written separately from the code, counting character by character from the raw offsets, checks both directions (no read ahead of the text, no safe read refused) on the fixtures, on every truncation of every fixture pair, and on all 49 ordered pairs of the seven cached tokenizers over the whole edge set.
+
+#### Does this change the M2b-S numbers?
+
+**No number already recorded changes, and nothing was retrained.** A checkpoint saved before this card records no alignment rule and loads with rule 1, which builds the same batches as `main`: compared tensor by tensor against `batch.py` and `align.py` from `origin/main` on 235 texts, four tokenizer pairs and two token budgets (1,880 comparisons, all equal), and held as literals in the tests. So `~/m2b-scale/run1/best.pt` evaluates exactly as it did.
+
+**A mapper trained from now on uses rule 2 and could score differently.** For Phi-3.5 to Qwen2.5 the difference is small on this kind of text: 3 of 200 SQuAD passages and 14 of 41,646 sender tokens (0.03%) align differently; stage 1 batches, which are truncated, also end at a shared boundary now. Whether that moves F1 is not measured. Loading an old checkpoint with rule 2, or a new one with rule 1, is a train and serve mismatch; `TransferPair` picks the rule from the checkpoint so this does not happen by accident, and `evaluate` writes `alignmentRule` into its report.
+
+#### Which pairs look viable by tokenizer overlap
+
+One measured transfer exists in this repository (Phi-3.5 to Qwen2.5, M2b-S), so this is a ranking by overlap, not a tested prediction. The published 0.9 correlation between overlap and transfer quality (arXiv 2603.18908) was not re-measured.
+
+- **Best: Qwen2.5 with Llama 3.1** (Jaccard 0.64, 95 to 98% of positions one-to-one on passages, 28% of passages cut identically) and **Phi-3.5 with Mistral v0.3** (Jaccard 0.61, 90 to 92% one-to-one). Each is a pair of the same tokenizer family. These are the pairs to try first for training-free alignment (`statebridge`), where nothing learns to bridge a boundary mismatch.
+- **Middle: Granite 3.1 with any of the others** (Jaccard 0.23 to 0.33, 63 to 82% one-to-one). Granite's 49k vocabulary splits words that the others keep whole, so about a third of its positions fall inside a longer token of Qwen or Llama.
+- **Weakest by overlap: a SentencePiece tokenizer with a byte-level one** (Phi-3.5 or Mistral with Qwen2.5 or Llama 3.1): Jaccard 0.17 to 0.22, 72 to 90% one-to-one depending on direction. Most of the small vocabulary exists in the large one (83 to 92%), so the low Jaccard is mostly the size gap; the real cost is the 18 to 27% of the small-vocabulary side's positions that sit inside a longer token.
+- **The M2b-S pair is in the weakest group** (Jaccard 0.17, 77% one-to-one from Phi-3.5 to Qwen2.5) and still passed its three gates with a trained mapper and character-span alignment. Low overlap therefore does not rule a pair out for a trained mapper; it is a reason not to expect a training-free method to work on it.
+- **Direction matters.** From the larger vocabulary to the smaller, one sender token covers several receiver tokens (11% of positions from Qwen2.5 to Phi-3.5), and the receiver tokens before the last one read nothing new. From the smaller to the larger, several sender tokens fall inside one receiver token (22% from Phi-3.5 to Qwen2.5), which loses nothing. Small-vocabulary sender to large-vocabulary receiver is the easier direction; M2b-S runs that way.
+
+#### Norm calibration
+
+`runtime/latent_transfer/norm.py`, off by default. `calibrate_cache` rescales each document's mapped keys and values so their RMS per layer and head equals the receiver's own (`sigma`, already in every checkpoint); `calibrate_states` moves hidden-state norms to a target, per document or per token, with an optional cap; `embedding_norm_stats` gives the receiver's input-embedding norm statistics as that target. Switches: `TransferPair(norm_calibration=True)` or `python -m latent_transfer.evaluate --norm-calibration [--norm-max-scale X]`; the report records `normCalibration`. With the flag off the mapped cache goes through the same two calls as before. Its effect on F1 is not measured (that needs the GPU and is the sibling sessions' experiment); stage 2 training does not apply it.
+
+### Codex review of L3 (2026-11-26)
+
+Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc, 40db050 and 482a51b, and a confirmation round on 9df433f. Every finding was reproduced before it was fixed, and each fix has a regression test named for its round in `runtime/tests/test_align.py`.
+
+- **Round 1 (10 findings).** Two tokenizers that cut one emoji into different byte groups could read a byte ahead; a sender token without characters carried earlier text past a receiver BOS and lost its order; `refine_spans` left overlaps longer than one character overlapping; rule 1 positions had changed for zero-width spans; a zero-width token could be taken as a place to truncate, and `max_tokens=None` raised; norm calibration rescaled padding, let a NaN in padding reach real tokens and gave NaN gradients at zero energy; a fraction broke the audit's JSON; the tensor mask compared floats; audit coverage and refusal counts; the word-marker tolerance applied to byte-level tokenizers. All fixed.
+- **Round 2 (4 of the 10 confirmed fixed, 8 findings).** Visibility read from the refined spans still let a receiver read ahead on overlaps longer than one character, and a cut could fall inside one; fixed by taking visibility and cuts from what the raw offsets say each token touched (`align.ownership`). `refine_spans` raised on orderable overlaps and on a sentinel offset; rule 2 positions could land on an empty token; a NaN in a real token was hidden and fp64 input went through fp32; audit miscounts. All fixed. Two accepted as documented rather than changed: the cache scale is taken over the whole document, so it is not prefix-causal (stated in `norm.py` and the handoff); a sender-only empty token at the very end is kept and reported unread.
+- **Round 3 (the round 2 items closed or accepted; 1 medium and 2 low new).** After a nested overlap, an uncovered gap was credited to the wrong sender token; a boundary could leave the overlap it divides; with offsets above 2**53 rule 2 chose a different receiver token than rule 1 on clean spans. All fixed in 9df433f. Codex also reported that rule 1 matched `origin/main` on 20,000 generated pairs and that no retained prefix was unsafe.
+- Found by the fixtures and the audit between rounds, not by Codex: an empty token between the pieces of one character blocked the completing piece from reading its own run; exact fractions gave rule 2 a different last digit than rule 1 on clean text (200 of 200 passages "changed" until fixed).
+- **Confirmation round on 9df433f: no defects above low.** The three round 3 fixes were confirmed with the values Codex evaluated, and its own per-character oracle found no mismatch in `ownership`, `reading_keys` or `common_cut` over 20,000 random span pairs, with and without the text length and at every token budget. One low finding: with offsets above 2**53 and a divided character on the receiver, the float midpoint chose the wrong receiver token. Fixed (the search is exact whenever the receiver has a divided character), with a test.
+- This card does not touch security, export or signing, so no human review is required by AGENTS.md section 4; Ruslan's review of the PR is still welcome.
+
+#### Repeated findings (AGENTS.md section 4, step 5; added 2026-11-27 when the rule landed with H13)
+
+- **No finding repeats an earlier card's entry in this file.** The alignment code had no review record before L3, and none of the section 6 rules that earlier reviews kept returning to (raw invisible characters, HTML sinks, loopback) came up here; `node scripts/check.mjs` reports no findings on this branch.
+- **One finding repeated inside this card,** across rounds 1, 2 and 3: a receiver token could read a sender token that had touched text the receiver had not finished (different byte groups in round 1, overlaps longer than one character in round 2, a gap after a nested overlap in round 3). It was answered with an API change, not a pattern: visibility and truncation no longer take the spans the caller happens to hold. `align.align_document` computes them from the raw offsets (`align.ownership`) and hands back integer reading keys, and `batch.make_pair` uses only those, so a caller cannot build the mask from refined spans again. No `scripts/check.mjs` rule can detect this mistake: it is a property of the arithmetic on arbitrary offsets, not of how the code is written. What guards it instead is the oracle in `runtime/tests/test_align.py`, which counts character by character and fails on any read ahead or refused safe read, on the fixtures, on every truncation and on every cached tokenizer pair.
+
+### Suites for L3 (2026-11-26)
+
+- `python -m unittest discover -s tests -t .` in `runtime/` on Windows (no torch), final commit: 309 tests, OK, 83 skipped.
+- The same in WSL with torch and the cached tokenizers, final commit: 309 tests, OK, none skipped.
+- `npm run -s test:graph`: 9 of 9.
+- `node --test tests/*.test.mjs`: 664 pass, 10 skipped, 0 failed. A first run, made while the audit and a Codex review were using the machine, had 1 failure of 674; only the end of that log was kept, so the test is not identified. The rerun on a quiet machine was clean. This card changes no JavaScript.
+- `npx playwright test`: 61 passed, 1 skipped (run at 40db050; later commits change only Python under `runtime/latent_transfer/` and its test).
+- Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), rerun on the final commit.
+- After merging `main` at c3be893 (2026-11-27, with L4's `statebridge` files and tests): `node scripts/check.mjs` no findings (323 files); the runtime suite 345 tests OK on Windows (102 skipped without torch) and 345 OK in WSL with torch, none skipped, on CPU; the rule 1 comparison equal again. L4's code reaches the alignment only through `TransferPair` with a checkpoint, which loads rule 1, so its recorded numbers do not depend on this card.

@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "about": "Card H11: the user-facing features of the browser app, named the way a person asks for them, and how to reach each one. `node scripts/drive.mjs <id>` opens a feature on a fresh ledger and saves a screenshot; tests/e2e/features.spec.mjs keeps every entry working. Steps: select [selector, value], upload [selector, repository file], fill [selector, text], click selector, waitFor selector (visible). An entry with runsSwarm true starts a swarm run; the ledger runs one at a time, so tests/e2e/swarm.spec.mjs checks those entries with its other swarm tests.",
+  "features": [
+    {
+      "id": "library-import",
+      "name": "Library: import a transcript",
+      "what": "Pick Claude Code or Codex and a transcript file; the ledger imports it and opens it in the reader.",
+      "path": "/",
+      "steps": [
+        { "select": ["#source-agent", "claude"] },
+        { "upload": ["#transcript-file", "demo/leo-orbit.jsonl"] },
+        { "click": "#import-form button:has-text(\"Import transcript\")" },
+        { "waitFor": "#reader-messages > *" }
+      ],
+      "proof": ".accession"
+    },
+    {
+      "id": "library-search",
+      "name": "Library: search transcripts",
+      "what": "Search every imported message, filter by agent, and open a matching transcript.",
+      "path": "/",
+      "steps": [
+        { "select": ["#source-agent", "claude"] },
+        { "upload": ["#transcript-file", "demo/leo-orbit.jsonl"] },
+        { "click": "#import-form button:has-text(\"Import transcript\")" },
+        { "waitFor": "#reader-messages > *" },
+        { "fill": ["#search-query", "orbit"] },
+        { "click": "#search-form button:has-text(\"Search\")" },
+        { "waitFor": "#search-results button" },
+        { "click": "#search-results button" },
+        { "waitFor": "#reader-messages > *" }
+      ],
+      "proof": ".catalog"
+    },
+    {
+      "id": "reader",
+      "name": "Library: read a transcript",
+      "what": "The reader shows each message with its line number, as text, and can delete the transcript.",
+      "path": "/",
+      "steps": [
+        { "select": ["#source-agent", "codex"] },
+        { "upload": ["#transcript-file", "demo/ali-orbit.jsonl"] },
+        { "click": "#import-form button:has-text(\"Import transcript\")" },
+        { "waitFor": "#reader-messages > *" }
+      ],
+      "proof": ".reader"
+    },
+    {
+      "id": "room",
+      "name": "Negotiation room",
+      "what": "Open two parties' graphs side by side; people confirm or reject each proposal.",
+      "path": "/",
+      "steps": [{ "waitFor": "#room-form" }],
+      "proof": "#room"
+    },
+    {
+      "id": "node-review",
+      "name": "Review graph nodes",
+      "what": "Approve, edit or reject each node of a version 3 graph beside its evidence.",
+      "path": "/",
+      "steps": [{ "waitFor": "#review-form" }],
+      "proof": "#review"
+    },
+    {
+      "id": "console-live",
+      "name": "Console: live",
+      "what": "The pixel office of agents, the live graph, evidence, activity and the swarm room, from this ledger's data.",
+      "path": "/console/",
+      "steps": [{ "waitFor": "#office" }]
+    },
+    {
+      "id": "console-demo",
+      "name": "Console: the recorded demo",
+      "what": "The recorded demo played to the end: hand-offs, tokens saved and the proof behind a node.",
+      "path": "/console/?demo&speed=8",
+      "steps": [{ "waitFor": "body[data-demo=\"finished\"]" }],
+      "timeoutMs": 60000
+    },
+    {
+      "id": "swarm",
+      "name": "Swarm page",
+      "what": "The dataset, the task and the controls to run many agents at once.",
+      "path": "/swarm/",
+      "steps": [{ "waitFor": "#run-form" }]
+    },
+    {
+      "id": "swarm-run",
+      "name": "Swarm: a simulated run",
+      "what": "A simulated 100-agent run to the end: each agent's tile, the checks and the combined answer.",
+      "path": "/swarm/",
+      "steps": [
+        { "waitFor": "#mode-simulated:enabled" },
+        { "click": "#mode-simulated" },
+        { "click": "#run" },
+        { "waitFor": "body[data-run-state=\"done\"]" }
+      ],
+      "timeoutMs": 60000,
+      "runsSwarm": true
+    }
+  ]
+}

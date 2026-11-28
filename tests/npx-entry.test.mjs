@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { InstallError, mcpPath, mcpServerCommand, unsafeSpecLine } from '../src/install.mjs';
+import { staticFiles } from '../src/static-files.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bin = join(repo, 'bin', 'context-ledger.mjs');
@@ -134,10 +135,15 @@ test('P5c: the package is publishable, and the tarball holds only the allowlist'
   assert.match(readFileSync(bin, 'utf8'), /^#!\/usr\/bin\/env node\n/u);
   const { stdout } = await run(process.execPath, [npmScript('npm-cli.js'), 'pack', '--dry-run', '--json'], { cwd: repo, encoding: 'utf8', timeout: 120_000 });
   const files = JSON.parse(stdout)[0].files.map(file => file.path.replaceAll('\\', '/')).sort();
+  // Card U10: the brand files the server serves, and the licences that travel with the
+  // fonts, are the only files from docs/ (tests/package-files.test.mjs names each one).
+  const brandFiles = ['docs/brand/tokens.css', 'docs/brand/ctm-logo.svg',
+    ...['inter-tight.woff2', 'jersey-15.woff2', 'silkscreen.woff2', 'OFL-intertight.txt', 'OFL-jersey15.txt', 'OFL-silkscreen.txt'].map(name => `docs/brand/fonts/${name}`)];
+  const brand = path => brandFiles.includes(path);
   const allowed = path => ['LICENSE', 'README.md', 'package.json', 'rules/latent-rules.json'].includes(path)
-    || ['bin/', 'src/', 'public/', 'schemas/'].some(prefix => path.startsWith(prefix));
+    || ['bin/', 'src/', 'public/', 'schemas/'].some(prefix => path.startsWith(prefix)) || brand(path);
   assert.deepEqual(files.filter(path => !allowed(path)), []);
-  for (const path of files) {
+  for (const path of files.filter(path => !brand(path))) {
     assert.doesNotMatch(path, /(?:^|\/)(?:tests?|fixtures|docs|demo|runtime)\/|\.(?:sqlite|env|pem|key|token)$|(?:^|\/)\.env/u, path);
   }
   for (const needed of ['bin/context-ledger.mjs', 'src/server.mjs', 'src/mcp.mjs', 'src/cli.mjs', 'public/index.html', 'schemas/semantic-graph-v2.schema.json']) {
@@ -251,6 +257,15 @@ test('P5c: from a packed tarball in an empty folder, npx starts the ledger, impo
   const env = homeEnv(home, { PORT: String(port), npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false' });
   const npx = [npmScript('npx-cli.js'), '-y', '--package', tarball, 'context-ledger'];
   await startBin(t, later, [...npx, 'start'], env, empty);
+  // Card U10: the installed copy serves every file on the server's list, the brand files
+  // (colours, logo, fonts) included. Before U10 those five answered 500.
+  for (const [path, [, type]] of staticFiles) {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`);
+    const body = await response.arrayBuffer();
+    assert.equal(response.status, 200, path);
+    assert.ok(response.headers.get('content-type').startsWith(type), path);
+    assert.ok(body.byteLength > 0, path);
+  }
   const transcript = join(empty, 'leo.jsonl');
   await writeFile(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: 'Leo: ship the synthetic adapter on port 4317.' } }) + '\n');
   const call = async (args, extra = {}) => {

@@ -6,6 +6,8 @@ import { ConflictError, InputError } from './errors.mjs';
 import { combine, incidents, isCorrect, isVerified, parseAnswer, seeded, systemPrompt, userPrompt } from './swarm-task.mjs';
 
 export const maxAgents = 200;
+// The reports every run reads: one fixed seed, so the page can show them before a run.
+export const swarmSeed = 7;
 export const maxRuns = 5;
 export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
@@ -33,6 +35,24 @@ export function swarmUrls(text) {
     }
     return url.href.replace(/\/+$/u, '');
   });
+}
+
+/** How long one answer to "are live runs offered?" is reused, in ms (U11 review). */
+const configReuseMs = 5000;
+
+/** Card U11: where a local vLLM listens unless told otherwise. */
+export const defaultSwarmUrl = 'http://127.0.0.1:8000/v1';
+
+/**
+ * Card U11: the model servers to ask, and where that came from. Unset or empty: the usual
+ * local vLLM address, asked only when a page asks whether live runs are offered. "off":
+ * none, and no request is made. Anything else: the loopback URLs it names, as before.
+ */
+export function swarmSetting(text) {
+  const value = typeof text === 'string' ? text.trim() : '';
+  if (!value) return { urls: [defaultSwarmUrl], source: 'default' };
+  if (value.toLowerCase() === 'off') return { urls: [], source: 'off' };
+  return { urls: swarmUrls(value), source: 'set' };
 }
 
 /** Prometheus text to { name: summed value } for the vLLM series the page shows. */
@@ -100,7 +120,12 @@ async function cappedText(response) {
 }
 
 export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => performance.now(), simScale } = {}) {
-  const urls = swarmUrls(env.SWARM_URLS);
+  const { urls, source } = swarmSetting(env.SWARM_URLS);
+  // Why live runs are not offered, in words a page can show as they are.
+  const noServer = source === 'off' ? 'Live runs are turned off (SWARM_URLS=off).' : 'No model server configured (set SWARM_URLS).';
+  const notAnswering = source === 'default'
+    ? `No model server is answering at ${defaultSwarmUrl}, where a local vLLM listens by default. Start one there and reload this page, or name yours in SWARM_URLS.`
+    : 'The configured model server is not answering.';
   const concurrency = Math.min(Math.max(Number.parseInt(env.SWARM_CONCURRENCY ?? '32', 10) || 32, 1), maxAgents);
   const scale = simScale ?? (Number(env.SWARM_SIM_SCALE) > 0 ? Number(env.SWARM_SIM_SCALE) : 1);
   // Card S1b: timed solo requests per server for the baseline, after one untimed warm-up.
@@ -131,13 +156,26 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     }));
   }
 
-  async function config() {
-    if (!urls.length) return { live: false, reason: 'No model server configured (set SWARM_URLS).', concurrency };
+  async function probe() {
+    if (!urls.length) return { live: false, reason: noServer, concurrency };
     try {
       return { live: true, models: (await models()).map(entry => entry.model), concurrency };
     } catch {
-      return { live: false, reason: 'The configured model server is not answering.', concurrency };
+      return { live: false, reason: notAnswering, concurrency };
     }
+  }
+
+  // U11 review: pages ask on every load, and with SWARM_URLS unset the ledger asks a port
+  // that something else may hold and stall on. Pages asking at once share one probe, and its
+  // answer is reused for a few seconds, so a stalled listener costs one wait, not one per tab.
+  let probing = null;
+  async function config() {
+    if (!probing || (probing.settledAt !== undefined && now() - probing.settledAt > configReuseMs)) {
+      const entry = { settledAt: undefined };
+      entry.promise = probe().finally(() => { entry.settledAt = now(); });
+      probing = entry;
+    }
+    return probing.promise;
   }
 
   async function liveAgent(run, agent, report, server) {
@@ -294,11 +332,11 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const mode = input?.mode;
     if (!Number.isInteger(agents) || agents < 1 || agents > maxAgents) throw new InputError(`agents must be a whole number from 1 to ${maxAgents}.`);
     if (mode !== 'live' && mode !== 'simulated') throw new InputError('mode must be live or simulated.');
-    if (mode === 'live' && !urls.length) throw new InputError('No model server configured (set SWARM_URLS).');
+    if (mode === 'live' && !urls.length) throw new InputError(noServer);
     // One run at a time, so SWARM_CONCURRENCY bounds the requests the GPU sees.
     if (active) throw new ConflictError('A swarm run is already running. Wait for it to finish.', { runId: active.id });
     const id = randomBytes(32).toString('hex');
-    const seed = 7;
+    const seed = swarmSeed;
     const reports = incidents(agents, seed);
     const run = {
       id, mode, seed, reports, state: 'starting', phase: null, agentsDone: false, started: now(), wallMs: null, metrics: null, baseline: null, kvPeak: null,
@@ -356,5 +394,18 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     };
   }
 
-  return { config, start, snapshot, urls, concurrency };
+  /**
+   * Card U8: what the swarm page shows before a run. The first reports as text and the
+   * instructions every agent shares. Never the generator's truth for a report.
+   */
+  function task() {
+    return {
+      seed: swarmSeed, maxAgents, synthetic: true,
+      sample: incidents(3, swarmSeed).map(({ id, text }) => ({ id, text })),
+      instructions: systemPrompt,
+      facts: ['service', 'cause', 'downtimeMinutes', 'quote'],
+    };
+  }
+
+  return { config, start, snapshot, task, urls, concurrency };
 }

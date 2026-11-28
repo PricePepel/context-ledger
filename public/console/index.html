@@ -3,62 +3,96 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#F2F1EE">
   <title>CTM Console</title>
+  <link rel="icon" type="image/svg+xml" href="/console/logo.svg">
+  <link rel="preload" href="/console/fonts/jersey-15.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/console/fonts/inter-tight.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/console/tokens.css">
   <link rel="stylesheet" href="/console/console.css">
   <link rel="stylesheet" href="/console/office.css">
   <script src="/console/session.js" defer></script>
   <script type="module" src="/console/console.mjs"></script>
 </head>
 <body>
-  <header class="bar">
-    <span class="brand" aria-hidden="true">CTM</span>
-    <h1>Console</h1>
-    <span id="mode" class="mode">Live</span>
-    <p id="status" class="status" role="status">Connecting to the ledger…</p>
-    <button id="replay" class="replay" type="button" hidden>Replay demo</button>
-    <a class="bar-link" href="/">Library</a>
-  </header>
-
-  <main class="console">
-    <section class="part office" aria-labelledby="office-heading">
-      <h2 id="office-heading">Agents</h2>
-      <svg id="office" aria-labelledby="office-heading"></svg>
-    </section>
-
-    <section class="part brain" aria-labelledby="brain-heading">
-      <h2 id="brain-heading">What they put in the ledger</h2>
-      <p class="hint">Click any node to see the line that proves it.</p>
-      <div id="brain" class="brain-box"></div>
-    </section>
-
-    <aside id="evidence" class="part evidence" aria-labelledby="evidence-heading">
-      <p class="eyebrow">Evidence</p>
-      <h2 id="evidence-heading" aria-live="polite">Pick a node</h2>
-      <p id="evidence-meta" class="evidence-meta"></p>
-      <p id="evidence-status" class="evidence-status" role="status">The cited transcript turn opens here, with the cited lines highlighted.</p>
-      <ol id="evidence-turns" class="turns" aria-label="Cited transcript turns"></ol>
-      <h3 class="activity-heading">Activity</h3>
-      <ol id="activity" class="activity" aria-label="Activity" aria-live="polite"></ol>
-    </aside>
-
-    <section class="part numbers" aria-label="Numbers">
-      <div class="tile">
-        <p class="tile-value" id="n-handoffs">0</p>
-        <p class="tile-label">Hand-offs today</p>
-        <p class="tile-note">graphs published today</p>
+  <div class="sheet">
+    <header class="bar">
+      <img class="brand" src="/console/logo.svg" alt="CTM" width="32" height="32">
+      <h1>Console</h1>
+      <span id="mode" class="mode">Live</span>
+      <p id="status" class="status" role="status">Connecting to the ledger…</p>
+      <div class="panel-toggles" role="group" aria-label="Show panels">
+        <button class="btn toggle" type="button" data-panel="evidence" aria-controls="evidence" aria-pressed="true">Evidence</button>
+        <button class="btn toggle" type="button" data-panel="feed" aria-controls="feed" aria-pressed="true">Activity</button>
       </div>
-      <div class="tile">
-        <p class="tile-value" id="n-tokens">0</p>
-        <p class="tile-label">Tokens saved (estimate)</p>
-        <p class="tile-note" id="n-tokens-note">transcript vs graph briefing, characters ÷ 4</p>
+      <a class="btn bar-link" href="/">Library</a>
+      <button id="replay" class="btn solid replay" type="button" hidden>Replay demo</button>
+    </header>
+
+    <main class="console">
+      <section class="part office" aria-labelledby="office-heading">
+        <h2 id="office-heading" class="lab">Agents</h2>
+        <svg id="office" aria-labelledby="office-heading"></svg>
+      </section>
+
+      <section id="swarm" class="part swarm" aria-labelledby="swarm-heading">
+        <div class="swarm-head">
+          <h2 id="swarm-heading" class="lab">Local swarm</h2>
+          <span id="swarm-mode" class="swarm-mode">Checking…</span>
+          <button id="swarm-run" class="btn solid" type="button" disabled>Run 100 agents</button>
+          <a id="swarm-open" class="btn bar-link swarm-open" href="/swarm/">Open the swarm page</a>
+        </div>
+        <p id="swarm-status" class="hint" role="status">Checking for a model server…</p>
+        <ul class="swarm-legend" aria-hidden="true">
+          <li><i data-state="queued"></i>queued</li>
+          <li><i data-state="running"></i>working</li>
+          <li><i data-state="verified"></i>answer checked against its source</li>
+          <li><i data-state="dropped"></i>quote not found, left out</li>
+          <li><i data-state="failed"></i>failed</li>
+        </ul>
+        <ol id="swarm-grid" class="swarm-grid" aria-label="Swarm agents"></ol>
+        <p id="swarm-tally" class="swarm-tally"></p>
+        <dl id="swarm-stats" class="swarm-stats"></dl>
+      </section>
+
+      <section class="part brain" aria-labelledby="brain-heading">
+        <h2 id="brain-heading" class="lab">What they put in the ledger</h2>
+        <p class="hint">Click any node to see the line that proves it.</p>
+        <div id="brain" class="brain-box"></div>
+      </section>
+
+      <div class="side">
+        <aside id="evidence" class="part evidence" aria-labelledby="evidence-heading">
+          <p class="lab">Evidence</p>
+          <h2 id="evidence-heading" class="fact" aria-live="polite">Pick a node</h2>
+          <p id="evidence-meta" class="evidence-meta"></p>
+          <p id="evidence-status" class="evidence-status" role="status">The cited transcript turn opens here, with the cited lines highlighted.</p>
+          <ol id="evidence-turns" class="turns" aria-label="Cited transcript turns"></ol>
+          <section id="review" class="review" aria-label="Review" hidden></section>
+        </aside>
+        <section id="feed" class="part feed" aria-labelledby="activity-heading">
+          <div class="feed-head">
+            <h2 id="activity-heading" class="lab">Activity</h2>
+            <p class="counters" aria-label="Today">
+              <span class="tag w" title="graphs published today"><span id="n-handoffs">0</span> hand-offs</span>
+              <span class="tag m" id="n-tokens-wrap"><span id="n-tokens">0</span> tokens saved</span>
+              <span class="tag q" title="replaced by a later decision"><span id="n-superseded">0</span> superseded</span>
+            </p>
+          </div>
+          <p class="counter-note" id="n-tokens-note">transcript vs graph briefing, characters ÷ 4</p>
+          <ol id="activity" class="activity" aria-label="Activity" aria-live="polite"></ol>
+        </section>
+
       </div>
-      <div class="tile">
-        <p class="tile-value" id="n-superseded">0</p>
-        <p class="tile-label">Superseded decisions</p>
-        <p class="tile-note">replaced by a later decision</p>
-      </div>
+    </main>
+
+    <section class="band" aria-label="CTM, with the agent crew">
+      <button id="band-replay" class="btn band-replay" type="button">Replay intro</button>
+      <div class="drift" aria-hidden="true"></div>
+      <svg id="band" role="group" aria-label="CTM, with the agent crew"></svg>
+      <p id="band-said" class="sr-only" role="status"></p>
     </section>
-  </main>
+  </div>
 
   <svg id="flash-layer" class="flash-layer" aria-hidden="true"></svg>
 </body>
