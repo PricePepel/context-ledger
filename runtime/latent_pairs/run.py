@@ -72,7 +72,9 @@ def run_logged(command, log_path):
     started = time.time()
     with open(log_path, "ab") as handle:
         code = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, check=False,
-                              env={**os.environ, "PYTHONUNBUFFERED": "1"}).returncode
+                              env={**os.environ, "PYTHONUNBUFFERED": "1",
+                                   # fewer stranded blocks when batch shapes change every step
+                                   "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}).returncode
     return code, time.time() - started
 
 

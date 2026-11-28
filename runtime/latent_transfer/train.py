@@ -127,6 +127,22 @@ def gpu_peak():
             "peakReservedGiB": round(torch.cuda.max_memory_reserved() / 2 ** 30, 2)}
 
 
+GPU_SHARE = 0.92  # of the card; the rest is for the desktop and for CUDA's own context
+
+
+def cap_gpu_memory(share=GPU_SHARE):
+    """Keep this process inside the card's own memory.
+
+    Under WSL an allocation past the card's memory does not fail: it goes to host memory
+    and every step slows down several times over, silently (L5 run 1: 1.07 s per step at
+    16.0 of 16 GiB, 0.48 s with room to spare). With a cap, torch first reuses the blocks it
+    has cached, and a run that really does not fit stops with an out-of-memory error that
+    the caller can act on.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.set_per_process_memory_fraction(share)
+
+
 def release_calibration_memory():
     """Hand torch's cached GPU blocks back after sigma calibration, and start the peak
     counters again so they describe training.
@@ -172,6 +188,7 @@ def main():
     log_path = os.path.join(out, "log.jsonl")
     rng = random.Random(args.seed)
     torch.manual_seed(args.seed)
+    cap_gpu_memory()
 
     def log(**fields):
         fields["time"] = round(time.time(), 1)
@@ -224,7 +241,7 @@ def main():
             optimizer.step()
             if (step + 1) % 100 == 0:
                 log(event="stage1", step=step + 1, loss=round(float(loss), 4), grad=round(float(norm), 3),
-                    secPerStep=round((time.time() - started) / (step + 1), 3))
+                    secPerStep=round((time.time() - started) / (step + 1), 3), **gpu_reserved())
             if (step + 1) % 1000 == 0 or step + 1 == args.stage1_steps:
                 log(event="stage1-eval", step=step + 1, nmse=round(nmse(pair, val_batches), 4),
                     devF1=round(dev_f1(pair, dev_rows[:50]), 4), **gpu_peak())
@@ -256,7 +273,7 @@ def main():
         optimizer.step()
         if (step + 1) % 100 == 0:
             log(event="stage2", step=step + 1, loss=round(float(loss), 4), grad=round(float(norm), 3),
-                secPerStep=round((time.time() - started) / (step + 1), 3))
+                secPerStep=round((time.time() - started) / (step + 1), 3), **gpu_reserved())
         if (step + 1) % 500 == 0 or step + 1 == args.stage2_steps:
             score = dev_f1(pair, dev_rows)
             log(event="stage2-eval", step=step + 1, devF1=round(score, 4), nmse=round(nmse(pair, val_batches), 4),
