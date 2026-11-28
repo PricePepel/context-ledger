@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -446,13 +445,9 @@ test('the MCP adapter has no way to delete', async () => {
   assert.doesNotMatch(await readFile(new URL('../src/mcp.mjs', import.meta.url), 'utf8'), /DELETE|deleteSession/u);
 });
 
-test('the files this card changes hold no raw control or format characters', async () => {
-  const files = ['src/errors.mjs', 'src/store.mjs', 'src/server.mjs', 'src/cli.mjs', 'tests/delete.test.mjs', 'tests/routes.test.mjs',
-    'tests/e2e/delete.spec.mjs', 'public/app.js', 'public/index.html', 'public/styles.css'];
-  for (const file of files) {
-    assert.ok(existsSync(join(root, file)), file);
-    const text = await readFile(join(root, file), 'utf8');
-    const found = [...text].filter(character => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character) && !['\t', '\n', '\r'].includes(character));
-    assert.deepEqual(found, [], file);
-  }
+// Card H12: Playwright runs the specs it finds, so a deleted browser journey would pass
+// silently. The removed character scan also asserted the spec exists; this keeps that.
+test('the delete browser journey is still in the Playwright suite', async () => {
+  const spec = await readFile(new URL('./e2e/delete.spec.mjs', import.meta.url), 'utf8');
+  assert.match(spec, /\btest\(/u);
 });

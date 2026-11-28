@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { existsSync } from 'node:fs';
 import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { codeLifetimeMs, createAuth, emptyIfOwnRecord, privateToOwner, readTokenFile, sessionLifetimeMs, tokenFileFor, tokenForUrl } from '../src/token.mjs';
+import { codeLifetimeMs, createAuth, emptyIfOwnRecord, newToken, privateToOwner, readTokenFile, runWithInput, sessionLifetimeMs, tokenFileFor, tokenForUrl, writeAttemptMs, writeAttempts, writeTokenFile } from '../src/token.mjs';
 import { restrictToOwner } from './ledger-auth.mjs';
 import { startMcp } from './mcp-client.mjs';
 
@@ -849,4 +850,142 @@ test('on Windows a token file can be removed while a client is reading it', { sk
   await rm(marker);
   assert.deepEqual(await reading, { port: 4317, token: 'H'.repeat(43) });
   await assert.rejects(stat(file), { code: 'ENOENT' });
+});
+
+// Card H15: the Windows write with an injected PowerShell runner, so these run on every
+// platform and nothing really sleeps. A fake attempt does what the write script does
+// (create the file, write the record) and prints the descriptor it would have found.
+const fakeSid = 'S-1-5-21-1000-2000-3000-1001';
+const privateOutput = `${fakeSid}\n${fakeSid}\nO:${fakeSid}G:${fakeSid}D:PAI(A;;FA;;;${fakeSid})\n`;
+const timedOut = () => Object.assign(new Error('The command ran out of time.'), { timedOut: true });
+async function h15Place(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-h15-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return { path: tokenFileFor(join(directory, 'ledger.sqlite'), 4317), token: newToken() };
+}
+
+test('H15: a Windows write whose first PowerShell attempt times out is retried once and succeeds', async t => {
+  const { path, token } = await h15Place(t);
+  const calls = [];
+  const run = async (target, input, timeoutMs) => {
+    calls.push({ found: existsSync(target), timeoutMs, input });
+    if (calls.length === 1) {
+      await writeFile(target, input.slice(0, 5)); // killed part way through
+      throw timedOut();
+    }
+    await writeFile(target, input);
+    return privateOutput;
+  };
+  const identity = await writeTokenFile(path, token, 4317, { windows: true, run });
+  assert.equal(typeof identity.ino, 'bigint');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(call => call.timeoutMs), [writeAttemptMs, writeAttemptMs]);
+  assert.equal(writeAttemptMs, 60_000);
+  assert.equal(calls[1].found, false, 'the second attempt creates the file afresh');
+  assert.equal(calls[0].input, JSON.stringify({ port: 4317, token }) + '\n');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { port: 4317, token });
+});
+
+test('H15: a Windows write that times out twice fails with the fixed sentence and leaves no token', async t => {
+  const { path, token } = await h15Place(t);
+  let calls = 0;
+  const run = async (target, input) => {
+    calls += 1;
+    await writeFile(target, input); // the record was written before the kill
+    throw timedOut();
+  };
+  await assert.rejects(writeTokenFile(path, token, 4317, { windows: true, run }), { message: 'The token file could not be written privately.' });
+  assert.equal(calls, writeAttempts);
+  assert.equal(writeAttempts, 2);
+  assert.equal(existsSync(path) ? (await readFile(path, 'utf8')).includes(token) : false, false);
+});
+
+test('H15: a Windows write that finds a descriptor others can read fails at once, without a retry, and empties its record', async t => {
+  const { path, token } = await h15Place(t);
+  let calls = 0;
+  const run = async (target, input) => {
+    calls += 1;
+    await writeFile(target, input);
+    return `${fakeSid}\n${fakeSid}\nO:${fakeSid}D:PAI(A;;FA;;;${fakeSid})(A;;FR;;;WD)\n`;
+  };
+  await assert.rejects(writeTokenFile(path, token, 4317, { windows: true, run }), { message: 'The token file could not be written privately.' });
+  assert.equal(calls, 1);
+  assert.equal(await readFile(path, 'utf8'), '');
+});
+
+test('H15: a Windows write whose attempt fails for another reason is not retried', async t => {
+  const { path, token } = await h15Place(t);
+  for (const failure of [Object.assign(new Error('exit 3'), { timedOut: false }), new Error('no flag')]) {
+    let calls = 0;
+    const run = async () => {
+      calls += 1;
+      throw failure;
+    };
+    await assert.rejects(writeTokenFile(path, token, 4317, { windows: true, run }), { message: 'The token file could not be written privately.' });
+    assert.equal(calls, 1);
+    assert.equal(existsSync(path), false);
+  }
+});
+
+test('H15: the runner kills a child that outlives its bound and marks it timed out, and feeds stdin', async () => {
+  const hung = runWithInput(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: process.env, input: '', timeoutMs: 300 });
+  await assert.rejects(hung, error => error.timedOut === true);
+  const failed = runWithInput(process.execPath, ['-e', 'process.exit(4)'], { env: process.env, input: '', timeoutMs: 30_000 });
+  await assert.rejects(failed, error => error.timedOut === false);
+  const echoed = await runWithInput(process.execPath, ['-e', "let s = ''; process.stdin.on('data', d => { s += d; }).on('end', () => process.stdout.write(s.toUpperCase()));"], { env: process.env, input: 'synthetic record\n', timeoutMs: 30_000 });
+  assert.equal(echoed, 'SYNTHETIC RECORD\n');
+});
+
+test('H15 review: a timed-out child has exited, not just been asked to, when the runner rejects', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-h15-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const pidFile = join(directory, 'pid');
+  // On POSIX the child takes a moment over SIGTERM before a signal ends it; Windows ends it at once.
+  const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => setTimeout(() => process.kill(process.pid, 'SIGKILL'), 300)); setInterval(() => {}, 1000);`;
+  await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 3000 }), error => error.timedOut === true);
+  const pid = Number(await readFile(pidFile, 'utf8'));
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+});
+
+test('H15 review: a stop during the write kills the child, waits for it, and fails closed without a retry', async t => {
+  const stopping = new AbortController();
+  const hung = runWithInput(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: process.env, input: '', timeoutMs: 30_000, signal: stopping.signal });
+  setTimeout(() => stopping.abort(), 200);
+  await assert.rejects(hung, error => error.timedOut === false);
+
+  const { path, token } = await h15Place(t);
+  const writeStop = new AbortController();
+  let calls = 0;
+  const run = async (target, input, timeoutMs, signal) => {
+    calls += 1;
+    assert.equal(signal, writeStop.signal);
+    await writeFile(target, input);
+    writeStop.abort();
+    throw timedOut(); // even a timeout is not retried once the server is stopping
+  };
+  await assert.rejects(writeTokenFile(path, token, 4317, { windows: true, run, signal: writeStop.signal }), { message: 'The token file could not be written privately.' });
+  assert.equal(calls, 1);
+  assert.equal(await readFile(path, 'utf8'), '');
+});
+
+test('H15 review 2: a child that writes too much is stopped as a failure, never as a retryable timeout', async () => {
+  // It floods stdout, then (on POSIX) lingers over SIGTERM past its short bound.
+  const script = "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 500)); process.stdout.write('x'.repeat(70 * 1024)); setInterval(() => {}, 1000);";
+  await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 2000 }), error => error.timedOut === false && error.message === 'The command was stopped.');
+});
+
+test('H15 review 2: a write whose folder cannot be prepared fails with the fixed sentence, naming no path', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-h15-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = tokenFileFor(join(directory, 'ledger.sqlite'), 4317);
+  await mkdir(path);
+  await writeFile(join(path, 'keep.txt'), 'synthetic\n'); // a folder at the path cannot be removed
+  for (const onWindows of [true, false]) {
+    await assert.rejects(writeTokenFile(path, newToken(), 4317, { windows: onWindows, run: async () => assert.fail('no attempt') }), error => error.message === 'The token file could not be written privately.' && !error.message.includes(directory));
+  }
+});
+
+test('H15 review 3: a child that exits with its own code when the timer fires is judged by that code, not retried as a timeout', { skip: process.platform === 'win32' && 'Windows ends a killed child at once, so it never exits with its own code.' }, async () => {
+  const script = "process.on('SIGTERM', () => process.exit(4)); setInterval(() => {}, 1000);";
+  await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 300 }), error => error.timedOut === false);
 });
