@@ -208,11 +208,12 @@ function pricesOf(text, item) {
     const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
     // A label is the item's own short row: it opens a block, with at most two words before the
     // name ("| small oat latte $5.00") and a short gap to the price ("| oat latte (16 oz) $5.00").
+    // The price may also open the very next block, as in a menu card ("| oat latte | $5.00").
     // A name in a sentence ("inspired by our oat latte $5.00", "oat latte fans might like our
-    // cookie for $5.00") may be followed by some other thing's price, and so may a name whose
-    // price lies past a block break ("| oat latte pairings | cookie $5.00").
+    // cookie for $5.00") may be followed by some other thing's price, and so may a heading
+    // whose next block is about something else ("| oat latte pairings | cookie $5.00").
     const ownRow = /(^|\|)\s*([\p{L}-]+\s+){0,2}$/u.test(text.slice(Math.max(0, match.index - 40), match.index))
-      && !between.includes('|') && between.trim().length <= 15;
+      && /^[^|]{0,15}(\|\s*)?$/u.test(between);
     if (amount) found.push({ price: Number(amount[1]), label: ownRow });
   }
   return found;
@@ -246,9 +247,13 @@ export const requirements = [
   // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" in the same
   // sentence after it.
   ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) => {
-    // The sentence ends at a full stop or a block break ("| sign up once." is another paragraph).
-    const sentence = after.replace(/([.!?](\s|$)|\|)[\s\S]*/u, '');
+    // The sentence ends at a full stop or a block break ("| sign up once." is another paragraph),
+    // but a block right after the price that opens with "one-time" or "upfront" labels the price
+    // ("$18 | one-time signup fee").
+    const [own, next = ''] = after.split('|');
+    const sentence = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
     return !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence) &&
+      !/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next) &&
       (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u.test(after) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
   })],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],

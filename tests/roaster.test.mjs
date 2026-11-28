@@ -228,3 +228,11 @@ test('review 4, round 4: block breaks bound price labels and one-time words; quo
   const titled = scoreSite(good.replace('<p>Roasted slow, poured fresh.</p>', '<p title="Our motto > Roasted slow, poured fresh.">Welcome</p>'));
   assert.ok(titled.missed.includes('Tagline "Roasted slow, poured fresh."'));
 });
+
+test('review 4, round 5: a menu card puts its price in the next block; a one-time label in the next block counts', () => {
+  const card = scoreSite(good.replace('<p>Our signature', '<div class="menu-item"><p>Oat Latte</p><p>$5.00</p></div><p>Our signature'));
+  assert.ok(card.stale.includes('Old oat latte price $5.00'));
+  assert.ok(card.missed.includes('Oat latte $5.25'));
+  const fee = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>Monthly coffee deliveries</p><div>$18</div><div>One-time signup fee</div>'));
+  assert.ok(fee.missed.includes('Bean Club, $18 a month'));
+});

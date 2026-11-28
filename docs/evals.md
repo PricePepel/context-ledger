@@ -6277,4 +6277,11 @@ A fourth round found two medium and one low, fixed with a regression test:
 15. *(medium)* "Sign up once." in the next paragraph failed the monthly check. The one-time words are now looked for only up to a full stop or a block break.
 16. *(low)* Visible text cut a tag at its first `>`, so a quoted `title="Our motto > …"` leaked into the scored text. Tags are now removed with their quoted values whole.
 
+A fifth round found two medium, the mirror image of items 14 and 15, fixed so that every earlier round's cases still pass:
+
+17. *(medium)* A menu card that puts the name and the price in two blocks (`<p>Oat Latte</p><p>$5.00</p>`) hid a stale price. An own row may now have its price open the very next block, while a heading followed by a block about something else ("Oat Latte Pairings | Cookie $5.00") still does not count.
+18. *(medium)* A one-time label in the block right after the price ("$18 | One-time signup fee") passed the monthly check. A next block that opens with "one-time" or "upfront" now fails it, while "Sign up once." in the next paragraph still does not.
+
+The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
+
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
