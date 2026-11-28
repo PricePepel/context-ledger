@@ -8,6 +8,52 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — L3 tokenizer alignment audit (2026-11-26)
+
+Card L3, branch `claude/l3-tokenizer-align-cc0178`. The alignment between two models' tokens (`runtime/latent_transfer/align.py`) was already by character offsets, not token index. The audit ran five tokenizers (Phi-3.5, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), all 20 ordered pairs, on 35 hard synthetic texts and 200 SQuAD passages; tables in [evals](evals.md) under L3. No GPU, no training.
+
+What it found: real tokenizers do not return a clean split of the text. The byte tokens of one emoji all report the emoji's span, Granite reports a whole character for a token that ends inside it, Phi-3.5 and Mistral give their word marker the span of the next character, and Qwen leaves a combining accent under no token. With those offsets the same tokenizer on both sides did not map token i to position i, a piece could read later pieces, and after truncation one side's last tokens sat over text the other side had dropped.
+
+What changed:
+
+- **Rule 2** (`align.ALIGNMENT_RULE`, the default for new work): positions come from offsets refined into spans that tile the text; a sender token is readable once the receiver has finished every character the sender had touched (taken from the raw offsets, `align.ownership`); truncation stops both sides where each has finished exactly what it has touched.
+- **Rule 1** is the old behaviour, kept exactly. A checkpoint without a recorded rule (every checkpoint so far, `~/m2b-scale/run1/best.pt` included) loads with rule 1, so **no recorded M2b or M2b-S number changes**. A mapper trained from now on uses rule 2 and records it; for Phi-3.5 to Qwen2.5 that changes 3 of 200 SQuAD passages (0.03% of sender tokens). Not retrained, so its effect on F1 is unknown.
+- The batch (`batch.Pair`) says what does not line up: `sender_unread`, `receiver_blind`, `dropped`.
+- `python -m latent_transfer.align_audit` measures any tokenizer pair (`--tokenizers` takes Hugging Face ids, `--pairs a:b`).
+
+For the `cross-model` and `statebridge` sessions:
+
+- **Alignment for a new pair:** `make_pair(sender_tok, receiver_tok, texts, max_tokens)` gives rule 2. For your own code, `align.align_document(sender_raw_spans, receiver_raw_spans, len(text), max_tokens)` returns an `Aligned` with the kept token indexes (`sender_keep`, `receiver_keep`), the refined spans, and `.positions()`, `.mask()`, `.unread()` and `.blind()`. Pass raw offsets of the whole text (no tokenizer truncation); `align.classify` takes refined spans. To add a BOS, give it the span `(0, 0)` on the side that has one.
+- **Norm calibration is off unless you turn it on.** For a mapped KV cache: `TransferPair(..., norm_calibration=True)`, or `python -m latent_transfer.evaluate --checkpoint ... --norm-calibration` (add `--norm-max-scale 4` to keep each scale within 1/4 to 4). It rescales each document's keys and values to the receiver's own RMS per layer and head, from `sigma` in the checkpoint. For hidden states fed in as embeddings (training-free alignment): `from latent_transfer.norm import calibrate_states, embedding_norm_stats`, then `calibrate_states(states, embedding_norm_stats(receiver)["mean"], mask, per_token=True)`. Compare with the flag off on the same items; no result with it on exists yet. Stage 2 training (`train.stage2_loss`) does not apply it. The cache scale is taken over the whole document, so it suits one-shot passage transfer and not a cache that must stay valid as a prefix.
+- **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
+
+Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+## Current checkpoint: H14 Windows-only browser test flakes (2026-11-27)
+
+Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
+
+Next owner: H15. The Node suite on #100 failed because the server's Windows token-file write (PowerShell, 30 s timeout, `src/token.mjs`) did not finish under load, so the server exited. That code guards the token file, so Ruslan approves its merge.
+
+## Current checkpoint: H10 label lengths in code points (2026-11-26)
+
+`scripts/check.mjs` has a fourth rule, `label-length`: a label's `.length` next to a comparison must count code points (`[...label].length`), as JSON Schema `maxLength` and the graph schemas do. Its first run found that latent findings dropped labels of 500 emoji; fixed with a test. The store double-close candidate was dropped: no pattern finds it without understanding control flow, and its tests cover it. Next owner: add a rule the next time a review finding repeats a kind already seen (H13 writes that into AGENTS.md).
+
+## Current checkpoint: H9 repo-wide invariant checks (2026-11-26)
+
+`node scripts/check.mjs` checks every tracked file for the AGENTS.md section 6 rules that Codex reviews kept finding: raw control, format, bidi and separator characters (files and file names); HTML sinks in code outside tests; and `listen` calls that do not name `'127.0.0.1'`. It runs first in the node CI job on all three systems and is in the AGENTS.md section 4 local run list. Each message says what to write instead. On its first run it found three real bugs on `main`, now fixed. Design choice from Codex round 2: the code rules read comments and strings as they are, so a sink spelt in a comment is reported (reword it); a whole-file comment skipper could be fooled into skipping code. Review rounds and results are in [evals](evals.md) under H9.
+
+Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
+
+## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
+
+The pixel console line is in `ruslan/console-v0` and goes to `main` with the release PR #88. Ali's U4, U4b and U6 (#51, #55, #56) and U7 to U10 (#82 to #85, #87) were merged on 2026-11-23, with Ali's approval in #56 (he also reviewed the console changes in #83 and #84) and Ruslan's for the release. Once #88 is merged, a fresh install from GitHub gets the pixel console with its swarm room, the library and the swarm page in the same pixel look, the terminal welcome on `start` and `install`, and the brand files in the package (U10: an installed copy used to come up without its colours, fonts and logo).
+
+#88 also merged `main`'s P3c into the line (only `docs/evals.md` conflicted; both sides kept) and removed 22 stale board rows that the U6 merge of `main` (#82) had left beside `main`'s current ones. Suites on the release branch: node 654 pass, 10 skipped; Playwright 61 pass, 1 skipped. The live swarm from the console room on vLLM: 100 agents in 3.6–4.1 s on a warm server, about 20–22× faster than one after another, 100 of 100 verified and correct each time (evals, U7).
+
+Next owner: Ali reports node test failures on his machine that come from its setup (where npm is installed, and OpenSSL), while CI is green. The tests look for npm's CLI next to `node`; the U10 test also checks `npm_execpath` and the distribution paths, but the P5c helper in `tests/npx-entry.test.mjs` does not (Codex noted it in the U10 review). Not done: `npm publish`, and team mode (one ledger joined from a second computer).
+
+U11 (PR #89, merged 2026-11-23): at a terminal `start` explains how to sign in, with the link on a line of its own; piped output is unchanged. The swarm asks `http://127.0.0.1:8000/v1` when `SWARM_URLS` is unset, so a running vLLM is found without a setting, and `SWARM_URLS=off` turns live runs off. Tests that expect a simulated swarm must set `SWARM_URLS=off`.
+
 ## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
 
 PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 3: P3b's `reviews` plus `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 and 2 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
@@ -18,12 +64,25 @@ PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts 
 
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
-PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Not done yet: the live check on vLLM, blocked because the GPU is busy with W3 until about 22:00. Next owner: run 100 agents live (expect about 23-30x, a nonzero KV peak), add the numbers to evals and PR #76, then update the investor run sheet line that says not to quote the speed-up tile.
+PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Live check done (evals, S1b): 100 agents on the 7B model show about 21-22x on warm runs (15x on the first run after a server start), against 51-56x from the old figure, and a KV peak of about 5% where the last sample reads 0%. PR #76 is merged. Next owner: update the investor run sheet line that says not to quote the speed-up tile (quote about 21-22x from a warm run).
 
 ## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
 
 100 live agents (Qwen2.5-7B AWQ on the laptop GPU) finish in 3.5–4.6 s, 100 of 100 correct and verified, combined answer matching the truth; about 23–30× faster than one agent at a time (measured single-agent baseline 1.05 s). The page's own speed-up ratio (53×) overstates this, and its KV figure reads 0% after the run: both go to Backlog card S1b. Two models on one GPU start only with the settings in evals (S1, live run); their timings were taken while another GPU job ran and are not usable. Next owner: S1b, then rerun the two-model timing on an idle GPU.
 
+
+## Current checkpoint — L4 training-free alignment does not replace the mapper (2026-11-27)
+
+Card L4 tested whether a closed-form alignment in the style of StateBridge (arXiv 2608.13317) can stand in for the trained M2b-S mapper, so that 5 to 8 models would not each need a trained pair. It cannot, on this evidence. On the 300 M2b-S SQuAD questions and seven model pairs, no pair and no variant passes the rule fixed before the runs (beat a mismatched prefix with a 95% interval above zero, and be at least as good as the sender's text summary): 0 of 28. Phi-3.5-mini to Qwen2.5-1.5B: best aligned prefix F1 0.192, text summary 0.461, no passage 0.191, trained mapper 0.872. Tables, intervals, timings and the edge cases are in evals (L4).
+
+Two things worth keeping from the card:
+
+- **The paper does not do what its abstract suggests for us.** It only ever uses one model for all agents, and its map is fitted on each message against that message's own token embeddings. With 64 rows in a space of thousands of dimensions, and tokens that do not repeat, that fit returns the token embeddings whatever the hidden states were (unit tests show it and its two conditions). On real Qwen2.5-3B summaries, where tokens do repeat, swapping in another passage's hidden states changes the prefix by 7% and leaves 280 of 300 answers unchanged, and the prefix scores like the plain token embeddings (0.447 against 0.448, difference within 0.01) and slightly below the summary as text. We did not rerun the paper's benchmarks, so where its reported gains come from is untested.
+- **Why the cross-model version fails.** Two models' vocabulary tables do line up under one rotation (81% to 100% of held-out entries land on their own row), but final-layer hidden states are not vocabulary rows: mapped states land on the right row 0% to 23% of the time, and a map fitted on real states reaches 29% to 47%, which carries a trace of the passage (0.045 to 0.172 F1 over a mismatched prefix, in 11 of 14 checks) but stays 0.22 to 0.38 F1 below the text summary and is not reliably above no passage at all. These diagnostics describe the failure; they do not isolate its cause.
+
+Code, all in new files: `runtime/latent_transfer/statebridge.py` (the arithmetic), `statebridge_anchors.py`, `statebridge_stats.py`, `statebridge_eval.py` (one command per pair), `statebridge_edge.json`, `runtime/tests/test_statebridge.py` (36 tests). `align.py` is untouched.
+
+Next owner: keep the trained mapper for cross-model hand-offs and text where no mapper exists. If someone wants to push this line further, the open question is not another closed-form map but whether one small trained piece can be shared across pairs (a common space with one adapter per model, trained once per model rather than once per pair); that would be a new card with the same mismatched control. Not done here: a multi-step reasoning task like the paper's, a Llama pair (gated, not on the machine), and any search over `K`, `α` and `λ`.
 
 ## Current checkpoint — M2b-S latent transfer at 4B scale (2026-11-22)
 
@@ -444,6 +503,62 @@ Next steps:
 
 1. The console (U1, PR #22) reads a `grounding` field on nodes. Once both are merged, point its `nodeMark` at the graph's `quotedNodeIds` and `inferredNodeIds`.
 2. The mark is a floor, like the latent check: a label that only shares one content word with its line is quoted. A stricter check (all content words, or an exact quote field on the node) would be a new card with its own eval.
+## Current checkpoint — U4 console polish (2026-11-18)
+
+Branch `ali/u4-console-polish`, stacked on U1 (#22), G7 (#23), U2 (#30) and I3 (#34); the PR's base is `ruslan/console-v0`.
+
+- **Brand:** the console loads `docs/brand/tokens.css`, served at `/console/tokens.css` from its one source, and `console.css` and `office.css` use only `--ctm-*` variables (a node test checks each is defined).
+- **Office:** agents are 16 × 20 pixel sprites (`public/console/sprites.mjs`): Clawd for Claude Code, the purple Codex pet, and a neutral bot for anything else. They are vendor trademarks, drawn for the local console only: swap them for the bot before a public video or deploy.
+- **Marks:** `nodeMark(graph, id)` reads the graph's `quotedNodeIds` and `inferredNodeIds` (G7 next step 1, done). The word shows beside each node's kind. The rebuilt demo recording has 11 quoted nodes; the live e2e test covers inferred.
+- **Agent turns:** the evidence pane labels I3 turns "Agent /root/worker to /root" (`turnSpeaker`).
+
+Next steps:
+
+1. Merge order: U1, G7, U2 and I3 first; then rebase this branch on `main` and rebuild the recording (`node demo/console-recording.mjs`).
+2. `malformed transport input is answered without stopping the server` in `tests/mcp.test.mjs` fails on macOS with Node 26, on this branch and on `ruslan/console-v0` alike. Not checked on Node 22.
+3. P3 (reviewer prototype) is next, stacked on this branch: approve, edit or reject beside the evidence, with the decisions kept in the browser only.
+
+## Current checkpoint — U6 pixel console and agent crew (2026-11-20)
+
+Branch `ali/u6-pixel-console`, stacked on U4b (#55). The console is now the light pixel look Ali approved:
+
+- Local fonts (Jersey 15, Inter Tight, Silkscreen) under `docs/brand/fonts` with OFL licences; the server serves them from its fixed list and the CSP adds only `font-src 'self'`.
+- `console.css` is rewritten with pixel frames and buttons and new `--ctm-pixel-*` tokens in `docs/brand/tokens.css`. The number tiles are gone: their counters (same IDs) sit on the activity heading.
+- `agent-marks.mjs` holds 14 official vendor marks (Simple Icons 16.38.0). `sprites.mjs` builds a Mark bot for each: a robot in the brand colour with the mark on its screen. The office draws the mark for any agent whose provider has one; Claude Code and Codex are unchanged.
+- The activity feed sits under the evidence in the right column, more compact. `panels.mjs` adds header switches for Evidence and Activity (remembered in `localStorage` when allowed); with both off the left column takes the full width, and selecting a fact turns Evidence back on.
+- `ctm-band.mjs` draws the CTM band at the bottom with the crew; click or Enter shows a name bubble.
+
+Checks: node tests 415 pass with the 3 known local failures (also failing on the base); Playwright 31 pass, 1 skipped (the I3 agent-turn `fixme`); runtime Python has 2 timing failures that also fail on the untouched base. Screenshots are regenerated in `docs/console`, with `08-ctm-band.png` new.
+
+Next owner: get a human review of the CSP change and the trademark note (ADR 15), then merge after U4b.
+
+## Current checkpoint — U4b furnished pixel office (2026-11-19)
+
+Branch `ali/u4b-pixel-office`, stacked on U4 (#51). Ali approved the preview on 2026-11-19 (`docs/console/preview/approved-*.png`).
+
+- `public/console/office-furniture.mjs` draws one top-down room (desks, shelves, plants, windows and daylight, lamps, whiteboard, kitchen, lounge) and exports the agent spots: `seatAt`, `besideDesk`, `loungeSpot`.
+- `public/console/office.mjs` keeps `createOffice(svg)` → `{update, anchor, pulse}`, 6 per room and the `RANK` order. Each agent keeps its desk while shown; working agents sit behind it (monitor lit), waiting ones stand beside it, idle ones go to the lounge.
+- `public/console/sprites.mjs`: Ali's blue cloud Codex character, and `roleOf` plus `accessoryPixels` for six role props.
+- Office colours are `--ctm-office-*` tokens in `docs/brand/tokens.css`.
+- Logo: `/console/logo.svg` serves the CTM mark, `docs/brand/ctm-logo.svg`, also used as the favicon. The CSP gained `img-src 'self'` for it; a human should check that change.
+
+Next: swap the vendor sprites for the neutral bot before anything public.
+
+## Current checkpoint — P3 reviewer prototype (2026-11-18)
+
+Branch `ali/p3-reviewer`, stacked on U4 (`ali/u4-console-polish`, #51).
+
+- **What:** in `/console/?demo`, the evidence panel has a Review block: Approve, Edit (a new label, 1 to 300 visible characters) or Reject, with Undo. The node shows the decision in its meta and `aria-label`; an edit shows the new label, and the proof keeps the original as its heading.
+- **Where it lives:** `public/console/review.mjs` (the store, `withReviews`, and the panel). Reviews are in `localStorage` under `ctm-console-reviews-v0`, keyed by graph ID and node ID. Nothing is sent to the ledger, and live mode has no Review block.
+
+Decisions left to Ruslan (the prototype makes no claim on them):
+
+1. Who may approve. Today, anyone with the browser can.
+2. Whether an edit makes a new graph version, a reviewer note, or a correction the next `context_for` reads.
+3. What a reject keeps: hide the node from hand-offs, keep it with a flag, or ask the agent to republish.
+4. Whether a review carries over to the party's next publish. Today it does not, because a new publish has a new graph ID.
+
+Once those are decided and P1c lands, reviews need a server route and a table, and this store becomes a cache or goes away.
 
 ## Current checkpoint — G9 scoped context with a budget (2026-11-17)
 

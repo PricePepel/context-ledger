@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="CTM">
+  <!-- The CTM mark, as on ctm-ai.uz: a ring of violet and lime dots around a spark.
+       Presentation attributes only, so the console's CSP needs no inline style. -->
+  <defs>
+    <linearGradient id="ctm-spark" x1="31" y1="50" x2="69" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C44BFF"/>
+      <stop offset="0.5" stop-color="#E6DDFF"/>
+      <stop offset="1" stop-color="#B9F500"/>
+    </linearGradient>
+  </defs>
+  <circle cx="50" cy="14" r="5.4" fill="#723BFA"/>
+  <circle cx="68" cy="18.82" r="5.4" fill="#B9F500"/>
+  <circle cx="81.18" cy="32" r="5.4" fill="#B9F500"/>
+  <circle cx="86" cy="50" r="5.4" fill="#B9F500"/>
+  <circle cx="81.18" cy="68" r="5.4" fill="#B9F500"/>
+  <circle cx="68" cy="81.18" r="5.4" fill="#B9F500"/>
+  <circle cx="50" cy="86" r="5.4" fill="#B9F500"/>
+  <circle cx="32" cy="81.18" r="5.4" fill="#723BFA"/>
+  <circle cx="18.82" cy="68" r="5.4" fill="#723BFA"/>
+  <circle cx="14" cy="50" r="5.4" fill="#723BFA"/>
+  <circle cx="18.82" cy="32" r="5.4" fill="#723BFA"/>
+  <circle cx="32" cy="18.82" r="5.4" fill="#723BFA"/>
+  <path d="M50 31C52 44 56 48 69 50C56 52 52 56 50 69C48 56 44 52 31 50C44 48 48 44 50 31Z" fill="url(#ctm-spark)"/>
+</svg>

@@ -145,7 +145,8 @@ const hiddenOrBreaking = text => [...text].some(character => /[\p{Cc}\p{Zl}\p{Zp
   || (/\p{Cf}/u.test(character) && !keptFormat.has(character.codePointAt(0))));
 
 // One visible line: drop findings whose label could fake structure or hide text.
-const goodLabel = label => typeof label === 'string' && label.length <= 500 && /[^\s\p{C}]/u.test(label)
+// 500 code points, as the graph schemas' maxLength counts (card H10).
+const goodLabel = label => typeof label === 'string' && [...label].length <= 500 && /[^\s\p{C}]/u.test(label)
   && !hiddenOrBreaking(label);
 
 // The answer is model prose. Keep it, but on one line, so it can never imitate the

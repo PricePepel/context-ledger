@@ -1,0 +1,13 @@
+{
+ "note": "Card L4 edge cases: hand-written synthetic passages with emoji and non-English text. Not real data.",
+ "items": [
+  {"id": "edge-emoji-en", "context": "Launch log 🚀: the Kestrel-7 rocket lifted off at 06:42 from pad C. 🎉 The crew of 3 reported 🔥 in engine 2 after 90 seconds, and the flight ended in the sea 🌊 near Port Varo.", "question": "Which engine reported fire?", "answers": ["engine 2", "2"]},
+  {"id": "edge-emoji-meaning", "context": "Menu codes: 🍕 means the order is ready, 📦 means it was shipped, and 🚲 means a courier is on the way. Order 5521 shows 📦 and order 5522 shows 🚲.", "question": "What does the symbol shown for order 5522 mean?", "answers": ["a courier is on the way", "courier is on the way"]},
+  {"id": "edge-russian-time", "context": "Поезд номер 48 отправляется из Самарканда в 07:15 и прибывает в Бухару в 09:40. Билет стоит 86000 сумов. Проводника зовут Тимур Алиев.", "question": "When does the train arrive in Bukhara?", "answers": ["09:40", "в 09:40"]},
+  {"id": "edge-russian-name", "context": "Библиотека на улице Навои открыта с 9 до 18 часов. Заведующую зовут Дилноза Каримова, а новый читальный зал вмещает 120 человек.", "question": "Как зовут заведующую библиотекой?", "answers": ["Дилноза Каримова"]},
+  {"id": "edge-uzbek-number", "context": "Toshkentdagi Chorsu bozori har kuni soat 6 da ochiladi. Bozorda 2400 ta savdo oʻrni bor, eng mashhur mahsulot esa Qoʻqon holvasi hisoblanadi.", "question": "How many trading stalls does the market have?", "answers": ["2400", "2400 ta"]},
+  {"id": "edge-chinese-year", "context": "蓝湖图书馆于1987年开放，馆长是陈伟。馆内收藏了三十万册图书，每周一闭馆。", "question": "In which year did the library open?", "answers": ["1987", "1987年"]},
+  {"id": "edge-arabic-number", "context": "افتتح متحف النور في مدينة حلب عام 1994 ويضم 350 قطعة اثرية. مدير المتحف هو سامر حداد.", "question": "How many artifacts does the museum hold?", "answers": ["350"]},
+  {"id": "edge-mixed", "context": "Заказ №7731 ✅ доставлен в Samarqand: 3 коробки 📦, получатель 李娜 (Li Na), стоимость 45 EUR.", "question": "Who received order 7731?", "answers": ["Li Na", "李娜"]}
+ ]
+}
