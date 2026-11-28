@@ -1083,3 +1083,14 @@ test('P4d review 12: a copy keeps the kind main gave it when a whole value also 
     { role: 'assistant', line: 3, text: 'Kx7mWord' },
   ]), '[REDACTED assigned-secret]');
 });
+
+test('P4e: a bare copy of a hyphenated passphrase longer than 512 characters is replaced whole', () => {
+  // Reproduced on main by the R1/R2 session: only the copy's first 512 characters were cut.
+  const phrase = Array.from({ length: 120 }, (_, index) => 'word' + index.toString(36)).join('-');
+  assert.ok(phrase.length > 512 && !/\s/u.test(phrase));
+  const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password=' + phrase },
+    { role: 'assistant', line: 2, text: `copied ${phrase} here` },
+  ] });
+  assert.equal(session.messages[1].text, 'copied [REDACTED assigned-secret] here');
+});
