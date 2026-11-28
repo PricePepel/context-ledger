@@ -107,8 +107,9 @@ test('R1: a graph and the lines it cites travel; the graph has the same ID on bo
   assert.deepEqual(b.store.getGraph(a.graph.id).quotedNodeIds, a.store.getGraph(a.graph.id).quotedNodeIds);
   const stored = b.store.get(a.session.id);
   assert.deepEqual(stored.messages, [
-    { role: 'assistant', text: 'The relay ships on port 6100.', line: 2, key: key(2) },
-    { role: 'user', text: 'Agreed, and no deploys on Sunday.', line: 3, key: key(3) },
+    // A version 2 graph cites lines, so its lines wait under l:<line> for their real keys.
+    { role: 'assistant', text: 'The relay ships on port 6100.', line: 2, key: 'l:2' },
+    { role: 'user', text: 'Agreed, and no deploys on Sunday.', line: 3, key: 'l:3' },
   ]);
   assert.deepEqual({ ...stored, messages: undefined }, {
     id: a.session.id, provider: 'claude', source: 'vera.jsonl', title: 'Agreed, and no deploys on Sunday.',
@@ -275,7 +276,7 @@ test('R1: a second parcel of the same session adds its new lines in order; the s
     nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidenceLines: [2, 3] }] });
   const result = carry(a.store, b.store, second.id);
   assert.equal(result.added, 1);
-  assert.deepEqual(b.store.get(a.session.id).messages.map(message => [message.line, message.key]), [[2, key(2)], [3, key(3)], [5, key(5)]]);
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => [message.line, message.key]), [[2, 'l:2'], [3, 'l:3'], [5, 'l:5']]);
   assert.equal(result.session.messageCount, 3);
   assert.equal(result.session.excerpts, true);
   assert.equal(b.store.list('port 6100', null, null).length, 1, 'the new line is searchable');
@@ -298,15 +299,20 @@ test('R1: where the transcript was imported, the session stays as it is and the 
   const before = b.dump();
   const { parcel } = parcelOf(a.store, a.graph.id);
   const mismatch = 'The parcel\'s lines do not match the session of the same ID in this ledger, so the parcel was not stored.';
-  for (const change of [
-    p => { p.session.messages[0].role = 'user'; },
-    p => { p.session.messages[0].key = 'h:' + 'a'.repeat(32); },
-  ]) {
-    const copy = clone(parcel);
-    change(copy);
-    assert.throws(() => b.store.receiveParcel(checkParcel(copy)), error => error instanceof ConflictError && error.message === mismatch);
-    assert.equal(b.dump(), before);
-  }
+  const roleChanged = clone(parcel);
+  roleChanged.session.messages[0].role = 'user';
+  assert.throws(() => b.store.receiveParcel(checkParcel(roleChanged)), error => error instanceof ConflictError && error.message === mismatch);
+  assert.equal(b.dump(), before);
+  // A version 3 graph cites keys, so there a key the session does not have is refused too.
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }] }] });
+  const keyChanged = clone(parcelOf(a.store, v3.id).parcel);
+  keyChanged.session.messages[0].key = 'h:' + 'a'.repeat(32);
+  keyChanged.graph.packet.nodes[0].evidence = [{ message: 'h:' + 'a'.repeat(32) }];
+  keyChanged.graph.id = packetId(keyChanged.graph.packet);
+  const settled = b.dump();
+  assert.throws(() => b.store.receiveParcel(checkParcel(keyChanged)), error => error instanceof ConflictError && error.message === mismatch);
+  assert.equal(b.dump(), settled);
   const elsewhere = clone(parcel);
   elsewhere.project = 'lyra';
   assert.throws(() => b.store.receiveParcel(checkParcel(elsewhere)), error => error instanceof ConflictError
@@ -344,9 +350,10 @@ test('R1: excerpts with a legacy key keep it when the full transcript arrives', 
   legacy.session.messages[0].key = 'l:2';
   b.store.receiveParcel(checkParcel(legacy));
   const cited = { version: 3, sessionId: a.session.id, party: 'vera', edges: [],
-    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: 'l:2' }, { message: key(3) }] }] };
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: 'l:2' }] }] };
   const graph = b.store.publishGraph(cited);
   b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  // The cited legacy key stays; line 3's placeholder takes the file's key.
   assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), [key(1), 'l:2', key(3), key(4), key(5)]);
   assert.equal(b.store.publishGraph(cited).id, graph.id, 'its citations still resolve');
 });
@@ -1286,7 +1293,7 @@ test('R1 refresh review 3: a line-cited parcel cannot set a key, and the full tr
   // Excerpts that took a key no graph here cites by key also give it up to the file.
   const c = ledger(t, 'c');
   c.store.receiveParcel(checkParcel(forged));
-  assert.equal(c.store.get(a.session.id).messages[0].key, 'h:' + 'f'.repeat(32));
+  assert.equal(c.store.get(a.session.id).messages[0].key, 'l:2', 'stored under its placeholder, not the parcel key');
   c.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
   assert.deepEqual(c.store.get(a.session.id).messages.map(message => message.key), [1, 2, 3, 4, 5].map(key));
   // So a version 3 parcel with the real keys now joins.
@@ -1327,4 +1334,22 @@ test('R1 refresh review 4: a received graph that cites a line by another line\'s
   assert.throws(() => b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) }),
     error => error instanceof ConflictError && error.message === 'A graph received from another machine cites one line of this transcript by the key the file gives another line, so the file was not imported. Nothing was changed.');
   assert.equal(b.dump(), dump);
+});
+
+// ---- Codex review of the 2026-11-27 refresh, round 5 ----
+
+test('R1 refresh review 5: a line-cited parcel cannot put one line under the real key of another line', t => {
+  const a = vera(t, [5, 3]);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  // Line 5 sent under the key the transcript gives line 2.
+  const forged = clone(parcel);
+  forged.session.messages.find(message => message.line === 5).key = key(2);
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(checkParcel(forged));
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), ['l:3', 'l:5']);
+  // A valid version 3 parcel for line 2 joins.
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { message: key(3) }] }] });
+  assert.equal(carry(a.store, b.store, v3.id).graph.id, v3.id);
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => [message.line, message.key]), [[2, key(2)], [3, key(3)], [5, 'l:5']]);
 });
