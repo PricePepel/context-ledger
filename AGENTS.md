@@ -9,6 +9,13 @@ These rules apply to every human and every coding agent (Claude Code, Codex, Cur
 3. [docs/evals.md](docs/evals.md) — acceptance evals and results so far.
 4. [docs/architecture.md](docs/architecture.md) and [docs/strategy/](docs/strategy/) when they exist on your base branch.
 
+These files are about 900 KB together, so do not read them whole. Start with the map of them (card K1):
+
+- `node scripts/project-context.mjs` — the cards that are not done, their owners and the newest handoff notes.
+- `node scripts/project-context.mjs <card ID or words>` — the card, what was written about it, the files it touches and the related cards, each with its file and lines. `--budget <tokens>` widens it.
+
+Then open the cited lines. The map is rebuilt from the files on every run; it shows where to read, and the files stay the record.
+
 Do not start coding until you know which card you are working on.
 
 ## 2. Claim work on the delivery board

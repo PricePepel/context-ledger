@@ -21,6 +21,20 @@ Branch `claude/t1-mapper-hub-a864f6`. [mapper-hub.md](mapper-hub.md) is the desi
 - **Needs Ruslan:** whether parts trained through Qwen2.5-3B (non-commercial licence) may ship, and whether the manifest is signed with the P4a key.
 - **Follow-up outside this card:** three citations in other sections of `evals.md` say more than the papers do (arXiv 2603.18908, 2608.04893; see mapper-hub.md section 7).
 
+## Current checkpoint: K1 project context graph (2026-11-27)
+
+PR #109, branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
+
+- `node scripts/project-context.mjs`: cards per state, every card that is not Done, the newest dated notes here.
+- `node scripts/project-context.mjs <card ID>`: the card, the sections whose heading names it (newest first, with their first words), the files those sections name, the other cards named with it, and the sections that only mention it.
+- `node scripts/project-context.mjs <words>`: cards and sections that contain the words. `--budget <tokens>` (default 1500), `--json` for the whole graph, `--root <folder>`.
+- It finds a card by its ID in a `## ` heading, by `Cycle N`, by a range such as H1–H5, by the card's PR number, or by the file name in the per-card layout (`docs/evals/p4d.md`), which it reads beside the single files in case H12 splits them. **Write the card ID and a YYYY-MM-DD date in the heading of every new section here and in the eval log**, or the map will list the section only under "Mentioned in".
+- It is a map of where to read. It has no model in it, so a decision written in prose under a heading that names no card is found only by a word search.
+
+What it showed on its first run: the board row of P4d still says In progress though PR #69 is merged, and the row of S1 says "Review", which is not one of the five states.
+
+Next: K2 on the board (serve this graph through the ledger's own `context_for`). Eval and both Codex rounds: `docs/evals.md`, "K1".
+
 ## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
 
 PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §18).
