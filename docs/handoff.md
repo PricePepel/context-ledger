@@ -69,6 +69,14 @@ Next owner: Ali reports node test failures on his machine that come from its set
 
 U11 (PR #89, merged 2026-11-23): at a terminal `start` explains how to sign in, with the link on a line of its own; piped output is unchanged. The swarm asks `http://127.0.0.1:8000/v1` when `SWARM_URLS` is unset, so a running vLLM is found without a setting, and `SWARM_URLS=off` turns live runs off. Tests that expect a simulated swarm must set `SWARM_URLS=off`.
 
+## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
+
+PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 3: P3b's `reviews` plus `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 and 2 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
+
+- **Copies of a found value.** `redactSession` also replaces copies of each found value elsewhere in the session (pasted bare into a later message, in an agent heading). It runs one Aho-Corasick pass per field, with a 512-character budget per kind of entry. Eight Codex rounds and one Claude review shaped it; every finding after round 1 was in this layer. Round 8's fixes are not reviewed again.
+- **Owed before merge:** a human security review (signing and export, AGENTS.md section 4). The reviewer should decide whether the copy layer is worth its complexity, or whether a simpler rule plus the documented residuals is enough.
+- **Next owner:** change `scannerName` in `src/secrets.mjs` whenever a scanner rule changes. ADR-8's allowlist export of cleared excerpts and the passphrase-encrypted key are still open, as is redacting the graph export (G12) and plain `handoff`.
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Live check done (evals, S1b): 100 agents on the 7B model show about 21-22x on warm runs (15x on the first run after a server start), against 51-56x from the old figure, and a KV peak of about 5% where the last sample reads 0%. PR #76 is merged. Next owner: update the investor run sheet line that says not to quote the speed-up tile (quote about 21-22x from a warm run).

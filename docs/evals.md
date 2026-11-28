@@ -4627,6 +4627,86 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
+
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 16. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+
+| Eval | Expected |
+| --- | --- |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. A value found once (six characters or more) is also replaced where it is pasted again without its name. There is no option to sign without redaction. |
+| Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
+| Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
+| Sender sees the count, not the values | `--sign` prints how many replacements it made on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
+| Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
+| Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
+| Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
+### P4d results (2026-11-22)
+
+- **All rows:** pass. `tests/sign.test.mjs` (the P4d tests at its end, and the P4a tests updated for the new version) and `tests/secrets.test.mjs` (the copy rule).
+- **Version number changed by the merge with P3b (2026-11-22).** P3b (#70) merged first and took manifest version 2 for the review chain head. P4d therefore writes version 3: P3b's `reviews` plus `redaction`. Where the rows above say version 2, read version 3. Where they say version 1, read versions 1 and 2: both are bundles from before P4d, verify with the not-redacted warning, and are tested. `tests/signed-review-head.test.mjs` now expects version 3 and the `Redaction:` line. A focused Codex check of the merge (of d21b7a0) found no high or medium issue; its three low doc findings are fixed: the OpenSSL checklist requires no `redaction` in versions 1 and 2, the `reviews verify` text no longer says it repeats `verify`'s warnings, and the `verifyBundle` comment names `reviews`.
+- **Codex review, round 1** (of de72f08):
+  - (high) A value found by its name (`password=…`) stayed in the signed hand-off where a later message pasted it bare: redaction cut matched spans, not values. Fixed in `redactSession`: a found value of six characters or more is also replaced everywhere else in the session (source name included), the longer of two values first. Tests: the signed fixture pastes its password into a later message, and scanner tests cover copies, quoted values, overlaps and the short-value limit.
+  - (medium) The session ID is the unkeyed SHA-256 of the original transcript, so a receiver who could rebuild every other byte could confirm a guess of a short redacted value. Not changed, since the session identity is outside this card. It is recorded as a residual in ADR-9a and `docs/signed-handoff.md`.
+  - (low) The sender's summary called transcript records and the source name "lines". It now says `in N transcript lines and the source name`.
+  - (low) The receiver docs said "whole, non-negative count" (the limit is 2^53 − 1) and did not mention placeholder values. The OpenSSL manual check did not give the exact `redaction` keys. All three corrected.
+  - (low) Test gaps, all filled:
+    - The test that version 1 lists exactly one file now runs on version 1 and version 2.
+    - The version 1 test signs a genuinely unredacted hand-off.
+    - A malformed record is now checked through the CLI as well (exit 1, nothing on stdout).
+    - A changed count under the old signature now fails the signature check.
+    - The sender output is checked for key prefixes as well as for pieces of the values.
+  - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
+- **Codex round 2** did not run: Codex hit its usage limit during the round. It is owed, against the head of the branch.
+- **Independent Claude review** (a separate code-reviewer agent, not shown the implementation notes), of the round 1 fix e04e948. No high finding:
+  - (medium) A value after a name was searched for only by its first word, so a passphrase pasted again kept its later words. Fixed: copies are searched for the first one to eight words, the whole tail and any later word that mixes letters and digits.
+  - (medium) The copy search cuts the same text inside longer words and in prose (`password: secret` hides every `secret`). Kept, since that errs toward hiding, and documented in ADR-9a and `docs/signed-handoff.md`.
+  - (medium) The copy search ran one `indexOf` per value per field: 20,000 values over 8 MiB took 39 s. Fixed with one pass per field that looks positions up by their first six characters: 0.8 s for that input. A test bounds 20,000 values over 4 MiB.
+  - (low) A quoted value with an escaped quote was cut short at the escape. Fixed: the quoted part is found with the scanner's own quote rules, and searched for as written and decoded.
+  - (low) A copy in another letter case, with an invisible character inside or in another Unicode normalization, is not found. Documented as a residual.
+  - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
+  - Each fix has a test in `tests/secrets.test.mjs`.
+- **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
+- **Codex review, round 2** (of 49f03f7):
+  - (high) A password and a token on one line merge into one finding, and the copy search took only the whole merged span, so a bare copy of either value survived. Fixed: every word in a finding that mixes letters and digits, and its first one to eight words, are searched for, whatever the finding's kind.
+  - (high, not a leak) A source name `password=<session ID>` is replaced in the source name, but the ID still shows as the session ID. The ID is public by design, so a value that equals it was never secret. Documented in `docs/signed-handoff.md`.
+  - (medium) Copies of a passphrase written with two spaces were missed, because the prefixes were joined with one space. So was a Bearer value with an escape after a quote that comes before `Bearer`. Fixed: prefixes are cut from the text as written, and every value is searched for with its escapes decoded too.
+  - (medium) Grouping values by their first six characters was quadratic for values that share them: 5 s at 8,000 values. Replaced with one Aho-Corasick pass over all values per field: 0.4 s at 20,000. A test bounds it. Memory grows with the number of matches; that is documented.
+  - (low, not changed) A literal `[REDACTED assigned-secret]` in the transcript, after `password=assigned-secret`, becomes a nested marker. The value is still removed.
+  - (low, not changed) A password that is a key format's public prefix (`password=sk-ant-`) still shows that prefix in a key's `redact` preview. The prefix is public text, the same for every key of that format.
+  - (low) The OpenSSL check said "a whole number of 0 or more". It now gives the upper bound. The docs now name agent authors and recipients as scanned.
+  - (low) Tests:
+    - Every malformed redaction record is now checked through the CLI as well.
+    - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
+- **Codex review, round 3** (of 5ecc8b0):
+  - (high) A key or Bearer value nested in a longer finding lost its own boundaries when candidates merged, so a copy of it glued to other text survived. Fixed: copies are searched for each accepted candidate before the merge, under the kind of the finding that holds it.
+  - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
+  - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
+  - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
+- **Codex review, round 4** (of c940dcc):
+  - (high) A JSON `"Bearer …"` value was searched for without its quote, because the quote stands before `Bearer`, not the value. An all-letter value with JSON after it was then never matched. Fixed: the scanner hands its quote to the copy search.
+  - (medium) Each candidate looked up its finding from the start of the message: 40,000 findings in one message took 3.8 s. Fixed with one walk over both lists, which are sorted by start.
+  - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
+  - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
+  - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
+- **Codex review, round 5** (of be3a2f2): no medium finding.
+  - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
+  - (low) The README still called the count a count of values. It now says replacements.
+  - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
+- **Codex review, round 6** (of 97d5b68): no medium finding.
+  - (high) A second named value on the same line (`password=a token=b`) was searched for only as part of a whole word, because the scanner reads one lead per line. Fixed: the value after every further name inside a finding is an entry of its own.
+  - (high) Decoded prefixes were each charged to the budget, so a long decoded passphrase lost its last words. Fixed: each text is decoded once, and its decoded words count as written ones do. Budgets are now 512 each for the span, the values inside it and the decoded forms.
+  - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
+  - (low) Two passages still said "values replaced". They now say replacements.
+  - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
+- **Codex review, round 7** (of 94fea13): no medium or low finding.
+  - (high) A quoted value after a further name in JSON (`"token":"violetorchid"`) ran on past its closing quote, and JSON has no spaces to end a word, so a bare copy survived. Fixed: such a value stops at its closing quote or at the next name, and values can also end just before a quote or separator.
+  - (high) Several names on one line each took the whole rest of the line, so their overlapping suffixes used up the budget before a later value was reached. Fixed: these values stop at the next name and never overlap. The span, the quoted part, these values, key-like words and decoded forms each have their own 512-character budget. Both cases are tested.
+- **Codex review, round 8** (of d75e427). These fixes are not reviewed again: every finding since round 2 has been in this best-effort copy layer, not in signing, verification or the manifest.
+  - (high) A long decoded span used the shared decoded budget, so a nested decoded value was never searched for. Fixed: each kind of entry has its own decoded budget.
+  - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
+  - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
