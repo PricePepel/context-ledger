@@ -11,6 +11,13 @@
 // - Each pattern resumes after the whole value it found, so long runs are scanned once.
 // - Overlapping candidates merge into one span, labelled with the most specific kind.
 
+/**
+ * The scanner's name and rule version, as a signed hand-off records it (P4d). Change the
+ * number whenever a rule is added, removed or changed, so a receiver can tell which
+ * checks a bundle was redacted with.
+ */
+export const scannerName = 'context-ledger-secrets/1';
+
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
 const base64url = /[A-Za-z0-9_-]/u;
@@ -205,7 +212,8 @@ function lineTails(text) {
       const end = lineEnd;
       const value = judgedValue(text, start, end, quote);
       if (!value || isPlaceholder(value)) continue;
-      found.push({ kind: rule.kind, start, end, prefix: 0 });
+      // The quote is kept for the copy search (P4d): it may stand before Bearer, not the value.
+      found.push({ kind: rule.kind, start, end, prefix: 0, quote });
       // The rest of the line is already covered, so the next lead is looked for after it.
       pattern.lastIndex = Math.max(pattern.lastIndex, end);
     }
@@ -380,30 +388,212 @@ export function maskedPreview(text, finding) {
   return `${text.slice(finding.start, finding.start + finding.prefix)}…`;
 }
 
+// Card P4d: a value found once is also removed where it appears again without a name
+// before it (pasted into a later message, say). Shorter values are removed only where
+// they were found: a copy search for them would cut ordinary words and numbers.
+const minCopyLength = 6;
+// What one candidate adds to the copy search is capped, with a budget for each kind of
+// entry (its span, its quoted part, the values after names inside it, its key-like
+// words) and one more for each kind's decoded forms,
+// so one long finding cannot fill the heap; a longer value is still found by its first
+// characters and its first inner values.
+const maxCopyLength = 512;
+const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
+const leadingQuotes = /^["'`]+/u;
+
 /**
- * A copy of the session with its source name and every message redacted, and the
- * findings. Each finding has a line (null for the source name), a kind, a length and a
- * masked preview, never a value.
+ * Where a value could end: the end of each word, trailing punctuation left out, and just
+ * before each quote or separator, so text with no spaces (JSON, a query string) has
+ * boundaries too.
+ */
+const separators = /["'`,;&|()<>[\]{}]/gu;
+function wordEnds(value) {
+  const ends = [...value.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
+  for (const match of value.matchAll(separators)) ends.push(match.index);
+  return ends;
+}
+
+/**
+ * What a candidate stands for, to search for elsewhere: entries of a text, each counting at
+ * the end of every word in it, as written (a passphrase pasted whole is matched whole),
+ * and at its end. A candidate can be one key, a line tail after a name (password=...) or a
+ * span that holds several, so the entries are its span; every value after a further name
+ * inside it (a second password= on the line); every word that mixes letters and digits,
+ * as a key does; its quoted part; and each of these decoded, when it holds an escape.
+ */
+function copyEntries(text, candidate) {
+  // A budget per kind of entry, and one more per kind for its decoded forms.
+  const budget = new Map();
+  const entries = [];
+  const add = (value, pool) => {
+    const left = budget.get(pool) ?? maxCopyLength;
+    if (left <= 0 || value.length < minCopyLength) return;
+    const kept = value.slice(0, left);
+    budget.set(pool, left - kept.length);
+    entries.push({ value: kept, ends: [...wordEnds(kept), kept.length], pool });
+  };
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
+  add(span, 'span');
+  // The quote the scanner saw (it can stand before Bearer), else the character before.
+  const before = candidate.start > 0 ? text[candidate.start - 1] : '';
+  const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
+  if (quote) {
+    const close = quotedEnd(text, candidate.start, quote);
+    if (close <= candidate.end) add(text.slice(candidate.start, close), 'quoted');
+  }
+  // A value after each further name inside the span runs to its closing quote, or else to
+  // the next name, so these values never overlap and share one budget fairly.
+  const leads = freeTextLeads.flatMap(rule => [...span.matchAll(new RegExp(rule.lead.source, rule.lead.flags))])
+    .map(match => ({ at: match.index, after: match.index + match[0].length })).sort((a, b) => a.at - b.at);
+  leads.forEach((lead, index) => {
+    const stop = index + 1 < leads.length ? leads[index + 1].at : span.length;
+    const open = /["'`]/u.test(span[lead.after] ?? '') ? span[lead.after] : '';
+    const from = lead.after + (open ? 1 : 0);
+    add(span.slice(from, open ? Math.min(quotedEnd(span, from, open), stop) : stop), 'named');
+  });
+  for (const match of span.matchAll(/\S+/gu)) {
+    for (const piece of match[0].split(new RegExp(separators.source + '+', 'u'))) {
+      const bare = piece.replace(leadingQuotes, '').replace(trailingPunctuation, '');
+      if (mixed(bare)) add(bare, 'words');
+    }
+  }
+  // Each text is decoded once, and its decoded words count as written ones do.
+  for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), entry.pool + ' decoded');
+  return entries.map(({ value, ends }) => ({ value, ends }));
+}
+
+/**
+ * A matcher for many values at once (Aho-Corasick over UTF-16 code units): one pass over a
+ * text finds, at every position, the longest value that ends there, so the time grows
+ * with the text, the values' total length and the matches, not with their product. An
+ * entry is added once, with a value ending at each of its counted lengths.
+ */
+function copyMatcher(entries) {
+  const nodes = [{ next: new Map(), fail: 0, length: 0, kind: '' }];
+  for (const { value, ends, kind } of entries) {
+    const counted = new Set(ends.filter(length => length >= minCopyLength));
+    const last = Math.max(0, ...counted);
+    let node = 0;
+    for (let at = 0; at < last; at += 1) {
+      const unit = value.charCodeAt(at);
+      let child = nodes[node].next.get(unit);
+      if (child === undefined) {
+        child = nodes.push({ next: new Map(), fail: 0, length: 0, kind: '' }) - 1;
+        nodes[node].next.set(unit, child);
+      }
+      node = child;
+      if (counted.has(at + 1) && at + 1 > nodes[node].length) Object.assign(nodes[node], { length: at + 1, kind });
+    }
+  }
+  // Breadth first: a node's failure link is the longest proper suffix that is a node, and
+  // it inherits that suffix's longest value when it has none of its own.
+  const queue = [...nodes[0].next.values()];
+  for (let head = 0; head < queue.length; head += 1) {
+    const node = queue[head];
+    for (const [unit, child] of nodes[node].next) {
+      let fail = nodes[node].fail;
+      while (fail !== 0 && !nodes[fail].next.has(unit)) fail = nodes[fail].fail;
+      const target = nodes[fail].next.get(unit);
+      nodes[child].fail = target !== undefined && target !== child ? target : 0;
+      if (nodes[child].length === 0) Object.assign(nodes[child], { length: nodes[nodes[child].fail].length, kind: nodes[nodes[child].fail].kind });
+      queue.push(child);
+    }
+  }
+  return text => {
+    const spans = [];
+    let node = 0;
+    for (let at = 0; at < text.length; at += 1) {
+      const unit = text.charCodeAt(at);
+      while (node !== 0 && !nodes[node].next.has(unit)) node = nodes[node].fail;
+      node = nodes[node].next.get(unit) ?? 0;
+      const { length, kind } = nodes[node];
+      if (!length) continue;
+      // Ends only grow, so a new match merges with the spans it overlaps at the end.
+      let start = at + 1 - length;
+      let spanKind = kind;
+      while (spans.length && spans.at(-1).end > start) {
+        const last = spans.pop();
+        if (last.start <= start) { start = last.start; spanKind = last.kind; }
+      }
+      spans.push({ kind: spanKind, start, end: at + 1, prefix: 0 });
+    }
+    return spans;
+  };
+}
+
+/**
+ * findings and copies merged into spans. A copy that widens a finding hides its prefix.
+ * A finding's prefix is only ever a key format's public start (ghp_, AKIA), so a copy
+ * inside it shows nothing that is not public.
+ */
+function withCopies(findings, copies) {
+  if (!copies.length) return findings;
+  const all = [...findings.map(finding => ({ ...finding, rank: 0 })), ...copies.map(copy => ({ ...copy, rank: 1 }))];
+  const spans = [];
+  for (const span of all.sort((a, b) => a.start - b.start || a.rank - b.rank)) {
+    const last = spans.at(-1);
+    if (last && span.start < last.end) {
+      if (span.end > last.end) Object.assign(last, { end: span.end, prefix: 0 });
+    } else {
+      spans.push({ kind: span.kind, start: span.start, end: span.end, prefix: span.prefix });
+    }
+  }
+  return spans;
+}
+
+/**
+ * A copy of the session with its source name, every message and every agent turn's author
+ * and recipient redacted, and the findings. Each finding has a line (null for the source
+ * name), a kind, a length and a masked preview, never a value. A value found in one place
+ * is also removed everywhere else it appears in the session, when it is at least six
+ * characters long (P4d).
  */
 export function redactSession(session) {
-  const findings = [];
-  const record = (text, line) => {
-    const found = findSecrets(text);
-    for (const finding of found) {
-      findings.push({ line, kind: finding.kind, length: finding.end - finding.start, preview: maskedPreview(text, finding) });
-    }
-    return found.length ? redactText(text, found) : text;
-  };
-  const source = typeof session.source === 'string' ? record(session.source, null) : session.source;
-  const messages = session.messages.map(message => {
-    const redacted = { ...message, text: record(message.text, message.line) };
+  const fields = [];
+  if (typeof session.source === 'string') fields.push({ text: session.source, line: null, message: -1, name: 'source' });
+  session.messages.forEach((message, index) => {
+    fields.push({ text: message.text, line: message.line, message: index, name: 'text' });
     // Card I3: an agent turn's paths are printed in its heading, so they are checked too.
     if (message.role === 'agent') {
-      for (const field of ['author', 'recipient']) {
-        if (typeof message[field] === 'string') redacted[field] = record(message[field], message.line);
+      for (const name of ['author', 'recipient']) {
+        if (typeof message[name] === 'string') fields.push({ text: message[name], line: message.line, message: index, name });
       }
     }
-    return ['text', 'author', 'recipient'].every(field => redacted[field] === message[field]) ? message : redacted;
   });
+  const found = fields.map(field => findSecrets(field.text));
+  // Copies are searched for each candidate the scanner accepted, before candidates merge
+  // into findings, so a key inside a longer finding keeps its own boundaries.
+  const entries = [];
+  fields.forEach((field, index) => {
+    const spans = found[index];
+    if (!spans.length) return;
+    // Both lists sorted by start: each candidate takes the kind of the finding holding it.
+    let at = 0;
+    for (const candidate of [...candidates(field.text), ...spans].sort((a, b) => a.start - b.start)) {
+      while (at < spans.length - 1 && spans[at].end <= candidate.start) at += 1;
+      const holder = spans[at].start <= candidate.start && candidate.start < spans[at].end ? spans[at] : candidate;
+      for (const entry of copyEntries(field.text, candidate)) entries.push({ ...entry, kind: holder.kind });
+    }
+  });
+  const copiesIn = entries.length ? copyMatcher(entries) : () => [];
+  const findings = [];
+  let source = session.source;
+  const changed = new Map();
+  fields.forEach((field, index) => {
+    const spans = withCopies(found[index], copiesIn(field.text));
+    if (!spans.length) return;
+    for (const span of spans) {
+      findings.push({ line: field.line, kind: span.kind, length: span.end - span.start, preview: maskedPreview(field.text, span) });
+    }
+    const text = redactText(field.text, spans);
+    if (field.message === -1) {
+      source = text;
+      return;
+    }
+    const message = changed.get(field.message) ?? { ...session.messages[field.message] };
+    message[field.name] = text;
+    changed.set(field.message, message);
+  });
+  const messages = session.messages.map((message, index) => changed.get(index) ?? message);
   return { session: { ...session, source, messages }, findings };
 }
