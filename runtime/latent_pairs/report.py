@@ -6,26 +6,36 @@ before the runs, and what each mapper cost. Standard library only.
 
 Reads latent_compare's phase files (the per-item results stay on the GPU machine) and the
 training logs, and writes summary.json and report.md with aggregates only.
+
+A pair gets a verdict only from the result the batch runner recorded for it: the pair is
+`measured`, the result file is byte for byte the one written for its checkpoint file, and it
+was made from L2's item set. Anything else is shown as not verified, with the reason.
 """
 import argparse
+import contextlib
 import json
 import os
 
 from latent_compare import report as harness_report
+from latent_compare import run as harness
 from latent_compare.models import MAPPERS, MODELS
 
-from .evaluate import register
-from .plan import BATCH, ordered_pairs, pair_name, trainable_pairs, untrainable
-from .run import load_status
+from .plan import BATCH, FULL_STEPS, ITEMS_ID, MAIN_ITEMS, RECIPE, ordered_pairs, pair_name, trainable_pairs, untrainable
+from .run import bound, load_json, load_status, read_log, result_path
 
+CARD = "L5"
 PASS_ARMS = ("mismatched", "zeroed")
 BETTER, WORSE, SAME, UNMEASURED = "better", "worse", "no detectable difference", "not measured"
+RECIPE_MARGIN = -0.05
 
 
-def word(interval):
-    """How `swat` compares with another arm, from the paired 95% interval of the difference."""
+def word(interval, items=None):
+    """How `swat` compares with another arm, from the paired 95% interval of the difference.
+    With `items`, an interval over fewer items is not a comparison of the set and says so."""
     if not interval:
         return UNMEASURED
+    if items is not None and interval.get("n") != items:
+        return f"{UNMEASURED} ({interval.get('n', 0)} of {items} items)"
     if interval["low"] > 0:
         return BETTER
     if interval["high"] < 0:
@@ -33,7 +43,7 @@ def word(interval):
     return SAME
 
 
-def verdict(pair, items):
+def verdict(pair, items=MAIN_ITEMS):
     """The pass rule of docs/evals.md (L5), applied to one pair of latent_compare's latent section.
 
     Pass needs `swat`, `mismatched` and `zeroed` to have run on every main item without an
@@ -41,6 +51,8 @@ def verdict(pair, items):
     """
     arms, intervals = pair["arms"], pair["intervals"]
     reasons = []
+    if pair.get("items") != items:
+        reasons.append(f"the main set has {pair.get('items')} items, not {items}")
     for arm in ("swat",) + PASS_ARMS:
         ran = arms.get(arm, {})
         if ran.get("n") != items or ran.get("errors") or ran.get("missing"):
@@ -53,42 +65,50 @@ def verdict(pair, items):
             reasons.append(f"`swat − {arm}` interval reaches zero ({interval['low']:+.3f})")
     return {
         "pass": not reasons, "reasons": reasons,
-        "vsSummary": word((intervals.get("swat-t2t_m2b") or {}).get("f1")),
-        "vsPassage": word((intervals.get("swat-text_m2b") or {}).get("f1")),
-        "vsPassageHit": word((intervals.get("swat-text_m2b") or {}).get("hit")),
-        "vsHarnessText": word((intervals.get("swat-harness_text") or {}).get("f1")),
+        "vsSummary": word((intervals.get("swat-t2t_m2b") or {}).get("f1"), items),
+        "vsPassage": word((intervals.get("swat-text_m2b") or {}).get("f1"), items),
+        "vsPassageHit": word((intervals.get("swat-text_m2b") or {}).get("hit"), items),
+        "vsHarnessText": word((intervals.get("swat-harness_text") or {}).get("f1"), items),
+        "vsHarnessTextHit": word((intervals.get("swat-harness_text") or {}).get("hit"), items),
     }
-
-
-def read_log(folder):
-    try:
-        with open(os.path.join(folder, "log.jsonl"), encoding="utf-8") as handle:
-            return [json.loads(line) for line in handle if line.strip()]
-    except FileNotFoundError:
-        return []
 
 
 def cost(rows, status=None):
     """What one mapper cost, from its training log: seconds per step in each stage, wall
-    hours, peak GPU memory, and the best dev F1 with its step."""
-    result = {}
-    for stage in ("stage1", "stage2"):
-        steps = [row for row in rows if row.get("event") == stage and "secPerStep" in row]
+    hours, peak GPU memory, and the dev F1 of the checkpoint that was kept.
+
+    A log holds one part per start of the trainer. Stage 2 and the kept checkpoint are read
+    from the last part only, so the score of a run that was cut off and started again is
+    never credited to the checkpoint that replaced its own.
+    """
+    parts, result = [[]], {}
+    for row in rows:
+        if row.get("event") == "start":
+            parts.append([])
+        parts[-1].append(row)
+    last = parts[-1]
+    with_stage1 = [part for part in parts if any(row.get("event") == "stage1" and "secPerStep" in row for row in part)]
+    for stage, part in (("stage1", with_stage1[-1] if with_stage1 else []), ("stage2", last)):
+        steps = [row for row in part if row.get("event") == stage and "secPerStep" in row]
         if steps:
             result[f"{stage}SecPerStep"] = steps[-1]["secPerStep"]
             result[f"{stage}Steps"] = steps[-1]["step"]
-    for key in ("peakAllocatedGiB", "peakReservedGiB"):
-        peaks = [row[key] for row in rows if key in row]
+    for key in ("peakAllocatedGiB", "peakReservedGiB", "calibrationPeakReservedGiB"):
+        peaks = [row[key] for part in (with_stage1[-1:] + [last]) for row in part if key in row]
         if peaks:
             result[key] = max(peaks)
-    evals = [row for row in rows if row.get("event") == "stage2-eval" and row.get("step")]
-    if evals:
-        best = max(evals, key=lambda row: row["devF1"])
-        result.update({"bestDevF1": best["devF1"], "bestStep": best["step"]})
-    starts = [row for row in rows if row.get("event") == "start"]
+    saved = [row for row in last if row.get("event") == "saved" and row.get("path") == "best.pt"]
+    evals = {row["step"]: row for row in last if row.get("event") == "stage2-eval" and row.get("step")}
+    if saved and "devF1" in saved[-1]:
+        result["bestDevF1"] = saved[-1]["devF1"]
+        result["bestCheckpoint"] = saved[-1].get("id")
+        steps = [step for step, row in evals.items() if row["devF1"] == saved[-1]["devF1"] and row["time"] <= saved[-1]["time"]]
+        result["bestStep"] = max(steps) if steps else None
+    starts = [row for row in last if row.get("event") == "start"]
     if starts:
         result["mapperParams"] = starts[-1].get("mapperParams")
         result["alignmentRule"] = starts[-1].get("alignmentRule")
+    result["trainerStarts"] = len(parts) - 1
     if status:
         if "trainSeconds" in status:
             result["trainHours"] = round(status["trainSeconds"] / 3600, 2)
@@ -96,6 +116,7 @@ def cost(rows, status=None):
             result["measureHours"] = round(status["evalSeconds"] / 3600, 2)
         result["smallBatches"] = bool(status.get("smallBatches"))
         result["fullSteps"] = bool(status.get("fullSteps"))
+        result["interrupted"] = status.get("interrupted", 0)
     return result
 
 
@@ -113,79 +134,137 @@ def estimate_hours(costs, stage1_steps, stage2_steps):
     return round(total / len(measured), 1)
 
 
-def latent_file(compare, sender, receiver):
+@contextlib.contextmanager
+def registered(entries):
+    """latent_compare's table with some pairs' checkpoints put in, for the length of the block.
+    The table is put back whatever happens inside."""
+    kept = dict(MAPPERS)
     try:
-        with open(os.path.join(compare, "latent", f"{pair_name(sender, receiver)}.json"), encoding="utf-8") as handle:
-            return json.load(handle)
-    except FileNotFoundError:
-        return None
-
-
-def section(compare, pairs):
-    """latent_compare's latent section for the given pairs, read from one run folder.
-    A pair is registered from its own file when the table does not have it yet."""
-    with open(os.path.join(compare, "items.json"), encoding="utf-8") as handle:
-        groups = json.load(handle)
-    receive, latent = {}, {}
-    for sender, receiver in pairs:
-        data = latent_file(compare, sender, receiver)
-        if not data:
-            continue
-        if (sender, receiver) not in MAPPERS or MAPPERS[(sender, receiver)]["id"] != data["checkpoint"]:
-            register(sender, receiver, None, data["checkpoint"])
-        latent[(sender, receiver)] = data
-        target = os.path.join(compare, "receive", f"{receiver}.json")
-        if receiver not in receive and os.path.exists(target):
-            with open(target, encoding="utf-8") as handle:
-                receive[receiver] = json.load(handle)
-    return groups, harness_report.latent_section(groups, receive, latent), latent
-
-
-def against_registered(groups, new, registered):
-    """Paired `swat` F1 of a retrained mapper minus the registered one, on the same main items."""
-    if not new or not registered:
-        return None
-    joined = [{"new": new["results"].get(item["id"], {}).get("swat"),
-               "registered": registered["results"].get(item["id"], {}).get("swat")} for item in groups["main"]]
-    return harness_report.paired(joined, "new", "registered")
-
-
-def build(root, compare, repro=None, batch=None):
-    """Everything the record needs, as one dict."""
-    batch = list(batch or BATCH)
-    first = batch[0]
-    kept = dict(MAPPERS)   # section() registers pairs for its own reading; the table is put back
-    try:
-        groups, pairs, _ = section(compare, [pair for pair in batch if pair != first or not repro])
-        summary = {"items": len(groups["main"]), "pairs": {}, "notTrained": {}, "batch": [list(pair) for pair in batch]}
-        if repro:
-            registered = latent_file(compare, *first)
-            _, again, files = section(repro, [first])
-            pairs.update(again)
-            name = f"{first[0]}>{first[1]}"
-            if name in again:
-                summary["recipeCheck"] = {
-                    "pair": name, "retrainedF1": again[name]["arms"]["swat"].get("f1"),
-                    "registeredCheckpoint": registered["checkpoint"] if registered else None,
-                    "retrainedMinusRegistered": against_registered(groups, files.get(first), registered)}
-                check = summary["recipeCheck"]["retrainedMinusRegistered"]
-                summary["recipeCheck"]["adequate"] = bool(check and check["low"] > -0.05)
+        for (sender, receiver), checkpoint_id in entries.items():
+            MAPPERS[(sender, receiver)] = {"checkpoint": None, "card": CARD, "id": checkpoint_id}
+        yield
     finally:
         MAPPERS.clear()
         MAPPERS.update(kept)
+
+
+def load_groups(compare, items_id=ITEMS_ID, main_items=MAIN_ITEMS):
+    """A run folder's item sets, refused unless they are the pinned ones."""
+    groups = load_json(os.path.join(compare, "items.json"))
+    if not groups:
+        raise ValueError(f"{compare} has no readable items.json")
+    found = harness.fingerprint(groups)
+    if found != items_id:
+        raise ValueError(f"{compare} holds item set {found}, not L2's {items_id}")
+    ids = [item["id"] for item in groups["main"]]
+    if len(ids) != main_items or len(set(ids)) != main_items:
+        raise ValueError(f"{compare} has {len(set(ids))} distinct main items, not {main_items}")
+    return groups
+
+
+def receive_of(compare, receiver, items_id):
+    """A receiver's harness answers (its own template), when they are from the pinned item set."""
+    data = load_json(os.path.join(compare, "receive", f"{receiver}.json"))
+    return data if data and data.get("itemsId") == items_id else None
+
+
+def measured_pair(root, compare, sender, receiver, items_id):
+    """(result file, None) for a pair whose recorded measurement stands, else (None, reason)."""
+    folder = os.path.join(root, pair_name(sender, receiver))
+    status = load_status(folder)
+    if status.get("state") != "measured":
+        return None, None   # not a result yet; its state says why
+    if not bound(folder, status, compare, sender, receiver, items_id):
+        return None, "the result file is not the one recorded for this pair's checkpoint"
+    data = load_json(result_path(compare, sender, receiver))
+    if data.get("itemsId") != items_id:
+        return None, f"the result is from item set {data.get('itemsId')}"
+    return data, None
+
+
+def hit_against_harness(groups, data, receive):
+    """Paired hit rate of `swat` minus the receiver reading the passage in its own template."""
+    answers = (receive or {}).get("results", {})
+    joined = [{"swat": data["results"].get(item["id"], {}).get("swat"), "text": answers.get(item["id"], {}).get("text")}
+              for item in groups["main"]]
+    return harness_report.paired(joined, "swat", "text", "hit")
+
+
+def pair_section(groups, compare, sender, receiver, data, items_id):
+    """latent_compare's latent section for one verified result, with the hit-rate comparison
+    against the harness `text` arm added."""
+    receive = receive_of(compare, receiver, items_id)
+    with registered({(sender, receiver): data["checkpoint"]}):
+        section = harness_report.latent_section(groups, {receiver: receive} if receive else {},
+                                                {(sender, receiver): data})[f"{sender}>{receiver}"]
+    section["intervals"]["swat-harness_text"]["hit"] = hit_against_harness(groups, data, receive)
+    return section
+
+
+def recipe_check(root, compare, repro, first, registered_id, items_id=ITEMS_ID, main_items=MAIN_ITEMS):
+    """The retrained first pair against the registered checkpoint, on the same items.
+    Raises ValueError when either side is not a complete, verified result."""
+    groups = load_groups(repro, items_id, main_items)
+    load_groups(compare, items_id, main_items)
+    new, reason = measured_pair(root, repro, *first, items_id)
+    if not new:
+        raise ValueError(f"the retrained {first[0]}>{first[1]} is not measured" + (f": {reason}" if reason else ""))
+    old = load_json(result_path(compare, *first))
+    if not old or old.get("itemsId") != items_id:
+        raise ValueError("the registered checkpoint has no result from L2's item set in the compare folder")
+    if old.get("checkpoint") != registered_id:
+        raise ValueError(f"the compare folder's result is from checkpoint {old.get('checkpoint')}, not the registered {registered_id}")
+    if new.get("checkpoint") == registered_id:
+        raise ValueError("the retrained result is from the registered checkpoint itself")
+    joined = [{"new": new["results"].get(item["id"], {}).get("swat"),
+               "registered": old["results"].get(item["id"], {}).get("swat")} for item in groups["main"]]
+    difference = harness_report.paired(joined, "new", "registered")
+    if not difference or difference["n"] != main_items:
+        raise ValueError(f"only {difference['n'] if difference else 0} of {main_items} items ran with both checkpoints")
+    values = [record["new"]["f1"] for record in joined]
+    return {"pair": f"{first[0]}>{first[1]}", "registeredCheckpoint": registered_id, "retrainedCheckpoint": new["checkpoint"],
+            "retrainedF1": round(sum(values) / len(values), 4), "retrainedMinusRegistered": difference,
+            "margin": RECIPE_MARGIN, "adequate": difference["low"] > RECIPE_MARGIN}
+
+
+def recipe_decision(root, compare, repro, batch=None, items_id=ITEMS_ID, main_items=MAIN_ITEMS):
+    """What the batch runner needs before the second pair: the recipe check, and whether the
+    rest of the batch uses the full M2b-S step counts. Raises ValueError when it cannot be made."""
+    first = (batch or BATCH)[0]
+    check = recipe_check(root, compare, repro, first, MAPPERS[first]["id"], items_id, main_items)
+    return {**check, "fullSteps": not check["adequate"]}
+
+
+def build(root, compare, repro, batch=None, items_id=ITEMS_ID, main_items=MAIN_ITEMS):
+    """Everything the record needs, as one dict."""
+    batch = list(batch or BATCH)
+    first = batch[0]
+    groups = load_groups(compare, items_id, main_items)
+    summary = {"items": main_items, "itemsId": items_id, "pairs": {}, "notTrained": {}, "batch": [list(pair) for pair in batch]}
+    try:
+        summary["recipeCheck"] = recipe_check(root, compare, repro, first, MAPPERS[first]["id"], items_id, main_items)
+    except ValueError as error:
+        summary["recipeCheck"] = {"pair": f"{first[0]}>{first[1]}", "notMade": str(error)}
+    summary["recipeDecision"] = load_json(os.path.join(root, "recipe.json"))
     for sender, receiver in batch:
         name, folder = f"{sender}>{receiver}", os.path.join(root, pair_name(sender, receiver))
+        where = repro if (sender, receiver) == first else compare
         status = load_status(folder)
         entry = {"sender": MODELS[sender]["id"], "receiver": MODELS[receiver]["id"],
                  "state": status.get("state", "not started"), "reason": status.get("reason"),
                  "cost": cost(read_log(folder), status)}
-        if name in pairs and "skipped" not in pairs[name]:
-            entry.update({"checkpoint": pairs[name]["checkpoint"], "arms": pairs[name]["arms"],
-                          "intervals": pairs[name]["intervals"], "edge": pairs[name]["edge"],
-                          "verdict": verdict(pairs[name], summary["items"])})
+        data, reason = measured_pair(root, where, sender, receiver, items_id)
+        if data:
+            section = pair_section(groups, where, sender, receiver, data, items_id)
+            entry.update({"checkpoint": section["checkpoint"], "arms": section["arms"], "intervals": section["intervals"],
+                          "edge": section["edge"], "verdict": verdict(section, main_items)})
+        elif reason:
+            entry["notVerified"] = reason
         summary["pairs"][name] = entry
-    done = [entry["cost"] for entry in summary["pairs"].values() if entry["state"] == "measured"]
-    summary["estimateHoursPerPair"] = {"recipe": estimate_hours(done, 8000, 10000), "m2bS": estimate_hours(done, 15000, 20000)}
+    done = [entry["cost"] for entry in summary["pairs"].values() if "arms" in entry]
+    summary["estimateHoursPerPair"] = {
+        "recipe": estimate_hours(done, RECIPE["stage1_steps"], RECIPE["stage2_steps"]),
+        "m2bS": estimate_hours(done, FULL_STEPS["stage1_steps"], FULL_STEPS["stage2_steps"])}
     in_batch = set(batch)
     summary["trainableNotInBatch"] = [f"{s}>{r}" for s, r in trainable_pairs() if (s, r) not in in_batch]
     for sender, receiver in ordered_pairs():
@@ -205,10 +284,12 @@ def with_interval(arm):
     return f"{arm['f1']:.3f} [{arm['f1Low']:.3f}, {arm['f1High']:.3f}]"
 
 
-def diff(interval):
+def diff(interval, items=None):
+    """A paired difference with its interval, and how many items it covers when not all."""
     if not interval:
         return "—"
-    return f"{interval['diff']:+.3f} [{interval['low']:+.3f}, {interval['high']:+.3f}]"
+    text = f"{interval['diff']:+.3f} [{interval['low']:+.3f}, {interval['high']:+.3f}]"
+    return text if items is None or interval["n"] == items else f"{text} (n = {interval['n']})"
 
 
 def table(header, rows):
@@ -217,40 +298,53 @@ def table(header, rows):
     return "\n".join(lines)
 
 
+def state_text(entry):
+    text = entry["state"] + (f": {entry['reason']}" if entry.get("reason") else "")
+    return text + (f" (not verified: {entry['notVerified']})" if entry.get("notVerified") else "")
+
+
 def render(summary):
     """Markdown of the summary: F1 table, differences, verdicts, cost, and what was not trained."""
+    items = summary["items"]
     measured = {name: entry for name, entry in summary["pairs"].items() if "arms" in entry}
-    parts = [f"Main set: {summary['items']} SQuAD items. F1 with its bootstrap 95% interval."]
+    parts = [f"Main set: {items} SQuAD items (item set `{summary['itemsId']}`). F1 with its bootstrap 95% interval."]
     parts.append(table(
         ["Pair", "`swat` (mapper)", "`mismatched`", "`zeroed`", "`t2t_m2b` (text summary)", "`text_m2b` (passage)"],
         [[name] + [with_interval(entry["arms"].get(arm)) for arm in ("swat", "mismatched", "zeroed", "t2t_m2b", "text_m2b")]
          for name, entry in measured.items()]))
+    parts.append("Paired differences with their 95% intervals (F1 unless the column says hit rate).")
     parts.append(table(
         ["Pair", "`swat − mismatched`", "`swat − zeroed`", "`swat − t2t_m2b`", "`swat − text_m2b`", "`swat − text` (harness)",
-         "hit: `swat − text_m2b`"],
-        [[name] + [diff((entry["intervals"].get(key) or {}).get(metric)) for key, metric in (
+         "hit: `swat − text_m2b`", "hit: `swat − text` (harness)"],
+        [[name] + [diff((entry["intervals"].get(key) or {}).get(metric), items) for key, metric in (
             ("swat-mismatched", "f1"), ("swat-zeroed", "f1"), ("swat-t2t_m2b", "f1"), ("swat-text_m2b", "f1"),
-            ("swat-harness_text", "f1"), ("swat-text_m2b", "hit"))] for name, entry in measured.items()]))
+            ("swat-harness_text", "f1"), ("swat-text_m2b", "hit"), ("swat-harness_text", "hit"))]
+         for name, entry in measured.items()]))
     parts.append(table(
-        ["Pair", "Carries the passage", "Against the text summary", "Against the passage (F1 / hit)", "Against harness `text`",
-         "`swat` ms", "`t2t_m2b` ms"],
+        ["Pair", "Carries the passage", "Against the text summary", "Against the passage, `text_m2b` (F1 / hit)",
+         "Against the passage, harness `text` (F1 / hit)", "`swat` ms", "`t2t_m2b` ms"],
         [[name, "**Pass**" if entry["verdict"]["pass"] else "**Fail**: " + "; ".join(entry["verdict"]["reasons"]),
           entry["verdict"]["vsSummary"], f"{entry['verdict']['vsPassage']} / {entry['verdict']['vsPassageHit']}",
-          entry["verdict"]["vsHarnessText"], num(entry["arms"]["swat"].get("ms"), 0), num(entry["arms"]["t2t_m2b"].get("ms"), 0)]
+          f"{entry['verdict']['vsHarnessText']} / {entry['verdict']['vsHarnessTextHit']}",
+          num(entry["arms"]["swat"].get("ms"), 0), num(entry["arms"]["t2t_m2b"].get("ms"), 0)]
          for name, entry in measured.items()]))
     parts.append(table(
         ["Pair", "State", "Stage 1 s/step", "Stage 2 s/step", "Train h", "Measure h", "Peak GPU GiB (reserved / allocated)",
-         "Best dev F1 (step)", "Batches"],
-        [[name, entry["state"] + (f": {entry['reason']}" if entry.get("reason") else ""),
+         "Kept checkpoint: dev F1 (step)", "Batches", "Steps"],
+        [[name, state_text(entry),
           num(entry["cost"].get("stage1SecPerStep")), num(entry["cost"].get("stage2SecPerStep")),
           num(entry["cost"].get("trainHours"), 2), num(entry["cost"].get("measureHours"), 2),
           f"{num(entry['cost'].get('peakReservedGiB'), 2)} / {num(entry['cost'].get('peakAllocatedGiB'), 2)}",
-          f"{num(entry['cost'].get('bestDevF1'), 4)} ({entry['cost'].get('bestStep', '—')})",
-          "2 and 1" if entry["cost"].get("smallBatches") else "4 and 2"] for name, entry in summary["pairs"].items()]))
-    check = summary.get("recipeCheck")
-    if check:
-        parts.append(f"Recipe check on {check['pair']}: retrained `swat` F1 {num(check['retrainedF1'])}; retrained − registered "
-                     f"({check['registeredCheckpoint']}) {diff(check['retrainedMinusRegistered'])}; "
+          f"{num(entry['cost'].get('bestDevF1'), 4)} ({entry['cost'].get('bestStep') or '—'})",
+          "2 and 1" if entry["cost"].get("smallBatches") else "4 and 2",
+          "M2b-S" if entry["cost"].get("fullSteps") else "half"] for name, entry in summary["pairs"].items()]))
+    check = summary["recipeCheck"]
+    if "notMade" in check:
+        parts.append(f"Recipe check on {check['pair']}: not made, {check['notMade']}.")
+    else:
+        parts.append(f"Recipe check on {check['pair']}: retrained `swat` F1 {num(check['retrainedF1'])} (checkpoint "
+                     f"`{check['retrainedCheckpoint']}`); retrained − registered (`{check['registeredCheckpoint']}`) "
+                     f"{diff(check['retrainedMinusRegistered'], items)}; "
                      f"{'adequate' if check['adequate'] else 'not adequate'} by the −0.05 rule.")
     estimate = summary["estimateHoursPerPair"]
     parts.append(f"Trainable here and not in the batch ({len(summary['trainableNotInBatch'])}): "
@@ -268,13 +362,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--root", required=True)
     parser.add_argument("--compare", required=True)
-    parser.add_argument("--repro", help="run folder the retrained M2b-S pair was measured into")
+    parser.add_argument("--repro", required=True, help="run folder the retrained M2b-S pair was measured into")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     out = os.path.expanduser(args.out)
     os.makedirs(out, exist_ok=True)
-    summary = build(os.path.expanduser(args.root), os.path.expanduser(args.compare),
-                    os.path.expanduser(args.repro) if args.repro else None)
+    summary = build(os.path.expanduser(args.root), os.path.expanduser(args.compare), os.path.expanduser(args.repro))
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=1)
     with open(os.path.join(out, "report.md"), "w", encoding="utf-8") as handle:

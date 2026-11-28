@@ -17,6 +17,24 @@ DOC_PREFIX = "<|im_start|>user\nRead this passage.\n\n"
 END = "<|im_end|>"
 
 
+def single_token(tokenizer, text):
+    """The id of `text` when the tokenizer writes it as one token of its own, else None.
+
+    A tokenizer that turns any unknown string into its one unknown token would pass a
+    length check with a marker it does not have, so that id only counts when the text is
+    the unknown token itself (GPT-2 style tokenizers use one token as end and unknown).
+    """
+    if not text:
+        return None
+    ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+    if len(ids) != 1 or not isinstance(ids[0], int):
+        return None
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    if unknown is not None and ids[0] == unknown and text != getattr(tokenizer, "unk_token", None):
+        return None
+    return ids[0]
+
+
 def end_marker(tokenizer):
     """The text that ends a receiver's answer in stage 2, and the token decoding stops at.
 
@@ -24,12 +42,22 @@ def end_marker(tokenizer):
     Any other receiver would spell it out piece by piece, learn to write those pieces and
     never stop, so it gets its own end-of-sequence token instead.
     """
-    if len(tokenizer(END, add_special_tokens=False)["input_ids"]) == 1:
+    if single_token(tokenizer, END) is not None:
         return END
     own = getattr(tokenizer, "eos_token", None)
-    if own and len(tokenizer(own, add_special_tokens=False)["input_ids"]) == 1:
+    if single_token(tokenizer, own) is not None:
         return own
     raise ValueError("The receiver's tokenizer has neither <|im_end|> nor an end-of-sequence token of its own.")
+
+
+def end_ids(tokenizer):
+    """The token ids greedy decoding stops at: the end marker and the tokenizer's own
+    end-of-sequence id when it has one. Never None and never the unknown token by accident."""
+    ids = {single_token(tokenizer, end_marker(tokenizer))}
+    own = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(own, int):
+        ids.add(own)
+    return ids
 
 
 def doc_text(passage):

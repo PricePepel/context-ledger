@@ -1,15 +1,23 @@
-"""Train and measure a list of pairs, one after another, on one GPU.
+"""Train and measure the batch's pairs, one after another, on one GPU.
 
-    python -m latent_pairs.run --root ~/l5-mappers --compare ~/l5-mappers/compare --pairs phi3.5:qwen1.5
+    python -m latent_pairs.run --root ~/l5-mappers --compare ~/l5-mappers/compare --repro ~/l5-mappers/compare-repro
 
 Each pair gets a folder under --root with the training log, the checkpoints and a
-status.json. A pair that is already measured or has failed is left alone, so the command
-can be run again after an interruption; a pair cut off in stage 2 starts stage 2 again from
-its stage 1 checkpoint. No new pair starts once the pairs so far have used the budget.
-Standard library only: training and measuring run as their own processes, so the GPU is
-empty between them.
+status.json. The command can be run again after an interruption:
+
+- a pair that is measured, with its result file still the one that was written, is left alone;
+- a pair cut off in stage 2 starts stage 2 again from its stage 1 checkpoint;
+- the time an interrupted run had used is counted against the budget.
+
+The first pair of the batch is the M2b-S pair again and is measured into --repro, beside
+the registered checkpoint's result in --compare. No other pair starts before the recipe
+decision of docs/evals.md (L5) is made from those two results and written to recipe.json;
+that decision sets the step counts for the rest. No new pair starts once the batch has used
+its budget. Standard library only: training and measuring run as their own processes, so the
+GPU is empty between them.
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -17,44 +25,67 @@ import subprocess
 import sys
 import time
 
-from .plan import BATCH, BUDGET_HOURS, out_of_memory, pair_name, recipe, train_args, within_budget
+from .plan import BATCH, BUDGET_HOURS, ITEMS_ID, out_of_memory, pair_name, recipe, train_args, within_budget
 
-STATUS = "status.json"
+STATUS, RECIPE_FILE = "status.json", "recipe.json"
+DIVERGED = 3   # latent_transfer.train's exit code for a loss or gradient that is not a number
+ATTEMPT_FILES = ("log.jsonl", "train.out", "stage1.pt", "best.pt", "last.pt", "stage1.pt.tmp", "best.pt.tmp", "last.pt.tmp")
 
 
-def load_status(folder):
+def load_json(target):
     try:
-        with open(os.path.join(folder, STATUS), encoding="utf-8") as handle:
+        with open(target, encoding="utf-8") as handle:
             return json.load(handle)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return None
 
 
-def save_status(folder, status):
-    os.makedirs(folder, exist_ok=True)
-    target = os.path.join(folder, STATUS)
+def save_json(target, data):
+    os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target + ".tmp", "w", encoding="utf-8") as handle:
-        json.dump(status, handle, indent=1)
+        json.dump(data, handle, indent=1)
     os.replace(target + ".tmp", target)
 
 
-def hours_used(root, pairs):
-    """GPU hours the given pairs have used so far (training and measuring)."""
-    seconds = 0.0
-    for sender, receiver in pairs:
-        status = load_status(os.path.join(root, pair_name(sender, receiver)))
-        seconds += status.get("trainSeconds", 0) + status.get("evalSeconds", 0)
-    return seconds / 3600
+def load_status(folder):
+    return load_json(os.path.join(folder, STATUS)) or {}
+
+
+def save_status(folder, status):
+    save_json(os.path.join(folder, STATUS), status)
+
+
+def read_log(folder):
+    """The training log's events. A last line cut off by an interruption is left out."""
+    rows = []
+    try:
+        with open(os.path.join(folder, "log.jsonl"), encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def finished(folder):
     """Whether the training log of a folder ends with its `done` event."""
-    try:
-        with open(os.path.join(folder, "log.jsonl"), encoding="utf-8") as handle:
-            lines = [line for line in handle if line.strip()]
-    except FileNotFoundError:
-        return False
-    return bool(lines) and json.loads(lines[-1]).get("event") == "done"
+    rows = read_log(folder)
+    return bool(rows) and rows[-1].get("event") == "done"
+
+
+def diverged(folder):
+    return any(row.get("event") == "diverged" for row in read_log(folder))
+
+
+def sha256_file(target):
+    digest = hashlib.sha256()
+    with open(target, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def tail(path, size=4000):
@@ -65,6 +96,11 @@ def tail(path, size=4000):
             return handle.read().decode("utf-8", "replace")
     except FileNotFoundError:
         return ""
+
+
+def last_line(text):
+    lines = text.strip().splitlines()
+    return lines[-1][:300] if lines else "no output"
 
 
 def run_logged(command, log_path):
@@ -78,78 +114,191 @@ def run_logged(command, log_path):
     return code, time.time() - started
 
 
+def timed(folder, status, kind, command, log_name, runner, clock=time.time):
+    """Run one process and charge its time to the pair. The start is written down first, so a
+    run that is cut off can still be charged for (reconcile)."""
+    status["running"] = {"kind": kind, "startedAt": clock(), "log": log_name}
+    save_status(folder, status)
+    code, seconds = runner(command, os.path.join(folder, log_name))
+    status[f"{kind}Seconds"] = status.get(f"{kind}Seconds", 0) + seconds
+    status.pop("running", None)
+    save_status(folder, status)
+    return code
+
+
+def reconcile(folder, status):
+    """Charge a pair for a run that was cut off before it could report its time: from its
+    recorded start to the last time it wrote to its log."""
+    running = status.pop("running", None)
+    if not running:
+        return status
+    try:
+        seen = os.path.getmtime(os.path.join(folder, running["log"]))
+    except OSError:
+        seen = running["startedAt"]
+    kind = running["kind"]
+    status[f"{kind}Seconds"] = status.get(f"{kind}Seconds", 0) + max(0.0, seen - running["startedAt"])
+    status["interrupted"] = status.get("interrupted", 0) + 1
+    save_status(folder, status)
+    return status
+
+
+def hours_used(root, pairs):
+    """GPU hours the given pairs have used so far (training and measuring, cut-off runs included)."""
+    seconds = 0.0
+    for sender, receiver in pairs:
+        folder = os.path.join(root, pair_name(sender, receiver))
+        status = reconcile(folder, load_status(folder)) if os.path.isdir(folder) else {}
+        seconds += status.get("trainSeconds", 0) + status.get("evalSeconds", 0)
+    return seconds / 3600
+
+
+def set_aside(folder):
+    """Move a failed attempt's files into attempt1/. Safe to run again after an interruption:
+    a file already moved is not overwritten by a later one."""
+    aside = os.path.join(folder, "attempt1")
+    os.makedirs(aside, exist_ok=True)
+    for name in ATTEMPT_FILES:
+        source, target = os.path.join(folder, name), os.path.join(aside, name)
+        if os.path.exists(source):
+            if os.path.exists(target):
+                os.remove(source)
+            else:
+                shutil.move(source, target)
+
+
 def train(folder, sender, receiver, status, full_steps, runner=run_logged):
     """Train one pair, with the one small-batch retry after running out of memory.
     Returns None when it finished, else the reason it did not."""
+    if status.get("retry") == "moving":   # cut off while the first attempt was being set aside
+        set_aside(folder)
+        status["retry"] = "ready"
+        save_status(folder, status)
     for small in ([True] if status.get("smallBatches") else [False, True]):
         settings = recipe(full_steps=full_steps, small_batches=small)
         stage1 = os.path.join(folder, "stage1.pt")
         resume = stage1 if os.path.exists(stage1) else None
         command = [sys.executable, "-m", "latent_transfer.train", *train_args(sender, receiver, folder, settings, resume)]
-        status.update({"state": "training", "settings": settings, "smallBatches": small})
-        save_status(folder, status)
-        code, seconds = runner(command, os.path.join(folder, "train.out"))
-        status["trainSeconds"] = status.get("trainSeconds", 0) + seconds
+        status.update({"state": "training", "settings": settings, "smallBatches": small,
+                       "stage2Restarts": status.get("stage2Restarts", 0) + (1 if resume else 0)})
+        code = timed(folder, status, "train", command, "train.out", runner)
         if code == 0 and finished(folder):
             return None
         output = tail(os.path.join(folder, "train.out"))
-        if small or not out_of_memory(output):
-            return ("out of GPU memory at the small batches too" if out_of_memory(output)
-                    else f"training exited with code {code}: {output.strip().splitlines()[-1][:300] if output.strip() else 'no output'}")
-        # Out of memory at the recipe's batches: keep the first attempt's files aside and retry once.
-        aside = os.path.join(folder, "attempt1")
-        os.makedirs(aside, exist_ok=True)
-        for name in ("log.jsonl", "train.out", "stage1.pt", "best.pt", "last.pt"):
-            if os.path.exists(os.path.join(folder, name)):
-                shutil.move(os.path.join(folder, name), os.path.join(aside, name))
-        status["retriedAfterOutOfMemory"] = True
+        if code == DIVERGED or diverged(folder):
+            return "training diverged (a loss or gradient that is not a number)"
+        if not out_of_memory(output):
+            return f"training exited with code {code}: {last_line(output)}"
+        if small:
+            return "out of GPU memory at the small batches too"
+        # Out of memory at the recipe's batches. The retry is written down before anything is
+        # moved, so an interruption here cannot bring the first attempt back.
+        status.update({"smallBatches": True, "retriedAfterOutOfMemory": True, "retry": "moving"})
+        save_status(folder, status)
+        set_aside(folder)
+        status["retry"] = "ready"
+        save_status(folder, status)
     return "training did not finish"
 
 
-def measure(folder, sender, receiver, compare, status, runner=run_logged):
-    """Run latent_compare's latent phase on the pair's best checkpoint."""
+def result_path(compare, sender, receiver):
+    return os.path.join(compare, "latent", f"{pair_name(sender, receiver)}.json")
+
+
+def bound(folder, status, compare, sender, receiver, items_id=ITEMS_ID):
+    """Whether a pair's recorded measurement still stands: the result file in this run folder
+    is the one that was written for this checkpoint file, from the pinned item set."""
+    result = status.get("result") or {}
+    target, checkpoint = result_path(compare, sender, receiver), os.path.join(folder, "best.pt")
+    if result.get("path") != os.path.abspath(target) or result.get("itemsId") != items_id:
+        return False
+    if not os.path.exists(target) or not os.path.exists(checkpoint):
+        return False
+    return sha256_file(target) == result.get("sha256") and sha256_file(checkpoint) == result.get("checkpointSha256")
+
+
+def measure(folder, sender, receiver, compare, status, runner=run_logged, items_id=ITEMS_ID):
+    """Run latent_compare's latent phase on the pair's best checkpoint, always afresh, and
+    tie the result file to the checkpoint file it was made from."""
+    checkpoint, target = os.path.join(folder, "best.pt"), result_path(compare, sender, receiver)
+    if not os.path.exists(checkpoint):
+        return "training left no best.pt"
     command = [sys.executable, "-m", "latent_pairs.evaluate", "--pair", f"{sender}:{receiver}",
-               "--checkpoint", os.path.join(folder, "best.pt"), "--out", compare]
+               "--checkpoint", checkpoint, "--out", compare, "--force"]
     status["state"] = "measuring"
-    save_status(folder, status)
-    code, seconds = runner(command, os.path.join(folder, "eval.out"))
-    status["evalSeconds"] = status.get("evalSeconds", 0) + seconds
+    status.pop("result", None)
+    before = sha256_file(checkpoint)
+    code = timed(folder, status, "eval", command, "eval.out", runner)
     if code != 0:
-        output = tail(os.path.join(folder, "eval.out")).strip()
-        return f"measuring exited with code {code}: {output.splitlines()[-1][:300] if output else 'no output'}"
+        return f"measuring exited with code {code}: {last_line(tail(os.path.join(folder, 'eval.out')))}"
+    data = load_json(target)
+    if not data:
+        return "measuring left no result file"
+    if data.get("itemsId") != items_id:
+        return f"the result is from item set {data.get('itemsId')}, not L2's {items_id}"
+    if sha256_file(checkpoint) != before:
+        return "best.pt changed while it was being measured"
+    status["result"] = {"path": os.path.abspath(target), "sha256": sha256_file(target), "checkpointSha256": before,
+                        "checkpointId": data.get("checkpoint"), "itemsId": data.get("itemsId")}
     return None
 
 
-def run_pairs(root, compare, pairs, budget=BUDGET_HOURS, full_steps=False, budget_pairs=None, runner=run_logged,
-              say=lambda text: print(text, flush=True)):
-    """Train and measure each pair in order. budget_pairs are the pairs whose time counts
-    against the budget (the whole batch, also when this call runs only some of it)."""
-    budget_pairs = budget_pairs or pairs
-    for sender, receiver in pairs:
-        folder = os.path.join(root, pair_name(sender, receiver))
-        status = load_status(folder)
-        if status.get("state") in ("measured", "failed"):
-            say(f"{sender}->{receiver}: already {status['state']}")
+def run_pair(root, compare, sender, receiver, full_steps, runner, say, items_id=ITEMS_ID):
+    folder = os.path.join(root, pair_name(sender, receiver))
+    status = reconcile(folder, load_status(folder)) if os.path.isdir(folder) else {}
+    if status.get("state") == "failed":
+        say(f"{sender}->{receiver}: already failed, {status.get('reason')}")
+        return
+    if status.get("state") == "measured" and bound(folder, status, compare, sender, receiver, items_id):
+        say(f"{sender}->{receiver}: already measured")
+        return
+    status.update({"sender": sender, "receiver": receiver, "fullSteps": full_steps})
+    if not finished(folder):
+        say(f"{sender}->{receiver}: training")
+        reason = train(folder, sender, receiver, status, full_steps, runner)
+        if reason:
+            status.update({"state": "failed", "reason": reason})
+            save_status(folder, status)
+            say(f"{sender}->{receiver}: failed, {reason}")
+            return
+    say(f"{sender}->{receiver}: measuring")
+    reason = measure(folder, sender, receiver, compare, status, runner, items_id)
+    # A pair whose measurement failed is tried again on the next call: its mapper exists.
+    status.update({"state": "trained", "reason": reason} if reason else {"state": "measured", "reason": None})
+    save_status(folder, status)
+    say(f"{sender}->{receiver}: {status['state']}" + (f", {reason}" if reason else ""))
+
+
+def default_decide(root, compare, repro):
+    from .report import recipe_decision   # the report reads the harness's files; kept out of the runner's start
+    return recipe_decision(root, compare, repro)
+
+
+def run_batch(root, compare, repro, pairs=None, budget=BUDGET_HOURS, runner=run_logged, decide=default_decide,
+              say=lambda text: print(text, flush=True), batch=None, items_id=ITEMS_ID):
+    """Train and measure the pairs in order. `pairs` narrows the run to some of the batch;
+    the budget and the recipe decision are always the whole batch's."""
+    batch = list(batch or BATCH)
+    first = batch[0]
+    for sender, receiver in (pairs or batch):
+        if (sender, receiver) == first:
+            # The check on the recipe is made with the recipe's own step counts.
+            run_pair(root, repro, sender, receiver, False, runner, say, items_id)
             continue
-        used = hours_used(root, budget_pairs)
+        decision = load_json(os.path.join(root, RECIPE_FILE))
+        if not decision:
+            try:
+                decision = decide(root, compare, repro)
+            except ValueError as error:
+                say(f"{sender}->{receiver}: not started, the recipe is not decided: {error}")
+                return
+            save_json(os.path.join(root, RECIPE_FILE), decision)
+            say(f"recipe decided: {'adequate' if decision['adequate'] else 'not adequate, full M2b-S steps from here'}")
+        used = hours_used(root, batch)
         if not within_budget(used, budget):
             say(f"{sender}->{receiver}: not started, {used:.1f} h of the {budget} h budget are used")
             continue
-        status.update({"sender": sender, "receiver": receiver, "fullSteps": full_steps})
-        if not finished(folder):
-            say(f"{sender}->{receiver}: training")
-            reason = train(folder, sender, receiver, status, full_steps, runner)
-            if reason:
-                status.update({"state": "failed", "reason": reason})
-                save_status(folder, status)
-                say(f"{sender}->{receiver}: failed, {reason}")
-                continue
-        say(f"{sender}->{receiver}: measuring")
-        reason = measure(folder, sender, receiver, compare, status, runner)
-        # A pair whose measurement failed is tried again on the next call: its mapper exists.
-        status.update({"state": "trained", "reason": reason} if reason else {"state": "measured", "reason": None})
-        save_status(folder, status)
-        say(f"{sender}->{receiver}: {status['state']}" + (f", {reason}" if reason else ""))
+        run_pair(root, compare, sender, receiver, bool(decision["fullSteps"]), runner, say, items_id)
 
 
 def parse_pairs(text):
@@ -165,14 +314,13 @@ def parse_pairs(text):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--root", required=True, help="folder for the pairs' training runs")
-    parser.add_argument("--compare", required=True, help="latent_compare run folder to measure into")
+    parser.add_argument("--compare", required=True, help="latent_compare run folder the new pairs are measured into")
+    parser.add_argument("--repro", required=True, help="latent_compare run folder for the retrained M2b-S pair")
     parser.add_argument("--pairs", help="comma-separated sender:receiver keys (default: the whole batch)")
     parser.add_argument("--budget-hours", type=float, default=BUDGET_HOURS)
-    parser.add_argument("--full-steps", action="store_true", help="the M2b-S step counts instead of half")
     args = parser.parse_args()
-    pairs = parse_pairs(args.pairs) if args.pairs else list(BATCH)
-    run_pairs(os.path.expanduser(args.root), os.path.expanduser(args.compare), pairs, args.budget_hours,
-              args.full_steps, budget_pairs=list(BATCH))
+    run_batch(os.path.expanduser(args.root), os.path.expanduser(args.compare), os.path.expanduser(args.repro),
+              parse_pairs(args.pairs) if args.pairs else None, args.budget_hours)
 
 
 if __name__ == "__main__":

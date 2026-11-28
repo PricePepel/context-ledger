@@ -51,6 +51,12 @@ def main():
     if reason:
         print(f"latent {sender}->{receiver} not run: {reason}", flush=True)
         sys.exit(1)
+    # The phase returns without a reason both when it ran and when it found a result it took
+    # as current. Either way the file must now be this checkpoint's.
+    saved = harness.load(os.path.join(out, "latent", f"{sender}__{receiver}.json"))
+    if saved.get("checkpoint") != MAPPERS[(sender, receiver)]["id"]:
+        print(f"latent {sender}->{receiver}: the result file is from checkpoint {saved.get('checkpoint')}", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

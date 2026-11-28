@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .align import ALIGNMENT_RULE, RULE_RAW
 from .batch import make_pair
-from .data import end_marker
+from .data import end_ids, end_marker
 from .kv import build_cache, continue_from_cache, greedy_after_cache, model_shape, prefill
 from .mapper import Mapper, init_weights
 from .norm import calibrate_cache
@@ -57,8 +57,7 @@ class TransferPair:
         # What stage 2 teaches the receiver to end an answer with (data.end_marker): ChatML's
         # token where the receiver has it, its own end-of-sequence token otherwise.
         self.end_text = end_marker(self.receiver_tok)
-        self.eos = {self.receiver_tok(self.end_text, add_special_tokens=False)["input_ids"][0],
-                    self.receiver_tok.eos_token_id}
+        self.eos = end_ids(self.receiver_tok)
 
     # Caches ---------------------------------------------------------------
     def pair(self, texts, max_tokens=384):
@@ -164,7 +163,10 @@ class TransferPair:
         body = json.dumps(identity, sort_keys=True)
         checkpoint_id = hashlib.sha256(body.encode()).hexdigest()[:16]
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # Written beside the target and moved into place, so a run cut off while saving never
+        # leaves half a checkpoint under the name a resume would load.
         torch.save({"sender": self.sender_name, "receiver": self.receiver_name, "config": config,
                     "mapper": {k: v.detach().cpu() for k, v in self.mapper.state_dict().items()},
-                    "meta": meta, "id": checkpoint_id, "alignment": self.alignment}, path)
+                    "meta": meta, "id": checkpoint_id, "alignment": self.alignment}, path + ".tmp")
+        os.replace(path + ".tmp", path)
         return checkpoint_id

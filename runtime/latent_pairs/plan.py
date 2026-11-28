@@ -16,6 +16,11 @@ FULL_STEPS = {"stage1_steps": 15000, "stage2_steps": 20000}   # M2b-S, if the re
 
 BUDGET_HOURS = 24
 
+# L2's item sets (latent_compare.run.fingerprint of ~/l2-compare/run1/items.json) and the size
+# of their main set. A result from any other set is not an L5 result (docs/evals.md, L5).
+ITEMS_ID = "62078721512a88db"
+MAIN_ITEMS = 200
+
 # The first batch, in order (docs/evals.md, L5).
 BATCH = [("phi3.5", "qwen1.5"), ("qwen3", "qwen1.5"), ("qwen1.5", "qwen3"), ("phi3.5", "qwen3"),
          ("granite2", "qwen1.5"), ("qwen3", "qwen0.5"), ("qwen1.5", "phi3.5"), ("qwen1.5", "granite2")]

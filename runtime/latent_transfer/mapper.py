@@ -166,22 +166,36 @@ class Mapper(nn.Module):
         return sk, sv
 
 
+class SigmaStats:
+    """Running sums for calibrate_sigma, one batch at a time, so the caches of all the
+    calibration batches never sit on the GPU together."""
+
+    def __init__(self):
+        self.total, self.count = None, 0.0
+
+    def add(self, keys, values, mask):
+        """keys/values: L_R x [B, H, T, d] of one batch (keys before RoPE); mask [B, T]."""
+        if self.total is None:
+            self.total = torch.zeros(len(keys), keys[0].shape[1], 2, dtype=torch.float64)
+        weight = mask.float()[:, None, :, None]
+        for layer in range(len(keys)):
+            self.total[layer, :, 0] += (keys[layer].float() ** 2 * weight).sum((0, 2, 3)).double().cpu()
+            self.total[layer, :, 1] += (values[layer].float() ** 2 * weight).sum((0, 2, 3)).double().cpu()
+        self.count += float(mask.sum()) * keys[0].shape[-1]
+
+    def sigma(self):
+        return (self.total / self.count).sqrt().float()
+
+
 def calibrate_sigma(keys_list, values_list, masks):
     """Per (layer, head, K/V) RMS of real receiver caches.
 
     keys_list/values_list: per batch, L_R x [B, H, T, d] (keys before RoPE); masks [B, T].
     """
-    layers = len(keys_list[0])
-    heads = keys_list[0][0].shape[1]
-    total = torch.zeros(layers, heads, 2, dtype=torch.float64)
-    count = 0.0
+    stats = SigmaStats()
     for keys, values, mask in zip(keys_list, values_list, masks):
-        weight = mask.float()[:, None, :, None]
-        for layer in range(layers):
-            total[layer, :, 0] += (keys[layer].float() ** 2 * weight).sum((0, 2, 3)).double().cpu()
-            total[layer, :, 1] += (values[layer].float() ** 2 * weight).sum((0, 2, 3)).double().cpu()
-        count += float(mask.sum()) * keys[0].shape[-1]
-    return (total / count).sqrt().float()
+        stats.add(keys, values, mask)
+    return stats.sigma()
 
 
 def parameter_count(module):

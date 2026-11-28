@@ -15,13 +15,14 @@ import json
 import math
 import os
 import random
+import sys
 import time
 
 import torch
 import torch.nn.functional as F
 
 from .data import doc_text, f1, question_suffix, squad, wikitext
-from .mapper import calibrate_sigma, parameter_count
+from .mapper import SigmaStats, parameter_count
 from .pair import RECEIVER, SENDER, TransferPair
 
 DEV_TITLES = 20  # SQuAD train articles kept out of training, for dev F1 during training
@@ -158,6 +159,14 @@ def release_calibration_memory():
         torch.cuda.reset_peak_memory_stats()
 
 
+DIVERGED = 3  # exit code of a run stopped for a loss or gradient that is not a number
+
+
+def finite(loss, norm):
+    """Whether a step's loss and gradient norm are both finite numbers."""
+    return bool(torch.isfinite(loss.detach()).all()) and math.isfinite(float(norm))
+
+
 def fits(pair, text, max_tokens):
     return (len(pair.receiver_tok(text, add_special_tokens=False)["input_ids"]) <= max_tokens and
             len(pair.sender_tok(text, add_special_tokens=False)["input_ids"]) <= max_tokens)
@@ -216,13 +225,18 @@ def main():
 
     # ---------------------------------------------------------------- stage 1
     if not args.resume:
-        calib = [pair.pair([doc_text(p) for p in rng.sample(wiki, 16)], args.max_tokens) for _ in range(16)]
-        caches = [pair.receiver_cache(b) for b in calib]
-        pair.mapper.sigma.copy_(calibrate_sigma([c.keys for c in caches], [c.values for c in caches],
-                                                [b.receiver_mask for b in calib]).to(pair.device))
-        del caches
+        # One calibration batch on the GPU at a time: with all 16 caches held at once a pair
+        # with a 3B receiver does not fit before training has even started (Codex review, L5).
+        stats = SigmaStats()
+        for _ in range(16):
+            calib = pair.pair([doc_text(p) for p in rng.sample(wiki, 16)], args.max_tokens)
+            cache = pair.receiver_cache(calib)
+            stats.add(cache.keys, cache.values, calib.receiver_mask)
+            del cache, calib
+        pair.mapper.sigma.copy_(stats.sigma().to(pair.device))
+        calibration_peak = {f"calibration{key[0].upper()}{key[1:]}": value for key, value in gpu_peak().items()}
         release_calibration_memory()
-        log(event="calibrated", **gpu_reserved(), sigmaKeys=round(float(pair.mapper.sigma[..., 0].mean()), 4),
+        log(event="calibrated", **gpu_reserved(), **calibration_peak, sigmaKeys=round(float(pair.mapper.sigma[..., 0].mean()), 4),
             sigmaValues=round(float(pair.mapper.sigma[..., 1].mean()), 4))
         optimizer = torch.optim.AdamW(params, lr=args.lr1, betas=(0.9, 0.95), weight_decay=1e-3)
         log(event="stage1", nmse=round(nmse(pair, val_batches), 4), step=0)
@@ -238,6 +252,9 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
+            if not finite(loss, norm):
+                log(event="diverged", stage=1, step=step + 1)
+                sys.exit(DIVERGED)
             optimizer.step()
             if (step + 1) % 100 == 0:
                 log(event="stage1", step=step + 1, loss=round(float(loss), 4), grad=round(float(norm), 3),
@@ -270,6 +287,11 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(params, 1.0)
+        if not finite(loss, norm):
+            # A checkpoint saved before this point does not make the pair a result: the
+            # eval's rule counts a run that diverges as failed.
+            log(event="diverged", stage=2, step=step + 1)
+            sys.exit(DIVERGED)
         optimizer.step()
         if (step + 1) % 100 == 0:
             log(event="stage2", step=step + 1, loss=round(float(loss), 4), grad=round(float(norm), 3),
