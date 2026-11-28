@@ -17,6 +17,21 @@ DOC_PREFIX = "<|im_start|>user\nRead this passage.\n\n"
 END = "<|im_end|>"
 
 
+def end_marker(tokenizer):
+    """The text that ends a receiver's answer in stage 2, and the token decoding stops at.
+
+    ChatML's `<|im_end|>` when the receiver's tokenizer has it as one token (Qwen, SmolLM2).
+    Any other receiver would spell it out piece by piece, learn to write those pieces and
+    never stop, so it gets its own end-of-sequence token instead.
+    """
+    if len(tokenizer(END, add_special_tokens=False)["input_ids"]) == 1:
+        return END
+    own = getattr(tokenizer, "eos_token", None)
+    if own and len(tokenizer(own, add_special_tokens=False)["input_ids"]) == 1:
+        return own
+    raise ValueError("The receiver's tokenizer has neither <|im_end|> nor an end-of-sequence token of its own.")
+
+
 def doc_text(passage):
     return DOC_PREFIX + passage.strip()
 

@@ -81,7 +81,7 @@ def stage2_loss(pair, batch, suffixes, targets):
 def qa_sample(pair, row):
     """Document, then question + answer; loss on the answer and the end-of-turn token."""
     question = pair.receiver_tok(question_suffix(row["question"]), add_special_tokens=False)["input_ids"]
-    answer = pair.receiver_tok(row["answers"][0] + "<|im_end|>", add_special_tokens=False)["input_ids"]
+    answer = pair.receiver_tok(row["answers"][0] + pair.end_text, add_special_tokens=False)["input_ids"]
     # Token t's logits predict token t+1: mark the last question token's successor onward.
     return doc_text(row["context"]), question + answer, [0] * len(question) + [1] * len(answer)
 
@@ -111,6 +111,15 @@ def nmse(pair, batches):
     return sum(values) / len(values)
 
 
+def gpu_peak():
+    """Peak GPU memory of this process so far, in GiB: what the tensors took and what torch
+    held for them. The second is what has to fit on the card."""
+    if not torch.cuda.is_available():
+        return {}
+    return {"peakAllocatedGiB": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2),
+            "peakReservedGiB": round(torch.cuda.max_memory_reserved() / 2 ** 30, 2)}
+
+
 def fits(pair, text, max_tokens):
     return (len(pair.receiver_tok(text, add_special_tokens=False)["input_ids"]) <= max_tokens and
             len(pair.sender_tok(text, add_special_tokens=False)["input_ids"]) <= max_tokens)
@@ -134,7 +143,7 @@ def main():
     parser.add_argument("--resume", help="checkpoint to start stage 2 from (skips stage 1)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sender", default=SENDER, help="Hugging Face id of the sender model")
-    parser.add_argument("--receiver", default=RECEIVER, help="Hugging Face id of the receiver model (ChatML template)")
+    parser.add_argument("--receiver", default=RECEIVER, help="Hugging Face id of the receiver model")
     args = parser.parse_args()
     os.makedirs(os.path.expanduser(args.out), exist_ok=True)
     out = os.path.expanduser(args.out)
@@ -195,7 +204,7 @@ def main():
                     secPerStep=round((time.time() - started) / (step + 1), 3))
             if (step + 1) % 1000 == 0 or step + 1 == args.stage1_steps:
                 log(event="stage1-eval", step=step + 1, nmse=round(nmse(pair, val_batches), 4),
-                    devF1=round(dev_f1(pair, dev_rows[:50]), 4))
+                    devF1=round(dev_f1(pair, dev_rows[:50]), 4), **gpu_peak())
         checkpoint_id = pair.save(os.path.join(out, "stage1.pt"), {"stage": 1, "steps": args.stage1_steps})
         log(event="saved", path="stage1.pt", id=checkpoint_id)
 
@@ -227,13 +236,14 @@ def main():
                 secPerStep=round((time.time() - started) / (step + 1), 3))
         if (step + 1) % 500 == 0 or step + 1 == args.stage2_steps:
             score = dev_f1(pair, dev_rows)
-            log(event="stage2-eval", step=step + 1, devF1=round(score, 4), nmse=round(nmse(pair, val_batches), 4))
+            log(event="stage2-eval", step=step + 1, devF1=round(score, 4), nmse=round(nmse(pair, val_batches), 4),
+                **gpu_peak())
             if score > best:
                 best = score
                 checkpoint_id = pair.save(os.path.join(out, "best.pt"), {"stage": 2, "step": step + 1, "devF1": score})
                 log(event="saved", path="best.pt", id=checkpoint_id, devF1=round(score, 4))
     pair.save(os.path.join(out, "last.pt"), {"stage": 2, "steps": args.stage2_steps})
-    log(event="done", bestDevF1=round(best, 4))
+    log(event="done", bestDevF1=round(best, 4), **gpu_peak())
 
 
 if __name__ == "__main__":

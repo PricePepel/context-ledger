@@ -9,6 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .align import ALIGNMENT_RULE, RULE_RAW
 from .batch import make_pair
+from .data import end_marker
 from .kv import build_cache, continue_from_cache, greedy_after_cache, model_shape, prefill
 from .mapper import Mapper, init_weights
 from .norm import calibrate_cache
@@ -53,7 +54,11 @@ class TransferPair:
         # A mapper keeps the alignment rule it was trained with. Checkpoints from before
         # the L3 audit record none and used rule 1 (raw offsets).
         self.alignment = state.get("alignment", RULE_RAW) if state else ALIGNMENT_RULE
-        self.eos = {self.receiver_tok.convert_tokens_to_ids("<|im_end|>"), self.receiver_tok.eos_token_id}
+        # What stage 2 teaches the receiver to end an answer with (data.end_marker): ChatML's
+        # token where the receiver has it, its own end-of-sequence token otherwise.
+        self.end_text = end_marker(self.receiver_tok)
+        self.eos = {self.receiver_tok(self.end_text, add_special_tokens=False)["input_ids"][0],
+                    self.receiver_tok.eos_token_id}
 
     # Caches ---------------------------------------------------------------
     def pair(self, texts, max_tokens=384):
