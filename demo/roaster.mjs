@@ -252,11 +252,15 @@ export const requirements = [
     // The sentence ends at a full stop or a block break ("| sign up once." is another paragraph),
     // but a block right after the price that opens with "one-time" or "upfront" labels the price
     // ("$18 | one-time signup fee").
+    // Monthly wording in the price's own block wins over the next block, which may be the next
+    // section's heading ("$18/month | one-time purchases").
     const [own, next = ''] = after.split('|');
     const sentence = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
-    return !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence) &&
-      !/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next) &&
-      (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u.test(after) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
+    const monthlyWords = /^\s*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u;
+    if (/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence)) return false;
+    if (monthlyWords.test(own)) return true;
+    return !/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next) &&
+      (monthlyWords.test(next) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
   })],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
   ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],

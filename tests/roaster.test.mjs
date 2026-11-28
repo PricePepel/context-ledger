@@ -244,3 +244,9 @@ test('review 4, round 6: nested closing tags make one block break', () => {
   const wrapped = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>Monthly coffee deliveries</p><div class="price"><p>$18</p></div><p>One-time signup fee</p>'));
   assert.ok(wrapped.missed.includes('Bean Club, $18 a month'));
 });
+
+test('review 4, round 7: monthly wording on the price beats the next section\'s heading', () => {
+  const page = good.replace('<section><h2>Bean Club</h2><p>$18 a month for a bag of fresh beans.</p></section>',
+    '<section><h2>Bean Club</h2><div><p>$18/month</p></div></section><section><h2>One-time purchases</h2><p>Buy a bag in store.</p></section>');
+  assert.deepEqual(scoreSite(page).missed, []);
+});
