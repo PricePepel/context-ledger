@@ -258,7 +258,9 @@ export const requirements = [
     const sentence = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
     const monthlyWords = /^\s*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u;
     if (/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence)) return false;
-    if (monthlyWords.test(own)) return true;
+    const monthlyBefore = /\bmonthly\b|\b(per|a|each|every) month\b/u;
+    // The price's block runs from the last break before the price to the first one after it.
+    if (monthlyWords.test(own) || monthlyBefore.test(before.split('|').pop())) return true;
     return !/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next) &&
       (monthlyWords.test(next) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
   })],

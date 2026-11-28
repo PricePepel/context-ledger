@@ -6288,6 +6288,8 @@ A sixth round found two medium with one cause: nested closing tags (`</h3></head
 
 20. *(medium, round 7)* After the collapse, the next section's heading ("One-time purchases") became the block after a "$18/month" price and failed it. Monthly wording in the price's own block now decides; the next block is read only when the price's block has none.
 
+21. *(medium, round 8)* The same held for monthly wording before the price in its own block ("Monthly membership: $18"); the price's block now runs from the last break before the price to the first after it.
+
 The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
 
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

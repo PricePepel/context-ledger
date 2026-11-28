@@ -250,3 +250,9 @@ test('review 4, round 7: monthly wording on the price beats the next section\'s 
     '<section><h2>Bean Club</h2><div><p>$18/month</p></div></section><section><h2>One-time purchases</h2><p>Buy a bag in store.</p></section>');
   assert.deepEqual(scoreSite(page).missed, []);
 });
+
+test('review 4, round 8: monthly wording before the price in its own block also beats the next heading', () => {
+  const page = good.replace('<section><h2>Bean Club</h2><p>$18 a month for a bag of fresh beans.</p></section>',
+    '<section><h2>Bean Club</h2><p>Monthly membership: $18</p></section><section><h2>One-time purchases</h2><p>Buy a bag in store.</p></section>');
+  assert.deepEqual(scoreSite(page).missed, []);
+});
