@@ -225,6 +225,16 @@ test('round 2 high: a computed host key or an options object with a second argum
   assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen({ ['host']: '127.0.0.1', port: 0 });")), []);
 });
 
+test('R2: only the relay command\'s one listen in src/cli.mjs may name a host from its options', () => {
+  const relay = 'server.listen(port, host, resolve);';
+  assert.deepEqual(checkFile('src/cli.mjs', utf8(relay)), []);
+  // In any other file, or a second time in that file, or with other arguments, it is a finding.
+  assert.deepEqual(rules(checkFile('src/server.mjs', utf8(relay))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8(`${relay}\n${relay}`))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8('server.listen(port, host);'))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8("server.listen(port, '0.0.0.0', resolve);"))), ['loopback-only']);
+});
+
 test('round 2 medium: an optional call is checked', () => {
   for (const line of ['server.listen?.(0);', 'server?.listen(0);', "server['listen']?.(0);"]) {
     assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);

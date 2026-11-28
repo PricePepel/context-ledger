@@ -8,6 +8,10 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: R2 relay refreshed and reviewed (2026-11-28)
+
+PR #91 (`ruslan/r2-relay`) is stacked on #90 and goes after it; it has R1 and main merged and two rounds of Codex review fixed (in [evals](evals.md) under R2, "Refresh with main and R1"). The relay now keeps counting a deleted parcel's bytes until its downloads end and cuts a download after 3 minutes; the client refuses compressed answers. `scripts/check.mjs` exempts `relay serve`'s one `--host` listen. It adds a listener beyond loopback and encryption, so Ruslan reviews and merges it himself, after #90.
+
 ## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
 
 PR #90 (`ruslan/r1-parcels`) has main merged, six rounds of Codex review fixed (in [evals](evals.md) under R1, "Refresh with main"), and green suites. It goes before #91 (R2), which is stacked on it. Changed behaviour: `share` scans the whole session together with the graph's own text, a line-cited parcel carries and stores `l:<line>` keys, and publishing a graph holds the write lock. Two mediums are accepted and written down there. It adds an export path, so Ruslan reviews and merges it himself.
@@ -81,13 +85,21 @@ Next owner: H15. The Node suite on #100 failed because the server's Windows toke
 
 Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
 
+## Current checkpoint — R2 relay: send a parcel between two machines (2026-11-23)
+
+- **What changed.** `ledger relay serve [--host] [--port]` runs a mailbox for sealed parcels (`src/relay.mjs`). `ledger share <graph-id> --relay <url>` seals R1's parcel and prints a code; `ledger receive --from <code>` fetches, opens and stores it, then deletes the relay's copy (`src/relay-client.mjs`, `src/cli.mjs`).
+- **The ledger server is unchanged.** It still binds to loopback. The relay is the one program here that may listen on another address, only with `--host`. It imports only Node built-ins and opens no database; `tests/relay.test.mjs` checks that.
+- **Decisions** are ADR-20 in `docs/architecture.md` §17. User docs are the relay section of `docs/parcels.md`. Stacked on R1's branch.
+- **Needs a human security review** before merge: a listener beyond loopback, and encryption (HKDF-SHA-256, AES-256-GCM from `node:crypto`).
+- **Next.** R3: sync room choices and review events since a cursor through the same relay. Later cards: sign parcels with the P4a key, relay access control, a Docker image for the relay.
+
 ## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
 
 - **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
 - **Schema version 8** adds `session_excerpts`. A row marks a session that holds only received lines; its summaries say `excerpts: true`, and the library and the hand-off label it. Importing the full transcript later replaces the excerpts and keeps their keys.
 - **Decisions** are ADR-19 in `docs/architecture.md` §17. User docs are `docs/parcels.md`. Tests are `tests/parcel.test.mjs` and `tests/e2e/parcel.spec.mjs`.
 - **Needs a human security review** before merge: it adds an export path and a schema step.
-- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a one-time code). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
+- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a code that opens the parcel). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
 
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 

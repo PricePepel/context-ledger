@@ -23,8 +23,9 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
-  '       npm run ledger -- share <graph-id> --out <new-file>\n' +
-  '       npm run ledger -- receive <parcel-file>\n' +
+  '       npm run ledger -- share <graph-id> --out <new-file> | --relay <relay-url>\n' +
+  '       npm run ledger -- receive <parcel-file> | --from <code>\n' +
+  '       npm run ledger -- relay serve [--host <address>] [--port <port>]\n' +
   '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
   '       npm run ledger -- artifact list [--project <slug>] [--limit <n>] [--after <id>]\n' +
   '       npm run ledger -- login\n' +
@@ -109,12 +110,26 @@ function command(argv) {
   }
   // Card R1: a parcel carries one graph and the lines it cites to another machine.
   if (action === 'share') {
-    const { values, positionals } = options(args, { out: { type: 'string' } });
-    if (positionals.length === 1 && /^[a-f0-9]{64}$/u.test(positionals[0]) && values.out) {
-      return { action, graphId: positionals[0], out: values.out };
+    // Card R2: into a file, or through a relay; one of the two.
+    const { values, positionals } = options(args, { out: { type: 'string' }, relay: { type: 'string' } });
+    const target = values.out ?? values.relay;
+    if (positionals.length === 1 && /^[a-f0-9]{64}$/u.test(positionals[0]) && target && (values.out === undefined) !== (values.relay === undefined)) {
+      return { action, graphId: positionals[0], out: values.out, relay: values.relay };
     }
   }
-  if (action === 'receive' && args.length === 1 && args[0] !== '' && !args[0].startsWith('-')) return { action, filePath: args[0] };
+  if (action === 'receive') {
+    const { values, positionals } = options(args, { from: { type: 'string' } });
+    if (values.from && positionals.length === 0) return { action, code: values.from };
+    if (values.from === undefined && positionals.length === 1 && positionals[0] !== '') return { action, filePath: positionals[0] };
+  }
+  // Card R2: the relay is its own program; it never opens the ledger database.
+  if (action === 'relay' && args[0] === 'serve') {
+    const { values, positionals } = options(args.slice(1), { host: { type: 'string' }, port: { type: 'string' } });
+    const port = values.port === undefined ? 4319 : /^(?:0|[1-9][0-9]{0,4})$/u.test(values.port) ? Number(values.port) : NaN;
+    if (positionals.length === 0 && port <= 65535 && values.host !== '') {
+      return { action: 'relay-serve', relayHost: values.host ?? '127.0.0.1', relayPort: port };
+    }
+  }
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
     return { action, path: '/api/export?' + new URLSearchParams(args.slice(1).map(id => ['graph', id])), raw: true };
@@ -510,7 +525,15 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
  * after the secret scanner, and its artifacts. The ledger is read on one read-only
  * connection, and the file is new and for its owner only.
  */
-async function shareCommand(graphId, out) {
+async function shareCommand(graphId, out, relay) {
+  // Card R2: the relay is asked first, so nothing is read for a relay that is not there.
+  let client;
+  let origin;
+  if (relay !== undefined) {
+    client = await import('./relay-client.mjs');
+    origin = client.relayOrigin(relay);
+    await client.checkRelay(origin);
+  }
   const store = await openCurrentStore(ledgerDatabasePath(), 'share');
   const { buildParcel } = await import('./parcel.mjs');
   const { InputError } = await import('./errors.mjs');
@@ -536,25 +559,32 @@ async function shareCommand(graphId, out) {
   } finally {
     store.close();
   }
-  let file;
-  try {
-    // wx: never replace a file, and never write through a link someone left at the path.
-    file = await open(out, 'wx', 0o600);
-  } catch (error) {
-    if (error.code === 'EEXIST') throw new Error('The output file already exists. Choose a new file.');
-    if (error.code === 'ENOENT') throw new Error('The folder of the output file does not exist.');
-    throw new Error('Cannot create the output file.');
-  }
-  try {
-    await file.writeFile(built.text);
-    await file.sync();
-  } catch {
-    throw new Error('Cannot write the output file. Delete what was written and try again.');
-  } finally {
-    await file.close();
+  let secret;
+  if (origin === undefined) {
+    let file;
+    try {
+      // wx: never replace a file, and never write through a link someone left at the path.
+      file = await open(out, 'wx', 0o600);
+    } catch (error) {
+      if (error.code === 'EEXIST') throw new Error('The output file already exists. Choose a new file.');
+      if (error.code === 'ENOENT') throw new Error('The folder of the output file does not exist.');
+      throw new Error('Cannot create the output file.');
+    }
+    try {
+      await file.writeFile(built.text);
+      await file.sync();
+    } catch {
+      throw new Error('Cannot write the output file. Delete what was written and try again.');
+    } finally {
+      await file.close();
+    }
+  } else {
+    // Card R2 (ADR-20): sealed here with a key the relay never gets.
+    secret = client.newSecret();
+    await client.sendSealed(origin, secret, client.sealParcel(secret, built.text));
   }
   const lines = built.parcel.session.messages.length;
-  console.log(`Parcel written to ${terminalLabel(out)}\nGraph: ${graphId}\n` +
+  console.log(`${origin === undefined ? `Parcel written to ${terminalLabel(out)}` : `Parcel sent to the relay at ${terminalLabel(origin)}`}\nGraph: ${graphId}\n` +
     `It carries the ${plural(lines, 'line')} the graph cites, of ${total} in the session.`);
   if (built.redacted > 0) {
     console.log(`${plural(built.redacted, 'possible secret')} in what it carries ${built.redacted === 1 ? 'was' : 'were'} replaced by [REDACTED] markers.`);
@@ -562,14 +592,53 @@ async function shareCommand(graphId, out) {
   if (built.links > 0) {
     console.log(`This graph links to ${plural(built.links, 'other graph')}. The receiving ledger needs ${built.links === 1 ? 'it' : 'them'} first.`);
   }
-  console.log('On the other machine, run: ledger receive <this file>');
+  if (origin === undefined) {
+    console.log('On the other machine, run: ledger receive <this file>');
+    return;
+  }
+  // The code is the last line, alone, so it can be copied whole.
+  console.log('Give this code to the other person over a channel you trust. Anyone who has it can read the parcel, so keep it secret.\n' +
+    'On the other machine, run: ledger receive --from <code>\n' + client.formatCode(origin, secret));
+  if (client.isLoopback(origin)) console.error('Note: the relay address is a loopback address, so only this machine can use this code.');
 }
 
 /** Card R1 (ADR-19): check a parcel file and store its graph and lines, all or nothing. */
 async function receiveCommand(filePath) {
   const { parseParcel } = await import('./parcel.mjs');
+  await storeParcel(parseParcel(await readSmallFile(filePath, 'Parcel')));
+}
+
+/**
+ * Card R2 (ADR-20): fetch the sealed parcel a code names, open it with the code's secret,
+ * and store it as a parcel file is stored. The relay's copy is deleted only once the
+ * parcel is stored, so a parcel this ledger refuses can be tried again.
+ */
+async function receiveFromCommand(code) {
+  const client = await import('./relay-client.mjs');
+  const { origin, secret } = client.parseCode(code);
+  const sealed = await client.fetchSealed(origin, secret);
+  const { parseParcel } = await import('./parcel.mjs');
+  await storeParcel(parseParcel(client.openParcel(secret, sealed)));
+  console.log(await client.deleteSealed(origin, secret)
+    ? 'The relay says it deleted its sealed copy.'
+    : 'The relay did not confirm that it deleted its sealed copy. A Context Ledger relay deletes a copy after 24 hours; a relay that is not one may keep it.');
+}
+
+/** Card R2: run the relay until the process is stopped. */
+async function relayServeCommand(host, port) {
+  const { createRelay, listeningNotice } = await import('./relay.mjs');
+  const { server } = createRelay();
+  await new Promise((resolve, reject) => {
+    // The system's error names the address, which the person typed; a fixed sentence says enough.
+    server.once('error', () => reject(new Error('The relay could not listen on that address and port. It may be in use.')));
+    server.listen(port, host, resolve);
+  });
+  console.log(listeningNotice(server.address()));
+}
+
+/** A checked parcel into the ledger database: all of it, or nothing. */
+async function storeParcel(parcel) {
   const { GraphInputError } = await import('./graph.mjs');
-  const parcel = parseParcel(await readSmallFile(filePath, 'Parcel'));
   const { openStore, InputError, ConflictError } = await import('./store.mjs');
   let store;
   try {
@@ -661,12 +730,13 @@ async function main() {
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head, graphId, out } = command(argv);
+  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head, graphId, out, relay, code, relayHost, relayPort } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
   // Card R1: parcels are read from and stored into the database in this process too.
-  if (action === 'share') return shareCommand(graphId, out);
-  if (action === 'receive') return receiveCommand(filePath);
+  if (action === 'share') return shareCommand(graphId, out, relay);
+  if (action === 'receive') return code === undefined ? receiveCommand(filePath) : receiveFromCommand(code);
+  if (action === 'relay-serve') return relayServeCommand(relayHost, relayPort);
   // Card P4a: keys, signing and checking work on local files; signing reads the session
   // from the ledger database in this process, never from whatever answers on PORT.
   if (action === 'keygen') {

@@ -275,6 +275,12 @@ function optionsOnLoopback(text) {
 // listen({ port, host: '127.0.0.1' }).
 const portArgument = /^\d+$/u;
 
+// The one listener that may serve other machines: `ledger relay serve --host` (card R2,
+// ADR-20), a separate program that opens no ledger. It is named here by file and by the
+// exact arguments of one call; any other listen in that file is still checked. Adding an
+// entry needs the same review as ADR-20 did.
+const beyondLoopback = new Map([['src/cli.mjs', 'port, host, resolve']]);
+
 function listensOnLoopback(args) {
   const parts = topLevelParts(stripComments(args));
   if ((parts[0] ?? '').startsWith('{')) return optionsOnLoopback(parts[0]);
@@ -327,8 +333,13 @@ export function checkFile(path, bytes, { browser = false } = {}) {
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
     if (!html) {
+      let exemptLeft = beyondLoopback.get(path) === undefined ? 0 : 1;
       for (const match of code.matchAll(listenCall)) {
         const args = callArguments(code, match.index + match[0].length - 1);
+        if (exemptLeft > 0 && args === beyondLoopback.get(path)) {
+          exemptLeft -= 1;
+          continue;
+        }
         if (!listensOnLoopback(args)) {
           add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen({ port, host: '127.0.0.1' }) with the object written out, or listen(0, '127.0.0.1') with a literal port (AGENTS.md section 6: loopback only)");
         }
