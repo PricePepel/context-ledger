@@ -50,10 +50,11 @@ Do not start coding until you know which card you are working on.
 ## 6. Engineering invariants
 
 - Node 22, ES modules, no build step. Add a runtime dependency only with a short ADR in `docs/architecture.md`.
-- The server binds to loopback only and checks Host and Origin. Browser rendering uses `textContent`, never `innerHTML` with transcript data.
-- Anything printed to a terminal or exported must escape control, format and bidi characters (see `terminalJson` and `visibleText` in `src/cli.mjs`).
+- `node scripts/check.mjs` enforces the rules it can see, on every tracked file, and its messages say what to write instead: loopback-only `listen`, no HTML sinks in code (`textContent`, never `innerHTML`), no raw control, format or bidi characters, and label lengths in code points. Do not restate those rules elsewhere; add to the check.
+- The server also checks Host and Origin on every request.
+- Anything printed to a terminal or exported must escape control, format and bidi characters (see `terminalJson` and `visibleText` in `src/text.mjs`).
 - Imports stay explicit and user-controlled; no background collection of transcripts without consent.
-- Tooling quirk: some agent editors turn typed `\u2028`-style escapes into raw invisible characters. Use `String.fromCodePoint(...)` or `\p{...}` classes, and check that `src/` and `tests/` contain no raw control or format characters other than tab, newline and carriage return.
+- Tooling quirk: some agent editors turn typed escapes into raw invisible characters. Prefer `String.fromCodePoint(...)` or `\p{...}` classes; the check reports any that slip through.
 
 ## 7. Working across agents
 
