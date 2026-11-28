@@ -353,6 +353,10 @@ async function importT3(args) {
   }
 }
 
+// Card P4d: version 1 and 2 bundles were signed before redaction; both verify commands say so.
+const unredactedWarning = 'Warning: this bundle was signed before hand-offs were redacted. ' +
+  'Its hand-off was not checked for secrets; read it with care before you pass it on.';
+
 async function verifyCommand(dir, fingerprint) {
   const { problems, files, createdAt, session, fingerprint: signer, reviews, redaction, version } = await verifyBundle(dir, { fingerprint });
   if (problems.length > 0) {
@@ -369,10 +373,7 @@ async function verifyCommand(dir, fingerprint) {
     : `${redaction.findings} ${redaction.findings === 1 ? 'replacement' : 'replacements'}, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
     '\nKey fingerprint: ' + signer + '\n' + chain + '\nRedaction: ' + redacted);
-  if (redaction === null) {
-    console.error('Warning: this bundle was signed before hand-offs were redacted. ' +
-      'Its hand-off was not checked for secrets; read it with care before you pass it on.');
-  }
+  if (redaction === null) console.error(unredactedWarning);
   if (fingerprint === undefined) {
     console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
       'and run verify again with --fingerprint.');
@@ -458,6 +459,8 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
       throw new Error('The signed hand-off did not verify, so its review head is not trusted.');
     }
     if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
+    // Card P4d review: an audit of a version 2 bundle also hears that its hand-off was not redacted.
+    if (bundle.redaction === null) console.error(unredactedWarning);
     signed = bundle.reviews;
     trustedHead = signed.head;
   }
