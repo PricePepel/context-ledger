@@ -178,7 +178,9 @@ export function pageParts(html) {
   const text = bare
     .replace(/<head[\s\S]*?<\/head>/giu, ' ').replace(/<title[\s\S]*?<\/title>/giu, ' ')
     .replace(/<script[\s\S]*?<\/script>/giu, ' ').replace(/<style[\s\S]*?<\/style>/giu, ' ')
-    .replace(blockEnd, ' | ').replace(/<[^>]+>/gu, ' ')
+    // Tags go with their quoted attribute values whole (a ">" inside a title is not the tag's end);
+    // what is left, such as <!doctype html>, goes after.
+    .replace(blockEnd, ' | ').replace(anyTag, ' ').replace(/<[^>]+>/gu, ' ')
     .replace(/&nbsp;/gu, ' ').replace(/&amp;/gu, '&').replace(/&#36;|&dollar;/gu, '$')
     .replace(/&ndash;|&mdash;|&#8211;|&#8212;/gu, '-').replace(/&quot;|&#34;/gu, '"').replace(/&#39;|&rsquo;|&apos;/gu, "'");
   return { text: fold(text), css: fold(css), attributes: fold(attributes), html: fold(bare) };
@@ -207,9 +209,10 @@ function pricesOf(text, item) {
     // A label is the item's own short row: it opens a block, with at most two words before the
     // name ("| small oat latte $5.00") and a short gap to the price ("| oat latte (16 oz) $5.00").
     // A name in a sentence ("inspired by our oat latte $5.00", "oat latte fans might like our
-    // cookie for $5.00") may be followed by some other thing's price.
+    // cookie for $5.00") may be followed by some other thing's price, and so may a name whose
+    // price lies past a block break ("| oat latte pairings | cookie $5.00").
     const ownRow = /(^|\|)\s*([\p{L}-]+\s+){0,2}$/u.test(text.slice(Math.max(0, match.index - 40), match.index))
-      && between.replace(/[\s|]/gu, '').length <= 15;
+      && !between.includes('|') && between.trim().length <= 15;
     if (amount) found.push({ price: Number(amount[1]), label: ownRow });
   }
   return found;
@@ -243,7 +246,8 @@ export const requirements = [
   // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" in the same
   // sentence after it.
   ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) => {
-    const sentence = after.replace(/[.!?](\s|$)[\s\S]*/u, '');
+    // The sentence ends at a full stop or a block break ("| sign up once." is another paragraph).
+    const sentence = after.replace(/([.!?](\s|$)|\|)[\s\S]*/u, '');
     return !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence) &&
       (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u.test(after) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
   })],

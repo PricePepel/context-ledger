@@ -6271,4 +6271,10 @@ A third Codex round found four medium and one low, again in the scorer's edge ca
 12. *(medium)* "once" in a later sentence ("$18 per month. Cancel once you move.") failed the monthly check. The one-time words are now looked for only in the sentence that holds the price.
 13. *(low)* "per monthlong" read as monthly; the month words now end at a word boundary.
 
+A fourth round found two medium and one low, fixed with a regression test:
+
+14. *(medium)* The own-row gap ignored block breaks, so "Oat Latte Pairings" as a heading took the next paragraph's "Cookie $5.00" as a stale price. An own row now has no block break between the name and the price.
+15. *(medium)* "Sign up once." in the next paragraph failed the monthly check. The one-time words are now looked for only up to a full stop or a block break.
+16. *(low)* Visible text cut a tag at its first `>`, so a quoted `title="Our motto > …"` leaked into the scored text. Tags are now removed with their quoted values whole.
+
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

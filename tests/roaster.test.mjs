@@ -218,3 +218,13 @@ test('review 4, round 3: Bean Club wording is read sentence by sentence and word
   assert.equal(swap('<p>$18 per month. Cancel once you move.</p>'), false);
   assert.equal(swap('<p>Join annually for $18 per monthlong workshop.</p>'), true);
 });
+
+test('review 4, round 4: block breaks bound price labels and one-time words; quoted ">" stays in its tag', () => {
+  const pairings = scoreSite(good.replace('<p>Our signature', '<h3>Oat Latte Pairings</h3><p>Cookie $5.00</p><p>Our signature'));
+  assert.deepEqual(pairings.stale, []);
+  assert.deepEqual(pairings.missed, []);
+  const club = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>$18 per month</p><p>Sign up once.</p>'));
+  assert.deepEqual(club.missed, []);
+  const titled = scoreSite(good.replace('<p>Roasted slow, poured fresh.</p>', '<p title="Our motto > Roasted slow, poured fresh.">Welcome</p>'));
+  assert.ok(titled.missed.includes('Tagline "Roasted slow, poured fresh."'));
+});
