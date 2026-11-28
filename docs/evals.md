@@ -5597,6 +5597,37 @@ Three Playwright tests failed on Windows runners and passed on a re-run, with no
 - **Node suite on #100, and H9 ruled out.** Three Node tests that start a server failed together after about 30 s (#100, run 46025391797). The server printed "Cannot write the access token file next to the database.", the message from its listen callback: on Windows the token file is written by a synchronous PowerShell call with a 30 s timeout (`src/token.mjs`), and under load PowerShell did not finish in time, so the server exited. H9's change from `listen(port, host)` to `listen({ port, host })` is not the cause: every test server uses `PORT=0`, the server was already listening when it exited, Node reads both forms the same way, and the console demo flake predates H9. The token write is security code, so it is card H15, not part of this card.
 - **Codex review, round 1** (of the version before the working-agent change): three medium and two low, fixed. (medium) The recorder kept the highest opacity, the stroke and the size separately, so they could come from different frames; one frame must now have all three. (medium) The working-agent count was still read from the test after the line; it is now recorded with the line, as above. (medium) Whether an entry starts a swarm run was guessed from a `#run` selector, which a `#swarm-run` click would slip past; the page's own requests decide it now. (low) Every feature test was reported at `feature-check.mjs`, a location that runs nothing; the spec files call `test()` themselves and the helper only builds the body. (low) A body that could not be read hid the handoff response's status; the status is reported either way. Accepted: the mid-run screenshot is taken after the wait, so it can show a later moment; it is a picture for people, not a check.
 - **Codex review, round 2:** no high; one medium and three low. (low, fixed) A hidden flash layer would leave the line's own opacity, stroke and box intact: the frame check also needs the line's inherited visibility. (low, fixed) The swarm check counted attempts, so a marked entry whose run the ledger refused with 409 could pass: it now needs an accepted run. (low, fixed) The handoff response wait could time out on its own while the click was still waiting for a missing result: the two are awaited together. (medium, accepted) If the browser's own main thread stalls for more than the line's 2.4 s, the line can be removed before any frame samples it, and the test fails. Such a stall also means the line was never painted, so failing is correct; the CI failures came from polling outside the page, which this card removes. With eight CPU-bound processes running, 20 runs of the one-frame recorder and 20 more after this round all passed.
+## H15 — Token file write survives a slow PowerShell (defined 2026-11-27, before the code)
+
+Card: H15 on the delivery board. Scope: how `src/token.mjs` writes the token file on Windows, and the server's listen callback that waits for it. The read path and the ACL checks themselves are not changed.
+
+### The problem
+
+On Windows the server wrote its token file through one synchronous PowerShell call with a 30 s timeout, inside its listen callback. On a loaded CI runner (#100, run 46025391797) PowerShell took longer, the call was killed, and the server printed "Cannot write the access token file next to the database." and exited before serving anything (see the H14 notes, which rule out H9's listen change).
+
+### The change (recommended option)
+
+The write becomes asynchronous and is retried once after a timeout:
+
+- The server keeps answering 503 "Context Ledger is starting." until the write and its ACL check have both finished, as it already did before `auth` existed. Its event loop is no longer blocked, and nothing is printed (no "listening" line, no sign-in code) before the file is confirmed private.
+- Each PowerShell attempt has a bounded timeout of 60 s, and only a timeout leads to a second attempt (at most two, so at most about 2 minutes). Before the retry, whatever is at the path is removed, as at the start of every write, so the second attempt still creates the file exclusively with its private descriptor.
+- Any other failure fails closed at once, without a retry: the path already holds something (exit 3), the descriptor on the new handle is not private (exit 4), output that does not parse, or a descriptor Node rejects (`privateToOwner`). In each of these the record is emptied through its own handle as before, and the server exits with the same fixed sentence.
+
+Rejected: a longer synchronous timeout (blocks the event loop and still has a cliff), and an ACL path without PowerShell (needs a native addon or `icacls` text parsing, which depends on the display language; ADR-10's single-handle create-then-check would be lost).
+
+### What is tested and the expected result
+
+`tests/token.test.mjs`, with an injected PowerShell runner and no real sleeping:
+
+1. A first attempt that times out, then one that succeeds: the write resolves with the file's identity, the runner was called twice, each time with the 60 s bound, and the second attempt found nothing at the path (the partial file of the first was removed).
+2. Two attempts that both time out: the write rejects with the fixed sentence "The token file could not be written privately.", the runner was called exactly twice, and no token is left at the path.
+3. An attempt that reports a descriptor others can read: the write rejects at once (one call, no retry) and the record it wrote is emptied.
+4. An attempt that fails for another reason (a non-zero exit that is not a timeout): rejects at once, one call.
+5. The default runner marks a child it had to stop as timed out: a Node child that never exits, with a 300 ms bound, rejects with `timedOut: true`; a child that exits non-zero rejects without it. Its stdin carries the record and is then closed.
+6. The existing suite still holds: a server that cannot write its token file exits 1 with the fixed sentence and prints no "listening" line; on Windows the real file is private from its creation.
+
+Synthetic data only: random tokens and temporary folders.
+
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
 Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.
