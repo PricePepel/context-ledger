@@ -240,7 +240,73 @@ test('round 6: write on a variable that holds a document is an HTML sink', () =>
   for (const line of ['const doc = iframe.contentDocument; doc.write(transcript.text);', 'frame.contentDocument.writeln(text);', 'frameDoc?.write(text);']) {
     assert.deepEqual(rules(checkFile('public/a.mjs', utf8(line))), ['html-sink'], line);
   }
-  assert.deepEqual(checkFile('public/a.mjs', utf8('stream.write(chunk);')), []);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('stream.write(chunk);')), [], 'a stream in server code');
+});
+
+test('round 7: in browser code any write() call is a sink; setHTMLUnsafe and friends are sinks', () => {
+  const browser = ['const preview = iframe.contentDocument; preview.write(transcript.text);', 'target.writeln(text);', "preview['write'](text);", 'preview.setHTMLUnsafe(transcript.text);', 'preview.setHTML(text);', 'Document.parseHTMLUnsafe(text);'];
+  for (const line of browser) assert.deepEqual(rules(checkFile('public/console/a.mjs', utf8(line))), ['html-sink'], line);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('response.write(chunk); stream.write(line);')), [], 'server code writes streams');
+});
+
+test('round 7: a tracked file replaced by a folder before staging is skipped, not a crash', async () => {
+  const folder = await gitFolder({ 'src/preview.mjs': 'export const a = 1;\n', 'src/b.mjs': `const x = '${char(0x202e)}';\n` });
+  try {
+    await rm(join(folder, 'src', 'preview.mjs'));
+    await mkdir(join(folder, 'src', 'preview.mjs', 'parts'), { recursive: true });
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^src\/b\.mjs:1:12 {2}raw-character/mu);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('round 8: write() in an HTML page outside public/ is a sink too', () => {
+  const page = '<script>const preview = iframe.contentDocument; preview.write(transcript.text);</script>';
+  assert.deepEqual(rules(checkFile('demo/preview.html', utf8(page))), ['html-sink']);
+});
+
+test('round 8: a parent folder replaced by a file before staging is skipped, not a crash', async () => {
+  const folder = await gitFolder({ 'src/preview/index.mjs': 'export const a = 1;\n', 'src/b.mjs': `const x = '${char(0x202e)}';\n` });
+  try {
+    await rm(join(folder, 'src', 'preview'), { recursive: true, force: true });
+    await writeFile(join(folder, 'src', 'preview'), 'now a file\n');
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^src\/b\.mjs:1:12 {2}raw-character/mu);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('round 9: a module an HTML page loads, and what it imports, is browser code wherever it lives', async () => {
+  const folder = await gitFolder({
+    'demo/preview.html': '<script type="module" src="./preview.mjs"></script>\n',
+    'demo/preview.mjs': "import { show } from './show.mjs';\nshow();\n",
+    'demo/show.mjs': 'export function show() { const preview = iframe.contentDocument; preview.write(transcript.text); }\n',
+    'demo/server.mjs': 'process.stdout.write(line);\n',
+  });
+  try {
+    const failure = await run(process.execPath, [script, folder]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stdout, /^demo\/show\.mjs:1:\d+ {2}html-sink {2}write\(\) in browser code/mu);
+    assert.doesNotMatch(failure.stdout, /demo\/server\.mjs/u, 'a Node script beside it still writes streams');
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test("round 9: execCommand('insertHTML') is an HTML sink", () => {
+  assert.deepEqual(rules(checkFile('public/app.js', utf8("editor.focus(); document.execCommand('insertHTML', false, transcript.text);"))), ['html-sink']);
+});
+
+test('round 10: an HTML property name as a string in browser code, and listen passed along, are findings', () => {
+  assert.deepEqual(rules(checkFile('public/swarm/a.mjs', utf8("const key = rich ? 'innerHTML' : 'textContent'; el('div', { [key]: text });"))), ['html-sink']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8("const key = 'innerHTML';")), [], 'server code may name it, for example in a check');
+  for (const line of ['const listen = promisify(server.listen.bind(server)); await listen(port);', 'start(server.listen);']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
+  }
 });
 
 test('round 5: the ledger server itself listens through a written-out options object', async () => {
@@ -404,4 +470,66 @@ test('card H10 review: any comparison spelling is caught; only exact emptiness t
     'const width = label.length * 8;',
   ];
   for (const line of pass) assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+});
+
+test('card H10 review 2: a member chain, parentheses and a lone 0 or 1', () => {
+  const fail = [
+    'if (500 < node.label.length) reject();',
+    'if ((label.length) > 500) reject();',
+    'if (label.length < 1 + MAX_LABEL_LENGTH) keep();',
+    'if (MAX + 1 > label.length) keep();',
+    "if (graph.nodes[0]['label'].length > 500) cut();",
+  ];
+  for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  for (const line of ['if (!(label.length > 0)) refuse();', 'const empty = label.length < 1;', 'return (label.length >= 1) && ok;']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 3: indexed and call receivers, and a parenthesized 0', () => {
+  for (const line of ['if (500 < graph.nodes[0].label.length) reject();', 'if (500 < getNode().label.length) reject();', 'if (label.length < (1 + MAX)) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length > (0)) show();')), []);
+});
+
+test('card H10 review 4: nested receivers, a parenthesized 1 in a sum, and a keyword before 0', () => {
+  for (const line of ['if (label.length < (1) + MAX_LABEL_LENGTH) keep();', 'if (500 < getNode(getId()).label.length) reject();', "if (500 < getNode()['label'].length) reject();"]) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['return 0 < label.length;', 'if (label.length < 1) refuse();', 'const ok = (label.length > 0) ? a : b;']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 5: nested indexes, keys ending in label, and a 0 before more code', () => {
+  for (const line of ['if (500 < graph.nodes[indexes[0]].label.length) reject();', "if (node['editLabel'].length > 500) reject();", 'if (label.length < (1) + MAX) keep();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+  for (const line of ['if (label.length > 0) ++count;', 'if ((label.length > (0))) show();', 'if (label.length < 1) refuse();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(line)), [], line);
+  }
+});
+
+test('card H10 review 6: optional indexing before the label', () => {
+  for (const line of ['if (500 < nodes?.[index]?.label?.length) reject();', 'if (nodes?.[index]?.label.length > 500) cut();']) {
+    assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['label-length'], line);
+  }
+});
+
+test('card H10 review 7: the whole member chain before the label, across lines and groups', () => {
+  const fail = [
+    'if (500 < getNode(\n  graph,\n  nodeId,\n).label.length) return false;',
+    'if (500 < (node ?? fallback).label.length) return false;',
+    'if (500 < store.graphs[id].nodes.find(n => n.id === key).label.length) cut();',
+  ];
+  for (const text of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(text))), ['label-length'], text);
+  for (const text of ['return 0 < node.label.length;', 'const ok = items.every(item => item.label.length > 0);', 'if (typeof label === "string" && label.length > 0) show();']) {
+    assert.deepEqual(checkFile('src/a.mjs', utf8(text)), [], text);
+  }
+});
+
+test('card H10 review 8: a shifted limit is not a lone 1', () => {
+  assert.deepEqual(rules(checkFile('src/a.mjs', utf8('if (label.length < 1 << 9) reject();'))), ['label-length']);
+  assert.deepEqual(checkFile('src/a.mjs', utf8('if (label.length < 1) refuse();')), []);
 });

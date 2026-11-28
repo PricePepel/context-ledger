@@ -4,7 +4,7 @@
 // Node built-ins and `git ls-files` only; not part of the package.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { extname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { terminalLabel } from '../src/text.mjs';
 
@@ -43,23 +43,89 @@ const htmlSinks = [
   [new RegExp(String.raw`\b[\w$]*[Dd]oc[\w$]*${gap}${property('write(?:ln)?')}`, 'gu'), 'document.write'],
   [/\bcreateContextualFragment\b/gu, 'createContextualFragment'],
   [/\bparseFromString\b/gu, 'DOMParser.parseFromString'],
+  [/\b(?:setHTMLUnsafe|setHTML|parseHTMLUnsafe)\b/gu, 'setHTMLUnsafe'],
+  // document.execCommand('insertHTML', ...) inserts HTML at the caret (Codex round 9).
+  [/['"\x60]insertHTML['"\x60]/gu, "execCommand('insertHTML')"],
   [/\bsrcdoc\b/giu, 'srcdoc'],
 ];
+// Browser code has no streams, so there any write() call is document.write under some
+// name (Codex round 7: `const preview = iframe.contentDocument; preview.write(...)`).
+const browserWrite = [new RegExp(String.raw`${property('write(?:ln)?')}${gap}(?:\?\.)?${gap}\(`, 'gu'), 'write() in browser code'];
+// The HTML property names as strings, as in el('div', { [key]: text }) with key set to
+// 'innerHTML': browser code has no other reason to spell them (Codex round 10).
+const browserHtmlName = [/['"\x60](?:innerHTML|outerHTML)['"\x60]/gu, 'an HTML property name in browser code'];
+// The browser app, and any HTML page with an inline script (Codex round 8).
+const browserFile = /^public\/|\.html$/u;
 
 // Card H10: a label's .length counts UTF-16 units; JSON Schema maxLength and the graph
 // schemas count code points. The length of a name that ends in "label" (or "labelText"),
-// or of a ['label'] key, next to any comparison is a finding, however the other side is
-// written. Only the exact emptiness tests pass, where both counts agree:
-// length < 1, length > 0, length >= 1, and 1 > length, 0 < length, 1 <= length.
-// Plural names (labels, labelParts) are lists and are left out.
-const labelLength = new RegExp(String.raw`(?:\b[\w$]*[Ll]abel(?:Text)?\b|\[\s*(['"\x60])label\1\s*\])\s*\??\.length\b`, 'gu');
-const comparisonAfter = /^\s*([<>]=?)(?!=)\s*([\w$.]*)/u;
+// or of a ['label'] key, with any member chain before it (`node.label`), next to any
+// comparison is a finding, however the other side is written. Parentheses around the
+// length do not hide it. Only the exact emptiness tests pass, where both counts agree,
+// and only when the 0 or 1 stands alone (not `< 1 + MAX`): length < 1, length > 0,
+// length >= 1, and 1 > length, 0 < length, 1 <= length. Plural names (labels,
+// labelParts) are lists and are left out.
+// Call arguments and indexes in a member chain, one level of nesting (round 4).
+// Calls and indexes nest one level: getNode(getId()), nodes[indexes[0]] (rounds 4 and 5).
+const callOrIndex = String.raw`(?:\((?:[^()\n]|\([^()\n]*\))*\)|\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\])`;
+// A ['...label'] key, any name ending in label or labelText (round 5: ['editLabel']).
+const labelLength = new RegExp(String.raw`(?:\b(?:[\w$]+(?:(?:\?\.)?${callOrIndex})*\??\.)*[\w$]*[Ll]abel(?:Text)?\b|(?:[\w$]|\??\.|${callOrIndex})*?\[\s*(['"\x60])[\w$]*[Ll]abel(?:Text)?\1\s*\])\s*\??\.length\b`, 'gu');
+// The operator, the parentheses opened before the operand, and the operand. Only as many
+// ")" as were opened belong to it, so `> 0) ++count` is still a lone 0 (round 5).
+const comparisonAfter = /^\s*\)*\s*([<>]=?)(?!=)\s*(\(*)\s*([\w$.]*)/u;
+const afterOperand = (text, after) => {
+  let rest = text.slice(after.index + after[0].length);
+  for (let open = after[2].length; open > 0; open -= 1) rest = rest.replace(/^\s*\)/u, '');
+  return /^\s*(\S?)/u.exec(rest)[1];
+};
+
+// Where the member chain that ends at `index` starts, walking left over names, dots,
+// optional chaining and balanced (...) or [...] of any length, across lines (round 7:
+// `500 < getNode(\n graph,\n).label.length`, `500 < (node ?? fallback).label.length`).
+function chainStart(code, index) {
+  let start = index;
+  let expect = 'any'; // after a name only a dot may come before it; after a dot or group, anything
+  for (;;) {
+    let left = start;
+    while (left > 0 && /\s/u.test(code[left - 1])) left -= 1;
+    const character = code[left - 1];
+    if (character === '.') {
+      left -= 1;
+      if (code[left - 1] === '?') left -= 1;
+      start = left;
+      expect = 'any';
+    } else if (expect === 'any' && (character === ')' || character === ']')) {
+      const open = character === ')' ? '(' : '[';
+      let depth = 0;
+      let at = left - 1;
+      for (; at >= 0; at -= 1) {
+        if (code[at] === character) depth += 1;
+        else if (code[at] === open && (depth -= 1) === 0) break;
+      }
+      if (at < 0) return start;
+      start = at;
+      expect = 'any';
+    } else if (expect === 'any' && character !== undefined && /[\w$]/u.test(character)) {
+      while (left > 0 && /[\w$]/u.test(code[left - 1])) left -= 1;
+      start = left;
+      expect = 'dot';
+    } else return start;
+  }
+}
 // Not the ">" of an arrow function (`label => label.length`).
-const comparisonBefore = /([\w$.]*)\s*(?<!=)([<>]=?)\s*$/u;
+const comparisonBefore = /(\S?)\s*\(*\s*([\w$.]*)\s*(?<!=)([<>]=?)\s*\(*\s*$/u;
 const emptyAfter = new Set(['<1', '>0', '>=1']);
 const emptyBefore = new Set(['1>', '0<', '1<=']);
+// A 0 or 1 is the whole other side unless arithmetic or a member access touches it
+// (`< (1) + MAX`); a keyword before it (`return 0 < length`) leaves it alone.
+// A shift binds tighter than a comparison too (round 8: `< 1 << 9`).
+const notAloneAfter = new Set(['+', '-', '*', '/', '%', '.', '(', '[', '<', '>']);
+const notAloneBefore = new Set(['+', '-', '*', '/', '%', '.', ')', ']', '<', '>']);
 // Comments and an optional call (`?.`) may sit between the name and its arguments.
 const listenCall = new RegExp(String.raw`${property('listen')}${gap}(?:\?\.)?${gap}\(`, 'gu');
+// listen named but not called, as in promisify(server.listen.bind(server)): the host it
+// is called with cannot be checked here (Codex round 10).
+const listenReference = new RegExp(String.raw`${property('listen')}(?!${gap}(?:\?\.)?${gap}\()`, 'gu');
 
 const codePoint = character => 'U+' + character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
 
@@ -216,7 +282,7 @@ function listensOnLoopback(args) {
 }
 
 // Findings for one file, given its path relative to the repository (with "/") and bytes.
-export function checkFile(path, bytes) {
+export function checkFile(path, bytes, { browser = false } = {}) {
   if (binaryExtensions.has(extname(path).toLowerCase())) return [];
   let text;
   try {
@@ -236,17 +302,28 @@ export function checkFile(path, bytes) {
   if (codeFile.test(path) && !testFile.test(path) && !vendored.test(path) && path !== selfPath) {
     const html = path.endsWith('.html');
     const code = text;
-    for (const [pattern, name] of htmlSinks) {
+    // In browser code the broader write() rule replaces the document-name one.
+    const sinks = browser || browserFile.test(path)
+      ? [...htmlSinks.filter(([, name]) => name !== 'document.write'), browserWrite, browserHtmlName]
+      : htmlSinks;
+    // One HTML sink finding per line: several rules can match the same write.
+    const sinkLines = new Set();
+    for (const [pattern, name] of sinks) {
       for (const match of code.matchAll(pattern)) {
+        const { line } = position(starts, match.index);
+        if (sinkLines.has(line)) continue;
+        sinkLines.add(line);
         add(match.index, 'html-sink', `${name} parses text as HTML; build nodes with createElement and set textContent instead; in a comment or string, reword it (AGENTS.md section 6)`);
       }
     }
     for (const match of code.matchAll(labelLength)) {
-      const after = comparisonAfter.exec(code.slice(match.index + match[0].length, match.index + match[0].length + 80));
-      const before = comparisonBefore.exec(code.slice(Math.max(0, match.index - 80), match.index));
+      const following = code.slice(match.index + match[0].length, match.index + match[0].length + 80);
+      const after = comparisonAfter.exec(following);
+      const head = chainStart(code, match.index);
+      const before = comparisonBefore.exec(code.slice(Math.max(0, head - 80), head));
       if (!after && !before) continue;
-      if (after && !before && emptyAfter.has(after[1] + after[2])) continue;
-      if (before && !after && emptyBefore.has(before[1] + before[2])) continue;
+      if (after && !before && emptyAfter.has(after[1] + after[3]) && !notAloneAfter.has(afterOperand(following, after))) continue;
+      if (before && !after && emptyBefore.has(before[2] + before[3]) && !notAloneBefore.has(before[1])) continue;
       add(match.index, 'label-length', 'a label length counted in UTF-16 units; count code points with [...label].length, as JSON Schema maxLength and the graph schemas do (card H10)');
     }
     if (!html) {
@@ -255,6 +332,9 @@ export function checkFile(path, bytes) {
         if (!listensOnLoopback(args)) {
           add(match.index, 'loopback-only', "listen without host '127.0.0.1'; write listen({ port, host: '127.0.0.1' }) with the object written out, or listen(0, '127.0.0.1') with a literal port (AGENTS.md section 6: loopback only)");
         }
+      }
+      for (const match of code.matchAll(listenReference)) {
+        add(match.index, 'loopback-only', "listen passed along instead of called, so its host cannot be checked; call listen({ port, host: '127.0.0.1' }) directly (AGENTS.md section 6: loopback only)");
       }
     }
   }
@@ -276,9 +356,38 @@ export function trackedFiles(root) {
   return [...new Map(files.map(path => [path.toString('latin1'), path])).values()];
 }
 
+// Modules that a tracked HTML page loads with <script src>, and the relative imports of
+// those, run in the browser wherever they live (Codex round 9).
+const scriptSource = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/giu;
+const relativeImport = /(?:\bimport\b[^'"]*?\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/gu;
+
+function resolveRelative(from, target) {
+  if (/^[a-z][a-z0-9+.-]*:|^\/\//iu.test(target)) return null;
+  const parts = (target.startsWith('/') ? target.slice(1) : posix.join(posix.dirname(from), target)).split('?')[0];
+  return posix.normalize(parts);
+}
+
+export function browserModules(texts) {
+  const found = new Set();
+  const queue = [];
+  for (const [path, text] of texts) {
+    if (!path.endsWith('.html')) continue;
+    for (const match of text.matchAll(scriptSource)) queue.push(resolveRelative(path, match[1]));
+  }
+  for (const [path] of texts) if (browserFile.test(path) && !path.endsWith('.html')) queue.push(path);
+  while (queue.length > 0) {
+    const path = queue.pop();
+    if (!path || found.has(path) || !texts.has(path)) continue;
+    found.add(path);
+    for (const match of texts.get(path).matchAll(relativeImport)) queue.push(resolveRelative(path, match[1]));
+  }
+  return found;
+}
+
 export function checkTree(root) {
   const files = trackedFiles(root);
   const findings = [];
+  const loaded = [];
   for (const raw of files) {
     const path = new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw);
     if (!Buffer.from(path, 'utf8').equals(raw)) {
@@ -291,10 +400,22 @@ export function checkTree(root) {
     try {
       bytes = readFileSync(Buffer.concat([Buffer.from(root + '/', 'utf8'), raw]));
     } catch (error) {
-      if (error.code === 'ENOENT') continue; // deleted in the working tree, not yet staged
-      throw error;
+      // Deleted, or replaced by a folder, in the working tree and not yet staged.
+      // ENOTDIR: a parent folder was replaced by a file (Codex round 8).
+      if (error.code === 'ENOENT' || error.code === 'EISDIR' || error.code === 'ENOTDIR') continue;
+      // Anything else (EACCES, say) is reported and the scan goes on (Codex round 10).
+      findings.push({ path, line: 1, column: 1, rule: 'unreadable', message: `could not read this tracked file (${error.code ?? 'error'}); fix its permissions` });
+      continue;
     }
-    for (const finding of checkFile(path, bytes)) findings.push(finding);
+    loaded.push([path, bytes]);
+  }
+  const texts = new Map();
+  for (const [path, bytes] of loaded) {
+    if (codeFile.test(path)) texts.set(path, new TextDecoder('utf-8').decode(bytes));
+  }
+  const browser = browserModules(texts);
+  for (const [path, bytes] of loaded) {
+    for (const finding of checkFile(path, bytes, { browser: browser.has(path) })) findings.push(finding);
   }
   return { files: files.length, findings };
 }

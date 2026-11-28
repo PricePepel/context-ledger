@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { handoffMarkdown } from '../src/handoff.mjs';
+import { redactSession, scannerName } from '../src/secrets.mjs';
 import {
   canonicalJson, daclAllowsOnly, generateSigningKey, keyFingerprint, loadSigningKey, normalizeFingerprint, parseSavedAcl, verifyBundle,
   writeBundle,
@@ -244,11 +245,13 @@ test('handoff --sign writes exactly the hand-off, the key, a canonical manifest 
   assert.equal(canonicalJson(manifest), manifestBytes.toString('utf8'));
   assert.ok(!manifestBytes.toString('utf8').endsWith('\n'));
   assert.deepEqual(Object.keys(manifest).sort(),
-    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'reviews', 'session', 'version']);
+    ['algorithm', 'created_at', 'files', 'format', 'public_key', 'redaction', 'reviews', 'session', 'version']);
   assert.equal(manifest.format, 'context-ledger-signed-handoff');
-  // Card P3b: version 2 records the review chain; this ledger has no reviews yet.
-  assert.equal(manifest.version, 2);
+  // Card P3b records the review chain (this ledger has no reviews yet); card P4d makes it
+  // version 3 with the redaction record, and the synthetic session holds no secret.
+  assert.equal(manifest.version, 3);
   assert.deepEqual(manifest.reviews, { events: 0, head: '0000000000000000000000000000000000000000000000000000000000000000' });
+  assert.deepEqual(manifest.redaction, { scanner: 'context-ledger-secrets/1', findings: 0 });
   assert.equal(manifest.algorithm, 'Ed25519');
   assert.equal(manifest.session, sessionId);
   assert.match(manifest.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
@@ -421,10 +424,13 @@ test('verify refuses a correctly signed manifest that is not canonical', async t
 
   const shapes = {
     'extra key': { ...manifest, note: 'x' },
-    'other version': { ...manifest, version: 3 },
-    // Card P3b: version 2 needs a review head of the right shape; version 1 has none.
-    'version 2 without reviews': (({ reviews, ...rest }) => rest)(manifest),
-    'version 1 with reviews': { ...manifest, version: 1 },
+    'other version': { ...manifest, version: 4 },
+    'version as text': { ...manifest, version: '3' },
+    // Card P3b: version 2 and later need a review head of the right shape; version 1 has none.
+    'version 3 without reviews': (({ reviews, ...rest }) => rest)(manifest),
+    'version 1 with reviews and redaction': { ...manifest, version: 1 },
+    // Card P4d: only version 3 has a redaction record.
+    'version 2 with a redaction record': { ...manifest, version: 2 },
     'reviews with a count but the empty head': { ...manifest, reviews: { events: 2, head: '0000000000000000000000000000000000000000000000000000000000000000' } },
     'reviews with no events but a head': { ...manifest, reviews: { events: 0, head: 'a'.repeat(64) } },
     'reviews with a negative count': { ...manifest, reviews: { events: -1, head: 'a'.repeat(64) } },
@@ -434,6 +440,16 @@ test('verify refuses a correctly signed manifest that is not canonical', async t
     'envelope listed': { ...manifest, files: [...manifest.files, { ...manifest.files[0], name: 'manifest.sig' }] },
     'bad date': { ...manifest, created_at: '2026-02-30T00:00:00.000Z' },
   };
+  // P4d review 6: the version 1 shape with the newer records is refused by the CLI too.
+  const mixedVersion = copyOf(context, target => {
+    const bytes = Buffer.from(canonicalJson({ ...manifest, version: 1 }), 'utf8');
+    writeFileSync(join(target, 'manifest.json'), bytes);
+    writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
+  });
+  const refused = await run(['verify', mixedVersion]);
+  assert.equal(refused.code, 1);
+  assert.equal(refused.stdout, '');
+  assert.match(refused.stderr, /^The manifest does not match the signed hand-off format\.\r?\nVerification failed\./);
   for (const [label, shape] of Object.entries(shapes)) {
     const dir = copyOf(context, target => {
       const bytes = Buffer.from(canonicalJson(shape), 'utf8');
@@ -529,9 +545,15 @@ test('the OpenSSL-only recipe in the docs accepts a bundle and refuses a changed
 
 // --- Codex review, round 1 -------------------------------------------------------------
 
-test('verify refuses a version 1 manifest without exactly one handoff.md', async t => {
+test('verify refuses a version 1, 2 or 3 manifest without exactly one handoff.md', async t => {
   const context = await signedBundle(t);
-  const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const signed = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const { redaction: _, ...asVersion2 } = signed;
+  const { reviews: __, ...asVersion1 } = asVersion2;
+  for (const manifest of [signed, { ...asVersion2, version: 2 }, { ...asVersion1, version: 1 }]) await refusesOtherFiles(context, manifest);
+});
+
+async function refusesOtherFiles(context, manifest) {
   const [entry] = manifest.files;
   const shapes = {
     'only notes.txt': [{ ...entry, name: 'notes.txt' }],
@@ -549,9 +571,9 @@ test('verify refuses a version 1 manifest without exactly one handoff.md', async
       writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
     });
     assert.deepEqual(await problemsOf(dir, { fingerprint: context.fingerprint }),
-      ['The manifest does not match the signed hand-off format.'], label);
+      ['The manifest does not match the signed hand-off format.'], `version ${manifest.version}: ${label}`);
   }
-});
+}
 
 test('verify checks the size on its own, the exact PEM bytes and the exact signature length', async t => {
   const context = await signedBundle(t);
@@ -1017,4 +1039,199 @@ test('P5a review: an icacls /save record is read only when it is one record for 
   ]) {
     assert.equal(parseSavedAcl(text, 'signing-key.pem'), '', JSON.stringify(text));
   }
+});
+
+// --- P4d: the signed hand-off is the redacted one ------------------------------------
+
+// Fake credentials put together from fragments, as in tests/secrets.test.mjs, so no
+// committed file holds a whole string in a real credential format. None is real.
+const fakeSecret = {
+  aws: ['AK', 'IA', 'Q3XZ7W2M9KD4PL6N'].join(''),
+  github: ['gh', 'p_', 'Ab3D'.repeat(9)].join(''),
+  password: ['Zx9q', 'Wm3v', 'Lt7p', 'Rk2s'].join(''),
+  sourceToken: ['gh', 'o_', 'Qw8E'.repeat(9)].join(''),
+};
+const secretTranscript = [
+  JSON.stringify({ type: 'user', message: { role: 'user', content: `Synthetic: deploy with ${fakeSecret.aws} and password=${fakeSecret.password} today.` } }),
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: `Synthetic: pushing with ${fakeSecret.github}.` } }),
+  // A bare copy of the password, with no name before it (P4d review, round 1).
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: `Synthetic: saved ${fakeSecret.password} to the vault.` } }),
+].join('\n');
+const secretSource = `synthetic-p4d-${fakeSecret.sourceToken}.jsonl`;
+
+function seedSecrets(path) {
+  const store = openStore(path);
+  try {
+    const { id } = store.importTranscript({ provider: 'claude', source: secretSource, transcript: secretTranscript });
+    return store.get(id);
+  } finally {
+    store.close();
+  }
+}
+
+// A stand-in for the ledger on PORT that serves the given sessions, for `redact`.
+async function servingLedger(t, sessions) {
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    const found = sessions.find(entry => request.url === '/api/sessions/' + entry.id);
+    response.statusCode = found ? 200 : 404;
+    response.end(JSON.stringify(found ? { session: found } : {}));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return String(server.address().port);
+}
+
+async function secretBundle(t) {
+  const context = await signedBundle(t);
+  const secret = seedSecrets(context.database);
+  const bundle = join(context.folder, 'secret-bundle');
+  const signed = await run(['handoff', secret.id, '--sign', bundle], context.env);
+  assert.equal(signed.code, 0, signed.stderr);
+  return { ...context, secret, secretDir: bundle, signed };
+}
+
+// Every 12-character piece of every fake value, so a partly kept value is caught too.
+function pieces() {
+  return Object.values(fakeSecret).flatMap(value =>
+    Array.from({ length: value.length - 11 }, (_, index) => value.slice(index, index + 12)));
+}
+
+function assertNoSecret(text, label) {
+  for (const piece of pieces()) assert.ok(!text.includes(piece), `${label} holds part of a fake secret`);
+}
+
+test('P4d: handoff --sign signs the redacted hand-off and records the count', async t => {
+  const context = await secretBundle(t);
+  const { session: redacted, findings } = redactSession(context.secret);
+  assert.equal(findings.length, 5, 'four fake values, one of them pasted twice');
+  const markdown = readFileSync(join(context.secretDir, 'handoff.md'), 'utf8');
+  assert.equal(markdown, handoffMarkdown(redacted) + '\n');
+  for (const kind of ['aws-access-key-id', 'github-token', 'assigned-secret']) {
+    assert.ok(markdown.includes(`[REDACTED ${kind}]`), kind);
+  }
+  for (const name of readdirSync(context.secretDir)) {
+    assertNoSecret(readFileSync(join(context.secretDir, name)).toString('latin1'), name);
+  }
+
+  const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.version, 3);
+  assert.deepEqual(manifest.redaction, { scanner: scannerName, findings: 5 });
+  // The count is the one the redaction report gives for the same session.
+  const port = await servingLedger(t, [context.secret]);
+  const report = await run(['redact', context.secret.id, '--json'], { ...context.env, PORT: port });
+  assert.equal(report.code, 0, report.stderr);
+  assert.equal(JSON.parse(report.stdout).count, manifest.redaction.findings);
+
+  // The sender sees counts and where to look, never a value.
+  assert.ok(context.signed.stdout.includes('Redacted: 5 replacements in 3 transcript lines and the source name, ' +
+    `each a [REDACTED <kind>] marker. Run npm run ledger -- redact ${context.secret.id} to see where.`), context.signed.stdout);
+  assertNoSecret(context.signed.stdout + context.signed.stderr, 'the --sign output');
+  // Not even a masked preview: the summary has counts only.
+  for (const prefix of ['AKIA', 'ghp_', 'gho_', 'Zx9q']) assert.ok(!context.signed.stdout.includes(prefix), prefix);
+
+  const checked = await run(['verify', context.secretDir, '--fingerprint', context.fingerprint]);
+  assert.equal(checked.code, 0, checked.stderr);
+  assert.ok(checked.stdout.includes('Redaction: 5 replacements, by context-ledger-secrets/1'), checked.stdout);
+  assert.equal(checked.stderr, '');
+  assertNoSecret(checked.stdout, 'the verify output');
+});
+
+test('P4d: a clean session is signed unchanged and says the checks found nothing', async t => {
+  const context = await signedBundle(t);
+  const again = join(context.folder, 'again');
+  const signed = await run(['handoff', sessionId, '--sign', again], context.env);
+  assert.equal(signed.code, 0, signed.stderr);
+  assert.match(signed.stdout, /Redacted: nothing; the secret checks found no value\. They cannot find every secret/);
+  const plain = await run(['handoff', sessionId], context.env);
+  assert.equal(readFileSync(join(again, 'handoff.md'), 'utf8'), plain.stdout);
+  const checked = await run(['verify', again, '--fingerprint', context.fingerprint]);
+  assert.equal(checked.code, 0, checked.stderr);
+  assert.ok(checked.stdout.includes('Redaction: 0 replacements, by context-ledger-secrets/1'), checked.stdout);
+});
+
+test('P4d: there is no option to sign without redaction', async t => {
+  const context = await signedBundle(t);
+  for (const flag of ['--no-redact', '--redact=false', '--unredacted', '--raw']) {
+    const target = join(context.folder, 'flag' + flag.replace(/[^a-z]/g, ''));
+    const usage = await run(['handoff', sessionId, '--sign', target, flag], context.env);
+    assert.equal(usage.code, 1, flag);
+    assert.match(usage.stderr, /^Usage:/, flag);
+    assert.ok(!existsSync(target), flag);
+  }
+});
+
+test('P4d: verify refuses a version 3 manifest whose redaction record is not exact', async t => {
+  const context = await signedBundle(t);
+  const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
+  const { redaction } = manifest;
+  const shapes = {
+    'no redaction': (({ redaction: _, ...rest }) => rest)(manifest),
+    'redaction null': { ...manifest, redaction: null },
+    'redaction a list': { ...manifest, redaction: [redaction] },
+    'extra key': { ...manifest, redaction: { ...redaction, kinds: {} } },
+    'missing count': { ...manifest, redaction: { scanner: redaction.scanner } },
+    'other scanner': { ...manifest, redaction: { ...redaction, scanner: 'context-ledger-secrets/2' } },
+    'negative count': { ...manifest, redaction: { ...redaction, findings: -1 } },
+    'fractional count': { ...manifest, redaction: { ...redaction, findings: 1.5 } },
+    'count as text': { ...manifest, redaction: { ...redaction, findings: '0' } },
+    'unsafe count': { ...manifest, redaction: { ...redaction, findings: 2 ** 53 } },
+  };
+  for (const [label, shape] of Object.entries(shapes)) {
+    const dir = copyOf(context, target => {
+      const bytes = Buffer.from(canonicalJson(shape), 'utf8');
+      writeFileSync(join(target, 'manifest.json'), bytes);
+      writeFileSync(join(target, 'manifest.sig'), edSign(null, bytes, context.privateKey));
+    });
+    assert.deepEqual(await problemsOf(dir, { fingerprint: context.fingerprint }),
+      ['The manifest does not match the signed hand-off format.'], label);
+    {
+      const cli = await run(['verify', dir, '--fingerprint', context.fingerprint]);
+      assert.equal(cli.code, 1);
+      assert.equal(cli.stdout, '');
+      assert.match(cli.stderr, /^The manifest does not match the signed hand-off format\.\r?\nVerification failed\./);
+    }
+  }
+  // A changed count under the old signature is a broken signature.
+  const recount = copyOf(context, target => {
+    writeFileSync(join(target, 'manifest.json'), Buffer.from(canonicalJson({ ...manifest, redaction: { ...redaction, findings: 1 } }), 'utf8'));
+  });
+  assert.deepEqual(await problemsOf(recount, { fingerprint: context.fingerprint }), ['The signature does not match the manifest.']);
+});
+
+test('P4d: a version 1 or 2 bundle from before P4d still verifies, with a warning that it was not redacted', async t => {
+  const context = await secretBundle(t);
+  // The P3b shape: version 2, the review chain, no redaction record, and the hand-off as
+  // it was, secrets and all.
+  const markdown = Buffer.from(handoffMarkdown(context.secret) + '\n', 'utf8');
+  assert.ok(markdown.toString('utf8').includes(fakeSecret.password));
+  const manifest = JSON.parse(readFileSync(join(context.secretDir, 'manifest.json'), 'utf8'));
+  const { redaction: _, ...asVersion2 } = manifest;
+  const files = [{ name: 'handoff.md', bytes: markdown.length, sha256: createHash('sha256').update(markdown).digest('hex') }];
+  const older = join(context.folder, 'p3b-bundle');
+  cpSync(context.secretDir, older, { recursive: true });
+  writeFileSync(join(older, 'handoff.md'), markdown);
+  const olderBytes = Buffer.from(canonicalJson({ ...asVersion2, version: 2, files }), 'utf8');
+  writeFileSync(join(older, 'manifest.json'), olderBytes);
+  writeFileSync(join(older, 'manifest.sig'), edSign(null, olderBytes, context.privateKey));
+  const second = await run(['verify', older, '--fingerprint', context.fingerprint]);
+  assert.equal(second.code, 0, second.stderr);
+  assert.ok(second.stdout.includes('Redaction: not recorded (a version 2 bundle)'), second.stdout);
+  assert.match(second.stderr, /^Warning: this bundle was signed before hand-offs were redacted\./);
+
+  // The P4a shape: version 1, no review chain either.
+  const { reviews: __, ...rest } = asVersion2;
+  const dir = join(context.folder, 'p4a-bundle');
+  cpSync(older, dir, { recursive: true });
+  const bytes = Buffer.from(canonicalJson({ ...rest, version: 1, files }), 'utf8');
+  writeFileSync(join(dir, 'manifest.json'), bytes);
+  writeFileSync(join(dir, 'manifest.sig'), edSign(null, bytes, context.privateKey));
+  const result = await verifyBundle(dir, { fingerprint: context.fingerprint });
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.version, 1);
+  assert.equal(result.redaction, null);
+  const checked = await run(['verify', dir, '--fingerprint', context.fingerprint]);
+  assert.equal(checked.code, 0, checked.stderr);
+  assert.ok(checked.stdout.includes('Redaction: not recorded (a version 1 bundle)'), checked.stdout);
+  assert.match(checked.stderr, /^Warning: this bundle was signed before hand-offs were redacted\. Its hand-off was not checked for secrets/);
 });

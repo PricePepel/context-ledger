@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { loadFeatures, repo, startLedger } from '../scripts/drive.mjs';
+import { createServer } from 'node:http';
+import { loadFeatures, onOrigin, redact, repo, signInLink, startLedger, uploadPath } from '../scripts/drive.mjs';
 
 const run = promisify(execFile);
 const script = join(repo, 'scripts', 'drive.mjs');
@@ -68,5 +69,122 @@ test('the command starts its own ledger on loopback, signs in once, and cleans u
     assert.notEqual(again.status, 303, 'and works only once');
   } finally {
     await ledger.stop();
+  }
+});
+
+// H11 Codex review, round 1.
+test('review: feature paths and sign-in links stay on the ledger origin', async () => {
+  assert.equal(onOrigin('http://127.0.0.1:4317', '/console/'), 'http://127.0.0.1:4317/console/');
+  for (const path of ['//example.com/x', 'https://example.com/', 'http://127.0.0.1:9999/']) {
+    assert.throws(() => onOrigin('http://127.0.0.1:4317', path), /away from the ledger/u, path);
+  }
+  const folder = await mkdtemp(join(tmpdir(), 'ledger-features-'));
+  try {
+    const backslash = String.fromCharCode(92);
+    for (const path of ['//example.com/', `/${backslash}example.com/`]) {
+      const file = join(folder, 'features.json');
+      await writeFile(file, JSON.stringify({ version: 1, features: [{ id: 'a', name: 'x', what: 'x', path, steps: [{ click: 'a' }] }] }));
+      assert.throws(() => loadFeatures(file), /stay on the ledger/u, path);
+    }
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+
+  // A ledger that redirects the token request, or answers with a link elsewhere, is refused.
+  for (const respond of [
+    (request, response) => { response.writeHead(307, { Location: 'http://127.0.0.1:1/api/login' }); response.end(); },
+    (request, response) => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ path: '//example.com/login?code=abc' })); },
+  ]) {
+    const server = createServer(respond);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      await assert.rejects(signInLink(`http://127.0.0.1:${server.address().port}`, 'token'), /refused|unexpected link/u);
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
+  }
+});
+
+test('review: uploads come only from the repository fixtures', () => {
+  assert.equal(uploadPath('demo/leo-orbit.jsonl'), join(repo, 'demo', 'leo-orbit.jsonl'));
+  for (const file of ['../secret.jsonl', 'demo/../../x.jsonl', 'src/server.mjs', join(tmpdir(), 'x.jsonl')]) {
+    assert.throws(() => uploadPath(file), /must be a fixture/u, file);
+  }
+});
+
+test('review: sign-in codes are redacted, and --out may not be a network path', async () => {
+  assert.equal(redact('goto http://127.0.0.1:1/login?code=AbC_12-x failed'), 'goto http://127.0.0.1:1/login?code=<redacted> failed');
+  const backslash = String.fromCharCode(92);
+  const unc = `${backslash}${backslash}server${backslash}share${backslash}proof.png`;
+  const share = await run(process.execPath, [script, 'swarm', '--out', unc]).then(() => null, error => error);
+  assert.equal(share?.code, 1);
+  assert.match(share.stderr, /--out must be a local file/u);
+});
+
+// H11 Codex review, round 2.
+test('review 2: a mixed-slash network --out is refused', async () => {
+  const backslash = String.fromCharCode(92);
+  const share = await run(process.execPath, [script, 'swarm', '--out', `${backslash}/server/share/proof.png`]).then(() => null, error => error);
+  assert.equal(share?.code, 1);
+  assert.match(share.stderr, /--out must be a local file/u);
+});
+
+test('review 2: a fixture that is a link to a file outside the repository is refused', async t => {
+  const outside = await mkdtemp(join(tmpdir(), 'ledger-outside-'));
+  const link = join(repo, 'demo', `h11-link-${process.pid}.jsonl`);
+  try {
+    await writeFile(join(outside, 'secret.jsonl'), '{}\n');
+    try {
+      const { symlink } = await import('node:fs/promises');
+      await symlink(join(outside, 'secret.jsonl'), link, 'file');
+    } catch (error) {
+      t.skip(`cannot create a symbolic link here (${error.code})`);
+      return;
+    }
+    assert.throws(() => uploadPath(`demo/h11-link-${process.pid}.jsonl`), /must be a fixture/u);
+  } finally {
+    await rm(link, { force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// Round 3: the round 2 version never started a ledger. This one starts a real ledger whose
+// database path is a folder, so the server itself exits before it is ready.
+test('review 2 and 3: a ledger that stops before it is ready fails at once and leaves no folder', async () => {
+  const { readdirSync } = await import('node:fs');
+  const folders = () => readdirSync(tmpdir()).filter(name => name.startsWith('ledger-drive-')).sort();
+  const before = folders();
+  const notAFile = await mkdtemp(join(tmpdir(), 'ledger-not-a-file-'));
+  let spawned = false;
+  const started = Date.now();
+  try {
+    await assert.rejects(startLedger({ env: { CONTEXT_LEDGER_DB: notAFile }, onSpawn: () => { spawned = true; } }), /The ledger stopped/u);
+    assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+    assert.ok(spawned, 'onSpawn hands over stop() before the ledger is ready');
+    assert.deepEqual(folders(), before);
+  } finally {
+    await rm(notAFile, { recursive: true, force: true });
+  }
+});
+
+test('review 5: an option given where a value belongs is refused', async () => {
+  for (const args of [['swarm', '--url', '--list'], ['swarm', '--out', '--list']]) {
+    const failure = await run(process.execPath, [script, ...args]).then(() => null, error => error);
+    assert.equal(failure?.code, 1);
+    assert.match(failure.stderr, /needs a value/u, args.join(' '));
+  }
+});
+
+// Card H14: runsSwarm is a boolean. Whether an entry really starts a swarm run is checked
+// in the browser (tests/e2e/feature-check.mjs), from the request the page sends.
+test('H14: runsSwarm is true or false, and the swarm-run entry is marked', async () => {
+  assert.equal(loadFeatures().find(feature => feature.id === 'swarm-run')?.runsSwarm, true);
+  const folder = await mkdtemp(join(tmpdir(), 'ledger-features-'));
+  try {
+    const path = join(folder, 'features.json');
+    await writeFile(path, JSON.stringify({ version: 1, features: [{ id: 'a', name: 'x', what: 'x', path: '/', steps: [{ click: 'a' }], runsSwarm: 'yes' }] }));
+    assert.throws(() => loadFeatures(path), /runsSwarm is true or false/u);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
   }
 });

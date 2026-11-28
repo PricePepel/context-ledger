@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Card H11: the user-facing features of the browser app, named the way a person asks for them, and how to reach each one. `node scripts/drive.mjs <id>` opens a feature on a fresh ledger and saves a screenshot; tests/e2e/features.spec.mjs keeps every entry working. Steps: select [selector, value], upload [selector, repository file], fill [selector, text], click selector, waitFor selector (visible).",
+  "about": "Card H11: the user-facing features of the browser app, named the way a person asks for them, and how to reach each one. `node scripts/drive.mjs <id>` opens a feature on a fresh ledger and saves a screenshot; tests/e2e/features.spec.mjs keeps every entry working. Steps: select [selector, value], upload [selector, repository file], fill [selector, text], click selector, waitFor selector (visible). An entry with runsSwarm true starts a swarm run; the ledger runs one at a time, so tests/e2e/swarm.spec.mjs checks those entries with its other swarm tests.",
   "features": [
     {
       "id": "library-import",
@@ -27,7 +27,9 @@
         { "waitFor": "#reader-messages > *" },
         { "fill": ["#search-query", "orbit"] },
         { "click": "#search-form button:has-text(\"Search\")" },
-        { "waitFor": "#search-results button" }
+        { "waitFor": "#search-results button" },
+        { "click": "#search-results button" },
+        { "waitFor": "#reader-messages > *" }
       ],
       "proof": ".catalog"
     },
@@ -88,11 +90,13 @@
       "what": "A simulated 100-agent run to the end: each agent's tile, the checks and the combined answer.",
       "path": "/swarm/",
       "steps": [
-        { "waitFor": "#mode-simulated:checked" },
+        { "waitFor": "#mode-simulated:enabled" },
+        { "click": "#mode-simulated" },
         { "click": "#run" },
         { "waitFor": "body[data-run-state=\"done\"]" }
       ],
-      "timeoutMs": 60000
+      "timeoutMs": 60000,
+      "runsSwarm": true
     }
   ]
 }
