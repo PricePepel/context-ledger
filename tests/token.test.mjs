@@ -967,3 +967,20 @@ test('H15 review: a stop during the write kills the child, waits for it, and fai
   assert.equal(calls, 1);
   assert.equal(await readFile(path, 'utf8'), '');
 });
+
+test('H15 review 2: a child that writes too much is stopped as a failure, never as a retryable timeout', async () => {
+  // It floods stdout, then (on POSIX) lingers over SIGTERM past its short bound.
+  const script = "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 500)); process.stdout.write('x'.repeat(70 * 1024)); setInterval(() => {}, 1000);";
+  await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 2000 }), error => error.timedOut === false && error.message === 'The command was stopped.');
+});
+
+test('H15 review 2: a write whose folder cannot be prepared fails with the fixed sentence, naming no path', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ledger-h15-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = tokenFileFor(join(directory, 'ledger.sqlite'), 4317);
+  await mkdir(path);
+  await writeFile(join(path, 'keep.txt'), 'synthetic\n'); // a folder at the path cannot be removed
+  for (const onWindows of [true, false]) {
+    await assert.rejects(writeTokenFile(path, newToken(), 4317, { windows: onWindows, run: async () => assert.fail('no attempt') }), error => error.message === 'The token file could not be written privately.' && !error.message.includes(directory));
+  }
+});

@@ -402,14 +402,16 @@ server.listen({ port, host: '127.0.0.1' }, async () => {
   // writer outlives the server and races the next start.
   const stopping = new AbortController();
   let writing;
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, async () => {
-      stopping.abort();
-      await writing?.catch(() => {});
-      removeTokenFile(tokenFile, ready.isOwnToken);
-      process.exit(0);
-    });
-  }
+  // The handlers stay installed, so a second Ctrl-C during that wait cannot end the
+  // process before the child has exited and the file is cleaned up.
+  const stop = async () => {
+    if (stopping.signal.aborted) return;
+    stopping.abort();
+    await writing?.catch(() => {});
+    removeTokenFile(tokenFile, ready.isOwnToken);
+    process.exit(0);
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   try {
     writing = writeTokenFile(tokenFile, token, localPort, { signal: stopping.signal });
     tokenIdentity = await writing;

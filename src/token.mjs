@@ -158,65 +158,63 @@ export const writeAttempts = 2;
 /**
  * Runs a command with this input on its stdin, which is then closed, and resolves with
  * its stdout. Rejects when it cannot start, exits non-zero, writes more than 64 KiB or
- * is stopped. A child that is stopped (out of time, or through `signal`) settles only
- * once it has exited, so its handles are closed; `timedOut: true` means it was still
- * running after `timeoutMs`. A child that could not be killed rejects at once without
- * `timedOut`, so the caller fails closed instead of trying again beside it. stderr is
- * ignored. Never throws.
+ * is stopped (out of time, or through `signal`). It settles only once the child has
+ * exited and its stdio has closed, never earlier (a child whose kill failed is waited
+ * for), so no caller acts while the child may still touch a file. `timedOut: true`
+ * means it was still running after `timeoutMs` and nothing else went wrong first; only
+ * that may be retried. stderr is ignored. Never throws.
  */
 export function runWithInput(command, args, { env, input, timeoutMs, signal }) {
   return new Promise((resolvePromise, reject) => {
     let settled = false;
-    let timedOut = false;
+    // Why the child is being stopped: the first reason wins.
+    let reason;
     let child;
     let timer;
     const stdout = [];
     let size = 0;
-    const fail = (message, outOfTime = false) => {
-      if (settled) return;
+    const settle = () => {
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+    };
+    const fail = (message, outOfTime = false) => {
+      if (settled) return;
+      settle();
       reject(Object.assign(new Error(message), { timedOut: outOfTime }));
     };
-    const stop = reason => {
-      let killed = false;
+    const stop = why => {
+      reason ??= why;
       try {
-        killed = child.kill();
+        child.kill();
       } catch {
-        // killed stays false.
+        // The child is still waited for: 'close' settles.
       }
-      // Not known to be stopping: it may still be running, so nothing may retry beside it.
-      if (!killed && child.exitCode === null && child.signalCode === null) fail(reason);
     };
-    function onAbort() { stop('The command was stopped.'); }
+    function onAbort() { stop('stopped'); }
     try {
       child = spawn(command, args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
     } catch {
       fail('The command could not start.');
       return;
     }
-    // A child that never started has no pid; any other error waits for 'close'.
+    // A child that never started has no pid and no process to wait for; any other
+    // error waits for 'close'.
     child.on('error', () => { if (child.pid === undefined) fail('The command could not start.'); });
     child.stdout.on('data', chunk => {
       size += chunk.length;
-      if (size > 64 * 1024) stop('The command wrote too much.');
+      if (size > 64 * 1024) stop('overflow');
       else stdout.push(chunk);
     });
     child.on('close', code => {
       if (settled) return;
-      if (timedOut) return fail('The command ran out of time.', true);
-      if (signal?.aborted) return fail('The command was stopped.');
-      if (code !== 0 || size > 64 * 1024) return fail('The command failed.');
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
+      if (reason === 'timeout') return fail('The command ran out of time.', true);
+      if (reason !== undefined || signal?.aborted) return fail('The command was stopped.');
+      if (code !== 0) return fail('The command failed.');
+      settle();
       resolvePromise(Buffer.concat(stdout).toString('utf8'));
     });
-    timer = setTimeout(() => {
-      timedOut = true;
-      stop('The command ran out of time and could not be stopped.');
-    }, timeoutMs);
+    timer = setTimeout(() => stop('timeout'), timeoutMs);
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     child.stdin.on('error', () => { /* the child closed its stdin; its exit says what happened */ });
@@ -335,8 +333,13 @@ async function readPrivateFile(path) {
  */
 export async function writeTokenFile(path, token, port, { windows: onWindows = windows, run = runPowerShell, signal } = {}) {
   if (!secretPattern.test(token) || !validPort(port)) throw new Error('Invalid token record.');
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  rmSync(path, { force: true });
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    rmSync(path, { force: true });
+  } catch {
+    // A file system message names the path; nothing has been written yet.
+    throw new Error(notWritten);
+  }
   const line = JSON.stringify({ port, token });
   if (onWindows) {
     await writePrivateFile(path, line, run, signal);
