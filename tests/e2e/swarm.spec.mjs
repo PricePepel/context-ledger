@@ -1,3 +1,5 @@
+import { loadFeatures } from '../../scripts/drive.mjs';
+import { checkFeature, featureTitle } from './feature-check.mjs';
 import { expect, test } from './fixtures.mjs';
 
 // The ledger runs one swarm at a time, and a test that stops watching a run leaves it running
@@ -233,3 +235,7 @@ test('U8: the console\'s swarm room draws the same pixel robots', async ({ page 
   await expect(page.locator('#swarm')).toHaveAttribute('data-run-state', 'done', { timeout: 30_000 });
   expect(await page.locator('#swarm-grid svg [style], #swarm-grid svg [fill]').count()).toBe(0);
 });
+
+// Card H14: feature map entries that start a swarm run, after the beforeEach above, one
+// at a time with the other swarm tests (tests/e2e/features.spec.mjs skips them).
+for (const feature of loadFeatures()) if (feature.runsSwarm) test(featureTitle(feature), checkFeature(feature));

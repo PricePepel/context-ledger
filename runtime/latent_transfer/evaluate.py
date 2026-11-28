@@ -159,12 +159,16 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--sender", default=SENDER)
     parser.add_argument("--receiver", default=RECEIVER)
+    parser.add_argument("--norm-calibration", action="store_true",
+                        help="rescale each mapped cache to the receiver's per-head RMS (L3; off by default)")
+    parser.add_argument("--norm-max-scale", type=float, help="keep the calibration scale within [1/x, x]")
     args = parser.parse_args()
     conditions = [c for c in args.conditions.split(",") if c]
     if ({"swat", "zeroed"} & set(conditions)) and not args.checkpoint:
         parser.error("--checkpoint is required for the swat and zeroed conditions")
     torch.manual_seed(args.seed)
-    pair = TransferPair(sender=args.sender, receiver=args.receiver, checkpoint=args.checkpoint)
+    pair = TransferPair(sender=args.sender, receiver=args.receiver, checkpoint=args.checkpoint,
+                        norm_calibration=args.norm_calibration, norm_max_scale=args.norm_max_scale)
     items = eval_items(pair, args.count, args.seed, args.max_tokens)
     # Warm-up (CUDA kernels, allocator) on a training-free text, so item 1's timing is fair.
     pair.answer_from_text(doc_text("Warm-up passage."), question_suffix("Warm-up?"), 2)
@@ -173,6 +177,8 @@ def main():
     results = run(pair, items, conditions)
     summary = summarize(results, conditions)
     summary["checkpoint"] = pair.checkpoint_id
+    summary["alignmentRule"] = pair.alignment
+    summary["normCalibration"] = bool(args.norm_calibration)
     with open(args.out, "w") as handle:
         json.dump({"summary": summary, "results": results}, handle, indent=1)
     print(json.dumps(summary, indent=1))
