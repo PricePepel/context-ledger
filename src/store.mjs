@@ -810,10 +810,21 @@ function storeOn(database) {
           }
           const old = readMessages(session.id);
           const byKey = new Map(old.map(message => [message.key, message]));
+          const byLineHere = new Map(old.map(message => [message.line, message]));
           const lines = new Set(old.map(message => message.line));
+          // A ledger upgraded from before message keys keeps l:<line> keys (schema version
+          // 3), while a fresh import of the same file keys the turn by its UUID or hash. A
+          // version 1 or 2 graph cites lines, so for it a turn on the same line is the same
+          // turn when one side has the legacy key, and the key already here is kept.
+          const citesLines = graph.packet.version !== 3;
+          const legacyKey = key => key.startsWith('l:');
           const fresh = [];
           for (const message of incoming) {
-            const have = byKey.get(message.key);
+            let have = byKey.get(message.key);
+            if (!have && citesLines) {
+              const onLine = byLineHere.get(message.line);
+              if (onLine && (legacyKey(onLine.key) || legacyKey(message.key))) have = onLine;
+            }
             // Against a transcript imported here, the parcel shows the turn or a redaction
             // of it. Of two sets of excerpts, either may be the more redacted one.
             const same = have && (stored.excerpts ? compatibleTurns(message, have) : sameTurn(message, have));

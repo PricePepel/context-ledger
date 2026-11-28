@@ -175,10 +175,13 @@ function repeatsUncited(labels, uncited, carried) {
   if (byLength.size === 0) return false;
   let carriedText;
   const isCarried = new Map();
-  for (const label of labels.map(squeezed)) {
+  // The folded text of each label is searched by UTF-16 offset, as the leads were measured
+  // (lead.length above), so a surrogate pair is two places on both sides. This is not a
+  // label's length as a limit, which counts code points (card H10).
+  for (const foldedText of labels.map(squeezed)) {
     for (const [length, leads] of byLength) {
-      for (let index = 0; index + length <= label.length; index += 1) {
-        const lead = label.slice(index, index + length);
+      for (let index = 0; index + length <= foldedText.length; index += 1) {
+        const lead = foldedText.slice(index, index + length);
         if (!leads.has(lead)) continue;
         if (!isCarried.has(lead)) {
           carriedText ??= carried.map(message => squeezed(message.text)).join('\n');

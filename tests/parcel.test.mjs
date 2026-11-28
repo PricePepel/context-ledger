@@ -351,6 +351,29 @@ test('R1: excerpts with a legacy key keep it when the full transcript arrives', 
   assert.equal(b.store.publishGraph(cited).id, graph.id, 'its citations still resolve');
 });
 
+test('R1: a line-cited graph from an upgraded ledger with l:<line> keys is received by a fresh import of the same file', t => {
+  const a = vera(t);
+  const b = ledger(t, 'b');
+  // Codex review of the refresh (2026-11-27): the sender was migrated from before message
+  // keys, so its turns are keyed l:<line>; the receiver imported the same file fresh.
+  b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const legacy = clone(parcel);
+  for (const message of legacy.session.messages) message.key = `l:${message.line}`;
+  const result = b.store.receiveParcel(checkParcel(legacy));
+  assert.equal(result.graph.id, a.graph.id);
+  assert.equal(result.added, 0);
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), [1, 2, 3, 4, 5].map(key), 'the keys here are kept');
+  // The same alias does not hide a different turn on that line.
+  const c = ledger(t, 'c');
+  c.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  const changed = clone(legacy);
+  changed.session.messages[0].text = 'The relay ships on port 6200.';
+  const dump = c.dump();
+  assert.throws(() => c.store.receiveParcel(checkParcel(changed)), ConflictError);
+  assert.equal(c.dump(), dump);
+});
+
 test('R1: a file whose lines do not match the excerpts is refused, and nothing changes', t => {
   const a = vera(t);
   const b = ledger(t, 'b');
