@@ -1236,3 +1236,61 @@ test('R1 refresh review: a legacy key must name its own line', t => {
   named.session.messages[0].key = 'l:2';
   assert.equal(checkParcel(named), named);
 });
+
+// ---- Codex review of the 2026-11-27 refresh, round 3 ----
+
+test('R1 refresh review 3: a value ending in punctuation is found in a label, and a bare copy in a carried turn is redacted', t => {
+  const value = ['violet', 'finch', '9'].join('-');
+  const assignment = ['pass', 'word=', value, '; retries=3'].join('');
+  const a = ledger(t, 'a');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'kai.jsonl', transcript: claude([
+    ['user', `Kai: set ${assignment} on the box.`],
+    ['assistant', `Noted, the box now uses ${value} for the relay.`],
+    ['user', 'And keep the relay on port 6100.'],
+  ]) });
+  const repeated = 'This graph\'s own text (a label, a name, an artifact or its project) repeats a value the secret scanner found in its transcript, so it was not shared.';
+  const labelled = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'box', kind: 'decision', label: `The box uses ${value}`, evidenceLines: [3] }] });
+  refusedShare(a.store, labelled.id, repeated);
+  // Line 2 holds the value with nothing before it that the scanner knows; line 1 is not cited.
+  const carried = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'relay', kind: 'decision', label: 'The relay has a password', evidenceLines: [2, 3] }] });
+  const { parcel, redacted } = parcelOf(a.store, carried.id);
+  assert.equal(serializeParcel(parcel).includes(value), false);
+  assert.equal(redacted, 1);
+  const b = ledger(t, 'b');
+  receive(b.store, parcel);
+  // The full transcript still completes the redacted excerpt.
+  b.store.importTranscript({ provider: 'claude', source: 'kai.jsonl', transcript: claude([
+    ['user', `Kai: set ${assignment} on the box.`],
+    ['assistant', `Noted, the box now uses ${value} for the relay.`],
+    ['user', 'And keep the relay on port 6100.'],
+  ]) });
+  assert.notEqual(b.store.get(session.id).excerpts, true);
+});
+
+test('R1 refresh review 3: a line-cited parcel cannot set a key, and the full transcript supplies its own', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const legacy = clone(parcel);
+  for (const message of legacy.session.messages) message.key = `l:${message.line}`;
+  const forged = clone(parcel);
+  forged.session.messages[0].key = 'h:' + 'f'.repeat(32);
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(checkParcel(legacy));
+  b.store.receiveParcel(checkParcel(forged));
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), ['l:2', 'l:3'], 'the stored keys stay');
+  b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), [1, 2, 3, 4, 5].map(key));
+
+  // Excerpts that took a key no graph here cites by key also give it up to the file.
+  const c = ledger(t, 'c');
+  c.store.receiveParcel(checkParcel(forged));
+  assert.equal(c.store.get(a.session.id).messages[0].key, 'h:' + 'f'.repeat(32));
+  c.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  assert.deepEqual(c.store.get(a.session.id).messages.map(message => message.key), [1, 2, 3, 4, 5].map(key));
+  // So a version 3 parcel with the real keys now joins.
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }] }] });
+  assert.equal(carry(a.store, c.store, v3.id).graph.id, v3.id);
+});
