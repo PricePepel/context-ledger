@@ -1,6 +1,7 @@
 // P1e: the specs run against a ledger that needs its access token. `request` sends the
 // token from the file next to the test database, like the CLI; `page` signs in the way
-// a person does, with a one-time /login code, so the browser holds only the cookie.
+// a person does, with a one-time /login code, so the browser holds only the session
+// secret in the ledger origin's storage (P1f).
 import { test as base, expect } from '@playwright/test';
 import { readTokenFile, tokenFileFor } from '../../src/token.mjs';
 

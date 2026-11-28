@@ -8,6 +8,17 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
+
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §18).
+
+- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
+- `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
+- The CLI, the MCP adapter and the link format are unchanged.
+- Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
+- 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
+- **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
 ## Current checkpoint: R2 relay refreshed and reviewed (2026-11-28)
 
 PR #91 (`ruslan/r2-relay`) is stacked on #90 and goes after it; it has R1 and main merged and two rounds of Codex review fixed (in [evals](evals.md) under R2, "Refresh with main and R1"). The relay now keeps counting a deleted parcel's bytes until its downloads end and cuts a download after 3 minutes; the client refuses compressed answers. `scripts/check.mjs` exempts `relay serve`'s one `--host` listen. It adds a listener beyond loopback and encryption, so Ruslan reviews and merges it himself, after #90.
@@ -790,7 +801,7 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
 
 - Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
-- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in session (a header since P1f) and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
 - **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
 
 ## Current checkpoint — P5d clean-install eval (2026-11-21)

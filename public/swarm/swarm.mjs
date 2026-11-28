@@ -22,8 +22,14 @@ let timer = null;
 const tiles = new Map();
 
 async function api(path, init = {}) {
+  // Card P1f: the browser's session secret goes in a header, never a cookie; after a 401
+  // it is forgotten, unless another tab has stored a newer one since.
+  const session = globalThis.ledgerSession;
+  const base = { Accept: 'application/json', ...(init.headers ?? {}) };
+  const headers = session ? session.headers(base) : base;
   // Round 2: a deadline covers the whole response, so a stalled poll counts as a failure.
-  const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
+  const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers });
+  if (response.status === 401) await session?.forget(headers);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error ?? `Request failed (${response.status}).`);

@@ -56,7 +56,13 @@ export function swarmSummary(run) {
 }
 
 async function defaultApi(path, init = {}) {
-  const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json', ...(init.headers ?? {}) } });
+  // Card P1f: the browser's session secret from /console/session.js goes in a header,
+  // never a cookie; after a 401 it is forgotten, unless another tab stored a newer one.
+  const session = globalThis.ledgerSession;
+  const base = { Accept: 'application/json', ...(init.headers ?? {}) };
+  const headers = session ? session.headers(base) : base;
+  const response = await fetch(path, { ...init, signal: AbortSignal.timeout(5000), headers });
+  if (response.status === 401) await session?.forget(headers);
   let body;
   try { body = await response.json(); } catch { body = undefined; }
   if (!response.ok) {
