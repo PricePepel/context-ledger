@@ -5628,6 +5628,14 @@ Rejected: a longer synchronous timeout (blocks the event loop and still has a cl
 
 Synthetic data only: random tokens and temporary folders.
 
+### Review
+
+- **Codex review, round 1:** no high; two medium and two low.
+  - (medium, fixed) The runner was built on `execFile`. A kill that failed could reach its callback before the child exited, so the retry could remove the path while the first PowerShell was still alive and about to create the file. The runner now uses `spawn` and settles only on `close`, once the child has exited and its handles are shut. A child that could not be killed rejects at once without `timedOut`, so the write fails closed and is not retried beside it. Regression test: a child that takes 300 ms over SIGTERM has exited by the time the runner rejects (`process.kill(pid, 0)` gives ESRCH).
+  - (medium, fixed) The signal handlers were installed only after the awaited write, so a stop during a slow start left the PowerShell child running with the token on its stdin. On a restart at the same port, that child could take the path first. The handlers are now installed before the write and abort it through an `AbortSignal`. The runner kills the child and waits for it to exit, the write fails closed without a retry, and the handler then removes the file if it holds this start's token. Regression test: an abort during the write kills a hung child, and a write stopped during its first attempt is not retried even after a timeout.
+  - (low, partly covered) No test holds a real exclusive Windows handle through a timeout. The runner test above checks that the child has exited, which is what releases the handle. A real PowerShell that hangs while holding the file would need a test hook in the write script, which this card does not add to security code.
+  - (low, accepted) The 503 during the write has no server-level test. The server needs its write to pause before such a test is possible, and the only way to do that is a test-only hook in the server. The guard itself (`if (!auth) … 503`) is unchanged and predates H15, and `auth` is now assigned only after the write and its check.
+
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
 Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.

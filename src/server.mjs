@@ -388,26 +388,38 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen({ port, host: '127.0.0.1' }, () => {
+server.listen({ port, host: '127.0.0.1' }, async () => {
   const localPort = server.address().port;
   // The plain token lives only in this callback and in the file; auth keeps its digest.
+  // Card H15: on Windows the write waits for PowerShell; until it and its ACL check are
+  // done, auth stays unset, so every request gets 503 and nothing is printed.
   const token = newToken();
-  try {
-    tokenFile = tokenFileFor(database, localPort);
-    tokenIdentity = writeTokenFile(tokenFile, token, localPort);
-  } catch {
-    console.error(tokenFailure);
-    process.exit(1);
-  }
-  auth = createAuth({ token, port: localPort });
+  const ready = createAuth({ token, port: localPort });
+  tokenFile = tokenFileFor(database, localPort);
   // A clean stop removes the file, so a program that takes the port later gets no
-  // live token from a client. A killed process leaves a dead token behind.
+  // live token from a client. A killed process leaves a dead token behind. A stop during
+  // the write (H15) first stops its PowerShell child and waits for it to exit, so no
+  // writer outlives the server and races the next start.
+  const stopping = new AbortController();
+  let writing;
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      removeTokenFile(tokenFile, auth.isOwnToken);
+    process.once(signal, async () => {
+      stopping.abort();
+      await writing?.catch(() => {});
+      removeTokenFile(tokenFile, ready.isOwnToken);
       process.exit(0);
     });
   }
+  try {
+    writing = writeTokenFile(tokenFile, token, localPort, { signal: stopping.signal });
+    tokenIdentity = await writing;
+  } catch {
+    if (stopping.signal.aborted) return; // the stop handler exits
+    console.error(tokenFailure);
+    process.exit(1);
+  }
+  if (stopping.signal.aborted) return;
+  auth = ready;
   // Card U9: at a terminal these lines arrive inside the welcome; piped, they are the same
   // two plain lines as before. The server is already listening when this runs. Card U11:
   // a terminal also gets the steps to sign in, naming the login command of this install.

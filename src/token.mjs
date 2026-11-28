@@ -5,7 +5,7 @@
 // only SHA-256 digests; the bearer check compares digests in constant time, and codes
 // and sessions are looked up by their digests. Each port has its own file, so servers
 // on different ports and one database do not replace each other's token.
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, fstatSync, ftruncateSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -121,6 +121,7 @@ const readScript = powershellLines([
   '} finally { $stream.Dispose() }',
 ]);
 const powershellArguments = script => ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+// Options of the read script (the write script uses runWithInput below).
 const powershellOptions = path => ({ env: { ...process.env, [pathVariable]: path }, windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 });
 
 /**
@@ -148,13 +149,110 @@ function described(output) {
   return { sid, alias, sddl, bytes: base64 === undefined ? undefined : Buffer.from(base64, 'base64') };
 }
 
-/** Windows: creates the token file private from the start and writes the record through the checked handle. */
-function writePrivateFileSync(path, line) {
+// Card H15: on a loaded Windows runner one PowerShell start took more than 30 s, so the
+// write is asynchronous (the server answers 503 until it is done), each attempt has its
+// own bound, and only an attempt that ran out of time is tried once more.
+export const writeAttemptMs = 60_000;
+export const writeAttempts = 2;
+
+/**
+ * Runs a command with this input on its stdin, which is then closed, and resolves with
+ * its stdout. Rejects when it cannot start, exits non-zero, writes more than 64 KiB or
+ * is stopped. A child that is stopped (out of time, or through `signal`) settles only
+ * once it has exited, so its handles are closed; `timedOut: true` means it was still
+ * running after `timeoutMs`. A child that could not be killed rejects at once without
+ * `timedOut`, so the caller fails closed instead of trying again beside it. stderr is
+ * ignored. Never throws.
+ */
+export function runWithInput(command, args, { env, input, timeoutMs, signal }) {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let child;
+    let timer;
+    const stdout = [];
+    let size = 0;
+    const fail = (message, outOfTime = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(Object.assign(new Error(message), { timedOut: outOfTime }));
+    };
+    const stop = reason => {
+      let killed = false;
+      try {
+        killed = child.kill();
+      } catch {
+        // killed stays false.
+      }
+      // Not known to be stopping: it may still be running, so nothing may retry beside it.
+      if (!killed && child.exitCode === null && child.signalCode === null) fail(reason);
+    };
+    function onAbort() { stop('The command was stopped.'); }
+    try {
+      child = spawn(command, args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch {
+      fail('The command could not start.');
+      return;
+    }
+    // A child that never started has no pid; any other error waits for 'close'.
+    child.on('error', () => { if (child.pid === undefined) fail('The command could not start.'); });
+    child.stdout.on('data', chunk => {
+      size += chunk.length;
+      if (size > 64 * 1024) stop('The command wrote too much.');
+      else stdout.push(chunk);
+    });
+    child.on('close', code => {
+      if (settled) return;
+      if (timedOut) return fail('The command ran out of time.', true);
+      if (signal?.aborted) return fail('The command was stopped.');
+      if (code !== 0 || size > 64 * 1024) return fail('The command failed.');
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolvePromise(Buffer.concat(stdout).toString('utf8'));
+    });
+    timer = setTimeout(() => {
+      timedOut = true;
+      stop('The command ran out of time and could not be stopped.');
+    }, timeoutMs);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdin.on('error', () => { /* the child closed its stdin; its exit says what happened */ });
+    child.stdin.end(input);
+  });
+}
+
+/** The default runner of the write script: Windows PowerShell, the path in its environment. */
+const runPowerShell = (path, input, timeoutMs, signal) => runWithInput(powershell(), powershellArguments(writeScript), { env: { ...process.env, [pathVariable]: path }, input, timeoutMs, signal });
+
+/**
+ * Windows: creates the token file private from the start and writes the record through
+ * the checked handle. `run(path, input, timeoutMs, signal)` runs the write script
+ * (injected by tests). A timed-out attempt, which has exited by then, is retried once
+ * after removing whatever it left at the path; every other failure, and a stop through
+ * `signal`, fails closed at once and empties the record it may have written.
+ */
+async function writePrivateFile(path, line, run, signal) {
   let output;
-  try {
-    output = execFileSync(powershell(), powershellArguments(writeScript), { ...powershellOptions(path), input: line + '\n', stdio: ['pipe', 'pipe', 'ignore'] });
-  } catch {
-    throw new Error('The token file could not be written privately.');
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      output = await run(path, line + '\n', writeAttemptMs, signal);
+      break;
+    } catch (error) {
+      if (error?.timedOut !== true || attempt >= writeAttempts || signal?.aborted) {
+        // A killed attempt may have written the record before it stopped.
+        throw new Error(failedWrite(path, line));
+      }
+      // The attempt was killed and its handle is closed; the next one creates the file
+      // exclusively again, as at the start of every write.
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        throw new Error(failedWrite(path, line));
+      }
+    }
   }
   const found = described(output);
   if (!found || !privateToOwner(found.sddl, found.sid, found.alias)) throw new Error(failedWrite(path, line));
@@ -230,15 +328,18 @@ async function readPrivateFile(path) {
  * or a failed close removes the file; a failure on Windows leaves no token in it. A
  * link in the folder path is not checked. Returns the file's identity ({ dev, ino } as
  * bigints, from an open descriptor: on Windows only a descriptor's stat names the
- * volume) so readers can refuse the file.
+ * volume) so readers can refuse the file. Asynchronous: on Windows it waits for
+ * PowerShell (card H15); `options.signal` (an AbortSignal) stops that wait, killing the
+ * child and failing closed. `options.windows` and `options.run` (the write script's
+ * runner, see writePrivateFile) are for tests.
  */
-export function writeTokenFile(path, token, port) {
+export async function writeTokenFile(path, token, port, { windows: onWindows = windows, run = runPowerShell, signal } = {}) {
   if (!secretPattern.test(token) || !validPort(port)) throw new Error('Invalid token record.');
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   rmSync(path, { force: true });
   const line = JSON.stringify({ port, token });
-  if (windows) {
-    writePrivateFileSync(path, line);
+  if (onWindows) {
+    await writePrivateFile(path, line, run, signal);
     // The identity comes from a descriptor whose content is this start's record, which
     // nobody else can know, so it is the file just written. Every failure here is the
     // same fixed sentence, so no file system message (which names the path) escapes.
