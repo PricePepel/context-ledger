@@ -10,7 +10,7 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 
 ## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
 
-PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §14).
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §17).
 
 - `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
 - `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
@@ -18,6 +18,20 @@ PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security revie
 - Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
 - 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
 - **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
+## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
+
+Branch `claude/l1-serving-levers`. `evals/latent/serving-levers.mjs` fires N agents at once at one vLLM server (swarm task, optional shared handbook and unique notes) and reports time, tokens per second, prefix-cache hit rate, peak KV use and GPU memory; `serving-lib.mjs` holds the pure parts (tests in `tests/serving-levers.test.mjs`). `runtime/serve-vllm.sh` takes `VLLM_MAX_NUM_SEQS`, `VLLM_KV_OFFLOAD_GIB` and `VLLM_KV_DTYPE`. Results are in the L1 section of [the eval log](evals.md); the recommendation is "What to turn on" in [latent-gpu-plan.md](latent-gpu-plan.md): keep prefix caching, leave native KV offload and `--max-num-seqs` off, plain `fp8` KV only on the 14B, the 7B AWQ cannot take FP8 KV. Open: calibrated KV scales for the 7B, more than 100 agents, n-gram speculation at 100 agents. Machine notes: `/dev/shm` caps the offload buffer (7.8 GiB); WSL kills a server started from a session that exits, so start it with `setsid` and keep a `wsl.exe ... sleep` session open; `pkill -f` inside `bash -lc` matches its own command line, use a script file or `[b]in/vllm`.
+
+## Current checkpoint: L2 cross-model comparison harness (2026-11-27)
+
+`runtime/latent_compare/` runs one question set (200 SQuAD items and five edge-case groups) across eight open-weight models with the same arms: the passage as text, a sender's summary read by every receiver, the model's own KV cache handed over as bytes, and, for Phi-3.5-mini to Qwen2.5-1.5B, the M2b-S mapped cache with its mismatched and zeroed controls. One command reproduces the tables: in `runtime/`, `~/venvs/latent/bin/python -m latent_compare.run all --out ~/l2-compare/run1` (about 5.5 GPU hours; `report --out <dir>` rebuilds the tables without a GPU). Results, what was not run and the review record are in [evals](evals.md) under L2.
+
+What it found: three of four checks pass. The mapper result holds on this set (`swat` F1 0.859, far above both controls and the summary). The own-cache hand-off matches reading the text to within 0.009 F1 for all six torch models, but the "same answer on 95% of items" check fails for three of them (86.5% to 93.0%), and the cause is not isolated. Every one of the 64 summary pairs loses 0.11 to 0.45 F1 against reading the passage. 55 of 64 latent cells read "no mapper yet".
+
+The model set differs from the brief: Qwen2.5-7B and Llama-3.1-8B are 4-bit AWQ checkpoints served through vLLM (no cache hand-over, times not comparable); Granite is the 2B model; Qwen2.5-0.5B was added; Llama-3.2-3B is gated. No model in the set lacks a system role, so that path is covered by unit tests only.
+
+Next owner: (1) find why the own-cache answer text differs: add an arm that reuses the cache in memory without saving, and run one model in float32; (2) when a new mapper is trained, add its pair to `MAPPERS` in `latent_compare/models.py` and rerun `latent --pair`; (3) card L3 (PR #96) merged first and this branch has it merged in: `tests.test_latent_compare` passes unchanged, and the M2b-S checkpoint records no alignment rule, so `TransferPair` keeps rule 1 for it and `run.mapper_cut` still mirrors that cut. The mapper pair was measured before L3 and was not run again on the GPU after the merge; a mapper trained with rule 2 needs `mapper_cut` taught that rule; (4) the vLLM start with a per-run served name and the stricter stop were changed after the measured run (Codex round 4) and are unit-tested but were not run again on the GPU.
 
 ## Current checkpoint — L3 tokenizer alignment audit (2026-11-26)
 
@@ -45,6 +59,7 @@ Three Playwright tests that failed only on loaded Windows runners now wait on th
 
 Next owner: H15. The Node suite on #100 failed because the server's Windows token-file write (PowerShell, 30 s timeout, `src/token.mjs`) did not finish under load, so the server exited. That code guards the token file, so Ruslan approves its merge.
 
+
 ## Current checkpoint: H10 label lengths in code points (2026-11-26)
 
 `scripts/check.mjs` has a fourth rule, `label-length`: a label's `.length` next to a comparison must count code points (`[...label].length`), as JSON Schema `maxLength` and the graph schemas do. Its first run found that latent findings dropped labels of 500 emoji; fixed with a test. The store double-close candidate was dropped: no pattern finds it without understanding control flow, and its tests cover it. Next owner: add a rule the next time a review finding repeats a kind already seen (H13 writes that into AGENTS.md).
@@ -64,6 +79,14 @@ The pixel console line is in `ruslan/console-v0` and goes to `main` with the rel
 Next owner: Ali reports node test failures on his machine that come from its setup (where npm is installed, and OpenSSL), while CI is green. The tests look for npm's CLI next to `node`; the U10 test also checks `npm_execpath` and the distribution paths, but the P5c helper in `tests/npx-entry.test.mjs` does not (Codex noted it in the U10 review). Not done: `npm publish`, and team mode (one ledger joined from a second computer).
 
 U11 (PR #89, merged 2026-11-23): at a terminal `start` explains how to sign in, with the link on a line of its own; piped output is unchanged. The swarm asks `http://127.0.0.1:8000/v1` when `SWARM_URLS` is unset, so a running vLLM is found without a setting, and `SWARM_URLS=off` turns live runs off. Tests that expect a simulated swarm must set `SWARM_URLS=off`.
+
+## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
+
+PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 3: P3b's `reviews` plus `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 and 2 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
+
+- **Copies of a found value.** `redactSession` also replaces copies of each found value elsewhere in the session (pasted bare into a later message, in an agent heading). It runs one Aho-Corasick pass per field, with a 512-character budget per kind of entry. Eight Codex rounds and one Claude review shaped it; every finding after round 1 was in this layer. Round 8's fixes are not reviewed again.
+- **Owed before merge:** a human security review (signing and export, AGENTS.md section 4). The reviewer should decide whether the copy layer is worth its complexity, or whether a simpler rule plus the documented residuals is enough.
+- **Next owner:** change `scannerName` in `src/secrets.mjs` whenever a scanner rule changes. ADR-8's allowlist export of cleared excerpts and the passphrase-encrypted key are still open, as is redacting the graph export (G12) and plain `handoff`.
 
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
