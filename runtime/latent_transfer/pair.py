@@ -7,9 +7,11 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from .align import ALIGNMENT_RULE, RULE_RAW
 from .batch import make_pair
 from .kv import build_cache, continue_from_cache, greedy_after_cache, model_shape, prefill
 from .mapper import Mapper, init_weights
+from .norm import calibrate_cache
 
 SENDER = "Qwen/Qwen2.5-0.5B-Instruct"
 RECEIVER = "HuggingFaceTB/SmolLM2-360M-Instruct"
@@ -23,8 +25,12 @@ def load_model(name, device, dtype=torch.bfloat16):
 
 
 class TransferPair:
-    def __init__(self, sender=SENDER, receiver=RECEIVER, device="cuda", mapper_config=None, checkpoint=None):
+    def __init__(self, sender=SENDER, receiver=RECEIVER, device="cuda", mapper_config=None, checkpoint=None,
+                 norm_calibration=False, norm_max_scale=None):
         self.device = device
+        # L3: rescale each mapped document's cache to the receiver's own per-head RMS
+        # (norm.calibrate_cache). Off unless asked for; no checkpoint was trained with it.
+        self.norm_calibration, self.norm_max_scale = norm_calibration, norm_max_scale
         self.sender_name, self.receiver_name = sender, receiver
         self.sender_tok = AutoTokenizer.from_pretrained(sender)
         self.receiver_tok = AutoTokenizer.from_pretrained(receiver)
@@ -44,11 +50,14 @@ class TransferPair:
         if state:
             self.mapper.load_state_dict(state["mapper"])
         self.checkpoint_id = state["id"] if state else None
+        # A mapper keeps the alignment rule it was trained with. Checkpoints from before
+        # the L3 audit record none and used rule 1 (raw offsets).
+        self.alignment = state.get("alignment", RULE_RAW) if state else ALIGNMENT_RULE
         self.eos = {self.receiver_tok.convert_tokens_to_ids("<|im_end|>"), self.receiver_tok.eos_token_id}
 
     # Caches ---------------------------------------------------------------
     def pair(self, texts, max_tokens=384):
-        return make_pair(self.sender_tok, self.receiver_tok, texts, max_tokens).to(self.device)
+        return make_pair(self.sender_tok, self.receiver_tok, texts, max_tokens, self.alignment).to(self.device)
 
     def sender_cache(self, batch):
         return prefill(self.sender, batch.sender_ids, batch.sender_mask)
@@ -66,8 +75,15 @@ class TransferPair:
             return self.mapper(embeds, batch.receiver_mask, sender.keys, sender.values,
                                batch.sender_pos, batch.cross_allowed & batch.sender_mask.bool()[:, None, :])
 
+    def mapped(self, batch, sender=None):
+        """Mapper output at receiver scale (keys before RoPE), norm-calibrated when that is on."""
+        keys, values = self.mapper.scaled(*self.predict(batch, sender))
+        if self.norm_calibration:
+            keys, values = calibrate_cache(keys, values, self.mapper.sigma, batch.receiver_mask, self.norm_max_scale)
+        return keys, values
+
     def receiver_from_mapper(self, batch):
-        keys, values = self.mapper.scaled(*self.predict(batch))
+        keys, values = self.mapped(batch)
         return build_cache(self.receiver, keys, values)
 
     # Decoding -------------------------------------------------------------
@@ -105,7 +121,7 @@ class TransferPair:
         self._sync()
         timings["senderMs"] = (time.perf_counter() - start) * 1000
         start = time.perf_counter()
-        keys, values = self.mapper.scaled(*self.predict(batch, sender))
+        keys, values = self.mapped(batch, sender)
         cache = build_cache(self.receiver, keys, values)
         self._sync()
         timings["mapperMs"] = (time.perf_counter() - start) * 1000
@@ -137,11 +153,13 @@ class TransferPair:
     # Checkpoints ----------------------------------------------------------
     def save(self, path, meta):
         config = {key: value for key, value in self.mapper.config.items() if key != "receiver_embed_dim"}
-        body = json.dumps({"sender": self.sender_name, "receiver": self.receiver_name, "config": config,
-                           "meta": meta}, sort_keys=True)
+        identity = {"sender": self.sender_name, "receiver": self.receiver_name, "config": config, "meta": meta}
+        if self.alignment != RULE_RAW:  # rule 1 checkpoints keep the id they always had
+            identity["alignment"] = self.alignment
+        body = json.dumps(identity, sort_keys=True)
         checkpoint_id = hashlib.sha256(body.encode()).hexdigest()[:16]
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         torch.save({"sender": self.sender_name, "receiver": self.receiver_name, "config": config,
                     "mapper": {k: v.detach().cpu() for k, v in self.mapper.state_dict().items()},
-                    "meta": meta, "id": checkpoint_id}, path)
+                    "meta": meta, "id": checkpoint_id, "alignment": self.alignment}, path)
         return checkpoint_id

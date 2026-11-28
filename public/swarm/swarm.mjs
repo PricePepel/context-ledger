@@ -1,5 +1,7 @@
 // Card S1: the swarm demo page. Every string from a report or a model is set with
 // textContent; nothing here builds HTML from data.
+import { swarmAgentSvg } from '/console/swarm-agent.mjs';
+
 const pollMs = 250;
 const $ = id => document.getElementById(id);
 const el = (tag, props = {}, ...children) => {
@@ -46,16 +48,52 @@ async function loadConfig() {
       $('mode-badge').textContent = `Live: ${config.models.join(', ')}`;
       $('mode-badge').dataset.mode = 'live';
       setStatus(`Up to ${config.concurrency} agents run at the same moment.`);
+      $('runs-on').textContent = runsOn({ simulated: false, models: config.models, concurrency: config.concurrency });
     } else {
       $('mode-simulated').checked = true;
       $('mode-badge').textContent = 'No GPU models';
       $('live-reason').hidden = false;
       $('live-reason').textContent = `${config.reason} The simulation runs without a GPU; its timings are made up.`;
+      $('runs-on').textContent = runsOn({ simulated: true, models: [] });
     }
   } catch (error) {
     $('mode-simulated').checked = true;
     $('mode-live').disabled = true;
     setStatus(error.message);
+  }
+}
+
+/** What the page says the swarm runs on: the model server's models, or that it is simulated. */
+// Only what the ledger knows: the model names the server lists, that it is an
+// OpenAI-compatible server at a loopback address, and how many agents run at once. The
+// backend, the hardware and cache reuse are not claimed; cache reuse is shown only when
+// the server itself reported it for this run.
+function runsOn({ simulated, models, concurrency, cacheHitRate }) {
+  if (simulated) return 'Simulated. A simulated run has no model server, and its timings are made up.';
+  const names = models.length ? models.join(', ') : 'the model the server lists';
+  const cache = typeof cacheHitRate === 'number' ? ` The server reported ${Math.round(cacheHitRate * 100)}% of prompt tokens served from its prefix cache.` : '';
+  return `${names}, through an OpenAI-compatible model server at a loopback address on this machine${concurrency ? `, up to ${concurrency} agents at the same moment` : ''}.${cache}`;
+}
+
+// Card U8: the dataset and the task, before any run. Report texts only; the generator's
+// truth stays on the server until a run is scored.
+let task = null;
+function renderDataset() {
+  if (!task) return;
+  const agents = Number($('agents').value);
+  $('dataset-note').textContent = `${agents} incident reports, one per agent. They are synthetic: made on this machine from a fixed seed (${task.seed}), so every run reads the same reports and nothing real is used. The first ${task.sample.length}:`;
+}
+async function loadTask() {
+  try {
+    const body = await api('/api/swarm/task');
+    if (!Array.isArray(body.sample) || typeof body.instructions !== 'string') throw new Error('The ledger sent no task.');
+    task = { seed: Number.isSafeInteger(body.seed) ? body.seed : 0, sample: body.sample.filter(report => typeof report?.text === 'string').slice(0, 5) };
+    $('dataset-sample').replaceChildren(...task.sample.map(report => el('li', {},
+      el('span', { class: 'report-no', text: `Report ${Number.isSafeInteger(report.id) ? report.id : ''}` }), document.createTextNode(report.text))));
+    $('task-text').textContent = body.instructions;
+    renderDataset();
+  } catch (error) {
+    $('dataset-note').textContent = `The reports could not be loaded: ${error.message}`;
   }
 }
 
@@ -75,10 +113,11 @@ function renderGrid(run) {
   if (tiles.size !== run.agents.length) {
     tiles.clear();
     $('grid').replaceChildren(...run.agents.map(agent => {
-      const tile = el('button', { class: 'tile', type: 'button', role: 'listitem', 'aria-pressed': 'false', text: String(agent.id) });
+      // A real button inside a list item, so its role, name and pressed state are all announced.
+      const tile = el('button', { class: 'tile', type: 'button', 'aria-pressed': 'false' }, swarmAgentSvg(), el('span', { text: String(agent.id) }));
       tile.addEventListener('click', () => { selected = agent.id; render(current); });
       tiles.set(agent.id, tile);
-      return tile;
+      return el('li', {}, tile);
     }));
   }
   for (const agent of run.agents) {
@@ -87,7 +126,8 @@ function renderGrid(run) {
     tile.dataset.model = String(modelIndex(run, agent.model));
     tile.dataset.verified = String(agent.verified);
     tile.setAttribute('aria-pressed', String(agent.id === selected));
-    tile.setAttribute('aria-label', `Agent ${agent.id}, ${agent.state}${agent.state === 'done' ? (agent.verified ? ', quote verified' : ', quote not found') : ''}`);
+    const words = agent.state === 'done' ? (agent.verified ? 'answer checked' : 'quote not found, left out') : agent.state === 'running' ? 'working' : agent.state;
+    tile.setAttribute('aria-label', `Agent ${agent.id}, ${words}`);
   }
 }
 
@@ -98,21 +138,41 @@ function stat(label, value, note, simulated) {
 
 function renderStats(run) {
   const sim = run.simulated;
-  const speedup = run.elapsedMs > 0 && run.counts.finished ? run.oneAfterAnotherMs / run.elapsedMs : null;
+  // Card S1b: the speed-up is wall time against one agent run alone on each server
+  // (measured by the ledger before the agents start), never the agents' own times under load.
+  const solo = run.baseline?.perServer ?? [];
+  const measured = run.baseline?.measuredAt ? new Date(run.baseline.measuredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const soloNote = solo.length
+    ? `${solo.map(entry => `${entry.answered} × ${seconds(entry.ms)}${solo.length > 1 ? ` (${entry.model})` : ''}`).join(' + ')} per agent alone, warm (median of ${run.baseline.runs}, ${run.baseline.reused ? 'reused from' : 'measured at'} ${measured})`
+    : 'one agent alone was not timed';
   const tokensPerSecond = run.elapsedMs > 0 ? run.tokensOut / (run.elapsedMs / 1000) : null;
   const metrics = run.metrics;
   $('stats').replaceChildren(
     stat('Agents finished', `${run.counts.finished} / ${run.counts.total}`, `${run.counts.running} running now`),
     stat('Wall time', seconds(run.elapsedMs), 'start to last answer', sim),
-    stat('One after another', seconds(run.oneAfterAnotherMs), 'sum of every agent’s own time', sim),
-    stat('Speed-up', speedup ? `${speedup.toFixed(1)}×` : '—', 'sum ÷ wall time', sim),
+    stat('One after another', sim || run.oneAfterAnotherMs === null ? 'not measured' : seconds(run.oneAfterAnotherMs), sim ? 'simulated run' : soloNote),
+    stat('Speed-up', sim || !run.speedup ? 'not measured' : `${run.speedup.toFixed(1)}×`, sim ? 'simulated run' : 'one after another ÷ wall time'),
     stat('Tokens out per second', tokensPerSecond ? Math.round(tokensPerSecond).toLocaleString() : '—', `${run.tokensIn.toLocaleString()} in, ${run.tokensOut.toLocaleString()} out`, sim),
     stat('Requests on the server', sim ? 'not measured' : (metrics?.requestsRunning ?? 'not reported').toLocaleString(), sim ? 'simulated run' : 'running now, from the model server'),
-    stat('KV cache in use', sim ? 'not measured' : percent(metrics?.kvCacheUsage), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'from the model server')),
+    stat('KV cache peak', sim ? 'not measured' : percent(metrics?.kvCachePeak), sim ? 'simulated run' : 'highest sample during the run'),
     stat('Prefix-cache hits', sim ? 'not measured' : percent(metrics?.prefixCacheHitRate), sim ? 'simulated run' : (metrics?.stale ? 'last sample before the end' : 'shared instructions reused')),
     stat('Quotes verified', `${run.counts.verified} / ${run.counts.finished}`, 'quote found in its report'),
     stat('Answers correct', `${run.counts.correct} / ${run.counts.finished}`, 'checked against the generator'),
   );
+}
+
+/** The states in words and the check's counts, so nothing is told by colour alone. */
+function renderCheck(run) {
+  const done = run.agents.filter(agent => agent.state === 'done');
+  const checked = done.filter(agent => agent.verified).length;
+  const leftOut = done.length - checked;
+  const working = run.agents.filter(agent => agent.state === 'running').length;
+  const queued = run.agents.filter(agent => agent.state === 'queued').length;
+  $('tally').textContent = `${checked} checked, ${working} working, ${queued} queued, ${leftOut} left out, ${run.counts.failed} failed.`;
+  const count = (label, value) => el('div', {}, el('dt', { text: label }), el('dd', { text: String(value) }));
+  $('check-counts').replaceChildren(
+    count('Quote found', checked), count('Left out', leftOut), count('Failed', run.counts.failed), count('Facts match the truth', run.counts.correct));
+  $('runs-on').textContent = runsOn({ simulated: run.simulated, models: run.models, concurrency: run.concurrency, cacheHitRate: run.metrics?.prefixCacheHitRate });
 }
 
 function row(label, value, extra = {}) {
@@ -178,6 +238,7 @@ function render(run) {
   renderLegend(run);
   renderGrid(run);
   renderStats(run);
+  renderCheck(run);
   renderAnswer(run);
   renderDetail(run);
 }
@@ -194,6 +255,8 @@ async function poll(id, failures = 0) {
     const { run } = await api(`/api/swarm/runs/${id}`);
     current = run;
     render(run);
+    if (run.phase === 'baseline') setStatus('Timing one agent alone first, for an honest speed-up…');
+    else if (run.state === 'running') setStatus(`Running ${run.counts.total} agents…`);
     if (run.state === 'done' || run.state === 'failed') {
       $('run').disabled = false;
       setStatus(run.state === 'done' ? doneMessage(run) : (run.error ?? 'The run failed.'));
@@ -232,3 +295,13 @@ $('run-form').addEventListener('submit', async event => {
 });
 
 loadConfig();
+loadTask();
+$('agents').addEventListener('change', renderDataset);
+
+// Card U7: /swarm/#run=<id> opens a run started elsewhere (the console's swarm room).
+const linked = /^#run=([a-f0-9]{64})$/u.exec(location.hash);
+if (linked) {
+  $('run').disabled = true;
+  setStatus('Opening the run from the console…');
+  poll(linked[1]);
+}

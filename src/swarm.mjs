@@ -6,10 +6,22 @@ import { ConflictError, InputError } from './errors.mjs';
 import { combine, incidents, isCorrect, isVerified, parseAnswer, seeded, systemPrompt, userPrompt } from './swarm-task.mjs';
 
 export const maxAgents = 200;
+// The reports every run reads: one fixed seed, so the page can show them before a run.
+export const swarmSeed = 7;
 export const maxRuns = 5;
 export const maxResponseBytes = 256 * 1024;
 const requestTimeoutMs = 60_000;
 const metricsEveryMs = 500;
+// Card S1b round 2: the solo baseline reads reports from its own seed, so it never sends
+// a run's exact prompts ahead of the run (a prefix cache would then serve them faster).
+export const baselineSeed = 1_000_003;
+
+/** The median: the middle value, or the mean of the two middle values for an even count. */
+export function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
 
 /** The model servers from SWARM_URLS: loopback http only, refused at start otherwise. */
 export function swarmUrls(text) {
@@ -23,6 +35,24 @@ export function swarmUrls(text) {
     }
     return url.href.replace(/\/+$/u, '');
   });
+}
+
+/** How long one answer to "are live runs offered?" is reused, in ms (U11 review). */
+const configReuseMs = 5000;
+
+/** Card U11: where a local vLLM listens unless told otherwise. */
+export const defaultSwarmUrl = 'http://127.0.0.1:8000/v1';
+
+/**
+ * Card U11: the model servers to ask, and where that came from. Unset or empty: the usual
+ * local vLLM address, asked only when a page asks whether live runs are offered. "off":
+ * none, and no request is made. Anything else: the loopback URLs it names, as before.
+ */
+export function swarmSetting(text) {
+  const value = typeof text === 'string' ? text.trim() : '';
+  if (!value) return { urls: [defaultSwarmUrl], source: 'default' };
+  if (value.toLowerCase() === 'off') return { urls: [], source: 'off' };
+  return { urls: swarmUrls(value), source: 'set' };
 }
 
 /** Prometheus text to { name: summed value } for the vLLM series the page shows. */
@@ -90,11 +120,19 @@ async function cappedText(response) {
 }
 
 export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => performance.now(), simScale } = {}) {
-  const urls = swarmUrls(env.SWARM_URLS);
+  const { urls, source } = swarmSetting(env.SWARM_URLS);
+  // Why live runs are not offered, in words a page can show as they are.
+  const noServer = source === 'off' ? 'Live runs are turned off (SWARM_URLS=off).' : 'No model server configured (set SWARM_URLS).';
+  const notAnswering = source === 'default'
+    ? `No model server is answering at ${defaultSwarmUrl}, where a local vLLM listens by default. Start one there and reload this page, or name yours in SWARM_URLS.`
+    : 'The configured model server is not answering.';
   const concurrency = Math.min(Math.max(Number.parseInt(env.SWARM_CONCURRENCY ?? '32', 10) || 32, 1), maxAgents);
   const scale = simScale ?? (Number(env.SWARM_SIM_SCALE) > 0 ? Number(env.SWARM_SIM_SCALE) : 1);
+  // Card S1b: timed solo requests per server for the baseline, after one untimed warm-up.
+  const baselineRuns = Math.min(Math.max(Number.parseInt(env.SWARM_BASELINE_RUNS ?? '3', 10) || 3, 1), 5);
   const runs = new Map();
   let active = null;
+  let baselineCache = null;
 
   // Every request to a model server: no redirects (they could leave this machine), a
   // timeout, and a size cap before anything is parsed.
@@ -118,13 +156,26 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     }));
   }
 
-  async function config() {
-    if (!urls.length) return { live: false, reason: 'No model server configured (set SWARM_URLS).', concurrency };
+  async function probe() {
+    if (!urls.length) return { live: false, reason: noServer, concurrency };
     try {
       return { live: true, models: (await models()).map(entry => entry.model), concurrency };
     } catch {
-      return { live: false, reason: 'The configured model server is not answering.', concurrency };
+      return { live: false, reason: notAnswering, concurrency };
     }
+  }
+
+  // U11 review: pages ask on every load, and with SWARM_URLS unset the ledger asks a port
+  // that something else may hold and stall on. Pages asking at once share one probe, and its
+  // answer is reused for a few seconds, so a stalled listener costs one wait, not one per tab.
+  let probing = null;
+  async function config() {
+    if (!probing || (probing.settledAt !== undefined && now() - probing.settledAt > configReuseMs)) {
+      const entry = { settledAt: undefined };
+      entry.promise = probe().finally(() => { entry.settledAt = now(); });
+      probing = entry;
+    }
+    return probing.promise;
   }
 
   async function liveAgent(run, agent, report, server) {
@@ -184,10 +235,53 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
   const readMetrics = servers => Promise.all(servers.map(server => request(`${server.url.replace(/\/v1$/u, '')}/metrics`,
     { timeoutMs: 2000 }).then(parseMetrics).catch(() => ({}))));
 
+  // Card S1b: keep the highest KV-cache sample seen during the run, since the last sample
+  // (after every agent finished) is usually near zero.
+  function noteMetrics(run, view) {
+    if (!view) return;
+    if (Number.isFinite(view.kvCacheUsage)) run.kvPeak = Math.max(run.kvPeak ?? 0, view.kvCacheUsage);
+    run.metrics = { ...view, kvCachePeak: run.kvPeak ?? null };
+  }
+
   async function pollMetrics(run, servers, baseline) {
     while (!run.agentsDone) {
-      run.metrics = metricsView(await readMetrics(servers), baseline) ?? run.metrics;
+      noteMetrics(run, metricsView(await readMetrics(servers), baseline));
       await new Promise(resolve => setTimeout(resolve, metricsEveryMs));
+    }
+  }
+
+  /**
+   * Card S1b: how long one agent takes on each server with nothing else running: one
+   * untimed warm-up, then baselineRuns timed requests one at a time, the median kept.
+   * Each timed request reads a different report than the warm-up, as an agent would, so
+   * only the shared instructions come from the prefix cache. A reply counts only if it
+   * holds an answer an agent would accept. Measured once per ledger process for the same
+   * servers and models. Null if any request fails, and the run goes on without a speed-up.
+   */
+  async function soloBaseline(servers) {
+    const key = JSON.stringify(servers);
+    if (baselineCache?.key === key) return { ...baselineCache.value, reused: true };
+    const reports = incidents(baselineRuns + 1, baselineSeed);
+    const usable = async (report, server) => {
+      if (!parseAnswer((await liveAgent(null, null, report, server)).reply)) throw new Error('no usable answer');
+    };
+    try {
+      const perServer = [];
+      for (const server of servers) {
+        await usable(reports[0], server);
+        const times = [];
+        for (const report of reports.slice(1)) {
+          const begin = now();
+          await usable(report, server);
+          times.push(now() - begin);
+        }
+        perServer.push({ model: server.model, ms: median(times) });
+      }
+      const value = { perServer, runs: baselineRuns, measuredAt: new Date().toISOString() };
+      baselineCache = { key, value };
+      return { ...value, reused: false };
+    } catch {
+      return null;
     }
   }
 
@@ -199,6 +293,9 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
         servers = await models();
         run.models = servers.map(server => server.model);
         run.agents.forEach(agent => { agent.model = run.models[agent.index % run.models.length]; });
+        run.phase = 'baseline';
+        run.baseline = await soloBaseline(servers);
+        run.phase = null;
         baseline = await readMetrics(servers);
       }
       run.started = now();
@@ -211,8 +308,9 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
       // A last sample after every agent finished, so a short run still gets its numbers.
       // If it fails, the last sample from during the run stays, marked stale, with no "running now".
       if (run.mode === 'live') {
-        run.metrics = metricsView(await readMetrics(servers), baseline)
-          ?? (run.metrics && { ...run.metrics, requestsRunning: null, stale: true });
+        const last = metricsView(await readMetrics(servers), baseline);
+        if (last) noteMetrics(run, last);
+        else if (run.metrics) run.metrics = { ...run.metrics, requestsRunning: null, stale: true };
       }
       if (run.agents.every(agent => agent.state === 'failed')) {
         run.state = 'failed';
@@ -234,14 +332,14 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const mode = input?.mode;
     if (!Number.isInteger(agents) || agents < 1 || agents > maxAgents) throw new InputError(`agents must be a whole number from 1 to ${maxAgents}.`);
     if (mode !== 'live' && mode !== 'simulated') throw new InputError('mode must be live or simulated.');
-    if (mode === 'live' && !urls.length) throw new InputError('No model server configured (set SWARM_URLS).');
+    if (mode === 'live' && !urls.length) throw new InputError(noServer);
     // One run at a time, so SWARM_CONCURRENCY bounds the requests the GPU sees.
     if (active) throw new ConflictError('A swarm run is already running. Wait for it to finish.', { runId: active.id });
     const id = randomBytes(32).toString('hex');
-    const seed = 7;
+    const seed = swarmSeed;
     const reports = incidents(agents, seed);
     const run = {
-      id, mode, seed, reports, state: 'starting', agentsDone: false, started: now(), wallMs: null, metrics: null,
+      id, mode, seed, reports, state: 'starting', phase: null, agentsDone: false, started: now(), wallMs: null, metrics: null, baseline: null, kvPeak: null,
       models: mode === 'simulated' ? ['simulated'] : [],
       agents: reports.map((report, index) => ({ index, id: report.id, model: mode === 'simulated' ? 'simulated' : null,
         state: 'queued', answer: null, verified: false, correct: false })),
@@ -263,11 +361,24 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     const finished = run.agents.filter(agent => agent.state === 'done' || agent.state === 'failed');
     const sum = key => run.agents.reduce((total, agent) => total + (agent[key] ?? 0), 0);
     const elapsed = run.wallMs ?? (run.state === 'running' ? now() - run.started : 0);
+    // Card S1b: one after another is estimated from each answered agent's server running it
+    // alone, not from the agents' own times under load (each request is slower when shared).
+    // Failed agents add nothing, so fast errors cannot raise the speed-up.
+    const solo = run.baseline?.perServer;
+    const answered = run.agents.filter(agent => agent.state === 'done');
+    const oneAfterAnother = solo && answered.length ? answered.reduce((total, agent) => total + solo[agent.index % solo.length].ms, 0) : null;
     return {
       id: run.id, mode: run.mode, simulated: run.mode === 'simulated', state: run.state, error: run.error,
       models: run.models, concurrency,
       elapsedMs: Math.round(elapsed),
-      oneAfterAnotherMs: Math.round(sum('ms')),
+      phase: run.phase,
+      baseline: run.baseline && { perServer: run.baseline.perServer.map((entry, index) => ({ model: entry.model, ms: Math.round(entry.ms),
+          answered: answered.filter(agent => agent.index % run.baseline.perServer.length === index).length })),
+        runs: run.baseline.runs, measuredAt: run.baseline.measuredAt, reused: run.baseline.reused },
+      oneAfterAnotherMs: oneAfterAnother === null ? null : Math.round(oneAfterAnother),
+      speedup: oneAfterAnother !== null && elapsed > 0 ? oneAfterAnother / elapsed : null,
+      answeredForSpeedup: answered.length,
+      agentMsSum: Math.round(sum('ms')),
       tokensIn: sum('tokensIn'), tokensOut: sum('tokensOut'),
       counts: { total: run.agents.length, finished: finished.length,
         running: run.agents.filter(agent => agent.state === 'running').length,
@@ -283,5 +394,18 @@ export function createSwarm({ env = process.env, fetchImpl = fetch, now = () => 
     };
   }
 
-  return { config, start, snapshot, urls, concurrency };
+  /**
+   * Card U8: what the swarm page shows before a run. The first reports as text and the
+   * instructions every agent shares. Never the generator's truth for a report.
+   */
+  function task() {
+    return {
+      seed: swarmSeed, maxAgents, synthetic: true,
+      sample: incidents(3, swarmSeed).map(({ id, text }) => ({ id, text })),
+      instructions: systemPrompt,
+      facts: ['service', 'cause', 'downtimeMinutes', 'quote'],
+    };
+  }
+
+  return { config, start, snapshot, task, urls, concurrency };
 }

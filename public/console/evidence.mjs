@@ -1,10 +1,8 @@
 // The proof panel: the cited transcript turns of one node, with the cited lines
 // marked. Every transcript string is set with textContent, never parsed as HTML.
-import { evidenceTurns, visibleText } from './model.mjs';
+import { evidenceTurns, turnSpeaker, visibleText } from './model.mjs';
 
 const providerNames = { claude: 'Claude Code', codex: 'Codex' };
-const roleNames = { user: 'Person', assistant: 'Agent' };
-
 function el(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -58,7 +56,7 @@ export function createEvidence(panel, { loadSession }) {
         turns.replaceChildren(...shown.map(turn => {
           const item = el('li', turn.cited ? 'turn is-cited' : 'turn');
           const head = el('p', 'turn-head');
-          head.append(el('span', 'turn-line', `L${turn.line}`), el('span', 'turn-role', roleNames[turn.role] ?? turn.role));
+          head.append(el('span', 'turn-line', `L${turn.line}`), el('span', 'turn-role', turnSpeaker(turn)));
           if (turn.cited) head.append(el('span', 'turn-cited', 'cited'));
           const body = el(turn.cited ? 'mark' : 'p', 'turn-text', turn.text);
           item.append(head, body);

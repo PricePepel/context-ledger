@@ -7,10 +7,15 @@ const kindOrder = ['goal', 'constraint', 'decision', 'offer', 'action', 'blocker
 export const partyKey = packet => (packet.party ? `party:${packet.party}` : `session:${packet.sessionId}`);
 export const nodeKey = (party, id) => `${party}/${id}`;
 
-/** The G7 mark when a node carries one, otherwise null (every node is drawn neutral). */
-export function nodeMark(node) {
-  const mark = node.grounding ?? node.mark;
-  return mark === 'quoted' || mark === 'inferred' ? mark : null;
+/**
+ * The G7 mark the ledger gave a node at publish time: 'quoted', 'inferred', or null when
+ * the graph has no marks (published before G7). Unmarked is drawn neutral, never inferred.
+ */
+export function nodeMark(graph, nodeId) {
+  const has = list => Array.isArray(list) && list.includes(nodeId);
+  if (has(graph.quotedNodeIds)) return 'quoted';
+  if (has(graph.inferredNodeIds)) return 'inferred';
+  return null;
 }
 
 const startOfDay = at => {
@@ -201,7 +206,7 @@ export function createModel({ workingMs = 60_000 } = {}) {
             to: node.to ?? null,
             evidenceLines: citedLines(entry.graph, node),
             artifacts: citedArtifacts(entry.graph, node),
-            mark: nodeMark(node),
+            mark: nodeMark(entry.graph, node.id),
             superseded: node.kind === 'decision' && superseded.has(node.id),
             answered: node.kind === 'question' && node.status === 'open' && !open.has(node.id),
           }));
@@ -264,6 +269,20 @@ export function visibleText(text) {
     return [...Array(character.length).keys()]
       .map(index => `${backslash}u` + character.charCodeAt(index).toString(16).padStart(4, '0')).join('');
   });
+}
+
+const roleNames = { user: 'Person', assistant: 'Agent' };
+const pathText = path => String(path ?? 'unknown').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, character =>
+  [...Array(character.length).keys()].map(index => `${backslash}u` + character.charCodeAt(index).toString(16).padStart(4, '0')).join(''));
+
+/**
+ * Who said a turn. Card I3: a message between two Codex agents says who sent it to whom,
+ * with the paths on one line and every control and format character escaped (the
+ * library's rule), so they cannot reorder, hide or break the label.
+ */
+export function turnSpeaker(turn) {
+  if (turn.role === 'agent') return `Agent ${pathText(turn.author)} to ${pathText(turn.recipient)}`;
+  return roleNames[turn.role] ?? String(turn.role);
 }
 
 /**
