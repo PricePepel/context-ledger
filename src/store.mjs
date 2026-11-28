@@ -582,7 +582,8 @@ function storeOn(database) {
   /**
    * Card R1 (ADR-19): the full transcript of a session that so far held only excerpts
    * received in a parcel. The whole session replaces them; a line the excerpts had keeps
-   * its key, so the graphs that cite it hold, and the mark is removed. Every excerpt must
+   * its key when a stored graph cites that key, so the graph holds, and otherwise takes the
+   * file's own key; the mark is removed. Every excerpt must
    * be a turn of the file: the same line and role, and the same text or that text with
    * values replaced by redaction markers (sameTurn). Any other file is refused, so text
    * someone else sent is never swapped for different text without a word. Runs inside
@@ -592,10 +593,11 @@ function storeOn(database) {
     const old = readMessages(id);
     const atLine = new Map(messages.map(message => [message.line, message]));
     if (!old.every(message => atLine.has(message.line) && sameTurn(message, atLine.get(message.line)))) throw new ConflictError(excerptsMismatch);
-    // A legacy l:<line> key that came in a parcel and that no stored graph cites by key is
-    // only a placeholder: the file's own key replaces it (Codex review of the refresh).
+    // A key that came in a parcel and that no stored graph cites by key is only a
+    // placeholder, legacy or not: a parcel's keys are not checked against any file, so the
+    // file's own key replaces it (Codex review of the refresh, rounds 2 and 3).
     const cited = keysCitedByGraphs(id);
-    const kept = old.filter(message => !legacyKey(message.key) || cited.has(message.key));
+    const kept = old.filter(message => cited.has(message.key));
     const keyAt = new Map(kept.map(message => [message.line, message.key]));
     const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
     if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
@@ -830,9 +832,10 @@ function storeOn(database) {
           const byLineHere = new Map(old.map(message => [message.line, message]));
           const lines = new Set(old.map(message => message.line));
           // One side may key a turn l:<line> (legacy, see legacyKey) and the other by its
-          // UUID or hash. Excerpts here whose legacy key no stored graph cites take the
-          // parcel's real key. Otherwise, for a version 1 or 2 graph, which cites lines, a
-          // turn on the same line is the same turn and the key already here is kept.
+          // UUID or hash. A version 3 graph cites the key, so excerpts here whose legacy key
+          // no stored graph cites take the parcel's key. A version 1 or 2 graph cites only
+          // lines, so its keys are not evidence of anything: the turn on the same line is the
+          // same turn and the key already here is kept (Codex review of the refresh, round 3).
           const citesLines = graph.packet.version !== 3;
           let citedHere;
           const rekey = new Map();
@@ -840,7 +843,7 @@ function storeOn(database) {
           for (const message of incoming) {
             let have = byKey.get(message.key);
             const onLine = have ? undefined : byLineHere.get(message.line);
-            if (onLine && stored.excerpts && legacyKey(onLine.key) && !legacyKey(message.key)
+            if (onLine && !citesLines && stored.excerpts && legacyKey(onLine.key) && !legacyKey(message.key)
               && !(citedHere ??= keysCitedByGraphs(session.id)).has(onLine.key)) {
               have = onLine;
               rekey.set(onLine.line, message.key);

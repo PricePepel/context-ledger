@@ -90,3 +90,16 @@ The tests run against a fake vLLM (`tests/helpers.py`) that answers per role, re
 
 - These checks need the live model (`docs/evals.md`, cycle 5): warm-cache numbers against real vLLM (`cachedTokens` of at least 90% of the prefix after the reader), answer quality, and whether a 64-token budget is enough for a structured slice. A small budget can cut the synthesizer off, which returns 502.
 - The guard against a symlink swapped in between the check and the read assumes a single local user.
+
+## Cross-model comparison harness (L2)
+
+`latent_compare` asks one question set of several open-weight models with the same arms: the passage as text, a sender's summary, the same model's KV cache handed over as bytes, and, for a pair with a trained mapper, the mapped cache with its controls. It needs torch and transformers (the WSL venv) and a GPU; the models and datasets must already be in the Hugging Face cache. A model marked `"backend": "vllm"` in `latent_compare/models.py` (the 4-bit 7B and 8B checkpoints, which transformers cannot load here) is served by the venv's vLLM on loopback port 8017, started and stopped by the run; it gets the same token ids, but its cache cannot be handed over, and its times are not comparable with the torch rows.
+
+```bash
+cd runtime
+~/venvs/latent/bin/python -m latent_compare.run all --out ~/l2-compare/run1
+```
+
+That one command builds the item sets, runs every model in `latent_compare/models.py` one at a time, runs the mapper pair, and writes `summary.json` and `report.md` (the tables in [the eval log](../docs/evals.md) under L2). Each phase saves a file under `--out` and is skipped when the file exists, so a stopped run resumes; `--models qwen1.5,phi3.5` runs a subset, and `report --out <dir>` rebuilds the tables without a GPU. To add a model, add it to `MODELS`; to add a mapper, add its pair and checkpoint to `MAPPERS`, and that cell stops reading "no mapper yet".
+
+The pure parts (prompts, item sets, scoring, the report, the phases with a fake engine, and the vLLM client against a fake server) are covered by `tests/test_latent_compare.py`, which needs no torch. A model or pair whose last attempt failed is listed in `failures.json` under `--out`, left out of the report, and run again from the start by the next `all`.

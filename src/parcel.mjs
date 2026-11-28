@@ -201,33 +201,6 @@ const strings = value => {
   return [];
 };
 
-// A value shorter than this is not looked for in a graph's text: it would match ordinary
-// words and numbers, and the scanner's own rules need longer values.
-const shortestCredentialValue = 6;
-
-/**
- * Every value the secret scanner finds in a session's source name and turns. A span can
- * run to the end of its line (password=value and the words after it), so its first word,
- * the value itself, is looked for too.
- */
-function credentialValues(session) {
-  const values = new Set();
-  const add = value => {
-    if ([...value].length >= shortestCredentialValue) values.add(value);
-  };
-  const texts = [session.source];
-  for (const message of session.messages) texts.push(message.text, message.author, message.recipient);
-  for (const text of texts) {
-    if (typeof text !== 'string') continue;
-    for (const { start, end } of findSecrets(text)) {
-      const value = text.slice(start, end);
-      add(value);
-      add(value.split(/[\s\x85]/u)[0]);
-    }
-  }
-  return values;
-}
-
 // Used when the transcript's file name, once redacted, is no longer a name a ledger stores.
 const redactedSourceName = 'source name redacted';
 
@@ -263,15 +236,23 @@ export function buildParcel(graph, session) {
   if (ownText.some(text => findSecrets(text).length > 0)) {
     throw new InputError('This graph\'s own text (a label, a name, an artifact or its project) holds what looks like a credential, so it was not shared.');
   }
-  // The scanner often knows a value by what stands before it (password=...), which a label
-  // that copies only the value lacks. So every value it finds anywhere in the session, cited
-  // or not, must not appear in the graph's own text (Codex review of the refresh, round 2).
-  const found = credentialValues(session);
-  if (found.size > 0 && ownText.some(text => [...found].some(value => text.includes(value)))) {
+  // The scanner often knows a value only by what stands before it (password=...), which a
+  // bare copy of it lacks. So the whole session, cited or not, and the graph's own text go
+  // through the scanner together, and a value it finds anywhere is also removed where it
+  // is copied (P4d, ADR-9a). A carried turn is sent so redacted; the graph's own text cannot
+  // be redacted, so a copy there refuses the share (Codex review of the refresh, rounds 2
+  // and 3). Like the signed hand-off, a copy shorter than six characters is not looked for.
+  const own = ownText.map((text, index) => ({ role: 'user', line: -1 - index, key: `own:${index}`, text }));
+  const scanned = redactSession({ source: session.source, messages: [...session.messages, ...own] });
+  if (scanned.session.messages.slice(session.messages.length).some((message, index) => message.text !== ownText[index])) {
     throw new InputError('This graph\'s own text (a label, a name, an artifact or its project) repeats a value the secret scanner found in its transcript, so it was not shared.');
   }
-
-  const { session: redacted, findings } = redactSession({ source: session.source, messages: carried });
+  const carriedLines = new Set(carried.map(message => message.line));
+  const redacted = {
+    source: scanned.session.source,
+    messages: scanned.session.messages.slice(0, session.messages.length).filter((message, index) => isCited(session.messages[index])),
+  };
+  const findings = scanned.findings.filter(finding => finding.line === null || carriedLines.has(finding.line));
   const uncited = session.messages.filter(message => !isCited(message));
   if (repeatsUncited(graph.packet.nodes.map(node => node.label), uncited, redacted.messages)) {
     throw new InputError('A label of this graph repeats a transcript line the graph does not cite, so it was not shared. Cite that line or reword the label.');
