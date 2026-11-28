@@ -10,7 +10,7 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 
 ## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
 
-PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §17).
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §18).
 
 - `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
 - `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
@@ -18,6 +18,18 @@ PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security revie
 - Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
 - 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
 - **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
+## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
+
+PR #90 (`ruslan/r1-parcels`) has main merged, six rounds of Codex review fixed (in [evals](evals.md) under R1, "Refresh with main"), and green suites. It goes before #91 (R2), which is stacked on it. Changed behaviour: `share` scans the whole session together with the graph's own text, a line-cited parcel carries and stores `l:<line>` keys, and publishing a graph holds the write lock. Two mediums are accepted and written down there. It adds an export path, so Ruslan reviews and merges it himself.
+
+Next owner: R3 (sync), and several keys per turn if the accepted placeholder case matters in practice.
+
+## Current checkpoint: H12 prose diet (2026-11-28)
+
+Branch `ruslan/h12-prose-diet`. Where `scripts/check.mjs` enforces a rule, the repository no longer says it a second time. Five tests that scanned a card's own files for raw control or format characters are gone (the check reads every tracked file), and `tests/check.test.mjs` shows it covers the SVG, CSS and test files they read. AGENTS.md section 6 names the check and its rules once and says to add a rule to it instead of restating one; `tests/agents-rules.test.mjs` keeps that text. History in `docs/evals.md` and the dated entries here are unchanged.
+
+Next owner: when a card adds a check rule, delete any test or doc line that restated it in the same PR. Splitting `docs/evals.md` and this file into one file per card was discussed and is not part of H12; it would touch every open PR, so it needs its own card once the open PRs have merged. If it happens, keep what card K1's parser reads: each file named by its card ID or with the ID in a `#` or `##` heading, dates as YYYY-MM-DD in the heading, and `docs/delivery-board.md` as the one table.
 
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 
@@ -53,6 +65,12 @@ For the `cross-model` and `statebridge` sessions:
 - **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
 
 Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+## Current checkpoint: H15 the Windows token write survives a slow PowerShell (2026-11-27)
+
+On Windows the server's token-file write is now asynchronous (`writeTokenFile` in `src/token.mjs`, awaited in the listen callback of `src/server.mjs`). Until the file exists and its descriptor is confirmed private, the server answers 503 and prints nothing. Each PowerShell attempt is bounded at 60 s and only a pure timeout is retried, once, after the killed child has exited and the path is cleared. Every other failure fails closed and empties the record, as before. The runner `runWithInput` settles only when its child closes. A stop during the write aborts it and waits for that close. ADR-10a in `docs/architecture.md` records the choice; the eval and three Codex rounds are in the H15 section of `docs/evals.md`. The private-file checks, the write and read scripts and the read path are unchanged.
+
+Next owner: the read path still uses one PowerShell call with a 30 s timeout (`readPrivateFile`), and under heavy local load (100% CPU, about a hundred node processes) client reads in `mcp-live` and `list-api` ran out of time the same way. A bounded retry there is a separate card. PowerShell's "preparing modules for first use" progress shows up on stderr under load; pointing `PSModuleAnalysisCachePath` elsewhere might shorten cold starts, but nobody has measured that. The PR touches token code, so Ruslan merges it. P1f (#65) edits other functions in the same file; whichever lands second merges `main` once.
+
 ## Current checkpoint: H14 Windows-only browser test flakes (2026-11-27)
 
 Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
@@ -69,6 +87,14 @@ Next owner: H15. The Node suite on #100 failed because the server's Windows toke
 `node scripts/check.mjs` checks every tracked file for the AGENTS.md section 6 rules that Codex reviews kept finding: raw control, format, bidi and separator characters (files and file names); HTML sinks in code outside tests; and `listen` calls that do not name `'127.0.0.1'`. It runs first in the node CI job on all three systems and is in the AGENTS.md section 4 local run list. Each message says what to write instead. On its first run it found three real bugs on `main`, now fixed. Design choice from Codex round 2: the code rules read comments and strings as they are, so a sink spelt in a comment is reported (reword it); a whole-file comment skipper could be fooled into skipping code. Review rounds and results are in [evals](evals.md) under H9.
 
 Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
+
+## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
+
+- **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
+- **Schema version 8** adds `session_excerpts`. A row marks a session that holds only received lines; its summaries say `excerpts: true`, and the library and the hand-off label it. Importing the full transcript later replaces the excerpts and keeps their keys.
+- **Decisions** are ADR-19 in `docs/architecture.md` §17. User docs are `docs/parcels.md`. Tests are `tests/parcel.test.mjs` and `tests/e2e/parcel.spec.mjs`.
+- **Needs a human security review** before merge: it adds an export path and a schema step.
+- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a one-time code). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
 
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 
@@ -91,6 +117,10 @@ PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts 
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Live check done (evals, S1b): 100 agents on the 7B model show about 21-22x on warm runs (15x on the first run after a server start), against 51-56x from the old figure, and a KV peak of about 5% where the last sample reads 0%. PR #76 is merged. Next owner: update the investor run sheet line that says not to quote the speed-up tile (quote about 21-22x from a warm run).
+
+## Current checkpoint — D4 website build demo (2026-11-22)
+
+Two Claude agents built a coffee-roaster site from one synthetic client chat three ways (builder reads the chat, a hand-off note, or the ledger briefing), 3 runs each, in two rounds. Round 2: all three met 15/15 in every built site; the ledger hand-off cost more ($0.47 against $0.20 for reading the chat) and its builder did not read fewer tokens. Gate 1 passes only as a tie, gate 2 fails. In round 1 a diagnostic replay showed a builder making a second, scoped `context_for` call and building from it (runs 2 and 3 fit the same pattern): Backlog card G9c. The chat put its chatter after the requirements, so whole-chat builders saw everything on the first page; a fair long-chat test interleaves them. Codex review findings are fixed and recorded in evals. Runner: `node demo/website-build.mjs` (spends credits). Round 3 used a nine-page chat with the requirements spread through it, Haiku builders, and one note or graph shared by three builders. Ledger builders met 14, 15 and 15 of 15; whole-chat builders met 7 of 15 with 15 stale or ruled-out items; note builders met 3 of 15. Gate 1 passes, gate 2 fails ($0.97 against $0.24). The gap went with readers stopping early (an association, not an isolated cause: read coverage and hand-off format changed together): whole-chat builders read 3 of 9 pages, and the note writer read 1, while the publisher read all 9. The chatter loops through 16 exchanges, which invites stopping, so this overstates real chats. Next owner: rerun round 3 with non-repeating chatter and several first-agent runs, cut the publish cost (it read the chat in 12 steps, $0.88), and G9c. On 2026-11-27 main was merged in and twelve Codex rounds hardened the scorer and the read-coverage check (evals, D4, items 1-41); the 25 saved sites rescore unchanged, so the results above stand. Remaining synthetic scorer cases are on Backlog card D4b, under the stop rule recorded in evals.
 
 ## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
 

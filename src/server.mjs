@@ -415,26 +415,43 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen({ port, host: '127.0.0.1' }, () => {
+server.listen({ port, host: '127.0.0.1' }, async () => {
   const localPort = server.address().port;
   // The plain token lives only in this callback and in the file; auth keeps its digest.
+  // Card H15: on Windows the write waits for PowerShell; until it and its ACL check are
+  // done, auth stays unset, so every request gets 503 and nothing is printed.
   const token = newToken();
+  const ready = createAuth({ token, port: localPort });
+  tokenFile = tokenFileFor(database, localPort);
+  // A clean stop removes the file, so a program that takes the port later gets no
+  // live token from a client. A killed process leaves a dead token behind. A stop during
+  // the write (H15) first stops its PowerShell child and waits for it to exit, so no
+  // writer outlives the server and races the next start.
+  const stopping = new AbortController();
+  let writing;
+  // The handlers stay installed, so a second Ctrl-C during that wait cannot end the
+  // process before the child has exited and the file is cleaned up.
+  const stop = async () => {
+    if (stopping.signal.aborted) return;
+    stopping.abort();
+    try {
+      await writing?.catch(() => {});
+      removeTokenFile(tokenFile, ready.isOwnToken);
+    } finally {
+      process.exit(0);
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   try {
-    tokenFile = tokenFileFor(database, localPort);
-    tokenIdentity = writeTokenFile(tokenFile, token, localPort);
+    writing = writeTokenFile(tokenFile, token, localPort, { signal: stopping.signal });
+    tokenIdentity = await writing;
   } catch {
+    if (stopping.signal.aborted) return; // the stop handler exits
     console.error(tokenFailure);
     process.exit(1);
   }
-  auth = createAuth({ token, port: localPort });
-  // A clean stop removes the file, so a program that takes the port later gets no
-  // live token from a client. A killed process leaves a dead token behind.
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      removeTokenFile(tokenFile, auth.isOwnToken);
-      process.exit(0);
-    });
-  }
+  if (stopping.signal.aborted) return;
+  auth = ready;
   // Card U9: at a terminal these lines arrive inside the welcome; piped, they are the same
   // two plain lines as before. The server is already listening when this runs. Card U11:
   // a terminal also gets the steps to sign in, naming the login command of this install.

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -203,7 +202,9 @@ test('a delete is refused when the database keeps old pages in a WAL', async t =
   }
 });
 
-test('a graph published while another connection deletes its session is a 400, not a 500', async t => {
+test('a session cannot be deleted from another connection while a graph of it is being published', async t => {
+  // Codex review of the R1 refresh, round 6: the check and the insert now run under one
+  // write lock, so the other connection waits and gives up instead of deleting in between.
   const directory = await mkdtemp(join(tmpdir(), 'ledger-delete-race-'));
   const path = join(directory, 'ledger.sqlite');
   const publisher = openStore(path);
@@ -222,18 +223,14 @@ test('a graph published while another connection deletes its session is a 400, n
   StatementSync.prototype.run = function (...args) {
     if (args[1] === session.id && typeof args[2] === 'string' && args[2].includes('"packet"')) {
       StatementSync.prototype.run = run;
-      assert.equal(deleter.deleteSession(session.id), true);
+      assert.throws(() => deleter.deleteSession(session.id), /locked|busy/iu);
     }
     return run.apply(this, args);
   };
   t.after(() => { StatementSync.prototype.run = run; });
-  assert.throws(() => publisher.publishGraph(v1(session, 'Race goal')), error => {
-    assert.ok(error instanceof InputError);
-    assert.equal(error.message, 'Graph transcript session not found.');
-    return true;
-  });
+  const graph = publisher.publishGraph(v1(session, 'Race goal'));
   assert.equal(StatementSync.prototype.run, run);
-  assert.deepEqual(publisher.listGraphs({ limit: 10 }).graphs, []);
+  assert.deepEqual(publisher.listGraphs({ limit: 10 }).graphs.map(entry => entry.id), [graph.id]);
 });
 
 test('a list cursor on a deleted session is refused, and a restarted listing finds the rest', () => {
@@ -446,13 +443,9 @@ test('the MCP adapter has no way to delete', async () => {
   assert.doesNotMatch(await readFile(new URL('../src/mcp.mjs', import.meta.url), 'utf8'), /DELETE|deleteSession/u);
 });
 
-test('the files this card changes hold no raw control or format characters', async () => {
-  const files = ['src/errors.mjs', 'src/store.mjs', 'src/server.mjs', 'src/cli.mjs', 'tests/delete.test.mjs', 'tests/routes.test.mjs',
-    'tests/e2e/delete.spec.mjs', 'public/app.js', 'public/index.html', 'public/styles.css'];
-  for (const file of files) {
-    assert.ok(existsSync(join(root, file)), file);
-    const text = await readFile(join(root, file), 'utf8');
-    const found = [...text].filter(character => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character) && !['\t', '\n', '\r'].includes(character));
-    assert.deepEqual(found, [], file);
-  }
+// Card H12: Playwright runs the specs it finds, so a deleted browser journey would pass
+// silently. The removed character scan also asserted the spec exists; this keeps that.
+test('the delete browser journey is still in the Playwright suite', async () => {
+  const spec = await readFile(new URL('./e2e/delete.spec.mjs', import.meta.url), 'utf8');
+  assert.match(spec, /\btest\(/u);
 });

@@ -110,11 +110,14 @@ test('P3c: signing a current ledger still makes a bundle that verifies with its 
 
 test('P3c: the CLI opens the ledger for signing and reviews verify only through the read-only helper', () => {
   const source = readFileSync(new URL('../src/cli.mjs', import.meta.url), 'utf8');
-  // The body of a top-level function: from its header to the next line that closes one.
+  // The body of a top-level function: from its header to the next line that closes one,
+  // in a checkout with either kind of line ending (card R1: receive opens the store to write).
   const body = name => {
     const start = source.indexOf(`async function ${name}(`);
     assert.ok(start >= 0, name);
-    return source.slice(start, source.indexOf('\n}\n', start));
+    const length = source.slice(start).search(/\r?\n\}\r?\n/u);
+    assert.ok(length > 0, name);
+    return source.slice(start, start + length);
   };
   assert.match(body('openCurrentStore'), /openStore\(databasePath, \{ readOnly: true \}\)/u);
   // One open, and only that one.
@@ -143,7 +146,10 @@ test('P3c review: storeOn leaves closing to openStore, so its errors are not mas
   const source = readFileSync(new URL('../src/store.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('function storeOn(database) {');
   assert.ok(start >= 0);
-  const setup = source.slice(start, source.indexOf('\n  return {', start));
+  // Card R1: the methods are now `const store = {`, so one can call another.
+  const end = source.indexOf('\n  const store = {', start);
+  assert.ok(end > start);
+  const setup = source.slice(start, end);
   assert.doesNotMatch(setup, /database\.close\(\)/u);
 });
 

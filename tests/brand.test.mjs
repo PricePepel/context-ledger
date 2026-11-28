@@ -93,7 +93,6 @@ test('Pip\'s SVGs hold only allowed elements, attributes and colours, and name t
     const path = `docs/brand/${file}`;
     const svg = read(path);
     assert.ok(statSync(new URL(`../${path}`, import.meta.url)).size < 4096, file);
-    assert.ok(!/[\p{Cc}\p{Cf}]/u.test(svg.replace(/[\t\n\r]/gu, '')), `${file}: raw control or format character`);
     assert.match(svg, new RegExp(`^<svg [^>]*aria-label="Pip, the CTM mascot, ${pose}"`, 'u'), file);
     assert.doesNotMatch(svg, /\sid=/u, `${file}: no IDs, so inlined copies cannot clash`);
     const body = svg.replace(/<!--[\s\S]*?-->/gu, '');
