@@ -6,8 +6,10 @@
 //   options: --budget <tokens> (default 1500), --json (the whole graph), --root <folder>
 // The files are read on every run and nothing is written, so there is no copy to go
 // stale. Node built-ins and src/text.mjs only; not part of the package.
-import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+// Two layouts are read, alone or together: one file with a section per card
+// (docs/evals.md), and a folder with a file per card (docs/evals/p4d.md).
+import { readFileSync, readdirSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { terminalJson, terminalLabel } from '../src/text.mjs';
 
@@ -19,7 +21,11 @@ export const sources = [
 ];
 export const defaultBudget = 1500;
 const minimumBudget = 200;
+const maximumBudget = 1_000_000;
 const charactersPerToken = 4;
+// Characters kept for the two closing lines, so they always fit.
+const closingRoom = 520;
+const closingNote = 'Open the cited lines before changing anything: this is a map of the docs, not the docs.';
 const states = ['In progress', 'In review', 'Backlog', 'Ready', 'Done'];
 const openOrder = ['In progress', 'In review', 'Ready', 'Backlog', 'Other'];
 
@@ -52,6 +58,7 @@ function rowCells(line) {
 
 const cardIdShape = /^[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$/u;
 
+// Rows start with a pipe, as every row of the board does.
 export function parseBoard(text, path = 'docs/delivery-board.md') {
   const cards = [];
   splitLines(text).forEach((line, index) => {
@@ -65,7 +72,7 @@ export function parseBoard(text, path = 'docs/delivery-board.md') {
     // A raw pipe inside the scope (in code, say) made extra cells; they belong to it.
     const scope = cells.slice(3, -1).join(' | ');
     const [first, ...rest] = name.split(/\s+/u);
-    const hasId = rest.length > 0 && cardIdShape.test(first) && /\d/u.test(first);
+    const hasId = cardIdShape.test(first) && /\d/u.test(first);
     const state = states.find(known => stateText.toLowerCase().startsWith(known.toLowerCase())) ?? 'Other';
     cards.push({
       kind: 'card',
@@ -96,13 +103,16 @@ export function parseSections(text, path, levels) {
     sections.push(current);
   };
   lines.forEach((line, index) => {
-    const mark = /^\s{0,3}(`{3,}|~{3,})/u.exec(line);
-    if (mark) {
-      if (!fence) fence = mark[1][0];
-      else if (mark[1][0] === fence) fence = null;
+    const mark = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (fence) {
+      // Only the same character, at least as many of them, with nothing after, closes.
+      if (mark && mark[1][0] === fence.character && mark[1].length >= fence.length && !mark[2].trim()) fence = null;
       return;
     }
-    if (fence) return;
+    if (mark && !(mark[1][0] === '`' && mark[2].includes('`'))) {
+      fence = { character: mark[1][0], length: mark[1].length };
+      return;
+    }
     const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/u.exec(line);
     if (!heading || !levels.includes(heading[1].length)) return;
     close(index);
@@ -120,44 +130,45 @@ export function parseSections(text, path, levels) {
   return sections;
 }
 
-const idToken = /(?<![A-Za-z0-9])[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*(?![A-Za-z0-9])/gu;
-const numberRange = /(?<![A-Za-z0-9])([A-Z]{1,4})(\d+)(?:\p{Pd}| to )\1(\d+)(?![A-Za-z0-9])/gu;
-const letterRange = /(?<![A-Za-z0-9])([A-Z]{1,4}\d+)([a-z])(?:\p{Pd}| to )\1([a-z])(?![A-Za-z0-9])/gu;
+// A letter or digit of any script on either side means the ID is part of a longer word.
+const before = String.raw`(?<![\p{L}\p{N}])`;
+const after = String.raw`(?![\p{L}\p{N}])`;
+const between = String.raw`(?:\p{Pd}| to )`;
+const idToken = new RegExp(`${before}[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*${after}`, 'gu');
+const numberRange = new RegExp(String.raw`${before}([A-Z]{1,4})(\d+)${between}\1(\d+)${after}`, 'gu');
+const letterRange = new RegExp(String.raw`${before}([A-Z]{1,4}\d+)([a-z])${between}\1([a-z])${after}`, 'gu');
+const cycleNumber = new RegExp(String.raw`${before}[Cc]ycle (\d+)${after}`, 'gu');
+const prNumber = new RegExp(String.raw`#(\d+)${after}`, 'gu');
 const longestRange = 30;
 
-// The card IDs a text names. `P1` is not found in `P1a`; `P1-style` names P1; `H1–H5`
-// and `P2a to P2c` name every card between; `Cycle 4` names C4; `#58` names the card
-// whose branch cell has PR #58.
+// The cards a text names, as graph node IDs. `P1` is not found in `P1a`; `P1-style`
+// names P1; `H1–H5`, `H5–H1` and `P2a to P2c` name every card between; `Cycle 4` names
+// C4; `#58` names the card whose branch cell has PR #58.
 function namedCards(text, index) {
   const found = new Set();
+  const take = cardId => {
+    for (const id of index.byId.get(cardId) ?? []) found.add(id);
+    return index.byId.has(cardId);
+  };
   for (const [token] of text.matchAll(idToken)) {
     let candidate = token;
-    while (candidate) {
-      if (index.byId.has(candidate)) {
-        found.add(candidate);
-        break;
-      }
+    while (candidate && !take(candidate)) {
       const dash = candidate.lastIndexOf('-');
       candidate = dash > 0 ? candidate.slice(0, dash) : '';
     }
   }
   for (const [, prefix, from, to] of text.matchAll(numberRange)) {
-    const [low, high] = [Number(from), Number(to)];
-    if (high - low > longestRange) continue;
-    for (let number = low; number <= high; number += 1) {
-      if (index.byId.has(`${prefix}${number}`)) found.add(`${prefix}${number}`);
-    }
+    const [low, high] = [Number(from), Number(to)].sort((left, right) => left - right);
+    // Past the safe integers a counter stops moving, and a long range is not a range.
+    if (!Number.isSafeInteger(high) || high - low > longestRange) continue;
+    for (let number = low; number <= high; number += 1) take(`${prefix}${number}`);
   }
   for (const [, stem, from, to] of text.matchAll(letterRange)) {
-    for (let code = from.codePointAt(0); code <= to.codePointAt(0); code += 1) {
-      const id = `${stem}${String.fromCodePoint(code)}`;
-      if (index.byId.has(id)) found.add(id);
-    }
+    const [low, high] = [from.codePointAt(0), to.codePointAt(0)].sort((left, right) => left - right);
+    for (let code = low; code <= high; code += 1) take(`${stem}${String.fromCodePoint(code)}`);
   }
-  for (const [, number] of text.matchAll(/\b[Cc]ycle (\d+)\b/gu)) {
-    if (index.byId.has(`C${number}`)) found.add(`C${number}`);
-  }
-  for (const [, number] of text.matchAll(/#(\d+)\b/gu)) {
+  for (const [, number] of text.matchAll(cycleNumber)) take(`C${number}`);
+  for (const [, number] of text.matchAll(prNumber)) {
     for (const id of index.byPr.get(Number(number)) ?? []) found.add(id);
   }
   return found;
@@ -176,48 +187,56 @@ function excerpt(body, limit) {
   return cut(oneLine(text.join(' ')), limit);
 }
 
-// docs: { board, handoff, evals, architecture } as texts; a missing one is skipped.
+// docs: { board, handoff, evals, architecture }, each a text or a list of
+// { path, text } files; a missing one is skipped.
 export function buildProjectGraph(docs) {
   const nodes = [];
   const edges = [];
   const bodies = new Map();
   const index = { byId: new Map(), byPr: new Map() };
   const read = {};
-  for (const source of sources) {
-    const text = docs[source.key];
-    if (typeof text !== 'string') continue;
+  const fileStems = new Map();
+  const files = sources.flatMap(source => {
+    const given = docs[source.key];
+    const list = typeof given === 'string' ? [{ path: source.path, text: given }] : Array.isArray(given) ? given : [];
+    return list.map(file => ({ source, path: file.path, text: String(file.text) }));
+  });
+  for (const { source, path, text } of files) {
     const lineCount = splitLines(text).length - (/\n$/u.test(text) ? 1 : 0);
-    read[source.path] = { bytes: Buffer.byteLength(text), lines: lineCount };
+    read[path] = { bytes: Buffer.byteLength(text), lines: lineCount };
     if (source.key === 'board') {
-      for (const card of parseBoard(text, source.path)) {
+      for (const card of parseBoard(text, path)) {
         card.id = `card:${card.file}:${card.line}`;
         nodes.push(card);
         bodies.set(card.id, card.scope);
-        if (!card.cardId) continue;
-        index.byId.set(card.cardId, [...(index.byId.get(card.cardId) ?? []), card.id]);
-        for (const pr of card.prs) index.byPr.set(pr, [...new Set([...(index.byPr.get(pr) ?? []), card.cardId])]);
+        if (card.cardId) index.byId.set(card.cardId, [...(index.byId.get(card.cardId) ?? []), card.id]);
+        for (const pr of card.prs) index.byPr.set(pr, [...(index.byPr.get(pr) ?? []), card.id]);
       }
     } else {
-      for (const { body, ...section } of parseSections(text, source.path, source.levels)) {
+      for (const { body, ...section } of parseSections(text, path, source.levels)) {
         section.id = `section:${section.file}:${section.line}`;
         section.source = source.key;
         section.excerpt = excerpt(body, 400);
         section.files = namedFiles(body);
         nodes.push(section);
         bodies.set(section.id, body);
+        fileStems.set(section.id, basename(path, '.md').toLowerCase());
       }
     }
   }
   for (const node of nodes) {
-    const body = bodies.get(node.id);
+    // A card does not link to itself, nor to another row with its own ID.
+    const own = new Set([node.id, ...(index.byId.get(node.cardId) ?? [])]);
     const inTitle = node.kind === 'section' ? namedCards(node.title, index) : new Set();
-    for (const cardId of namedCards(body, index)) {
-      if (cardId === node.cardId || inTitle.has(cardId)) continue;
-      for (const to of index.byId.get(cardId)) edges.push({ from: node.id, to, kind: 'mentions' });
+    // docs/evals/p4d.md is about P4d, whatever its headings say.
+    const stem = fileStems.get(node.id);
+    for (const [cardId, ids] of index.byId) {
+      if (cardId.toLowerCase() === stem) ids.forEach(id => inTitle.add(id));
     }
-    for (const cardId of inTitle) {
-      for (const to of index.byId.get(cardId)) edges.push({ from: node.id, to, kind: 'about' });
+    for (const to of namedCards(bodies.get(node.id), index)) {
+      if (!own.has(to) && !inTitle.has(to)) edges.push({ from: node.id, to, kind: 'mentions' });
     }
+    for (const to of inTitle) edges.push({ from: node.id, to, kind: 'about' });
   }
   return { read, nodes, edges, bodies };
 }
@@ -227,38 +246,59 @@ const place = node => (node.kind === 'card' || node.endLine <= node.line
   ? `${node.file}:${node.line}`
   : `${node.file}:${node.line}-${node.endLine}`);
 const sectionLine = section => `  ${place(section)}  ${section.date ? `${section.date}  ` : ''}${section.title}`;
-const cardLine = card => `  ${card.cardId ?? '(no ID)'} ${card.title} | ${card.stateText} | ${card.owner} | ${place(card)}`;
+const cardName = card => `${card.cardId ?? '(no ID)'} ${card.title}`.trim();
+const cardLine = card => `  ${cardName(card)} | ${card.stateText} | ${card.owner} | ${place(card)}`;
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+// "Files (24 of 31): a, b": a list that is cut says so in its own line.
+const listLine = (title, items, most) => `${title}${items.length > most ? ` (${most} of ${items.length})` : ''}: ${items.slice(0, most).join(', ')}`;
 
-// Lines added in order of importance until the budget is spent. What does not fit is
-// counted by kind, and the last line says so (also when nothing was dropped).
+// What a terminal is sent: control, format and bidi characters escaped, line by line.
+const escaped = text => text.split('\n').map(terminalLabel).join('\n');
+// An escaped text cut to a number of UTF-16 units, the unit the budget is counted in.
+function fitted(text, room) {
+  if (text.length <= room) return text;
+  let kept = '';
+  for (const character of text) {
+    if (kept.length + character.length > room - 1) break;
+    kept += character;
+  }
+  return `${kept.trimEnd()}…`;
+}
+
+// Lines added in order of importance until the budget is spent. Sizes are those of the
+// escaped text, so the result is at most budget * 4 UTF-16 units. What does not fit, or
+// was cut by a cap, is counted by kind, and the last line says so (also when nothing
+// was dropped).
 class Briefing {
   constructor(budget) {
-    this.budget = Math.max(minimumBudget, Math.trunc(Number(budget)) || defaultBudget);
-    // Room kept for the closing line.
-    this.room = this.budget * charactersPerToken - 320;
+    this.budget = Math.min(maximumBudget, Math.max(minimumBudget, Math.trunc(Number(budget)) || defaultBudget));
+    this.room = this.budget * charactersPerToken - closingRoom;
     this.lines = [];
     this.dropped = new Map();
   }
-  fits(text) {
-    return text.length + 1 <= this.room;
+  drop(kind, count = 1) {
+    if (count > 0) this.dropped.set(kind, (this.dropped.get(kind) ?? 0) + count);
   }
-  // Always printed, cut to what is left.
-  must(text) {
-    const kept = cut(text, Math.max(40, this.room - 1));
-    this.lines.push(kept);
-    this.room -= kept.length + 1;
+  push(text) {
+    this.lines.push(text);
+    this.room -= text.length + 1;
+  }
+  // Printed whenever there is room for a readable part of it, cut to what is left.
+  must(kind, text) {
+    if (this.room < 24) this.drop(kind);
+    else this.push(fitted(escaped(text), this.room - 1));
   }
   // The full form, or the short form, or a count of what was dropped.
   add(kind, full, short = null) {
-    for (const text of [full, short]) {
-      if (text !== null && this.fits(text)) {
-        this.lines.push(text);
-        this.room -= text.length + 1;
+    for (const form of [full, short]) {
+      if (form === null) continue;
+      const text = escaped(form);
+      if (text.length + 1 <= this.room) {
+        this.push(text);
         return true;
       }
     }
-    this.dropped.set(kind, (this.dropped.get(kind) ?? 0) + 1);
+    this.drop(kind);
     return false;
   }
   // A heading, printed only when at least one of its items is.
@@ -274,7 +314,7 @@ class Briefing {
     const tail = dropped.length
       ? `Left out for the budget of ${this.budget} tokens: ${dropped.join(', ')}. Raise --budget to see them.`
       : `Nothing left out (budget ${this.budget} tokens).`;
-    return [...this.lines, tail, 'Open the cited lines before changing anything: this is a map of the docs, not the docs.'].join('\n');
+    return [...this.lines, closingNote, fitted(tail, closingRoom - closingNote.length - 2)].join('\n');
   }
 }
 
@@ -282,15 +322,16 @@ function overview(graph, budget) {
   const out = new Briefing(budget);
   const cards = graph.nodes.filter(node => node.kind === 'card');
   const counts = [...states, 'Other'].map(state => [state, cards.filter(card => card.state === state).length]);
-  out.must(`Project board: ${plural(cards.length, 'card')} (${counts.filter(([, count]) => count).map(([state, count]) => `${state} ${count}`).join(', ')}).`);
+  out.must('summary line', `Project board: ${plural(cards.length, 'card')} (${counts.filter(([, count]) => count).map(([state, count]) => `${state} ${count}`).join(', ')}).`);
   const open = cards.filter(card => card.state !== 'Done')
     .sort((left, right) => openOrder.indexOf(left.state) - openOrder.indexOf(right.state));
   out.group('Not done:', 'open card', open.map(card => [cardLine(card), null]));
-  const checkpoints = graph.nodes
+  const dated = graph.nodes
     .filter(node => node.kind === 'section' && node.source === 'handoff' && node.date)
-    .sort(newestFirst)
-    .slice(0, 8);
-  out.group('Newest handoff notes:', 'handoff note', checkpoints.map(section => [sectionLine(section), null]));
+    .sort(newestFirst);
+  const newest = dated.slice(0, 8);
+  // The older notes are not left out for the budget: the heading says how many there are.
+  out.group(`Newest handoff notes (${newest.length} of ${dated.length} with a date):`, 'handoff note', newest.map(section => [sectionLine(section), null]));
   const sizes = Object.entries(graph.read).map(([path, size]) => `${path} ${Math.round(size.bytes / 1024)} KB`);
   out.add('size line', `Read for this: ${sizes.join(', ')}.`);
   out.add('hint', 'Next: node scripts/project-context.mjs <card ID or words>');
@@ -303,8 +344,8 @@ function cardBriefing(graph, cardIds, budget) {
   const cards = graph.nodes.filter(node => node.kind === 'card' && cardIds.includes(node.cardId));
   const nodeIds = new Set(cards.map(card => card.id));
   for (const card of cards) {
-    out.must(`${card.cardId} ${card.title}`);
-    out.must(`  state: ${card.stateText} | owner: ${card.owner} | branch or PR: ${card.branch} | ${place(card)}`);
+    out.must('card', cardName(card));
+    out.must('card line', `  state: ${card.stateText} | owner: ${card.owner} | branch or PR: ${card.branch} | ${place(card)}`);
     out.add('card scope', `  scope: ${cut(oneLine(card.scope), 500)}`, `  scope: ${cut(oneLine(card.scope), 160)}`);
   }
   const linked = kind => {
@@ -320,16 +361,18 @@ function cardBriefing(graph, cardIds, budget) {
     `${sectionLine(section)}\n      ${cut(section.excerpt, 240)}`,
     sectionLine(section),
   ]));
-  const files = [...new Set(about.flatMap(section => section.files))].slice(0, 24);
-  if (files.length) out.add('list of files', `Files those sections name: ${files.join(', ')}`);
+  // From the sections about the card only: a note that mentions six cards names the
+  // files of all six.
+  const files = [...new Set(about.flatMap(section => section.files))];
+  if (files.length) out.add('list of files', listLine('Files those sections name', files, 24), listLine('Files those sections name', files, 6));
+  // The cards its row and its sections name, and the cards whose rows name it.
   const related = new Set();
   for (const edge of graph.edges) {
-    if (edge.kind !== 'mentions') continue;
     if (nodeIds.has(edge.from) || aboutIds.has(edge.from)) related.add(byId.get(edge.to));
     else if (nodeIds.has(edge.to) && byId.get(edge.from).kind === 'card') related.add(byId.get(edge.from));
   }
-  const others = [...related].filter(card => !nodeIds.has(card.id)).slice(0, 24);
-  if (others.length) out.add('list of other cards', `Other cards named with it: ${others.map(card => `${card.cardId ?? card.title} (${card.state})`).join(', ')}`);
+  const others = [...related].filter(card => !nodeIds.has(card.id)).map(card => `${card.cardId ?? card.title} (${card.state})`);
+  if (others.length) out.add('list of other cards', listLine('Other cards named with it', others, 24), listLine('Other cards named with it', others, 6));
   out.group('Mentioned in:', 'section that mentions it', mentions
     .filter(node => node.kind === 'section')
     .sort(newestFirst)
@@ -340,7 +383,7 @@ function cardBriefing(graph, cardIds, budget) {
 function questionBriefing(graph, words, budget) {
   const out = new Briefing(budget);
   const terms = [...new Set(words.map(word => word.toLowerCase()).filter(word => [...word].length >= 2))];
-  out.must(`Question: ${terms.join(' ')}`);
+  out.must('question', `Question: ${terms.join(' ')}`);
   const hits = text => {
     const lower = text.toLowerCase();
     return terms.filter(term => lower.includes(term)).length;
@@ -351,10 +394,12 @@ function questionBriefing(graph, words, budget) {
     return { node, score: hits(head) * 3 + hits(rest) };
   }).filter(entry => entry.score > 0)
     .sort((left, right) => right.score - left.score || newestFirst(left.node, right.node));
-  const cards = scored.filter(entry => entry.node.kind === 'card').slice(0, 12);
-  const sections = scored.filter(entry => entry.node.kind === 'section').slice(0, 40);
-  if (!scored.length) out.must('No card or section contains these words.');
-  out.group('Cards:', 'card', cards.map(({ node }) => [cardLine(node), null]));
+  const cards = scored.filter(entry => entry.node.kind === 'card');
+  const sections = scored.filter(entry => entry.node.kind === 'section');
+  if (!scored.length) out.must('answer', 'No card or section contains these words.');
+  // The best cards only, so the sections keep most of the budget; the rest are counted.
+  out.group('Cards:', 'card', cards.slice(0, 12).map(({ node }) => [cardLine(node), null]));
+  out.drop('card', cards.length - 12);
   out.group('Sections:', 'section', sections.map(({ node }) => [
     `${sectionLine(node)}\n      ${cut(node.excerpt, 200)}`,
     sectionLine(node),
@@ -363,7 +408,8 @@ function questionBriefing(graph, words, budget) {
 }
 
 // query: the words typed after the command. A word that is a card ID, in any letter
-// case, selects that card; other words are then ignored.
+// case, selects that card; other words are then ignored. The text returned is safe to
+// print: it is already escaped, and at most budget * 4 UTF-16 units long.
 export function briefing(graph, query = [], { budget = defaultBudget } = {}) {
   const words = (Array.isArray(query) ? query : String(query).split(/\s+/u)).filter(Boolean);
   if (!words.length) return overview(graph, budget);
@@ -375,11 +421,24 @@ export function briefing(graph, query = [], { budget = defaultBudget } = {}) {
 export function readDocs(root) {
   const docs = {};
   for (const source of sources) {
+    const found = [];
     try {
-      docs[source.key] = readFileSync(join(root, source.path), 'utf8');
+      found.push({ path: source.path, text: readFileSync(join(root, source.path), 'utf8') });
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
+    // The folder beside the file: docs/evals/ for docs/evals.md.
+    const folder = source.path.replace(/\.md$/u, '');
+    let names = [];
+    try {
+      names = readdirSync(join(root, folder), { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    }
+    for (const entry of names.filter(entry => entry.isFile() && entry.name.endsWith('.md')).sort((left, right) => left.name.localeCompare(right.name, 'en'))) {
+      found.push({ path: `${folder}/${entry.name}`, text: readFileSync(join(root, folder, entry.name), 'utf8') });
+    }
+    if (found.length) docs[source.key] = found;
   }
   return docs;
 }
@@ -392,18 +451,19 @@ export function run(argv, root = resolve(fileURLToPath(new URL('..', import.meta
     if (argument === '--json') options.json = true;
     else if (argument === '--budget' || argument === '--root') {
       const value = argv[index += 1];
-      if (value === undefined) throw new Error(`${argument} needs a value`);
+      if (value === undefined || value.startsWith('--')) throw new Error(`${argument} needs a value`);
       if (argument === '--root') options.root = resolve(value);
-      else if (!/^\d+$/u.test(value) || Number(value) < minimumBudget) throw new Error(`--budget is a whole number of tokens, ${minimumBudget} or more`);
-      else options.budget = Number(value);
+      else if (!/^\d{1,7}$/u.test(value) || Number(value) < minimumBudget || Number(value) > maximumBudget) {
+        throw new Error(`--budget is a whole number of tokens from ${minimumBudget} to ${maximumBudget}`);
+      } else options.budget = Number(value);
     } else if (argument.startsWith('--')) throw new Error(`Unknown option ${argument}`);
     else words.push(argument);
   }
   const docs = readDocs(options.root);
-  if (typeof docs.board !== 'string') throw new Error(`No docs/delivery-board.md under ${options.root}`);
+  if (!docs.board?.some(file => file.path === 'docs/delivery-board.md')) throw new Error(`No docs/delivery-board.md under ${options.root}`);
   const { bodies, ...graph } = buildProjectGraph(docs);
   if (options.json) return terminalJson(graph);
-  return briefing({ ...graph, bodies }, words, options).split('\n').map(terminalLabel).join('\n');
+  return briefing({ ...graph, bodies }, words, options);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

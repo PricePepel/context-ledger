@@ -167,7 +167,7 @@ test('a card briefing has the card, what was written about it newest first, file
   assert.match(text, /^Files those sections name: src\/store\.mjs, tests\/sqlite-probe\.test\.mjs$/mu);
   assert.match(text, /^Other cards named with it: P1 \(Done\)$/mu);
   assert.match(text, /^Mentioned in:\n {2}docs\/handoff\.md:17-20 {2}Current checkpoint - rooms$/mu);
-  assert.match(text, /^Nothing left out \(budget 1500 tokens\)\.$/mu);
+  assert.equal(lines.at(-1), 'Nothing left out (budget 1500 tokens).', 'the last line');
 });
 
 test('words that are not a card ID rank cards and sections, a heading counting more', () => {
@@ -190,7 +190,7 @@ test('the budget bounds the briefing and the last lines say what was left out', 
     assert.match(text, /^P1a Storage engine\n {2}state: /u, 'the card itself is always there');
   }
   const small = briefing(built, ['P1a'], { budget: 400 });
-  assert.match(small, /^Left out for the budget of 400 tokens: .*\d+ sections? about it.*\. Raise --budget to see them\.$/mu);
+  assert.match(small.split('\n').at(-1), /^Left out for the budget of 400 tokens: .*\d+ sections? about it.*\. Raise --budget to see them\.$/u, 'the last line');
   const group = small.split('Written about it, newest first:\n')[1].split('\n');
   const shown = group.slice(0, group.findIndex(line => !line.startsWith(' '))).filter(line => line.startsWith('  docs/')).length;
   const left = Number(/(\d+) sections? about it/u.exec(small)[1]);
@@ -198,16 +198,17 @@ test('the budget bounds the briefing and the last lines say what was left out', 
   assert.equal(shown + left, 62, 'the 60 notes and the eval and architecture sections are each shown or counted');
   const overview = briefing(built, [], { budget: 200 });
   assert.ok(overview.length <= 800);
-  assert.match(overview, /^Left out for the budget of 200 tokens: /mu);
+  assert.match(overview.split('\n').at(-1), /^Left out for the budget of 200 tokens: /u);
 });
 
 test('the overview counts the states and lists what is not done', () => {
   const text = briefing(graph());
   assert.match(text, /^Project board: 9 cards \(In progress 1, In review 1, Backlog 1, Ready 1, Done 4, Other 1\)\.$/mu);
-  const open = text.split('Not done:\n')[1].split('Newest handoff notes:')[0].trim().split('\n');
+  const open = text.split('Not done:\n')[1].split('Newest handoff notes (')[0].trim().split('\n');
   assert.deepEqual(open.map(line => line.trim().split(' ')[0]), ['H3', 'P1a', 'Q9', 'M2b-S', '(no']);
   assert.doesNotMatch(open.join('\n'), /\bC4\b|Done/u);
-  const notes = text.split('Newest handoff notes:\n')[1].split('\n').filter(line => line.startsWith('  docs/'));
+  assert.match(text, /^Newest handoff notes \(3 of 3 with a date\):$/mu);
+  const notes = text.split('Newest handoff notes (')[1].split('\n').filter(line => line.startsWith('  docs/'));
   assert.deepEqual(notes.map(line => /\d{4}-\d\d-\d\d/u.exec(line)[0]), ['2026-01-05', '2026-01-04', '2025-12-30']);
 });
 
@@ -245,8 +246,35 @@ test('the command reads the files again on every run', () => {
   }
 });
 
+test('a folder with a file per card is read beside, or in place of, the one file', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'k1-'));
+  try {
+    mkdirSync(join(folder, 'docs', 'evals'), { recursive: true });
+    mkdirSync(join(folder, 'docs', 'handoff'));
+    writeFileSync(join(folder, 'docs', 'delivery-board.md'), '| P4d Redacted hand-off | A | PR #69 | S | Done |\n| P4 Export | A | - | S | Ready |\n');
+    // An index file that only points at the folder, and no single handoff file at all.
+    writeFileSync(join(folder, 'docs', 'evals.md'), '# Acceptance evals\n\nOne file per card in `docs/evals/`.\n');
+    writeFileSync(join(folder, 'docs', 'evals', 'p4d.md'), '# Redacted signed hand-off (defined 2026-01-07)\n\nThe scanner runs first.\n\n## Results (2026-01-09)\n\nAll pass.\n');
+    writeFileSync(join(folder, 'docs', 'evals', 'notes.txt'), '## P4 not a doc\n');
+    writeFileSync(join(folder, 'docs', 'handoff', 'P4d.md'), '## Current checkpoint (2026-01-08)\n\nMerged; see `src/sign.mjs`.\n');
+    const text = run(['p4d', '--root', folder]);
+    const about = text.split('Written about it, newest first:\n')[1].split('\n').filter(line => line.startsWith('  docs/'));
+    assert.deepEqual(about.map(line => line.trim().split('  ').slice(0, 2)), [
+      ['docs/evals/p4d.md:5-7', '2026-01-09'],
+      ['docs/handoff/P4d.md:1-3', '2026-01-08'],
+      ['docs/evals/p4d.md:1-4', '2026-01-07'],
+    ], 'the file name says which card, and each line cites the file it is in');
+    assert.match(text, /^Files those sections name: src\/sign\.mjs$/mu);
+    assert.doesNotMatch(run(['P4', '--root', folder]), /Written about it/u, 'p4d.md is not about P4, and notes.txt is not read');
+    const built = JSON.parse(run(['--json', '--root', folder]));
+    assert.deepEqual(Object.keys(built.read), ['docs/delivery-board.md', 'docs/handoff/P4d.md', 'docs/evals.md', 'docs/evals/p4d.md']);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
 test('bad arguments are refused with a plain message', () => {
-  assert.throws(() => run(['--budget', '12']), /--budget is a whole number of tokens, 200 or more/u);
+  assert.throws(() => run(['--budget', '12']), /--budget is a whole number of tokens from 200 to 1000000/u);
   assert.throws(() => run(['--budget']), /--budget needs a value/u);
   assert.throws(() => run(['--nope']), /Unknown option --nope/u);
   const empty = mkdtempSync(join(tmpdir(), 'k1-'));
@@ -288,4 +316,96 @@ test('the script is not part of the package', () => {
   const source = readFileSync(script, 'utf8');
   const imports = [...source.matchAll(/from '([^']+)'/gu)].map(match => match[1]);
   assert.deepEqual(imports.filter(name => !name.startsWith('node:')), ['../src/text.mjs']);
+});
+
+// Codex review, round 1.
+
+test('a range of numbers too large to count does not hang, and a range may run downwards', () => {
+  const rows = ['H1', 'H2', 'H3'].map(id => `| ${id} Card | A | - | S | Done |`).join('\n');
+  const huge = '9007199254740992';
+  const built = buildProjectGraph({
+    board: rows,
+    handoff: `## H${huge}${dash}H${huge} and H1${dash}H9007199254740993\n\nText.\n\n## Down H3-H1 (2026-01-01)\n\nText.\n`,
+  });
+  assert.deepEqual(linksTo(built, 'H2', 'about'), ['Down H3-H1 (2026-01-01)']);
+  assert.equal(linksTo(built, 'H1', 'about').length, 2, 'H1 itself is still named in the first heading');
+});
+
+test('an ID inside a word of another script is not a card, and a PR number finds a card with no ID', () => {
+  const built = buildProjectGraph({
+    board: '| P1 Storage | A | - | S | Done |\n| Cleanup | A | PR #7 | S | Ready |\n| A1 | A | - | S | Ready |\n',
+    handoff: `## ${String.fromCodePoint(0xe9)}P1 and P1${String.fromCodePoint(0x44f)}\n\nText.\n\n## Follow-up for PR #7\n\nText about A1.\n`,
+  });
+  assert.deepEqual(linksTo(built, 'P1', 'about'), []);
+  const cleanup = built.nodes.find(node => node.title === 'Cleanup');
+  assert.deepEqual(built.edges.filter(edge => edge.to === cleanup.id).map(edge => edge.kind), ['about']);
+  assert.equal(card(built, 'A1').title, '', 'a first cell that is only an ID');
+  assert.deepEqual(linksTo(built, 'A1', 'mentions'), ['Follow-up for PR #7']);
+  assert.match(briefing(built, ['a1']), /^A1\n {2}state: Ready /u);
+});
+
+test('a code block closes only on its own mark, at least as long, with nothing after', () => {
+  const four = '`'.repeat(4);
+  const text = ['## Real', `${four}md`, fence, '## Fake', `${fence} js`, '~~~', four, '## After'].join('\r\n');
+  assert.deepEqual(parseSections(text, 'docs/handoff.md', [2]).map(section => [section.title, section.line, section.endLine]), [
+    ['Real', 1, 7],
+    ['After', 8, 8],
+  ]);
+  const open = ['## Real', four, fence, '## Fake'].join('\r\n');
+  assert.deepEqual(parseSections(open, 'docs/handoff.md', [2]).map(section => [section.title, section.line, section.endLine]), [['Real', 1, 4]],
+    'an unclosed block runs to the end of the file');
+});
+
+test('no input makes a briefing longer than its budget, in the characters a terminal is sent', () => {
+  const emoji = String.fromCodePoint(0x1f600);
+  const bidi = String.fromCodePoint(0x202e);
+  const rows = Array.from({ length: 10 }, (_, index) => `| A1 Row ${index} ${emoji.repeat(40)} | Owner ${bidi.repeat(30)} | - | ${'Scope. '.repeat(40)} | Ready |`).join('\n');
+  const notes = Array.from({ length: 30 }, (_, index) => `## A1 note ${index} ${bidi.repeat(250)} (2026-01-01)\n\n${emoji.repeat(300)}\n`).join('\n');
+  const built = buildProjectGraph({ board: rows, handoff: notes });
+  const queries = [['A1'], [], [emoji.repeat(500)], ['note', 'row', 'scope']];
+  for (const budget of [200, 300, 1500]) {
+    for (const query of queries) {
+      const text = briefing(built, query, { budget });
+      assert.ok(text.length <= budget * 4, `${text.length} units for ${budget} tokens, query ${query.join(' ').slice(0, 8)}`);
+      assert.doesNotMatch(text.replaceAll('\n', ''), /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+      assert.match(text.split('\n').at(-1), /^(?:Left out for the budget of \d+ tokens: |Nothing left out )/u);
+    }
+  }
+  const small = briefing(built, ['A1'], { budget: 200 });
+  assert.match(small.split('\n').at(-1), /\d+ cards?\b/u, 'rows of the card that did not fit are counted');
+  assert.match(briefing(built, ['A1'], { budget: Number.NaN }).split('\n').at(-1), /budget (?:of )?1500 tokens/u, 'a budget that is not a number falls back');
+});
+
+test('what a cap cuts is counted or said in its own line, never dropped in silence', () => {
+  const cards = Array.from({ length: 30 }, (_, index) => `| B${index + 1} Needle card | A | - | S | Done |`).join('\n');
+  const sections = Array.from({ length: 41 }, (_, index) => `## Needle ${index} (2026-01-01)\n\nText in \`src/file${index}.mjs\` about B1.\n`).join('\n');
+  const built = buildProjectGraph({ board: cards, handoff: sections });
+  const question = briefing(built, ['needle'], { budget: 100000 });
+  assert.equal(question.split('\n').filter(line => /^ {2}docs\/handoff\.md:/u.test(line)).length, 41, 'every matching section with a large budget');
+  assert.equal(question.split('\n').at(-1), 'Left out for the budget of 100000 tokens: 18 cards. Raise --budget to see them.');
+  const about = buildProjectGraph({
+    board: cards,
+    handoff: `## B1 note naming ${Array.from({ length: 29 }, (_, index) => `B${index + 2}`).join(', ')}\n\n${Array.from({ length: 31 }, (_, index) => `src/file${index}.mjs`).join(' ')}\n`,
+  });
+  const text = briefing(about, ['B1'], { budget: 100000 });
+  assert.match(text, /^Files those sections name \(24 of 31\): /mu);
+  assert.match(text, /^Other cards named with it \(24 of 29\): /mu);
+});
+
+test('the cards named in the heading of a section about the card are listed with it', () => {
+  const built = buildProjectGraph({
+    board: ['A1', 'A2', 'A3'].map(id => `| ${id} Card | A | - | S | Done |`).join('\n'),
+    handoff: '## A1 and A2\n\nSee `src/a.mjs`.\n\n## Follow-up\n\nA1 and A3 touch `tests/a.test.mjs`.\n',
+  });
+  const text = briefing(built, ['A1']);
+  assert.match(text, /^Other cards named with it: A2 \(Done\)$/mu);
+  assert.match(text, /^Files those sections name: src\/a\.mjs$/mu, 'files come from the sections about the card only');
+  assert.match(text, /^Mentioned in:\n {2}docs\/handoff\.md:5-7 {2}Follow-up$/mu, 'the other section is cited, to be opened');
+});
+
+test('an option that needs a value does not take the next option, and the budget has an upper limit', () => {
+  assert.throws(() => run(['--root', '--json']), /--root needs a value/u);
+  assert.throws(() => run(['--budget', '--json']), /--budget needs a value/u);
+  assert.throws(() => run(['--budget', '9'.repeat(400)]), /--budget is a whole number of tokens from 200 to 1000000/u);
+  assert.throws(() => run(['--budget', '1000001']), /from 200 to 1000000/u);
 });
