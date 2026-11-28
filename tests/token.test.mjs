@@ -940,8 +940,8 @@ test('H15 review: a timed-out child has exited, not just been asked to, when the
   const directory = await mkdtemp(join(tmpdir(), 'ledger-h15-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const pidFile = join(directory, 'pid');
-  // On POSIX the child takes a moment over SIGTERM before it exits; Windows ends it at once.
-  const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 1000);`;
+  // On POSIX the child takes a moment over SIGTERM before a signal ends it; Windows ends it at once.
+  const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => setTimeout(() => process.kill(process.pid, 'SIGKILL'), 300)); setInterval(() => {}, 1000);`;
   await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 3000 }), error => error.timedOut === true);
   const pid = Number(await readFile(pidFile, 'utf8'));
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
@@ -983,4 +983,9 @@ test('H15 review 2: a write whose folder cannot be prepared fails with the fixed
   for (const onWindows of [true, false]) {
     await assert.rejects(writeTokenFile(path, newToken(), 4317, { windows: onWindows, run: async () => assert.fail('no attempt') }), error => error.message === 'The token file could not be written privately.' && !error.message.includes(directory));
   }
+});
+
+test('H15 review 3: a child that exits with its own code when the timer fires is judged by that code, not retried as a timeout', { skip: process.platform === 'win32' && 'Windows ends a killed child at once, so it never exits with its own code.' }, async () => {
+  const script = "process.on('SIGTERM', () => process.exit(4)); setInterval(() => {}, 1000);";
+  await assert.rejects(runWithInput(process.execPath, ['-e', script], { env: process.env, input: '', timeoutMs: 300 }), error => error.timedOut === false);
 });

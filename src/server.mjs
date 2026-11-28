@@ -407,9 +407,12 @@ server.listen({ port, host: '127.0.0.1' }, async () => {
   const stop = async () => {
     if (stopping.signal.aborted) return;
     stopping.abort();
-    await writing?.catch(() => {});
-    removeTokenFile(tokenFile, ready.isOwnToken);
-    process.exit(0);
+    try {
+      await writing?.catch(() => {});
+      removeTokenFile(tokenFile, ready.isOwnToken);
+    } finally {
+      process.exit(0);
+    }
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   try {

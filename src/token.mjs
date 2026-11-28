@@ -161,8 +161,8 @@ export const writeAttempts = 2;
  * is stopped (out of time, or through `signal`). It settles only once the child has
  * exited and its stdio has closed, never earlier (a child whose kill failed is waited
  * for), so no caller acts while the child may still touch a file. `timedOut: true`
- * means it was still running after `timeoutMs` and nothing else went wrong first; only
- * that may be retried. stderr is ignored. Never throws.
+ * means it was still running after `timeoutMs`, nothing else went wrong first and the
+ * kill ended it; only that may be retried. stderr is ignored. Never throws.
  */
 export function runWithInput(command, args, { env, input, timeoutMs, signal }) {
   return new Promise((resolvePromise, reject) => {
@@ -208,13 +208,18 @@ export function runWithInput(command, args, { env, input, timeoutMs, signal }) {
     });
     child.on('close', code => {
       if (settled) return;
-      if (reason === 'timeout') return fail('The command ran out of time.', true);
+      // Only a child that the kill ended (no exit code) ran out of time; one that exited
+      // on its own while the timer fired is judged by what it did.
+      if (reason === 'timeout' && code === null) return fail('The command ran out of time.', true);
       if (reason !== undefined || signal?.aborted) return fail('The command was stopped.');
       if (code !== 0) return fail('The command failed.');
       settle();
       resolvePromise(Buffer.concat(stdout).toString('utf8'));
     });
-    timer = setTimeout(() => stop('timeout'), timeoutMs);
+    timer = setTimeout(() => {
+      // A child that has already exited is waiting only for its 'close'.
+      if (child.exitCode === null && child.signalCode === null) stop('timeout');
+    }, timeoutMs);
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     child.stdin.on('error', () => { /* the child closed its stdin; its exit says what happened */ });
@@ -368,7 +373,13 @@ export async function writeTokenFile(path, token, port, { windows: onWindows = w
     if (identity === undefined) throw new Error(failedWrite(path, line));
     return identity;
   }
-  const descriptor = openSync(path, 'wx', 0o600);
+  let descriptor;
+  try {
+    descriptor = openSync(path, 'wx', 0o600);
+  } catch {
+    // Something took the path after it was cleared; the message would name it.
+    throw new Error(notWritten);
+  }
   const record = Buffer.from(line + '\n', 'utf8');
   let identity;
   try {
