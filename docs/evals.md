@@ -5597,6 +5597,127 @@ Three Playwright tests failed on Windows runners and passed on a re-run, with no
 - **Node suite on #100, and H9 ruled out.** Three Node tests that start a server failed together after about 30 s (#100, run 46025391797). The server printed "Cannot write the access token file next to the database.", the message from its listen callback: on Windows the token file is written by a synchronous PowerShell call with a 30 s timeout (`src/token.mjs`), and under load PowerShell did not finish in time, so the server exited. H9's change from `listen(port, host)` to `listen({ port, host })` is not the cause: every test server uses `PORT=0`, the server was already listening when it exited, Node reads both forms the same way, and the console demo flake predates H9. The token write is security code, so it is card H15, not part of this card.
 - **Codex review, round 1** (of the version before the working-agent change): three medium and two low, fixed. (medium) The recorder kept the highest opacity, the stroke and the size separately, so they could come from different frames; one frame must now have all three. (medium) The working-agent count was still read from the test after the line; it is now recorded with the line, as above. (medium) Whether an entry starts a swarm run was guessed from a `#run` selector, which a `#swarm-run` click would slip past; the page's own requests decide it now. (low) Every feature test was reported at `feature-check.mjs`, a location that runs nothing; the spec files call `test()` themselves and the helper only builds the body. (low) A body that could not be read hid the handoff response's status; the status is reported either way. Accepted: the mid-run screenshot is taken after the wait, so it can show a later moment; it is a picture for people, not a check.
 - **Codex review, round 2:** no high; one medium and three low. (low, fixed) A hidden flash layer would leave the line's own opacity, stroke and box intact: the frame check also needs the line's inherited visibility. (low, fixed) The swarm check counted attempts, so a marked entry whose run the ledger refused with 409 could pass: it now needs an accepted run. (low, fixed) The handoff response wait could time out on its own while the click was still waiting for a missing result: the two are awaited together. (medium, accepted) If the browser's own main thread stalls for more than the line's 2.4 s, the line can be removed before any frame samples it, and the test fails. Such a stall also means the line was never painted, so failing is correct; the CI failures came from polling outside the page, which this card removes. With eight CPU-bound processes running, 20 runs of the one-frame recorder and 20 more after this round all passed.
+## T1a — Mapper hub (defined 2026-11-27, before any run)
+
+M2b-S and L5 train one mapper per ordered pair of models, so a library of N models needs N × (N − 1) mappers. A hub gives every model one encoder into a shared space and one decoder out of it. The design is in [mapper-hub.md](mapper-hub.md). This section fixes how the hub is judged before anything is trained or run on a GPU. The card itself runs only the CPU checks at the end; the three GPU steps belong to the cards named with them.
+
+### The two hubs under test
+
+- **Pivot hub.** Two direct mappers run one after the other through one model's cache: sender → pivot, then pivot → receiver. The pivot is Qwen2.5-1.5B, because L5's batch is a star around it. Nothing is trained.
+- **Split hub.** The direct mapper cut at its own seam: per model, an encoder (the blocks' `mem_norm` and `mem`) and a decoder (everything else). The hub state is 8 slots × 384 numbers per sender token. All parts of the founding models train jointly.
+
+### Items, decoding and score (all steps)
+
+- **Items.** The 300 SQuAD v1.1 validation questions of M2b-S (seed 0). The runner checks the IDs against the M2b-S run, as L4's runner does.
+- **Per route,** an item counts only if its M2b document fits 256 tokens for every tokenizer on the route (sender, pivot if there is one, receiver). 256 is the cap L5 trains with. All 300 fit for Phi-3.5 and the Qwen2.5 sizes, which is how M2b-S chose them. A route left with fewer than 200 items is reported and gets no verdict.
+- **Decoding.** Plain greedy, 24 new tokens, repetition penalty 1.0 (the L4 correction).
+- **Score.** Token F1 against the gold answers, best over the references, as M2b-S. Hit rate (the answer contains a gold answer) is reported beside it, because stage 2 teaches SQuAD's short answers.
+- **Intervals.** Paired bootstrap 95% intervals of the per-item F1 difference, 10,000 resamples.
+- **One seed.** No part is retrained to look for a better result.
+
+### Arms, per route
+
+| Arm | What the receiver gets |
+| --- | --- |
+| `hub` | The sender's cache of the passage through the hub route |
+| `direct` | The same through L5's direct mapper for this pair, re-evaluated in this run on the same items. Only where L5 trained the pair and it passed L5's rule |
+| `mismatched` | The hub route's output for the next item with a different passage (23 of the 300 share a passage with another item) |
+| `zeroed` | The hub route with the sender's cache set to zero |
+| `t2t` | The sender's 40-word summary as text, in the sender's own chat template |
+| `text` | The passage itself, as the M2b document |
+| `closed` | The question alone |
+
+For the pivot hub one more number is reported: the pivot → receiver mapper's own F1 on the same items, where the pivot reads the passage itself. The gap between that and `hub` is what the predicted pivot cache costs.
+
+### Pass rule per route (fixed before any run)
+
+1. **Carries the passage.** `hub − mismatched` and `hub − zeroed` both have the interval above zero. This is the rule of M2b-S, L4 and L5.
+2. **Beats the text summary.** `hub − t2t` has the interval above zero.
+3. **Keeps direct quality.** The lower end of the interval of `hub − direct` is above −0.05 F1. The margin is the one L5 uses to accept its shorter recipe.
+
+A route with no `direct` arm is judged on 1 and 2 only and is never called "keeps direct quality".
+
+### Step 1 — the chain (card T1b; eval only, about 1.5 GPU hours, after L5 ends)
+
+Routes, from L5's checkpoints as they are:
+
+| Route | Chain | `direct` arm |
+| --- | --- | --- |
+| Phi-3.5 → Qwen2.5-3B | pair 1, then pair 3 | pair 4 |
+| Granite-3.1-2B → Qwen2.5-3B | pair 5, then pair 3 | none |
+| Qwen2.5-3B → Phi-3.5 | pair 2, then pair 7 | none |
+| Granite-3.1-2B → Phi-3.5 | pair 5, then pair 7 | none |
+| Phi-3.5 → Granite-3.1-2B | pair 1, then pair 8 | none |
+| Qwen2.5-3B → Granite-3.1-2B | pair 2, then pair 8 | none |
+
+A route runs only if both of its L5 mappers exist and passed L5's rule. Pairs 7 and 8 are in L5's batch "if the budget allows".
+
+| Verdict for the pivot hub | When |
+| --- | --- |
+| **Keeps direct quality on the compared route** | Phi-3.5 → Qwen2.5-3B meets 1, 2 and 3 |
+| **Carries the passage but loses quality** | That route meets 1 and 2 and fails 3 |
+| **Fails** | That route fails 1 or 2 |
+| **No verdict** | Pair 1, 3 or 4 is missing or failed in L5. The routes that can run are still reported |
+
+The other routes are reported one by one as "carries and beats the summary" or not. One compared route is evidence about that route; it is not a claim about the library.
+
+### Step 2 — the split hub on three models (card T1c; about 8 GPU hours of training, 1.5 of eval)
+
+- **Models.** Phi-3.5-mini, Qwen2.5-1.5B, Qwen2.5-3B.
+- **Recipe.** L5's settings for the mapper and the optimiser (width 384, 6 heads, 8 blocks, learning rates 3e-4 and 1e-5, QA share 0.7, passages capped at 256 tokens, seed 0, alignment rule 2, bf16), and the batch sizes L5 ends up using for Phi-3.5 with Qwen2.5-3B.
+- **Steps.** Stage 1: 24,000. Stage 2: 30,000. Three L5 mappers' worth, so each of the six parts gets about as many updates as a direct mapper.
+- **Schedule.** Two models loaded at a time, 1,000 steps per block, rotating through the three unordered pairs. Within a block each step draws one route uniformly: the two cross routes, and in stage 1 also the two self routes.
+- **Compared routes.** Each of Phi-3.5 → Qwen2.5-1.5B, Qwen2.5-3B → Qwen2.5-1.5B, Qwen2.5-1.5B → Qwen2.5-3B, Phi-3.5 → Qwen2.5-3B and Qwen2.5-1.5B → Phi-3.5 whose L5 mapper exists and passed. Qwen2.5-3B → Phi-3.5 has no direct mapper and is judged on 1 and 2.
+
+| Verdict for the split hub | When |
+| --- | --- |
+| **Keeps direct quality** | Every compared route meets 1, 2 and 3, and at least three routes were compared |
+| **Works but loses quality** | Every compared route meets 1 and 2, and at least one fails 3. The loss per route is the result |
+| **Fails** | A compared route fails 1 or 2 |
+
+All checks are required and none is corrected for the number of routes, which makes "keeps direct quality" harder to reach, not easier.
+
+### Step 3 — a model added later (card T1c; about 5.5 GPU hours of training, 1.5 of eval)
+
+Granite-3.1-2B joins the frozen hub of step 2. Only its encoder and decoder train: 16,000 stage 1 steps and 20,000 stage 2 steps, in blocks against Qwen2.5-1.5B and Qwen2.5-3B.
+
+| Check | Pass when |
+| --- | --- |
+| Old routes untouched | Every step 2 route gives the same answer text on all items before and after |
+| Compared routes | Granite → Qwen2.5-1.5B and Qwen2.5-1.5B → Granite meet 1, 2 and 3 against L5's pairs 5 and 8, where those exist and passed |
+| Routes never trained together | Granite ↔ Phi-3.5, both directions, meet 1 and 2. Phi-3.5 was not loaded while Granite trained |
+
+**"The library can grow"** when all three hold. If the compared routes pass and the Phi-3.5 routes do not, the result is "a new model works only with the members it trained against", and the cost of a new model becomes one training block per member.
+
+### Also recorded
+
+Per route: mean end-to-end time of `hub`, `direct` and `t2t`; the time to load and hash the route's parts; peak GPU memory. Per training run: steps, seconds per step, wall time, model swaps. Aggregates only are committed.
+
+### Not covered
+
+More than one task, passages over 256 tokens, more than one seed, budget-matched compaction, and a receiver fine-tuned on SQuAD as the fair `text` reference (all as in M2b-S). Models that do not train on this machine (Mistral-7B, the two 4-bit models served by vLLM) are in no step.
+
+### CPU checks in this card (`runtime/tests/test_latent_hub.py`)
+
+Synthetic only: random weights, random caches, made-up digests. Expected, and what ran on 2026-11-27:
+
+| Check | Expected | Result |
+| --- | --- | --- |
+| A direct mapper split into encoder and decoder | The decoder on the encoder's output equals the mapper's output exactly (`torch.equal`) | Pass |
+| Part sizes | Encoder plus decoder parameters equal the mapper's, and `plan.py` gives 100,509,696 for the M2b-S mapper, the count its training log recorded | Pass |
+| Any encoder with any decoder of one hub | Shapes fit; a state of another shape is refused | Pass |
+| Causal order | Changing sender tokens from character 12 on changes no hub state before them and no receiver token that ends earlier, for the split and for the chain | Pass |
+| One training step on a route | Gradients reach that route's encoder and decoder and no other part | Pass |
+| The chain | Equals the second mapper run on the first one's output; gradients reach both; different pivot tokens or mappers without a common pivot are refused | Pass |
+| Build key | Changes with the model, revision, any weights digest, quantisation, cache type, tokenizer digest or shape; not with file order | Pass |
+| Routes | The sender's encoder and the receiver's decoder; no part at the pivot; the same build is handed straight over | Pass |
+| Refusals by name | Unknown model, another build of a covered model, a missing part, a failed or untested part, a failed route, an unmeasured route; a name that is not a model id is never echoed | Pass |
+| One failed encoder | Stops every route from its model and no other route | Pass |
+| Manifest | 24 malformed manifests are refused, among them path-like file names, a part over 1 GiB, a part for the pivot, and a bidi character in a licence | Pass |
+| Download | A matching file is kept and not fetched twice; wrong, short, long and empty bodies leave nothing behind; a damaged file is replaced; only https is read | Pass |
+
+Suites: the hub tests are 39, of which 10 need torch. On Windows without torch 29 pass and 10 skip. In WSL with torch on the CPU (`CUDA_VISIBLE_DEVICES=""`, GPU untouched) all 39 pass.
+
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
 Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.

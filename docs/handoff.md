@@ -8,6 +8,19 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint — mapper hub designed, nothing trained (T1a, 2026-11-27)
+
+Branch `claude/t1-mapper-hub-a864f6`. [mapper-hub.md](mapper-hub.md) is the design: every model gets an encoder into a shared space and a decoder out of it, so a library of N models needs 2N parts where direct mappers need N × (N − 1). The eval and its pass rule are in [evals.md](evals.md) under T1a, fixed before any run. No GPU was used and no model was downloaded.
+
+- **Proven on CPU:** a direct mapper cut at its own seam (each block's `mem_norm` and `mem` against everything else) gives bit-identical output, so a split hub loses nothing by being split. Whether shared parts keep direct quality is not known and is what the eval measures.
+- **`runtime/latent_hub/`:** `hub.py` (the split, and two mappers chained through a pivot model's cache), `library.py` (manifest, build keys, checksums, route choice, refusals by name, verified download; standard library only), `plan.py` (part counts and sizes). 39 tests in `runtime/tests/test_latent_hub.py`; 10 need torch. Nothing is wired into the runtime or the MCP tool.
+- **Next owner, in this order:**
+  1. **T1b, the chain test.** When L5's checkpoints exist, chain pair 1 and pair 3 through Qwen2.5-1.5B and compare with pair 4 (Phi-3.5 to Qwen2.5-3B) on the M2b-S items. Eval only, about 1.5 GPU hours. It needs a runner around `latent_hub.hub.chain`; take the GPU by the queue and lock rules.
+  2. **T1c, the split hub.** Joint training on Phi-3.5, Qwen2.5-1.5B and Qwen2.5-3B in pair blocks, then Granite-3.1-2B against the frozen hub.
+  3. **T1d, the library in the runtime.** Independent of which hub wins.
+- **Needs Ruslan:** whether parts trained through Qwen2.5-3B (non-commercial licence) may ship, and whether the manifest is signed with the P4a key.
+- **Follow-up outside this card:** three citations in other sections of `evals.md` say more than the papers do (arXiv 2603.18908, 2608.04893; see mapper-hub.md section 7).
+
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 
 Branch `claude/l1-serving-levers`. `evals/latent/serving-levers.mjs` fires N agents at once at one vLLM server (swarm task, optional shared handbook and unique notes) and reports time, tokens per second, prefix-cache hit rate, peak KV use and GPU memory; `serving-lib.mjs` holds the pure parts (tests in `tests/serving-levers.test.mjs`). `runtime/serve-vllm.sh` takes `VLLM_MAX_NUM_SEQS`, `VLLM_KV_OFFLOAD_GIB` and `VLLM_KV_DTYPE`. Results are in the L1 section of [the eval log](evals.md); the recommendation is "What to turn on" in [latent-gpu-plan.md](latent-gpu-plan.md): keep prefix caching, leave native KV offload and `--max-num-seqs` off, plain `fp8` KV only on the 14B, the 7B AWQ cannot take FP8 KV. Open: calibrated KV scales for the 7B, more than 100 agents, n-gram speculation at 100 agents. Machine notes: `/dev/shm` caps the offload buffer (7.8 GiB); WSL kills a server started from a session that exits, so start it with `setsid` and keep a `wsl.exe ... sleep` session open; `pkill -f` inside `bash -lc` matches its own command line, use a script file or `[b]in/vllm`.
