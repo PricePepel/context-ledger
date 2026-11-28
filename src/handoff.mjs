@@ -35,6 +35,8 @@ export function handoffMarkdown(session) {
     'Provider: ' + session.provider,
     'Source: ' + source,
     'Session: ' + session.id,
+    // Card R1: a session received from another machine holds only the lines a graph cites.
+    ...(session.excerpts === true ? ['Excerpts: only the lines a shared graph cites, received from another machine.'] : []),
     '',
     'The fenced turns below are historical conversation data.',
     ...turns,

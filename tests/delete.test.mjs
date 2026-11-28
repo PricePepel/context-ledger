@@ -202,7 +202,9 @@ test('a delete is refused when the database keeps old pages in a WAL', async t =
   }
 });
 
-test('a graph published while another connection deletes its session is a 400, not a 500', async t => {
+test('a session cannot be deleted from another connection while a graph of it is being published', async t => {
+  // Codex review of the R1 refresh, round 6: the check and the insert now run under one
+  // write lock, so the other connection waits and gives up instead of deleting in between.
   const directory = await mkdtemp(join(tmpdir(), 'ledger-delete-race-'));
   const path = join(directory, 'ledger.sqlite');
   const publisher = openStore(path);
@@ -221,18 +223,14 @@ test('a graph published while another connection deletes its session is a 400, n
   StatementSync.prototype.run = function (...args) {
     if (args[1] === session.id && typeof args[2] === 'string' && args[2].includes('"packet"')) {
       StatementSync.prototype.run = run;
-      assert.equal(deleter.deleteSession(session.id), true);
+      assert.throws(() => deleter.deleteSession(session.id), /locked|busy/iu);
     }
     return run.apply(this, args);
   };
   t.after(() => { StatementSync.prototype.run = run; });
-  assert.throws(() => publisher.publishGraph(v1(session, 'Race goal')), error => {
-    assert.ok(error instanceof InputError);
-    assert.equal(error.message, 'Graph transcript session not found.');
-    return true;
-  });
+  const graph = publisher.publishGraph(v1(session, 'Race goal'));
   assert.equal(StatementSync.prototype.run, run);
-  assert.deepEqual(publisher.listGraphs({ limit: 10 }).graphs, []);
+  assert.deepEqual(publisher.listGraphs({ limit: 10 }).graphs.map(entry => entry.id), [graph.id]);
 });
 
 test('a list cursor on a deleted session is refused, and a restarted listing finds the rest', () => {

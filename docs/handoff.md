@@ -8,6 +8,12 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
+
+PR #90 (`ruslan/r1-parcels`) has main merged, six rounds of Codex review fixed (in [evals](evals.md) under R1, "Refresh with main"), and green suites. It goes before #91 (R2), which is stacked on it. Changed behaviour: `share` scans the whole session together with the graph's own text, a line-cited parcel carries and stores `l:<line>` keys, and publishing a graph holds the write lock. Two mediums are accepted and written down there. It adds an export path, so Ruslan reviews and merges it himself.
+
+Next owner: R3 (sync), and several keys per turn if the accepted placeholder case matters in practice.
+
 ## Current checkpoint: H12 prose diet (2026-11-28)
 
 Branch `ruslan/h12-prose-diet`. Where `scripts/check.mjs` enforces a rule, the repository no longer says it a second time. Five tests that scanned a card's own files for raw control or format characters are gone (the check reads every tracked file), and `tests/check.test.mjs` shows it covers the SVG, CSS and test files they read. AGENTS.md section 6 names the check and its rules once and says to add a rule to it instead of restating one; `tests/agents-rules.test.mjs` keeps that text. History in `docs/evals.md` and the dated entries here are unchanged.
@@ -70,6 +76,14 @@ Next owner: H15. The Node suite on #100 failed because the server's Windows toke
 `node scripts/check.mjs` checks every tracked file for the AGENTS.md section 6 rules that Codex reviews kept finding: raw control, format, bidi and separator characters (files and file names); HTML sinks in code outside tests; and `listen` calls that do not name `'127.0.0.1'`. It runs first in the node CI job on all three systems and is in the AGENTS.md section 4 local run list. Each message says what to write instead. On its first run it found three real bugs on `main`, now fixed. Design choice from Codex round 2: the code rules read comments and strings as they are, so a sink spelt in a comment is reported (reword it); a whole-file comment skipper could be fooled into skipping code. Review rounds and results are in [evals](evals.md) under H9.
 
 Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
+
+## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
+
+- **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
+- **Schema version 8** adds `session_excerpts`. A row marks a session that holds only received lines; its summaries say `excerpts: true`, and the library and the hand-off label it. Importing the full transcript later replaces the excerpts and keeps their keys.
+- **Decisions** are ADR-19 in `docs/architecture.md` §17. User docs are `docs/parcels.md`. Tests are `tests/parcel.test.mjs` and `tests/e2e/parcel.spec.mjs`.
+- **Needs a human security review** before merge: it adds an export path and a schema step.
+- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a one-time code). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
 
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 

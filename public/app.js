@@ -57,7 +57,9 @@ function resultRow(session) {
   button.dataset.session = session.id;
   button.addEventListener('click', () => openTranscript(session.id, true));
   const count = `${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}`;
-  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count}`, 'result-meta'));
+  // Card R1: a session received from another machine holds only the lines a graph cites.
+  const kind = session.excerpts === true ? ' · excerpts' : '';
+  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count}${kind}`, 'result-meta'));
   return item;
 }
 
@@ -123,7 +125,8 @@ async function openTranscript(id, focusHeading = false) {
     const { session } = await request(`/api/sessions/${encodeURIComponent(id)}`, { signal });
     if (signal.aborted) return;
     readerHeading.textContent = session.title;
-    readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`;
+    readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`
+      + (session.excerpts === true ? ' · excerpts received from another machine' : '');
     renderRows(readerMessages, session.messages, messageRow);
     readerStatus.textContent = '';
     readerDelete.hidden = false;

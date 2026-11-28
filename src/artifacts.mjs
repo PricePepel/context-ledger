@@ -63,19 +63,28 @@ export function mountArtifacts(database, defaultProject) {
   const columns = `a.id, p.slug AS project, a.kind, a.repo, a.ref, a.created_at AS createdAt`;
   const byId = id => statement(`SELECT ${columns} FROM artifacts a JOIN projects p ON p.id = a.project_id WHERE a.id = ?`).get(id);
   const plain = row => (row ? { ...row } : undefined);
+  // The project and the artifact, inside the caller's transaction.
+  const insertChecked = checked => {
+    statement(`INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT (slug) DO NOTHING`).run(randomBytes(16).toString('hex'), checked.project, checked.project);
+    statement(`INSERT INTO artifacts (id, project_id, kind, repo, ref, created_at)
+      VALUES (?, (SELECT id FROM projects WHERE slug = ?), ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT (id) DO NOTHING`).run(artifactId(checked), checked.project, checked.kind, checked.repo, checked.ref);
+  };
 
   return {
+    /** Card R1: registers a parcel's artifact inside the transaction that receives the parcel. */
+    insertArtifact(input) {
+      insertChecked(checkArtifact(input, defaultProject));
+    },
+
     /** Registers an artifact (and its project, on first use); the stored row either way. */
     registerArtifact(input) {
       const checked = checkArtifact(input, defaultProject);
       const id = artifactId(checked);
       database.exec('BEGIN IMMEDIATE');
       try {
-        statement(`INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-          ON CONFLICT (slug) DO NOTHING`).run(randomBytes(16).toString('hex'), checked.project, checked.project);
-        statement(`INSERT INTO artifacts (id, project_id, kind, repo, ref, created_at)
-          VALUES (?, (SELECT id FROM projects WHERE slug = ?), ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-          ON CONFLICT (id) DO NOTHING`).run(id, checked.project, checked.kind, checked.repo, checked.ref);
+        insertChecked(checked);
         database.exec('COMMIT');
       } catch (error) {
         database.exec('ROLLBACK');
