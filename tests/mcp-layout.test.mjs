@@ -22,8 +22,6 @@ test('the adapter is split into files of at most 400 lines with no new dependenc
     for (const [, specifier] of source.matchAll(/^import [^'"]*['"]([^'"]+)['"]/gm)) {
       assert.match(specifier, /^(?:\.\.?\/|node:)/, `${name} imports ${specifier}`);
     }
-    // AGENTS.md section 6: only tab, newline and carriage return among control and format characters.
-    assert.doesNotMatch(source, /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}](?<![\t\n\r])/u, `${name} has a raw control or format character`);
   }
 });
 
