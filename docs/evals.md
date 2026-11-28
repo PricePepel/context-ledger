@@ -6209,9 +6209,36 @@ Synthetic board, handoff, eval and architecture texts written inside `tests/proj
 - **Links.** A section is linked to a card when the card's ID stands in it as a whole word (`P1` is not found in `P1a`), when it says `Cycle 4` or `cycle 4` and a card `C4` exists, or when it names the card's PR number. A link from the heading is marked `about`; a link from the body is marked `mentions`.
 - **Briefing for a card.** `node scripts/project-context.mjs P4d` prints the card, then the sections about it newest first (each with file and lines and its first words), then the sections that mention it, the repository files those sections name, and the other cards they name. The ID is matched without regard to case.
 - **Briefing for a question.** Words that are not a card ID rank cards and sections by how many of the words they contain, a heading or card title counting more than a body.
-- **Budget.** `--budget N` keeps the briefing to about N tokens (four characters to a token); the default is 1500. The last line says how many sections were left out and of which kind, and it is printed when nothing was left out too (the G9b finding: a briefing that is silent about what it dropped is read as complete).
+- **Budget.** `--budget N` (200 to 1,000,000; default 1500) keeps the briefing to N tokens at four characters to a token, counted in the UTF-16 units of the escaped text a terminal is sent, for any input. The last line says how many items were left out and of which kind, and it is printed when nothing was left out too (the G9b finding: a briefing that is silent about what it dropped is read as complete). A list cut by a fixed cap says so itself ("24 of 31", "the 12 best of 30 cards") and is not blamed on the budget. The card's title is cut first and its board line leads the next line, so the citation survives the smallest budget.
 - **Overview.** With no argument: the number of cards per state, every card that is not Done with its owner, and the newest dated checkpoints.
 - **No stale copy.** The command reads the four files on every run and writes nothing.
 - **Terminal safety.** Control, format and bidi characters in the docs reach the terminal escaped, in the text output and in `--json`.
 - **On this repository.** The command finds as many cards as the board has data rows and as many handoff sections as the file has `## ` headings outside code fences, and a briefing with the default budget is under 8 KB.
 - **Not in the package.** The script is under `scripts/`, uses Node built-ins and `src/text.mjs` only, and is not in the published file list.
+
+### Results (2026-11-27)
+
+`node --test tests/project-context.test.mjs`: 23 of 23 pass. On this repository's docs (82 cards; 1,061 KB in the four files on this branch, of which the eval log is 881 KB):
+
+| Run | Output | Against reading the four files |
+| --- | --- | --- |
+| No argument: what is open | 2.8 KB | about 380 times smaller |
+| `K1`, default budget | 2.0 KB | about 530 times smaller |
+| `P4d`, default budget | 2.3 KB | about 460 times smaller |
+| `--json`, the whole graph | 281 KB | cards, sections and links; no section text |
+
+Each run takes well under a second and reads the files again. The numbers are sizes only: whether a session does its work as well from the briefing as from the files was not measured.
+
+Local suites: `node scripts/check.mjs` no findings; `npm run -s test:graph` and `node --test tests/*.test.mjs` pass, except that `tests/paging.test.mjs` and `tests/sign.test.mjs` hit the 300 s file limit, in the full run and again alone, while a dozen other sessions used the machine (no test in them failed; K1 touches neither file nor the code they test, and CI runs both); the Python runtime checks pass (440 tests, 102 skipped). Playwright was not run locally: K1 changes no browser or server code, and CI runs it.
+
+**Codex review, round 1** (read-only): one high, four medium, four low. Fixed, each with a test under "Codex review, round 1":
+
+- High: a range such as `H9007199254740992–H9007199254740992` never ended, because adding one no longer changes a number of that size. Ranges now need safe integers at most 30 apart.
+- Medium: a briefing could be longer than its budget (code points cut, UTF-16 units charged; a floor of 40 characters per forced line; escaping after the count). Sizes are now those of the escaped text and forced lines are dropped and counted when there is no room.
+- Medium: fixed caps (40 sections, 12 cards, 24 files, 8 notes) dropped items while the last line said nothing was left out, and the omission line was not last. This repeats the G9b finding in this file. No `scripts/check.mjs` pattern can tell a cap from any other `slice`, so the fix is in the API: every list item goes through `Briefing.add`, `group` or `cap`, which count what they do not print, and the omission line is the last line.
+- Medium: a three-backtick line closed a four-backtick code block, so a heading inside the block became a section. A block now closes only on its own mark, at least as long, with nothing after it.
+- Medium: the cards named in the heading of a section about the card were not listed with it. They are now.
+- Low: a first cell that is only an ID; ranges that run downwards; an ID after a letter of another script; a PR number that names a card with no ID; `--root --json` and a budget of 400 digits. All fixed.
+- Declined, on purpose: rows without outer pipes are not read (every board row has them, and looser matching would read prose as rows); files and related cards are not taken from sections that only mention the card (a note that mentions six cards names the files of all six). Those sections are still cited under "Mentioned in".
+
+**Codex review, round 2:** no high; one medium and three low, fixed, each with a test under "Codex review, round 2": a 300-character title used the whole of a 200-token budget and pushed out the card's line number (the title is now cut to 120 and the citation leads its line; a question is cut to 160); the advice to raise the budget was given for the 12-card cap, which no budget lifts; `e` + U+0301 + `P1` linked card P1 (combining marks now count as part of a word); "2 section about its".

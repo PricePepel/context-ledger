@@ -160,7 +160,7 @@ test('a card briefing has the card, what was written about it newest first, file
   const text = briefing(graph(), ['p1A']);
   const lines = text.split('\n');
   assert.equal(lines[0], 'P1a Storage engine');
-  assert.match(lines[1], /state: In review \(PR #13\) \| owner: Claude Code \| branch or PR: PR #13 \| docs\/delivery-board\.md:7$/u);
+  assert.equal(lines[1], '  docs/delivery-board.md:7 | state: In review (PR #13) | owner: Claude Code | branch or PR: PR #13');
   const about = lines.filter(line => /^ {2}docs\/\S+:\d+-\d+ /u.test(line)).slice(0, 3);
   assert.deepEqual(about.map(line => line.trim().split('  ')[0]), ['docs/handoff.md:5-12', 'docs/evals.md:3-8', 'docs/architecture.md:7-9']);
   assert.match(text, /PR #13 keeps `src\/store\.mjs` on the built-in engine/u, 'the first words of the section');
@@ -187,7 +187,7 @@ test('the budget bounds the briefing and the last lines say what was left out', 
   for (const budget of [200, 400, 1500, 4000]) {
     const text = briefing(built, ['P1a'], { budget });
     assert.ok(text.length <= budget * 4, `${text.length} characters for a budget of ${budget} tokens`);
-    assert.match(text, /^P1a Storage engine\n {2}state: /u, 'the card itself is always there');
+    assert.match(text, /^P1a Storage engine\n {2}docs\/delivery-board\.md:7 \| state: /u, 'the card itself is always there');
   }
   const small = briefing(built, ['P1a'], { budget: 400 });
   assert.match(small.split('\n').at(-1), /^Left out for the budget of 400 tokens: .*\d+ sections? about it.*\. Raise --budget to see them\.$/u, 'the last line');
@@ -341,7 +341,7 @@ test('an ID inside a word of another script is not a card, and a PR number finds
   assert.deepEqual(built.edges.filter(edge => edge.to === cleanup.id).map(edge => edge.kind), ['about']);
   assert.equal(card(built, 'A1').title, '', 'a first cell that is only an ID');
   assert.deepEqual(linksTo(built, 'A1', 'mentions'), ['Follow-up for PR #7']);
-  assert.match(briefing(built, ['a1']), /^A1\n {2}state: Ready /u);
+  assert.match(briefing(built, ['a1']), /^A1\n {2}docs\/delivery-board\.md:3 \| state: Ready /u);
 });
 
 test('a code block closes only on its own mark, at least as long, with nothing after', () => {
@@ -382,7 +382,8 @@ test('what a cap cuts is counted or said in its own line, never dropped in silen
   const built = buildProjectGraph({ board: cards, handoff: sections });
   const question = briefing(built, ['needle'], { budget: 100000 });
   assert.equal(question.split('\n').filter(line => /^ {2}docs\/handoff\.md:/u.test(line)).length, 41, 'every matching section with a large budget');
-  assert.equal(question.split('\n').at(-1), 'Left out for the budget of 100000 tokens: 18 cards. Raise --budget to see them.');
+  assert.equal(question.split('\n').at(-1), 'Nothing left out (budget 100000 tokens). Shown: the 12 best of 30 cards; use more exact words to see others.',
+    'a cap that no budget lifts does not say to raise the budget');
   const about = buildProjectGraph({
     board: cards,
     handoff: `## B1 note naming ${Array.from({ length: 29 }, (_, index) => `B${index + 2}`).join(', ')}\n\n${Array.from({ length: 31 }, (_, index) => `src/file${index}.mjs`).join(' ')}\n`,
@@ -408,4 +409,40 @@ test('an option that needs a value does not take the next option, and the budget
   assert.throws(() => run(['--budget', '--json']), /--budget needs a value/u);
   assert.throws(() => run(['--budget', '9'.repeat(400)]), /--budget is a whole number of tokens from 200 to 1000000/u);
   assert.throws(() => run(['--budget', '1000001']), /from 200 to 1000000/u);
+});
+
+// Codex review, round 2.
+
+test('a long title or question does not push the citation or the answer out of a small budget', () => {
+  const built = buildProjectGraph({
+    board: `| A1 ${'X'.repeat(300)} | Owner | PR #9 | See src/a.mjs | Ready |\n`,
+    handoff: '## A1 note (2026-01-01)\n\nText.\n',
+  });
+  const text = briefing(built, ['A1'], { budget: 200 });
+  assert.ok(text.length <= 800);
+  assert.match(text, /^A1 X+\u2026\n {2}docs\/delivery-board\.md:1 \| state: Ready \| owner: Owner \| branch or PR: PR #9$/mu);
+  const asked = briefing(built, [`${'zebra'.repeat(80)}`], { budget: 200 });
+  assert.match(asked, /^No card or section contains these words\.$/mu);
+  const found = briefing(built, ['note', 'y'.repeat(400)], { budget: 200 });
+  assert.match(found, /docs\/handoff\.md:1-3/u);
+});
+
+test('a combining mark joins an ID to the word before it, in either Unicode form', () => {
+  const accent = String.fromCodePoint(0x301);
+  const built = buildProjectGraph({
+    board: '| P1 Storage | A | - | S | Done |\n',
+    handoff: `## e${accent}P1 and ${String.fromCodePoint(0xe9)}P1 and P1${accent}\n\nText.\n\n## Plain P1\n\nText.\n`,
+  });
+  assert.deepEqual(linksTo(built, 'P1', 'about'), ['Plain P1']);
+});
+
+test('the last line counts what was left out in good English', () => {
+  const notes = Array.from({ length: 40 }, (_, index) => `## P1 note ${index} (2026-01-01)\n\n${'Words. '.repeat(40)}\n`).join('\n');
+  const built = buildProjectGraph({ board: '| P1 Storage | A | - | S | Done |\n', handoff: notes });
+  const last = briefing(built, ['P1'], { budget: 200 }).split('\n').at(-1);
+  assert.match(last, /: \d\d sections about it\. Raise --budget to see them\.$/u);
+  const one = Array.from({ length: 4 }, (_, index) => `## P1 note ${index} (2026-01-01)\n\n${'Words. '.repeat(40)}\n`).join('\n');
+  const few = briefing(buildProjectGraph({ board: '| P1 Storage | A | - | S | Done |\n', handoff: one }), ['P1'], { budget: 200 });
+  assert.match(few.split('\n').at(-1), /(?:: |, )1 section about it[.,]|\d sections about it/u);
+  assert.doesNotMatch(few, /section about its/u);
 });

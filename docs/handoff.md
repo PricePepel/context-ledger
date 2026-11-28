@@ -8,6 +8,20 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: K1 project context graph (2026-11-27)
+
+Branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
+
+- `node scripts/project-context.mjs`: cards per state, every card that is not Done, the newest dated notes here.
+- `node scripts/project-context.mjs <card ID>`: the card, the sections whose heading names it (newest first, with their first words), the files those sections name, the other cards named with it, and the sections that only mention it.
+- `node scripts/project-context.mjs <words>`: cards and sections that contain the words. `--budget <tokens>` (default 1500), `--json` for the whole graph, `--root <folder>`.
+- It finds a card by its ID in a `## ` heading, by `Cycle N`, by a range such as H1–H5, by the card's PR number, or by the file name in the per-card layout (`docs/evals/p4d.md`), which it reads beside the single files in case H12 splits them. **Write the card ID and a YYYY-MM-DD date in the heading of every new section here and in the eval log**, or the map will list the section only under "Mentioned in".
+- It is a map of where to read. It has no model in it, so a decision written in prose under a heading that names no card is found only by a word search.
+
+What it showed on its first run: the board row of P4d still says In progress though PR #69 is merged, and the row of S1 says "Review", which is not one of the five states.
+
+Next: K2 on the board (serve this graph through the ledger's own `context_for`). Eval and both Codex rounds: `docs/evals.md`, "K1".
+
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 
 Branch `claude/l1-serving-levers`. `evals/latent/serving-levers.mjs` fires N agents at once at one vLLM server (swarm task, optional shared handbook and unique notes) and reports time, tokens per second, prefix-cache hit rate, peak KV use and GPU memory; `serving-lib.mjs` holds the pure parts (tests in `tests/serving-levers.test.mjs`). `runtime/serve-vllm.sh` takes `VLLM_MAX_NUM_SEQS`, `VLLM_KV_OFFLOAD_GIB` and `VLLM_KV_DTYPE`. Results are in the L1 section of [the eval log](evals.md); the recommendation is "What to turn on" in [latent-gpu-plan.md](latent-gpu-plan.md): keep prefix caching, leave native KV offload and `--max-num-seqs` off, plain `fp8` KV only on the 14B, the 7B AWQ cannot take FP8 KV. Open: calibrated KV scales for the 7B, more than 100 agents, n-gram speculation at 100 agents. Machine notes: `/dev/shm` caps the offload buffer (7.8 GiB); WSL kills a server started from a session that exits, so start it with `setsid` and keep a `wsl.exe ... sleep` session open; `pkill -f` inside `bash -lc` matches its own command line, use a script file or `[b]in/vllm`.

@@ -130,9 +130,10 @@ export function parseSections(text, path, levels) {
   return sections;
 }
 
-// A letter or digit of any script on either side means the ID is part of a longer word.
-const before = String.raw`(?<![\p{L}\p{N}])`;
-const after = String.raw`(?![\p{L}\p{N}])`;
+// A letter, digit or combining mark of any script on either side means the ID is part
+// of a longer word.
+const before = String.raw`(?<![\p{L}\p{N}\p{M}])`;
+const after = String.raw`(?![\p{L}\p{N}\p{M}])`;
 const between = String.raw`(?:\p{Pd}| to )`;
 const idToken = new RegExp(`${before}[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*${after}`, 'gu');
 const numberRange = new RegExp(String.raw`${before}([A-Z]{1,4})(\d+)${between}\1(\d+)${after}`, 'gu');
@@ -248,7 +249,13 @@ const place = node => (node.kind === 'card' || node.endLine <= node.line
 const sectionLine = section => `  ${place(section)}  ${section.date ? `${section.date}  ` : ''}${section.title}`;
 const cardName = card => `${card.cardId ?? '(no ID)'} ${card.title}`.trim();
 const cardLine = card => `  ${cardName(card)} | ${card.stateText} | ${card.owner} | ${place(card)}`;
-const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+const plurals = new Map([
+  ['section about it', 'sections about it'],
+  ['section that mentions it', 'sections that mention it'],
+  ['list of files', 'lists of files'],
+  ['list of other cards', 'lists of other cards'],
+]);
+const plural = (count, word) => `${count} ${count === 1 ? word : plurals.get(word) ?? `${word}s`}`;
 // "Files (24 of 31): a, b": a list that is cut says so in its own line.
 const listLine = (title, items, most) => `${title}${items.length > most ? ` (${most} of ${items.length})` : ''}: ${items.slice(0, most).join(', ')}`;
 
@@ -275,6 +282,11 @@ class Briefing {
     this.room = this.budget * charactersPerToken - closingRoom;
     this.lines = [];
     this.dropped = new Map();
+    this.capped = [];
+  }
+  // A cut that no budget undoes: said in the last line, without the advice to raise it.
+  cap(shown, total, word) {
+    if (total > shown) this.capped.push(`Shown: the ${shown} best of ${plural(total, word)}; use more exact words to see others.`);
   }
   drop(kind, count = 1) {
     if (count > 0) this.dropped.set(kind, (this.dropped.get(kind) ?? 0) + count);
@@ -284,9 +296,9 @@ class Briefing {
     this.room -= text.length + 1;
   }
   // Printed whenever there is room for a readable part of it, cut to what is left.
-  must(kind, text) {
+  must(kind, text, most = Number.POSITIVE_INFINITY) {
     if (this.room < 24) this.drop(kind);
-    else this.push(fitted(escaped(text), this.room - 1));
+    else this.push(fitted(escaped(text), Math.min(most, this.room - 1)));
   }
   // The full form, or the short form, or a count of what was dropped.
   add(kind, full, short = null) {
@@ -314,7 +326,7 @@ class Briefing {
     const tail = dropped.length
       ? `Left out for the budget of ${this.budget} tokens: ${dropped.join(', ')}. Raise --budget to see them.`
       : `Nothing left out (budget ${this.budget} tokens).`;
-    return [...this.lines, closingNote, fitted(tail, closingRoom - closingNote.length - 2)].join('\n');
+    return [...this.lines, closingNote, fitted([tail, ...this.capped].join(' '), closingRoom - closingNote.length - 2)].join('\n');
   }
 }
 
@@ -344,8 +356,10 @@ function cardBriefing(graph, cardIds, budget) {
   const cards = graph.nodes.filter(node => node.kind === 'card' && cardIds.includes(node.cardId));
   const nodeIds = new Set(cards.map(card => card.id));
   for (const card of cards) {
-    out.must('card', cardName(card));
-    out.must('card line', `  state: ${card.stateText} | owner: ${card.owner} | branch or PR: ${card.branch} | ${place(card)}`);
+    // The title is cut first and the citation leads its line, so a long title or a
+    // long cell cannot push the card's own line number out of a small budget.
+    out.must('card', cardName(card), 120);
+    out.must('card line', `  ${place(card)} | state: ${card.stateText} | owner: ${card.owner} | branch or PR: ${card.branch}`);
     out.add('card scope', `  scope: ${cut(oneLine(card.scope), 500)}`, `  scope: ${cut(oneLine(card.scope), 160)}`);
   }
   const linked = kind => {
@@ -383,7 +397,7 @@ function cardBriefing(graph, cardIds, budget) {
 function questionBriefing(graph, words, budget) {
   const out = new Briefing(budget);
   const terms = [...new Set(words.map(word => word.toLowerCase()).filter(word => [...word].length >= 2))];
-  out.must('question', `Question: ${terms.join(' ')}`);
+  out.must('question', `Question: ${terms.join(' ')}`, 160);
   const hits = text => {
     const lower = text.toLowerCase();
     return terms.filter(term => lower.includes(term)).length;
@@ -399,7 +413,7 @@ function questionBriefing(graph, words, budget) {
   if (!scored.length) out.must('answer', 'No card or section contains these words.');
   // The best cards only, so the sections keep most of the budget; the rest are counted.
   out.group('Cards:', 'card', cards.slice(0, 12).map(({ node }) => [cardLine(node), null]));
-  out.drop('card', cards.length - 12);
+  out.cap(12, cards.length, 'card');
   out.group('Sections:', 'section', sections.map(({ node }) => [
     `${sectionLine(node)}\n      ${cut(node.excerpt, 200)}`,
     sectionLine(node),
