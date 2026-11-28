@@ -6253,3 +6253,39 @@ Also recorded per pair: best dev F1 and its step, seconds per step in each stage
 - `data.end_marker` returns `<|im_end|>` for a tokenizer that has it as one token and the tokenizer's own end-of-sequence token otherwise, and refuses a tokenizer with neither; unit tests without torch.
 - The new pairs are registered in `latent_compare/models.py` `MAPPERS` with their checkpoint ids, and the latent table shows a measured F1 for them where it said "no mapper yet".
 - The runtime suite, `node scripts/check.mjs`, `npm run -s test:graph`, `node --test tests/*.test.mjs` and `npx playwright test` pass.
+
+### L5 results: run 1 and the recipe decision (2026-11-28)
+
+RTX 4090 Laptop GPU, 16 GiB, WSL, torch 2.14, bf16. Per-item files stay on the GPU machine under `~/l5-mappers/`; aggregates only here.
+
+**Before any number: two defects that made the first two starts of run 1 useless.** Both were silent, and both are fixed in `latent_transfer/train.py`.
+
+- After sigma calibration torch kept 17.5 GiB reserved for a training loop that needs 11.5 GiB (13.2 GiB were in use at the calibration peak). Under WSL an allocation past the card's 16 GiB does not fail: it goes to host memory. The first start ran at 4.97 s per step. Fix: calibration holds one batch at a time and the cached blocks are released after it.
+- With that fixed, the reserve still crept to 16.0 GiB during training and the step time was 1.07 s. Fix: the process is capped at 92% of the card, so torch reuses its cached blocks, and a run that really does not fit stops with an out-of-memory error instead of slowing down. With the cap: 13.2 GiB reserved, 0.43 to 0.46 s per step on a quiet machine.
+- A third effect is not a defect: the step is bound by one CPU core (tokenizer alignment), so a test suite running on the Windows side at the same time roughly doubles the step time (0.83 to 1.16 s per step while the Node tests ran). The seconds per step below include such stretches.
+
+**Run 1: Phi-3.5-mini to Qwen2.5-1.5B with the half recipe** (stage 1 8,000 steps at batch 4, stage 2 10,000 at batch 2, alignment rule 2, seed 0). Checkpoint `d9b9d75377881ea6`, kept at stage 2 step 8,500 with dev F1 0.8198 on 100 held-out questions (M2b-S: 0.8275 at step 10,500 of 20,000). Stage 1 ended at a normalized error of 0.168, the value M2b-S had at the same step.
+
+| Arm, 200 main items | F1 [95%] |
+| --- | --- |
+| `swat` (the mapped cache) | 0.833 [0.784, 0.876] |
+| `mismatched` (another passage's cache) | 0.077 [0.047, 0.110] |
+| `zeroed` (the sender's cache set to zero) | 0.001 [0.000, 0.003] |
+| `t2t_m2b` (the receiver reads the sender's summary) | 0.445 [0.385, 0.503] |
+| `text_m2b` (the receiver reads the passage) | 0.755 [0.708, 0.801] |
+
+| Difference | F1 [95%] | Hit rate [95%] |
+| --- | --- | --- |
+| `swat − mismatched` | +0.756 [+0.701, +0.808] | |
+| `swat − zeroed` | +0.832 [+0.783, +0.875] | |
+| `swat − t2t_m2b` | +0.388 [+0.318, +0.457] | |
+| `swat − text_m2b` | +0.077 [+0.026, +0.129] | −0.065 [−0.125, −0.005] |
+| `swat − text` (harness, Qwen's own template) | +0.126 [+0.070, +0.181] | −0.075 [−0.135, −0.010] |
+
+Verdict by the rule fixed before the run: **Pass**, both intervals far above zero. Against the text summary: better. Against reading the passage: higher F1 and a lower hit rate, both with intervals clear of zero. The mapper answers in SQuAD's short style, which F1 rewards; it finds the answer less often than the receiver reading the passage, by 6.5 points [0.5, 12.5]. M2b-S's claim "finds the answer as often as reading it, within 5 points" does not hold for this shorter-trained mapper on these items. Mean end to end: `swat` 311 ms, `t2t_m2b` 3,553 ms.
+
+**Cost of this mapper.** Training 2.61 hours of wall time (stage 1 0.615 s per step and stage 2 0.433 s per step, both including the dev evaluations and the slow stretches named above), one measurement about 9.5 minutes. Peak GPU memory in training 13.24 GiB reserved, 12.87 GiB in use, of which the two models' weights are 10.4 GiB. So training needs about 2.9 GiB on top of the weights, which confirms from a measurement that no Mistral-7B pair fits (14 GiB of weights before a partner).
+
+**The recipe check.** Retrained minus the registered M2b-S checkpoint (`ade79c34041fd529`), `swat` F1 on the same 200 items: **−0.026 [−0.064, +0.011]**. The interval includes zero, so no difference is detected, but its lower end is below the −0.05 margin fixed before the run. By that rule the recipe is **not adequate**: every pair after run 1 is trained with the full M2b-S step counts (15,000 and 20,000). The comparison bounds two changes together, half the steps and alignment rule 2; it does not say which one costs the 0.026.
+
+What that does to the batch: the estimate from run 1 is 5.5 hours per pair at the full step counts against 3.1 at half, so the 24-hour budget reaches about four more pairs, not seven. The order does not change. Pairs not reached are listed with the final table.
