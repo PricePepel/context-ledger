@@ -6264,4 +6264,11 @@ A second Codex round found that the first fixes were incomplete: three medium an
 8. *(medium)* "Next month: $18 upfront" met the monthly requirement, and "$18.00 per month" did not. The check now needs "monthly" or "per/a/each/every month" (not just "month"), rejects "upfront", and accepts $18.00.
 9. *(low)* `reportJson` wrote a character above U+FFFF as one five-digit escape, which JSON reads as two characters. It now writes each UTF-16 unit, a surrogate pair.
 
+A third Codex round found four medium and one low, again in the scorer's edge cases, all fixed with regression tests:
+
+10. *(medium)* A `</div>` inside a quoted attribute value ended a hidden element early, and a word such as "hidden" inside another attribute's value (`title="keep hidden until launch"`) hid a visible element. Tags are now scanned with quoted values kept whole, and the hiding attributes are read from a parsed attribute list.
+11. *(medium)* Any block starting with the item's name was a label, so "Oat latte fans might like our seasonal cookie for $5.00" was stale while "Small oat latte $5.00" was not. A label is now the item's own short row: at most two words before the name, and at most 15 characters between the name and the price.
+12. *(medium)* "once" in a later sentence ("$18 per month. Cancel once you move.") failed the monthly check. The one-time words are now looked for only in the sentence that holds the price.
+13. *(low)* "per monthlong" read as monthly; the month words now end at a word boundary.
+
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

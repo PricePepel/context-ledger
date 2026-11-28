@@ -193,3 +193,28 @@ test('review 4, round 2: "next month ... upfront" is not monthly, and $18.00 per
   assert.equal(swap('<p>Next month: $18 upfront for a bag.</p>'), true);
   assert.equal(swap('<p>$18.00 per month.</p>'), false);
 });
+
+test('review 4, round 3: quoted attribute values neither end nor start a hidden element', () => {
+  const tagline = '<p>Roasted slow, poured fresh.</p>';
+  const leak = scoreSite(good.replace(tagline, `<div hidden><span title="</div>">Roasted slow, poured fresh.</span></div><p>Visible</p>`));
+  assert.ok(leak.missed.includes('Tagline "Roasted slow, poured fresh."'));
+  const titled = scoreSite(good.replace(tagline, '<p title="keep hidden until launch" data-x="aria-hidden=true">Roasted slow, poured fresh.</p>'));
+  assert.deepEqual(titled.missed, []);
+});
+
+test('review 4, round 3: only the item\'s own short row can show a stale price', () => {
+  const add = row => scoreSite(good.replace('<p>Our signature', `${row}<p>Our signature`));
+  const fans = add('<p>Oat latte fans might like our seasonal cookie for $5.00.</p>');
+  assert.deepEqual(fans.stale, []);
+  assert.deepEqual(fans.missed, []);
+  const small = add('<p>Small oat latte $5.00</p>');
+  assert.ok(small.stale.includes('Old oat latte price $5.00'));
+  assert.ok(small.missed.includes('Oat latte $5.25'));
+});
+
+test('review 4, round 3: Bean Club wording is read sentence by sentence and word by word', () => {
+  const name = 'Bean Club, $18 a month';
+  const swap = text => scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', text)).missed.includes(name);
+  assert.equal(swap('<p>$18 per month. Cancel once you move.</p>'), false);
+  assert.equal(swap('<p>Join annually for $18 per monthlong workshop.</p>'), true);
+});

@@ -117,36 +117,50 @@ const blockEnd = /<\/(li|tr|p|div|h[1-6]|section|article|header|footer|ul|ol|tab
 
 const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 
+// A tag, open or close, whose attribute values may be quoted: a ">" or "</div>" inside quotes
+// stays part of the tag.
+const anyTag = /<(\/?)([a-z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/giu;
+const attribute = /([^\s=/"'>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/gu;
+
+/** A tag's attributes as a map of lower-case names to values ('' when it has none). */
+function attributesOf(source) {
+  const found = new Map();
+  for (const [, name, double, single, bare] of source.matchAll(attribute)) {
+    const key = name.toLowerCase();
+    if (!found.has(key)) found.set(key, double ?? single ?? bare ?? '');
+  }
+  return found;
+}
+
 /** Whether a tag's attributes hide it: `hidden`, `aria-hidden="true"`, or an inline style with
- * `display: none` or `visibility: hidden`, in any quoting. */
-function hides(attributes) {
-  if (/(^|\s)hidden(\s|=|\/|$)/iu.test(attributes) || /aria-hidden\s*=\s*["']?true\b/iu.test(attributes)) return true;
-  const style = /(^|\s)style\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/iu.exec(attributes);
-  const value = style ? style[3] ?? style[4] ?? style[5] : '';
-  return /display\s*:\s*none|visibility\s*:\s*hidden/iu.test(value);
+ * `display: none` or `visibility: hidden`. Words inside other attributes' values do not count. */
+function hides(source) {
+  const found = attributesOf(source);
+  return found.has('hidden') || /^\s*true\s*$/iu.test(found.get('aria-hidden') ?? '')
+    || /display\s*:\s*none|visibility\s*:\s*hidden/iu.test(found.get('style') ?? '');
 }
 
 /** The page with every hidden element removed, up to its matching close tag (nesting counted). */
 export function withoutHidden(html) {
-  const tags = /<([a-z][\w-]*)\b([^>]*)>/giu;
+  const tags = new RegExp(anyTag.source, anyTag.flags);
   let out = '';
   let kept = 0;
   for (let open = tags.exec(html); open; open = tags.exec(html)) {
-    const [, name, attributes] = open;
-    if (!hides(attributes)) continue;
+    const [whole, closing, name, source] = open;
+    if (closing || !hides(source)) continue;
     out += `${html.slice(kept, open.index)} `;
     kept = tags.lastIndex;
-    if (!voidTags.has(name.toLowerCase()) && !/\/\s*$/u.test(attributes)) {
-      const same = new RegExp(`<(/?)${name}\\b[^>]*>`, 'giu');
-      same.lastIndex = kept;
+    const tagName = name.toLowerCase();
+    if (!voidTags.has(tagName) && !/\/>$/u.test(whole)) {
       let depth = 1;
       let tag = null;
-      while (depth > 0 && (tag = same.exec(html))) {
+      while (depth > 0 && (tag = tags.exec(html))) {
+        if (tag[2].toLowerCase() !== tagName) continue;
         if (tag[1]) depth -= 1;
-        else if (!/\/\s*>$/u.test(tag[0])) depth += 1;
+        else if (!/\/>$/u.test(tag[0])) depth += 1;
       }
       // An element that is never closed hides the rest of the page.
-      kept = tag ? same.lastIndex : html.length;
+      kept = tag ? tags.lastIndex : html.length;
     }
     tags.lastIndex = kept;
   }
@@ -190,9 +204,13 @@ function pricesOf(text, item) {
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
     const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
-    // A label opens a row or block ("| oat latte $5.00"); a name mid-sentence ("inspired by our
-    // oat latte $5.00") may be followed by another item's price.
-    if (amount) found.push({ price: Number(amount[1]), label: /(^|\|)\s*$/u.test(text.slice(0, match.index)) });
+    // A label is the item's own short row: it opens a block, with at most two words before the
+    // name ("| small oat latte $5.00") and a short gap to the price ("| oat latte (16 oz) $5.00").
+    // A name in a sentence ("inspired by our oat latte $5.00", "oat latte fans might like our
+    // cookie for $5.00") may be followed by some other thing's price.
+    const ownRow = /(^|\|)\s*([\p{L}-]+\s+){0,2}$/u.test(text.slice(Math.max(0, match.index - 40), match.index))
+      && between.replace(/[\s|]/gu, '').length <= 15;
+    if (amount) found.push({ price: Number(amount[1]), label: ownRow });
   }
   return found;
 }
@@ -222,10 +240,13 @@ export const requirements = [
   ['Cold brew $4.75', priced('cold brew', 4.75)],
   ['Features the Harbor Fog blend', p => p.text.includes('harbor fog')],
   // Monthly, not just $18: "/mo", "a month", "per month" or "monthly" right after the price, or
-  // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" after it.
-  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) =>
-    !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(after) &&
-    (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month|monthly)/u.test(after) || /monthly|\b(per|a|each|every) month\b/u.test(before)))],
+  // "monthly" or "per month" before it; never with "one-time", "once" or "upfront" in the same
+  // sentence after it.
+  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?:\.00)?(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) => {
+    const sentence = after.replace(/[.!?](\s|$)[\s\S]*/u, '');
+    return !/one[\s\p{Pd}]?time|\bonce\b|up[\s\p{Pd}]?front/u.test(sentence) &&
+      (/^[\s|]*(\/\s*mo(nth)?\b|(a|per|each|every) month\b|monthly\b)/u.test(after) || /\bmonthly\b|\b(per|a|each|every) month\b/u.test(before));
+  })],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
   ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],
 ];
