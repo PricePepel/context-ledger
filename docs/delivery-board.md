@@ -88,3 +88,4 @@ Cards marked "after P1" depend on the new storage layer; build them on `product/
 Not merged in the 2026-11-19 merge run (the card keeps its state):
 
 - I3 (#34): its agent messages carry an author and a recipient that P1c's message rows (role, text, line, key) have no place for, and its re-import that refreshes a stored session would also have to rewrite those rows. That needs a design decision, not a merge fix.
+| L3 Tokenizer alignment audit | Claude Code (for Ruslan) | `claude/l3-tokenizer-align-cc0178` | Audit `runtime/latent_transfer/align.py` on hard text (white space, CRLF, emoji, combining marks, CJK, Arabic, code, special tokens, empty text) for at least four tokenizer pairs; fix defects with regression tests; make unaligned positions explicit; add an optional norm calibration step, off by default. No retraining | In review (2026-11-26) |

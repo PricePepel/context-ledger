@@ -150,7 +150,7 @@ def main():
 
     config = dict(dim=args.dim, heads=args.heads, ffn=args.ffn, blocks=args.blocks)
     pair = TransferPair(sender=args.sender, receiver=args.receiver, mapper_config=config, checkpoint=args.resume)
-    log(event="start", args=vars(args), mapperParams=parameter_count(pair.mapper))
+    log(event="start", args=vars(args), mapperParams=parameter_count(pair.mapper), alignmentRule=pair.alignment)
 
     squad_train, squad_dev = split_squad(args.seed)
     dev_rows = [r for r in random.Random(1).sample(squad_dev, 300) if fits(pair, doc_text(r["context"]), args.max_tokens)][:100]
