@@ -1265,7 +1265,7 @@ test('P4d review 9: handoff --sign refuses a session past the copy budget and wr
   assert.ok(!signed.stdout.includes('Qx'.repeat(8)) && !signed.stderr.includes('Qx'.repeat(8)), 'no value is printed');
 });
 
-test('P4e: new bundles name scanner /2, and a /1 bundle signed by a P4d build still verifies', async t => {
+test('P4e: new bundles name scanner /2, a /1 manifest signed by its key still verifies, and relabelling breaks the signature', async t => {
   const context = await signedBundle(t);
   const manifest = JSON.parse(readFileSync(join(context.bundle, 'manifest.json'), 'utf8'));
   assert.equal(manifest.redaction.scanner, 'context-ledger-secrets/2');
@@ -1278,4 +1278,9 @@ test('P4e: new bundles name scanner /2, and a /1 bundle signed by a P4d build st
   const cli = await run(['verify', old, '--fingerprint', context.fingerprint]);
   assert.equal(cli.code, 0, cli.stderr);
   assert.ok(cli.stdout.includes('Redaction: 0 replacements, by context-ledger-secrets/1'), cli.stdout);
+  // A /2 bundle relabelled /1 under its original signature does not verify (Codex round 5).
+  const relabelled = copyOf(context, target => {
+    writeFileSync(join(target, 'manifest.json'), Buffer.from(canonicalJson({ ...manifest, redaction: { ...manifest.redaction, scanner: 'context-ledger-secrets/1' } }), 'utf8'));
+  });
+  assert.deepEqual(await problemsOf(relabelled, { fingerprint: context.fingerprint }), ['The signature does not match the manifest.']);
 });

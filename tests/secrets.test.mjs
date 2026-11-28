@@ -1070,7 +1070,8 @@ test('P4d review 12: the same value given twice counts at the ends of both', () 
     { value: 'ABCDEFgh', ends: [8], kind: 'first' },
     { value: 'ABCDEFgh', ends: [6, 8], kind: 'second' },
   ]);
-  assert.deepEqual(search('x ABCDEF y').map(({ start, end }) => [start, end]), [[2, 8]]);
+  // The merged end, with the first value's kind (Codex round 5).
+  assert.deepEqual(search('x ABCDEF y'), [{ kind: 'first', start: 2, end: 8, prefix: 0 }]);
 });
 
 test('P4d review 12: a copy keeps the kind main gave it when a whole value also covers it', () => {
