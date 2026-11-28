@@ -8,6 +8,16 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+## Current checkpoint: L2 cross-model comparison harness (2026-11-27)
+
+`runtime/latent_compare/` runs one question set (200 SQuAD items and five edge-case groups) across eight open-weight models with the same arms: the passage as text, a sender's summary read by every receiver, the model's own KV cache handed over as bytes, and, for Phi-3.5-mini to Qwen2.5-1.5B, the M2b-S mapped cache with its mismatched and zeroed controls. One command reproduces the tables: in `runtime/`, `~/venvs/latent/bin/python -m latent_compare.run all --out ~/l2-compare/run1` (about 5.5 GPU hours; `report --out <dir>` rebuilds the tables without a GPU). Results, what was not run and the review record are in [evals](evals.md) under L2.
+
+What it found: three of four checks pass. The mapper result holds on this set (`swat` F1 0.859, far above both controls and the summary). The own-cache hand-off matches reading the text to within 0.009 F1 for all six torch models, but the "same answer on 95% of items" check fails for three of them (86.5% to 93.0%), and the cause is not isolated. Every one of the 64 summary pairs loses 0.11 to 0.45 F1 against reading the passage. 55 of 64 latent cells read "no mapper yet".
+
+The model set differs from the brief: Qwen2.5-7B and Llama-3.1-8B are 4-bit AWQ checkpoints served through vLLM (no cache hand-over, times not comparable); Granite is the 2B model; Qwen2.5-0.5B was added; Llama-3.2-3B is gated. No model in the set lacks a system role, so that path is covered by unit tests only.
+
+Next owner: (1) find why the own-cache answer text differs: add an arm that reuses the cache in memory without saving, and run one model in float32; (2) when a new mapper is trained, add its pair to `MAPPERS` in `latent_compare/models.py` and rerun `latent --pair`; (3) card L3 (PR #96) merged first and this branch has it merged in: `tests.test_latent_compare` passes unchanged, and the M2b-S checkpoint records no alignment rule, so `TransferPair` keeps rule 1 for it and `run.mapper_cut` still mirrors that cut. The mapper pair was measured before L3 and was not run again on the GPU after the merge; a mapper trained with rule 2 needs `mapper_cut` taught that rule; (4) the vLLM start with a per-run served name and the stricter stop were changed after the measured run (Codex round 4) and are unit-tested but were not run again on the GPU.
+
 ## Current checkpoint — L3 tokenizer alignment audit (2026-11-26)
 
 Card L3, branch `claude/l3-tokenizer-align-cc0178`. The alignment between two models' tokens (`runtime/latent_transfer/align.py`) was already by character offsets, not token index. The audit ran five tokenizers (Phi-3.5, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), all 20 ordered pairs, on 35 hard synthetic texts and 200 SQuAD passages; tables in [evals](evals.md) under L3. No GPU, no training.
@@ -33,6 +43,7 @@ Not done, for the next owner: the effect of rule 2 and of norm calibration on tr
 Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
 
 Next owner: H15. The Node suite on #100 failed because the server's Windows token-file write (PowerShell, 30 s timeout, `src/token.mjs`) did not finish under load, so the server exited. That code guards the token file, so Ruslan approves its merge.
+
 
 ## Current checkpoint: H10 label lengths in code points (2026-11-26)
 
