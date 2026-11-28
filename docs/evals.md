@@ -6661,3 +6661,70 @@ AirLLM runs models larger than the GPU by loading one decoder layer at a time fr
 | S1–S3 and Q1 pass, Q2 fails | Do not build it into the runtime yet. The gain exists but only a trained big-to-small mapper could carry it; open a mapper card with the estimated cost, and keep the streamer as measurement code. |
 
 Not covered: generation by a streamed model beyond one decode step (it is the known slow case), models over 15 GB of host RAM (they could only stream from disk; extrapolated, not run), tasks other than SQuAD, and a trained big-to-small mapper.
+
+### T4 results (measured 2026-11-28, RTX 4090 Laptop GPU 16 GB, WSL, 15 GB RAM)
+
+One run of `runtime/layer_stream/measure.py`, one process per phase. `python -m layer_stream.measure report --out ~/t4/run1` reproduces every figure below. Per-item files stay in `~/t4/run1/` on the GPU machine; only aggregates are committed. The `accelerate` comparison was not run (see the end of this section).
+
+**Verdict: do not build layer streaming into the runtime yet.** This is the fourth row of the rule table fixed above: S1, S2, S3 and Q1 pass, and Q2 fails. Streaming is exact and the reading is affordable. A bigger reader does read better than Qwen2.5-1.5B, but its text summary hands over less than the small model gets by reading the passage itself. Only a trained big-to-small mapper could carry the gain. The one reader this venv can stream, Mistral-7B, reads worse than the small model. The streamer stays as measurement code.
+
+| Check | Result | Measured |
+| --- | --- | --- |
+| S1 Streaming is exact | **Pass** | 10 of 10 items: the same argmax at every prompt position and the same greedy answer, with half the layers streamed from host memory against all resident |
+| S2 Read-once is affordable | **Pass** | 0.75 s per 1,000 tokens at 2,048 tokens with half the layers streamed from host memory (limit 5 s); 1.71 s from disk |
+| S3 The reading can be handed over | **Pass** | 10 of 10. The cache of the passage prefix was moved to host memory, serialized and loaded back. The answer continued from it equals the answer from the same cache not moved, and both equal the uninterrupted answer (in the resident run too). Mean prefix 152.5 tokens, 20.0 MB serialized |
+| Q1 A bigger reader reads better | **Pass** | Over Qwen2.5-1.5B (0.706): Qwen2.5-7B +0.157 F1 [+0.112, +0.203], Llama-3.1-8B +0.125 [+0.073, +0.175], Qwen2.5-14B +0.096 [+0.044, +0.149]. Mistral-7B −0.195 [−0.247, −0.143] |
+| Q2 A training-free hand-off keeps the gain | **Fail** | Every bigger reader's summary, read by Qwen2.5-1.5B, scores below Qwen2.5-1.5B reading the passage: Mistral-7B −0.221 [−0.285, −0.157], Llama-3.1-8B −0.280 [−0.341, −0.218], Qwen2.5-7B −0.322 [−0.384, −0.260] |
+
+#### Prefill of Mistral-7B v0.3 (bf16, 32 layers, 13.5 GiB), warm, median of 3
+
+| Configuration | Layers streamed | Streamed per pass | 512 tokens | 1,024 | 2,048 | s per 1k tokens at 2,048 | Peak GPU | One decode step at 2,048 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Resident | 0 | 0 | 0.19 s | 0.36 s | 0.72 s | 0.35 | 13.99 GiB | 0.067 s |
+| Host memory (pinned), 50% | 16 | 6.5 GiB | 0.82 s | 0.92 s | 1.54 s | 0.75 | 7.89 GiB | 0.72 s |
+| Host memory (pinned), 75% | 24 | 9.75 GiB | 1.01 s | 1.13 s | 1.41 s | 0.69 | 4.64 GiB | 0.93 s |
+| Disk (page cache dropped each pass), 50% | 16 | 6.5 GiB | 4.04 s | 4.01 s | 3.50 s | 1.71 | 7.89 GiB | 3.14 s |
+
+- **Bandwidth.** Pinned host to GPU moved one layer's tensors at 11.0 to 12.0 GB/s. Time added per GiB streamed at 2,048 tokens: 0.071 s in the 75% run, 0.126 s in the 50% run, and 0.43 s from disk. Reading the safetensors took 0.74 to 0.91 s of each disk pass; the rest is the unpinned copy.
+- **The 50% host run is the slower of the two host runs, although it streams less.** It ran first and its load took 752 s, against 21 s for the 75% run, because RAM was full of page cache while it pinned 6.5 GiB. Moving the KV cache to the host took 19.3 s at 2,048 tokens in that run, against 0.34 to 0.61 s in the others. Read its numbers as the cost under memory pressure; both host runs pass S2.
+- **Short passages pay the full weight stream.** At 512 tokens a streamed pass costs 4 to 5× a resident one; at 2,048 tokens, 2×. The stream is a fixed cost per pass, so streamed reading pays off on long documents and costs most in generation.
+- **Generation is the slow case, as expected.** One decode step takes 0.72 to 0.93 s streamed from host memory and 3.1 to 3.9 s from disk, against 0.067 s resident: 11 to 14× and 47 to 59× slower. A 40-word summary (about 60 tokens) from a disk-streamed 7B would take about 3 minutes.
+
+#### The KV cache
+
+The cache takes 131 MB per 1,000 tokens (32 layers × 8 KV heads × 128 dimensions, bf16), 268.6 MB serialized for 2,048 tokens. Without memory pressure, moving it to the host and serializing it takes 0.34 to 0.61 s at 2,048 tokens, and loading it back 0.17 to 0.23 s. The reader continues from it exactly (S3), so read once, ask many works for the reader itself: one streamed prefill, then many questions answered from the kept cache. Each answer then costs one streamed pass per token, which is the slow case above.
+
+#### Larger readers, extrapolated (not run)
+
+The extrapolation for 2,048 tokens uses three measured rates: compute of about 0.053 s per GiB of weights (from the resident run), plus 0.071 s per GiB streamed from host memory or 0.43 s per GiB from disk. It assumes 12 GiB of weights stay on the GPU. Host memory holds about 10 GiB of pinned layers next to WSL's other use; layers beyond that come from disk.
+
+| Reader, bf16 | Weights | Streamed | Prefill of 2,048 tokens | s per 1k tokens | One decode step | Fits on disk here |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7B (measured) | 13.5 GiB | 0 to 9.75 GiB | 0.7 to 1.5 s | 0.35 to 0.75 | 0.07 to 0.9 s | yes |
+| 14B | about 27.5 GiB | 15.5 GiB, disk | about 8 s | about 4 | about 7 s | no (16 GB free on C:) |
+| 32B | about 61 GiB | 49 GiB, disk | about 24 s | about 12 | about 21 s | no |
+| 70B | about 131 GiB | 119 GiB, disk | about 58 s | about 28 | about 51 s | no |
+
+A 14B model would still pass S2; a 32B model would not. At 4-bit a 14B (9.3 GiB) fits resident through vLLM, so streaming is only needed for readers beyond about 25B at 4-bit. In this venv torch cannot load the 4-bit checkpoints at all (L2), and the disk has no room for a bf16 model over 7B.
+
+**A bigger reader is not automatically better on this set.** Qwen2.5-14B-AWQ scores 0.803 F1, below Qwen2.5-7B-AWQ at 0.863. Both ran through vLLM on the same prompts and items, one run each.
+
+#### What a trained big-to-small mapper would cost
+
+This is estimated, not trained. The base is M2b-S's schedule:
+
+- stage 1: 15,000 steps of 4 passages, 0.567 s per step;
+- stage 2: 20,000 steps of 2 passages, 0.539 s per step;
+- 256 tokens per passage, with the 3.8B sender resident: 5.4 GPU hours in all.
+
+Each step then adds one streamed sender prefill, as measured with half of Mistral-7B streamed from host memory: 0.92 s for 1,024 tokens and 0.82 s for 512. That gives about 6.2 hours for stage 1 and 7.6 hours for stage 2: **about 13.8 GPU hours** on this laptop.
+
+It is an upper estimate. The 3.8B sender's own prefill inside M2b-S's step time is not subtracted, and batching more passages per streamed pass would spread the cost of the weight stream. Streaming is what makes this training fit at all. With the 7B sender resident (13.5 GiB), there is no room for the receiver and the mapper's backward pass (M2b-S). With half of it streamed, about 8 GiB stay free.
+
+No pair worth training can be loaded yet. The best reader here, Qwen2.5-7B, is a 4-bit AWQ checkpoint that torch cannot load in this venv. Loading it needs either `gptqmodel` (a new dependency, so an ADR) or a 15 GB bf16 download, which the disk cannot take now. Mistral-7B does load, but in this prompt format it reads 0.195 F1 worse than the receiver, so its cache has no reading advantage to hand over on this task.
+
+#### Not run, and why
+
+- **Transformers offload with `accelerate`** (`device_map="auto"`, `max_memory`): `accelerate` is not in the venv. The coordinating session agreed to install it for this comparison only, provided nothing in the repository imports it. By then the GPU was in L5's long mapper run. Only the card's own streamer was measured; this comparison is still open.
+- **Exactness from disk:** S1 and S3 ran with layers streamed from host memory. The disk path loads the same checkpoint tensors through the same hooks, but it was only timed, not compared.
+- **Overlap of copy and compute:** the streamer copies a layer, then runs it. Prefetching the next layer on a second CUDA stream could hide up to the smaller of the two costs. At 2,048 tokens with half the layers streamed, that is at most about 0.7 s of the 1.5 s pass.
