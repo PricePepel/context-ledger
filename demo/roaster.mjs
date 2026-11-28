@@ -267,7 +267,8 @@ function pricesOf(text, item) {
     // still belongs to the item.
     // A heading between the name and the price starts another card ("§ oat latte | § chocolate
     // chip cookie | $5.25"): pageParts marks each heading's start with "§".
-    if (between.includes('§')) continue;
+    // A heading that holds only the price ("§ oat latte | § $5.25") is still the item's.
+    if (between.replace(/§\s*$/u, '').includes('§')) continue;
     const priceBlock = between.includes('|') ? between.slice(between.lastIndexOf('|') + 1) : '';
     const named = priceBlock.replace(/\b(small|medium|large|regular|hot|iced|cup|mug|oz|ml|\d+)\b/gu, ' ').trim();
     if (named && /^[\p{L}'&-]+(\s+[\p{L}'&-]+)?$/u.test(named)) continue;
@@ -327,7 +328,9 @@ function monthlyClub(text) {
     // then $18 per month").
     const sentenceBefore = pieces.length > 1
       ? pieces.at(-1).replace(/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front|once)\b/u, '') : pieces[0];
-    const [own, next = ''] = after.split('|');
+    // A heading's "§" at the start of the next block does not hide what it says.
+    const [own, rawNext = ''] = after.split('|');
+    const next = rawNext.replace(/^\s*§/u, '');
     const sentenceAfter = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
     // When another amount follows in the sentence, only the words right after this one are its.
     const ownWords = amount.test(sentenceAfter) ? sentenceAfter.slice(0, 14) : sentenceAfter;

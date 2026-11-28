@@ -6397,6 +6397,13 @@ An eleventh round found five medium, fixed with one regression test:
 38. *(medium)* "Open 3pm to 9pm" met "Closes at 15:00". The start of a range, or a time after "open(s) at/from", is an opening time.
 39. *(medium)* "Closed Monday, open Tuesday" met "Closed on Tuesdays". A match with "open" in it, or a day then a comma then "closed", does not count; "Closed Mondays and Tuesdays" still does.
 
+A twelfth round found five medium. Two were side effects of item 35's heading marker, and are fixed with a regression test:
+
+40. *(medium)* A heading that holds only the price (`<h3>Oat Latte</h3><h4>$5.25</h4>`) was read as a new card; it is now the item's.
+41. *(medium)* A one-time fee in a heading after the price (`<p>$18</p><h3>One-time signup fee</h3>`) was missed; the next block is now read past the heading marker.
+
+**Stop rule (agreed with the coordinating session, 2026-11-27).** From round 3 on, every round built new synthetic cases: 7, 5, 4, 2, 2, 1, 1, 4, 9, 5 and 5 medium findings in turn. None changed the score of any of the 25 saved sites, which rescore unchanged after every fix, and a text heuristic will keep yielding new cases. So from round 12 a finding blocks the merge only if it changes a saved-site score, breaks an existing test, or is in the read-coverage logic of `demo/website-build.mjs`. The other three round 12 findings meet none of these and are on Backlog card D4b with the list: a bracketed fee, a dash that starts a note, and a Tuesday closure across a comma.
+
 The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
 
 Rescoring all 25 saved sites (the 23 in the round tables and the 2 single-run checks) with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.

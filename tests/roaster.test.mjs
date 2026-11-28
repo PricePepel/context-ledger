@@ -346,3 +346,9 @@ test('review 4, round 11: headings start cards, qualifiers stay with their amoun
   assert.ok(swap('<p>Open 7:00–15:00.</p><p>Open Tuesday, closed Monday.</p>').includes('Closed on Tuesdays'));
   assert.deepEqual(swap('<p>Open 7:00–15:00.</p><p>Closed Mondays and Tuesdays.</p>'), []);
 });
+
+test('review 4, round 12: a heading that holds only the price, and a heading after the price, are read', () => {
+  assert.deepEqual(scoreSite(good.replace('<li>Oat latte <b>$5.25</b></li>', '<li><article><h3>Oat Latte</h3><h4>$5.25</h4></article></li>')).missed, []);
+  const fee = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>Monthly deliveries</p><p>$18</p><h3>One-time signup fee</h3>'));
+  assert.ok(fee.missed.includes('Bean Club, $18 a month'));
+});
