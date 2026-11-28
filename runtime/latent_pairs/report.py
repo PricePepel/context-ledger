@@ -22,7 +22,7 @@ from latent_compare import run as harness
 from latent_compare.models import MAPPERS, MODELS
 
 from .plan import BATCH, FULL_STEPS, ITEMS_ID, MAIN_ITEMS, RECIPE, ordered_pairs, pair_name, trainable_pairs, untrainable
-from .run import load_json, load_status, read_log, result_path, sha256_file
+from .run import diverged, load_json, load_status, read_log, result_path, sha256_file
 
 CARD = "L5"
 PASS_ARMS = ("mismatched", "zeroed")
@@ -187,6 +187,8 @@ def measured_pair(root, compare, sender, receiver, items_id, not_checkpoint=None
     status = load_status(folder)
     if status.get("state") != "measured":
         return None, None   # not a result yet; its state says why
+    if diverged(folder):
+        return None, "its training log has a `diverged` event: by the eval's rule the pair has failed"
     result, target, checkpoint = status.get("result") or {}, result_path(compare, sender, receiver), os.path.join(folder, "best.pt")
     mismatch = "the result file is not the one recorded for this pair's checkpoint"
     if result.get("path") != os.path.abspath(target) or result.get("itemsId") != items_id:
@@ -205,6 +207,9 @@ def measured_pair(root, compare, sender, receiver, items_id, not_checkpoint=None
         return None, f"the result is from item set {data.get('itemsId')}"
     if not_checkpoint is not None and data.get("checkpoint") == not_checkpoint:
         return None, f"the result is from the registered checkpoint {not_checkpoint}, which is the baseline, not a retrained mapper"
+    # The digests that were just checked travel with the parsed result, so nothing that
+    # quotes them has to read the status or the files a second time.
+    data["verified"] = {"sha256": result["sha256"], "checkpointSha256": result["checkpointSha256"]}
     return data, None
 
 
@@ -237,8 +242,12 @@ def recipe_check(root, compare, repro, first, registered_id, items_id=ITEMS_ID, 
     new, reason = measured_pair(root, repro, *first, items_id, not_checkpoint=registered_id)
     if not new:
         raise ValueError(f"the retrained {first[0]}>{first[1]} is not measured" + (f": {reason}" if reason else ""))
-    baseline = result_path(compare, *first)
-    old = load_json(baseline)
+    try:
+        with open(result_path(compare, *first), "rb") as handle:
+            raw = handle.read()   # hashed and parsed from this one read
+        old = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        old = None
     if not old or old.get("itemsId") != items_id:
         raise ValueError("the registered checkpoint has no result from L2's item set in the compare folder")
     if old.get("checkpoint") != registered_id:
@@ -249,10 +258,10 @@ def recipe_check(root, compare, repro, first, registered_id, items_id=ITEMS_ID, 
     if not difference or difference["n"] != main_items:
         raise ValueError(f"only {difference['n'] if difference else 0} of {main_items} items ran with both checkpoints")
     values = [record["new"]["f1"] for record in joined]
-    recorded = load_status(os.path.join(root, pair_name(*first)))["result"]
+    recorded = new["verified"]
     return {"pair": f"{first[0]}>{first[1]}", "registeredCheckpoint": registered_id, "retrainedCheckpoint": new["checkpoint"],
             # What the decision was made from: the runner keeps a saved decision only while these still hold.
-            "itemsId": items_id, "registeredResultSha256": sha256_file(baseline),
+            "itemsId": items_id, "registeredResultSha256": hashlib.sha256(raw).hexdigest(),
             "retrainedResultSha256": recorded["sha256"], "retrainedCheckpointSha256": recorded["checkpointSha256"],
             "retrainedF1": round(sum(values) / len(values), 4), "retrainedMinusRegistered": difference,
             "margin": RECIPE_MARGIN, "adequate": difference["low"] > RECIPE_MARGIN}

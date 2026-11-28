@@ -242,8 +242,8 @@ class Folders(unittest.TestCase):
             self.write(os.path.join(base, "items.json"), ITEMS)
             # L2's text arms, which the first pair is compared with in the folder it is measured into.
             os.makedirs(os.path.join(base, "summaries"))
-            self.write(os.path.join(base, "summaries", f"{FIRST[0]}.json"), {})
-            self.write(os.path.join(base, "receive", f"{FIRST[1]}.json"), {})
+            self.write(os.path.join(base, "summaries", f"{FIRST[0]}.json"), {"itemsId": ITEMS_ID, "summaries": {}})
+            self.write(os.path.join(base, "receive", f"{FIRST[1]}.json"), {"itemsId": ITEMS_ID, "results": {}})
         self.write(run.result_path(self.compare, *FIRST), latent(checkpoint=REGISTERED))
         self.said = []
 
@@ -253,6 +253,7 @@ class Folders(unittest.TestCase):
 
     def go(self, runner, pairs=None, decide=None, **options):
         run.run_batch(self.root, self.compare, self.repro, pairs, runner=runner, say=self.said.append, batch=BATCH,
+                      registered_id=REGISTERED,
                       items_id=ITEMS_ID, decide=decide or (lambda *_: decided()), **options)
 
     def folder(self, pair):
@@ -329,6 +330,7 @@ class RunTest(Folders):
             handle.write("checkpoint")
         with open(os.path.join(self.folder(SAME), "log.jsonl"), "w", encoding="utf-8") as handle:
             handle.write(json.dumps({"event": "stage2", "step": 100}) + "\n")
+        run.save_status(self.folder(SAME), {"state": "training", "stage1Settings": run.stage1_settings(plan.recipe())})
         runner = Runner()
         self.go(runner, pairs=[SAME])
         first = runner.calls[0]
@@ -383,7 +385,7 @@ class RunTest(Folders):
         self.write(run.result_path(other, *FIRST), latent(checkpoint=REGISTERED))
         again = Runner()
         run.run_batch(self.root, other, self.repro, [SAME], runner=again, say=self.said.append, batch=BATCH,
-                      items_id=ITEMS_ID, decide=lambda *_: decided())
+                      items_id=ITEMS_ID, registered_id=REGISTERED, decide=lambda *_: decided())
         self.assertEqual(len(again.calls), 1)
         self.assertEqual(again.calls[0][again.calls[0].index("--out") + 1], other)
 
@@ -418,16 +420,16 @@ class RunTest(Folders):
 
     def test_r1_4_the_saved_decision_stands_while_its_evidence_does(self):
         self.go(Runner(), pairs=[FIRST, SAME], decide=lambda *_: decided(adequate=False))
-        # Decided again from the same files: whatever the new call says, the saved decision is the one used.
+        # Decided again from the same files with the same outcome: the saved decision is used.
         runner = Runner()
-        self.go(runner, pairs=[SMALL], decide=lambda *_: decided(adequate=True))
+        self.go(runner, pairs=[SMALL], decide=lambda *_: decided(adequate=False))
         self.assertEqual(runner.calls[0][runner.calls[0].index("--stage1-steps") + 1], "15000")
 
     # Codex review, round 2 -------------------------------------------------
     def test_r2_1_one_folder_for_both_results_is_refused_before_anything_runs(self):
         runner = Runner()
         run.run_batch(self.root, self.compare, os.path.join(self.compare, ".", ""), None, runner=runner,
-                      say=self.said.append, batch=BATCH, items_id=ITEMS_ID, decide=lambda *_: decided())
+                      say=self.said.append, batch=BATCH, items_id=ITEMS_ID, registered_id=REGISTERED, decide=lambda *_: decided())
         self.assertEqual(runner.calls, [])
         self.assertIn("same folder", self.said[-1])
         self.assertEqual(run.load_json(run.result_path(self.compare, *FIRST))["checkpoint"], REGISTERED)
@@ -468,6 +470,116 @@ class RunTest(Folders):
         self.assertNotIn("--resume", first)
         self.assertTrue(os.path.exists(os.path.join(folder, "attempt1", "stage1.pt")))
         self.assertTrue(self.status()["retriedAfterOutOfMemory"])
+
+    # Codex review, round 3 -------------------------------------------------
+    def test_r3_1_a_saved_decision_that_disagrees_with_the_files_stops_the_batch(self):
+        self.go(Runner(), pairs=[FIRST, SAME])   # decided: adequate, with these digests
+        runner = Runner()
+        # The same digests, and the comparison made from them now says the opposite.
+        self.go(runner, pairs=[SMALL], decide=lambda *_: decided(adequate=False))
+        self.assertEqual(runner.calls, [])
+        self.assertIn("decided from other results", self.said[-1])
+        self.assertFalse(run.same_evidence(decided(), decided(adequate=False)))
+
+    def test_r3_2_two_folder_names_that_lead_to_one_latent_folder_are_refused(self):
+        linked = os.path.join(self.root, "linked")
+        os.makedirs(linked)
+        try:
+            os.symlink(os.path.join(self.compare, "latent"), os.path.join(linked, "latent"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this account cannot create a directory link")
+        self.write(os.path.join(linked, "items.json"), ITEMS)
+        runner = Runner()
+        run.run_batch(self.root, self.compare, linked, None, runner=runner, say=self.said.append, batch=BATCH,
+                      items_id=ITEMS_ID, registered_id=REGISTERED, decide=lambda *_: decided())
+        self.assertEqual(runner.calls, [])
+        self.assertIn("same folder", self.said[-1])
+
+    def test_r3_3_an_earlier_launch_s_out_of_memory_line_is_not_this_launch_s(self):
+        folder = self.folder(SAME)
+        os.makedirs(folder)
+        old = "torch.OutOfMemoryError: CUDA out of memory.\n"
+        with open(os.path.join(folder, "train.out"), "w", encoding="utf-8", newline="") as handle:
+            handle.write(old + "resumed, step 100\n")   # a later launch began after the old error and was cut off
+        with open(os.path.join(folder, "log.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": "start"}) + "\n")
+        for small in (False, True):
+            status = {"state": "training", "smallBatches": small, "launch": {"offset": len(old)}}
+            self.assertEqual(run.launch_output(folder, status), "resumed, step 100\n")
+            self.assertIsNone(run.replay(folder, status), small)             # not failed
+            self.assertNotIn("retry", status)                                 # and no retry started
+            self.assertFalse(os.path.exists(os.path.join(folder, "attempt1")))
+        self.assertIn("out of memory", run.launch_output(folder, {}).lower())   # with no launch on record: the whole tail
+
+    def test_r3_3_each_training_launch_notes_where_its_output_begins(self):
+        offsets = []
+
+        def runner(command, log_path):
+            if "latent_transfer.train" in command:
+                offsets.append(run.load_status(self.folder(SAME))["launch"]["offset"])
+            return Runner(train=[1] if len(offsets) == 1 else [0])(command, log_path)
+        self.go(runner, pairs=[SAME])     # fails with another error, writing to train.out
+        run.save_status(self.folder(SAME), {"state": "training"})
+        self.go(runner, pairs=[SAME])
+        self.assertEqual(offsets[0], 0)
+        self.assertGreater(offsets[1], 0)
+
+    def test_r3_4_a_measured_pair_whose_log_says_diverged_is_failed(self):
+        self.go(Runner(), pairs=[SAME])
+        self.assertEqual(self.status()["state"], "measured")
+        with open(os.path.join(self.folder(SAME), "log.jsonl"), "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": "diverged", "stage": 2, "step": 900}) + "\n")
+        entry = self.build()["pairs"]["qwen3>qwen1.5"]
+        self.assertNotIn("verdict", entry)
+        self.assertIn("diverged", entry["notVerified"])
+        runner = Runner()
+        self.go(runner, pairs=[SAME])
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.status()["state"], "failed")
+
+    def test_r3_5_stale_inputs_are_refused_before_training(self):
+        cases = [
+            (os.path.join(self.repro, "summaries", f"{FIRST[0]}.json"), {"itemsId": "another-set"}, "another-set"),
+            (os.path.join(self.repro, "receive", f"{FIRST[1]}.json"), {"itemsId": "another-set"}, "another-set"),
+            (run.result_path(self.compare, *FIRST), latent(checkpoint="not-registered"), "not-registered"),
+            (run.result_path(self.compare, *FIRST), latent(checkpoint=REGISTERED, items_id="another-set"), "another-set"),
+            (run.result_path(self.compare, *FIRST), latent(checkpoint=REGISTERED, skip=("swat",)), "0 of 40 main items"),
+        ]
+        for target, content, said in cases:
+            with open(target, encoding="utf-8") as handle:
+                kept = handle.read()
+            self.write(target, content)
+            runner = Runner()
+            self.go(runner)
+            self.assertEqual(runner.calls, [], said)
+            self.assertIn(said, self.said[-1])
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(kept)
+
+    def test_r3_6_a_stage_1_checkpoint_from_other_settings_is_not_resumed(self):
+        folder = self.folder(SAME)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "stage1.pt"), "w", encoding="utf-8") as handle:
+            handle.write("stage 1 of the half recipe")
+        with open(os.path.join(folder, "log.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": "stage2", "step": 100}) + "\n")
+        run.save_status(folder, {"state": "training", "stage1Settings": run.stage1_settings(plan.recipe())})
+        runner = Runner()
+        self.go(runner, pairs=[FIRST, SAME], decide=lambda *_: decided(adequate=False))   # full steps from here
+        launch = next(call for call in runner.calls if "latent_transfer.train" in call and MODELS["qwen3"]["id"] in call)
+        self.assertNotIn("--resume", launch)
+        self.assertEqual(launch[launch.index("--stage1-steps") + 1], "15000")
+        self.assertTrue(os.path.exists(os.path.join(folder, "stage1.other-settings.pt")))
+
+    def test_r3_6_a_stage_1_checkpoint_with_no_settings_on_record_is_not_resumed(self):
+        folder = self.folder(SAME)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "stage1.pt"), "w", encoding="utf-8") as handle:
+            handle.write("from a runner that did not write its settings down")
+        runner = Runner()
+        self.go(runner, pairs=[SAME])
+        self.assertNotIn("--resume", runner.calls[0])
+        self.assertEqual(run.stage1_settings(plan.recipe()), run.stage1_settings(plan.recipe(small_batches=True)) | {"batch1": 4})
 
     def test_r2_7_the_budget_holds_for_the_first_pair_too(self):
         runner = Runner()

@@ -114,11 +114,29 @@ def run_logged(command, log_path):
     return code, time.time() - started
 
 
+def launch_output(folder, status, size=4000):
+    """The end of what the last training launch wrote: train.out from where that launch began.
+    The file is appended to by every launch, so an out-of-memory line of an earlier one must
+    not be read as this one's (Codex review, round 3)."""
+    begin = (status.get("launch") or {}).get("offset", 0)
+    try:
+        with open(os.path.join(folder, "train.out"), "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            end = handle.tell()
+            handle.seek(max(min(begin, end), end - size))
+            return handle.read().decode("utf-8", "replace")
+    except FileNotFoundError:
+        return ""
+
+
 def timed(folder, status, kind, command, log_name, runner, clock=time.time):
     """Run one process and charge its time to the pair. The start is written down first, so a
     run that is cut off can still be charged for (reconcile). What the run left behind is
     read from its own files afterwards (replay), never only from this process's memory."""
     status["running"] = {"kind": kind, "startedAt": clock(), "log": log_name}
+    if kind == "train":
+        target = os.path.join(folder, log_name)
+        status["launch"] = {"offset": os.path.getsize(target) if os.path.exists(target) else 0}
     save_status(folder, status)
     code, seconds = runner(command, os.path.join(folder, log_name))
     status[f"{kind}Seconds"] = status.get(f"{kind}Seconds", 0) + seconds
@@ -143,7 +161,7 @@ def replay(folder, status):
         return "training diverged (a loss or gradient that is not a number)"
     if finished(folder):
         return None
-    if out_of_memory(tail(os.path.join(folder, "train.out"))):
+    if out_of_memory(launch_output(folder, status)):
         if status.get("smallBatches"):
             return "out of GPU memory at the small batches too"
         # Written down before anything is moved, so an interruption here cannot bring the
@@ -152,6 +170,7 @@ def replay(folder, status):
         save_status(folder, status)
         set_aside(folder)
         status["retry"] = "ready"
+        status.pop("launch", None)
         save_status(folder, status)
     return None
 
@@ -197,6 +216,14 @@ def set_aside(folder):
                 shutil.move(source, target)
 
 
+STAGE2_ONLY = ("stage2_steps", "batch2", "lr2", "qa_share")
+
+
+def stage1_settings(settings):
+    """The settings a stage 1 checkpoint depends on."""
+    return {key: value for key, value in settings.items() if key not in STAGE2_ONLY}
+
+
 def train(folder, sender, receiver, status, full_steps, runner=run_logged):
     """Train one pair, with the one small-batch retry after running out of memory.
     Returns None when it finished, else the reason it did not."""
@@ -209,12 +236,18 @@ def train(folder, sender, receiver, status, full_steps, runner=run_logged):
         small = bool(status.get("smallBatches"))
         settings = recipe(full_steps=full_steps, small_batches=small)
         stage1 = os.path.join(folder, "stage1.pt")
+        made_by = stage1_settings(settings)
+        if os.path.exists(stage1) and status.get("stage1Settings") != made_by:
+            # From other settings (the recipe changed), or from a runner that did not write
+            # down which: stage 1 is trained again, so the result is what its label says.
+            os.replace(stage1, os.path.join(folder, "stage1.other-settings.pt"))
         resume = stage1 if os.path.exists(stage1) else None
+        status["stage1Settings"] = made_by
         command = [sys.executable, "-m", "latent_transfer.train", *train_args(sender, receiver, folder, settings, resume)]
         status.update({"state": "training", "settings": settings, "smallBatches": small,
                        "stage2Restarts": status.get("stage2Restarts", 0) + (1 if resume else 0)})
         code = timed(folder, status, "train", command, "train.out", runner)
-        output = tail(os.path.join(folder, "train.out"))
+        output = launch_output(folder, status)
         if code == DIVERGED or diverged(folder):
             return "training diverged (a loss or gradient that is not a number)"
         if code == 0 and finished(folder):
@@ -274,7 +307,8 @@ def run_pair(root, compare, sender, receiver, full_steps, runner, say, items_id=
     if status.get("state") == "failed":
         say(f"{sender}->{receiver}: already failed, {status.get('reason')}")
         return
-    if status.get("state") == "measured" and bound(folder, status, compare, sender, receiver, items_id):
+    if status.get("state") == "measured" and bound(folder, status, compare, sender, receiver, items_id) \
+            and not diverged(folder):
         say(f"{sender}->{receiver}: already measured")
         return
     status.update({"sender": sender, "receiver": receiver, "fullSteps": full_steps})
@@ -301,16 +335,22 @@ EVIDENCE = ("itemsId", "registeredCheckpoint", "retrainedCheckpoint", "registere
 
 
 def same_evidence(saved, now):
-    """Whether a saved recipe decision was made from the results that are there now."""
-    return all(saved.get(key) is not None and saved.get(key) == now.get(key) for key in EVIDENCE)
+    """Whether a saved recipe decision was made from the results that are there now, and says
+    what they say now."""
+    return (all(saved.get(key) is not None and saved.get(key) == now.get(key) for key in EVIDENCE)
+            and saved.get("fullSteps") is not None and saved.get("fullSteps") == now.get("fullSteps"))
 
 
-def preflight(compare, repro, first, items_id):
-    """What must hold before any GPU work: two different run folders, both with L2's item
-    sets, and the first pair's harness inputs in the folder it is measured into.
-    Raises ValueError with the reason."""
+def preflight(compare, repro, first, items_id, registered_id=None):
+    """What must hold before any GPU work: the first pair's two results land in two different
+    files, both run folders hold L2's item sets, the registered checkpoint's result is there
+    and complete, and the first pair's harness inputs, from the same item set, are in the
+    folder it is measured into. Raises ValueError with the reason."""
+    from latent_compare.models import MAPPERS
     from latent_compare.run import fingerprint
-    if os.path.realpath(compare) == os.path.realpath(repro):
+    registered_id = registered_id or MAPPERS[first]["id"]
+    # The files themselves, links resolved: two folder names can lead to one latent folder.
+    if os.path.realpath(result_path(compare, *first)) == os.path.realpath(result_path(repro, *first)):
         raise ValueError("--compare and --repro are the same folder: the retrained first pair would overwrite the "
                          "registered checkpoint's result")
     for name, folder in (("--compare", compare), ("--repro", repro)):
@@ -319,13 +359,23 @@ def preflight(compare, repro, first, items_id):
             raise ValueError(f"{name} ({folder}) has no readable items.json")
         if fingerprint(groups) != items_id:
             raise ValueError(f"{name} ({folder}) holds item set {fingerprint(groups)}, not L2's {items_id}")
+        main = [item["id"] for item in groups.get("main", [])]
     for kind, key in (("summaries", first[0]), ("receive", first[1])):
-        if not os.path.exists(os.path.join(repro, kind, f"{key}.json")):
+        data = load_json(os.path.join(repro, kind, f"{key}.json"))
+        if not data:
             raise ValueError(f"--repro has no {kind}/{key}.json: copy L2's summaries and receive folders into it, "
                              "so the retrained pair is compared with the same text arms")
+        if data.get("itemsId") != items_id:
+            raise ValueError(f"--repro's {kind}/{key}.json is from item set {data.get('itemsId')}, not L2's {items_id}")
     registered = load_json(result_path(compare, *first))
     if not registered:
         raise ValueError("--compare has no result of the registered checkpoint for the first pair")
+    if registered.get("checkpoint") != registered_id or registered.get("itemsId") != items_id:
+        raise ValueError(f"--compare's result for the first pair is from checkpoint {registered.get('checkpoint')} and item set "
+                         f"{registered.get('itemsId')}, not the registered {registered_id} and L2's {items_id}")
+    ran = sum(1 for item in main if "f1" in (registered.get("results", {}).get(item, {}).get("swat") or {}))
+    if ran != len(main):
+        raise ValueError(f"--compare's result of the registered checkpoint has `swat` on {ran} of {len(main)} main items")
 
 
 def default_decide(root, compare, repro):
@@ -334,13 +384,13 @@ def default_decide(root, compare, repro):
 
 
 def run_batch(root, compare, repro, pairs=None, budget=BUDGET_HOURS, runner=run_logged, decide=default_decide,
-              say=lambda text: print(text, flush=True), batch=None, items_id=ITEMS_ID):
+              say=lambda text: print(text, flush=True), batch=None, items_id=ITEMS_ID, registered_id=None):
     """Train and measure the pairs in order. `pairs` narrows the run to some of the batch;
     the budget and the recipe decision are always the whole batch's."""
     batch = list(batch or BATCH)
     first = batch[0]
     try:
-        preflight(compare, repro, first, items_id)
+        preflight(compare, repro, first, items_id, registered_id)
     except ValueError as error:
         say(f"not started: {error}")
         return
