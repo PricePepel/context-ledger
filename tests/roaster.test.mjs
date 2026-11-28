@@ -268,3 +268,62 @@ test('review 4, round 9: trailing full stops, earlier sentences, a second $18 an
   const borrowed = scoreSite(good.replace('<li>Oat latte <b>$5.25</b></li><li>Cold brew $4.75</li>', '<li>Oat latte</li><li>Small cold brew $5.25</li>'));
   assert.ok(borrowed.missed.includes('Oat latte $5.25'));
 });
+
+test('review 4, round 10: an unpriced item does not take the price of the next thing on the page', () => {
+  const page = good.replace('<li>Oat latte <b>$5.25</b></li>', '<li>Oat latte</li><li>Cookie $5.25</li>');
+  assert.ok(scoreSite(page).missed.includes('Oat latte $5.25'));
+  // A price in its own block, a size and a long description still belong to the item.
+  for (const row of ['<li><p>Oat latte</p><p>$5.25</p></li>', '<li><p>Oat latte</p><p>12 oz $5.25</p></li>',
+    '<li><p>Oat latte</p><p>Creamy oat milk, silky espresso $5.25</p></li>']) {
+    assert.deepEqual(scoreSite(good.replace('<li>Oat latte <b>$5.25</b></li>', row)).missed, [], row);
+  }
+});
+
+test('review 4, round 10: Bean Club monthly wording does not cross a heading, and a fee keeps its own words', () => {
+  const name = 'Bean Club, $18 a month';
+  const club = text => scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', text)).missed.includes(name);
+  assert.equal(club('<p>Monthly deliveries</p><h3>Gift bags</h3><p>$18</p>'), true);
+  assert.equal(club('<p>$18 per month plus a one-time signup fee of $5.</p>'), false);
+  assert.equal(club('<p>One-time $5 signup fee plus $18 per month.</p>'), false);
+  assert.equal(club('<p>Monthly subscription</p><p>$18</p>'), false);
+  assert.equal(club('<p>$18 upfront, then $10 a month.</p>'), true);
+});
+
+test('review 4, round 10: a class or ID the stylesheet hides earns nothing; a media query does not hide', () => {
+  const tagline = '<p>Roasted slow, poured fresh.</p>';
+  const withRule = (rule, element) => good.replace('</style>', `${rule}</style>`).replace(tagline, element);
+  for (const [rule, element] of [
+    ['.hide { display: none }', '<p class="lead hide">Roasted slow, poured fresh.</p>'],
+    ['#motto{visibility:hidden}', '<p id="motto">Roasted slow, poured fresh.</p>'],
+    ['div.off, .x { display:none; }', '<div class="off"><p>Roasted slow, poured fresh.</p></div>'],
+  ]) assert.ok(scoreSite(withRule(rule, element)).missed.includes('Tagline "Roasted slow, poured fresh."'), rule);
+  const media = withRule('@media (max-width: 600px) { .wide { display: none } }', '<p class="wide">Roasted slow, poured fresh.</p>');
+  assert.deepEqual(scoreSite(media).missed, []);
+  const compound = withRule('.menu .lead { display: none }', '<p class="lead">Roasted slow, poured fresh.</p>');
+  assert.deepEqual(scoreSite(compound).missed, []);
+});
+
+test('review 4, round 10: a closing time must be a closing time, and a negated closure does not count', () => {
+  const hours = '<p>Open 7:00–15:00. Closed on Tuesdays.</p>';
+  const swap = text => scoreSite(good.replace(hours, text)).missed;
+  assert.ok(swap('<p>Pick up orders at 3pm.</p><p>Closed on Tuesdays.</p>').includes('Closes at 15:00'));
+  assert.ok(swap('<p>Open 7:00–15:00.</p><p>Tuesday we are never closed.</p>').includes('Closed on Tuesdays'));
+  assert.ok(swap('<p>Open 7:00–15:00.</p><p>We are not closed on Tuesdays.</p>').includes('Closed on Tuesdays'));
+  assert.deepEqual(swap('<p>We close at 3pm.</p><p>Tue: closed</p>'), []);
+  assert.deepEqual(swap('<table><tr><td>Mon</td><td>7am</td><td>3pm</td></tr></table><p>Closed Tuesdays</p>'), []);
+});
+
+test('review 4, round 10: headings and links are read through nested tags, and order controls count', () => {
+  const add = html => scoreSite(good.replace('<section><h2>Visit', `${html}<section><h2>Visit`)).forbidden;
+  assert.ok(add('<section><h2><span>Wholesale</span></h2></section>').includes('A wholesale section'));
+  assert.ok(add('<p><a href="/trade"><b>Wholesale</b> enquiries</a></p>').includes('A wholesale section'));
+  assert.ok(add('<p><a href="/order">Order</a></p>').includes('Online ordering'));
+  assert.ok(add('<p><a href="https://shop.example/checkout">Buy beans</a></p>').includes('Online ordering'));
+  assert.ok(add('<p><button>Place an order</button></p>').includes('Online ordering'));
+  assert.deepEqual(add('<p><a href="#menu">See the menu</a> in any order you like.</p>'), []);
+});
+
+test('review 4, round 10: a reply with a second <html> document is not one build', () => {
+  assert.equal(htmlOf('<!doctype html><html>A</html><html>B</html>'), '');
+  assert.equal(htmlOf('Here:\n<!doctype html><html><body>A</body></html>\nDone.'), '<!doctype html><html><body>A</body></html>');
+});

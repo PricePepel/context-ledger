@@ -7,9 +7,9 @@ const read = (fromLine, next) => ({ name: 'mcp__context-ledger__session_read', i
 const more = line => ({ type: 'tool_result', content: [{ type: 'text', text: `[Partial result: 9 more turns remain. Call session_read again with fromLine ${line}.]\nturns` }] });
 
 test('a page result says where the next page starts, or that none is left', () => {
-  assert.deepEqual(pageResult(more(204)), { failed: false, next: 204 });
-  assert.deepEqual(pageResult({ type: 'tool_result', content: 'last page' }), { failed: false, next: null });
-  assert.deepEqual(pageResult({ type: 'tool_result', is_error: true, content: 'boom' }), { failed: true, next: null });
+  assert.deepEqual(pageResult(more(204)), { failed: false, next: 204, offset: 0 });
+  assert.deepEqual(pageResult({ type: 'tool_result', content: 'last page' }), { failed: false, next: null, offset: 0 });
+  assert.deepEqual(pageResult({ type: 'tool_result', is_error: true, content: 'boom' }), { failed: true, next: null, offset: 0 });
 });
 
 test('review: a reader that stops before the last page is flagged', () => {
@@ -62,4 +62,24 @@ test('review 4, round 2: a format character above U+FFFF is escaped as a surroga
   const out = reportJson({ note: `a${tag}b` });
   assert.ok(out.includes(String.raw`\udb40\udc01`));
   assert.deepEqual(JSON.parse(out), { note: `a${tag}b` });
+});
+
+test('review 4, round 10: a missing result leaves the read unverified, offsets count, and an empty read reaches nothing', () => {
+  const missing = [read(null, 204), { ...read(204), next: undefined }, read(812, null)];
+  const coverage = readCoverage(missing);
+  assert.equal(coverage.finished, false);
+  assert.equal(coverage.unverified, true);
+  assert.deepEqual(deviations('chat', 'builder', missing), ['chat read not verified: a page result was missing']);
+  // A split turn: the next page starts inside line 204, at character 900.
+  const split = { type: 'tool_result', content: 'turns\n[Partial result: The turn at line 204 continues; 3 more turns follow it. Call session_read again with fromLine 204 and fromOffset 900.]' };
+  assert.deepEqual(pageResult(split), { failed: false, next: 204, offset: 900 });
+  const resumed = (fromOffset, next) => ({ ...read(204, next), input: { sessionId: 'x', fromLine: 204, fromOffset } });
+  assert.deepEqual(readCoverage([{ ...read(null, 204), offset: 900 }, resumed(900, null)]).skipped, []);
+  assert.deepEqual(readCoverage([{ ...read(null, 204), offset: 900 }, resumed(1800, null)]).skipped, ['204+900->204+1800']);
+  // Asking past the end returns no turns: not the end of the chat.
+  const empty = { type: 'tool_result', content: 'header\n\n[No turns at or after line 9999.]' };
+  assert.deepEqual(pageResult(empty), { failed: false, empty: true, next: null, offset: 0 });
+  const past = readCoverage([read(null, 204), { ...read(9999, null), empty: true }]);
+  assert.equal(past.finished, false);
+  assert.deepEqual(past.skipped, ['204->9999']);
 });

@@ -132,22 +132,68 @@ function attributesOf(source) {
   return found;
 }
 
-/** Whether a tag's attributes hide it: `hidden`, `aria-hidden="true"`, or an inline style with
- * `display: none` or `visibility: hidden`. Words inside other attributes' values do not count. */
-function hides(source) {
+const hidingRule = /display\s*:\s*none|visibility\s*:\s*hidden/iu;
+
+/** CSS with every at-rule block (@media, @supports, ...) taken out, nested braces counted:
+ * a rule that hides something only on some screens does not hide it from the scorer. */
+function withoutAtRules(css) {
+  let out = '';
+  let index = 0;
+  for (let at = css.indexOf('@', index); at >= 0; at = css.indexOf('@', index)) {
+    const open = css.indexOf('{', at);
+    const semicolon = css.indexOf(';', at);
+    out += css.slice(index, at);
+    if (open < 0 || (semicolon >= 0 && semicolon < open)) { index = semicolon < 0 ? css.length : semicolon + 1; continue; }
+    let depth = 0;
+    let end = open;
+    for (; end < css.length; end += 1) {
+      if (css[end] === '{') depth += 1;
+      else if (css[end] === '}' && --depth === 0) break;
+    }
+    index = end + 1;
+  }
+  return out + css.slice(index);
+}
+
+/** The classes and IDs a page's stylesheets hide outright: a simple `.name`, `#name` or
+ * `tag.name` selector in a rule, outside any at-rule, that sets `display: none` or
+ * `visibility: hidden`. Compound selectors (".menu .item", ":hover") are left alone. */
+export function hiddenSelectors(html) {
+  const css = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/giu)].map(match => match[1]).join('\n')
+    .replace(/\/\*[\s\S]*?\*\//gu, ' ');
+  const classes = new Set();
+  const ids = new Set();
+  for (const [, selectors, body] of withoutAtRules(css).matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
+    if (!hidingRule.test(body)) continue;
+    for (const selector of selectors.split(',')) {
+      const simple = /^\s*(?:[a-z][\w-]*)?([.#])([\w-]+)\s*$/iu.exec(selector);
+      if (simple) (simple[1] === '.' ? classes : ids).add(simple[2].toLowerCase());
+    }
+  }
+  return { classes, ids };
+}
+
+/** Whether a tag's attributes hide it: `hidden`, `aria-hidden="true"`, an inline style with
+ * `display: none` or `visibility: hidden`, or a class or ID the page's stylesheet hides.
+ * Words inside other attributes' values do not count. */
+function hides(source, hidden = { classes: new Set(), ids: new Set() }) {
   const found = attributesOf(source);
+  const classes = (found.get('class') ?? '').toLowerCase().split(/\s+/u).filter(Boolean);
   return found.has('hidden') || /^\s*true\s*$/iu.test(found.get('aria-hidden') ?? '')
-    || /display\s*:\s*none|visibility\s*:\s*hidden/iu.test(found.get('style') ?? '');
+    || hidingRule.test(found.get('style') ?? '')
+    || classes.some(name => hidden.classes.has(name)) || hidden.ids.has((found.get('id') ?? '').toLowerCase());
 }
 
 /** The page with every hidden element removed, up to its matching close tag (nesting counted). */
 export function withoutHidden(html) {
+  const hidden = hiddenSelectors(html);
   const tags = new RegExp(anyTag.source, anyTag.flags);
   let out = '';
   let kept = 0;
   for (let open = tags.exec(html); open; open = tags.exec(html)) {
     const [whole, closing, name, source] = open;
-    if (closing || !hides(source)) continue;
+    // The page's own <html>, <head> and <body> are never treated as hidden.
+    if (closing || ['html', 'head', 'body'].includes(name.toLowerCase()) || !hides(source, hidden)) continue;
     out += `${html.slice(kept, open.index)} `;
     kept = tags.lastIndex;
     const tagName = name.toLowerCase();
@@ -208,6 +254,14 @@ function pricesOf(text, item) {
     const label = name => new RegExp(`\\|\\s*([\\p{L}-]+\\s+){0,2}${name}\\b[^|$]{0,15}(\\||\\$)`, 'u');
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
+    // Nor can it borrow the price of something off the menu list: when the price sits in a later
+    // block that opens with a short name of one or two words ("| oat latte | cookie $5.25"),
+    // that price is the cookie's. A block that is only the price ("| oat latte | $5.25"), a size
+    // ("| 12 oz $5.25") or a longer description ("| creamy oat milk, silky espresso $5.25")
+    // still belongs to the item.
+    const priceBlock = between.includes('|') ? between.slice(between.lastIndexOf('|') + 1) : '';
+    const named = priceBlock.replace(/\b(small|medium|large|regular|hot|iced|cup|mug|oz|ml|\d+)\b/gu, ' ').trim();
+    if (named && /^[\p{L}'&-]+(\s+[\p{L}'&-]+)?$/u.test(named)) continue;
     // A full stop after the amount ends the sentence ("$5.00."); it is not part of the number.
     const amount = /^\$\s?(\d+(?:\.\d{2})?)(?!\d|\.\d)/u.exec(rest.slice(dollar));
     // A label is the item's own short row: it opens a block, with at most two words before the
@@ -244,33 +298,59 @@ const monthlyAnywhere = /\bmonthly\b|\b(per|a|each|every) month\b/u;
  *   $18"), whatever the next block says (it may be the next section's heading).
  * - Otherwise the next block decides: it fails when it opens with "one-time" or "upfront"
  *   ("$18 | One-time signup fee") and passes when it opens with monthly wording ("$18 | per
- *   month"); failing both, monthly wording earlier after "Bean Club" passes it.
+ *   month"); failing both, monthly wording in the block just before the price's passes it
+ *   ("Monthly subscription | $18"), but not from further back across another heading
+ *   ("Monthly deliveries | Gift bags | $18").
+ * Qualifiers belong to their own amount: in "One-time $5 fee plus $18 per month" and "$18 per
+ * month plus a one-time fee of $5" the one-time words are the $5's.
  */
 function monthlyClub(text) {
+  const amount = /\$\s?\d+(?:\.\d{2})?(?!\d|\.\d)/u;
   for (const price of text.matchAll(/\$\s?18(?:\.00)?(?!\d|\.\d)/gu)) {
     const start = text.lastIndexOf('bean club', price.index);
     if (start < 0 || price.index - start > 300) continue;
     const before = text.slice(start + 'bean club'.length, price.index);
-    const after = text.slice(price.index + price[0].length, price.index + price[0].length + 30);
-    const sentenceBefore = before.split('|').pop().split(/[.!?]\s/u).pop();
+    const after = text.slice(price.index + price[0].length, price.index + price[0].length + 80);
+    const blocksBefore = before.split('|');
+    // The sentence before the price, from the last amount in it on: words before that amount are its.
+    const sentenceBefore = blocksBefore.at(-1).split(/[.!?]\s/u).pop().split(new RegExp(amount.source, 'gu')).pop();
     const [own, next = ''] = after.split('|');
     const sentenceAfter = own.replace(/[.!?](\s|$)[\s\S]*/u, '');
-    if (oneTime.test(sentenceBefore) || oneTime.test(sentenceAfter)) continue;
+    // When another amount follows in the sentence, only the words right after this one are its.
+    const ownWords = amount.test(sentenceAfter) ? sentenceAfter.slice(0, 14) : sentenceAfter;
+    if (oneTime.test(sentenceBefore) || oneTime.test(ownWords)) continue;
     if (monthlyAfter.test(own) || monthlyAnywhere.test(sentenceBefore)) return true;
     if (/^\s*(one[\s\p{Pd}]?time|up[\s\p{Pd}]?front)/u.test(next)) continue;
-    if (monthlyAfter.test(next) || monthlyAnywhere.test(before)) return true;
+    const previous = blocksBefore.slice(0, -1).reverse().find(block => block.trim()) ?? '';
+    if (monthlyAfter.test(next) || monthlyAnywhere.test(previous)) return true;
   }
   return false;
 }
+
+// A closing time counts only as a closing time: after a dash, "to", "until" or "close(s) at"
+// ("7:00–15:00", "closes at 3pm"), or in a block about hours or days ("Mon 7am 3pm"). "Pick up
+// orders at 3pm" is not when the café closes.
+const hoursWords = /\b(open|opens|opening|hours|close|closes|closing|daily|weekdays?|weekends?|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)s?\b/u;
+const closesAt = time => p => [...p.text.matchAll(new RegExp(time, 'gu'))].some(match => {
+  const lead = p.text.slice(Math.max(0, match.index - 25), match.index);
+  const blockStart = p.text.lastIndexOf('|', match.index) + 1;
+  const blockEnd = p.text.indexOf('|', match.index);
+  const block = p.text.slice(blockStart, blockEnd < 0 ? undefined : blockEnd);
+  return /(\p{Pd}|\bto|\buntil|\btill|\bthrough|\bclos(e|es|ing)(\s+at)?)\s*$/u.test(lead) || hoursWords.test(block);
+});
+// Closed on Tuesdays, but not "Tuesday we are never closed" or "not closed on Tuesdays".
+const closedTuesdays = p => [...p.text.matchAll(new RegExp(`closed[^.|]{0,40}${day}|${day}[^.|]{0,20}closed`, 'gu'))]
+  .some(match => !/\b(never|not|no longer)\b|n't\b/u.test(match[0]) &&
+    !/\b(never|not|no longer)\s*$|n't\s*$/u.test(p.text.slice(Math.max(0, match.index - 12), match.index)));
 
 /** The client's final word: 15 requirements, each a test on the page. */
 export const requirements = [
   ['Business name Tidewater Roast Co.', p => p.text.includes('tidewater roast co')],
   ['Tagline "Roasted slow, poured fresh."', p => p.text.includes('roasted slow, poured fresh')],
   ['Address 41 Harbor Lane, Portland, Maine', p => p.text.includes('41 harbor lane') && p.text.includes('portland') && p.text.includes('maine')],
-  ['Closes at 15:00', p => /(?<![\d:])(15:00|15\.00|3\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
+  ['Closes at 15:00', closesAt(String.raw`(?<![\d:])(15:00|15\.00|3\s?(:00)?\s?(pm|p\.m\.))`)],
   // "Tue Closed" in an hours table counts (scorer fix after round 2, applied to every site).
-  ['Closed on Tuesdays', p => new RegExp(`closed[^.|]{0,40}${day}|${day}[^.|]{0,20}closed`, 'u').test(p.text)],
+  ['Closed on Tuesdays', closedTuesdays],
   // Applied, not just mentioned: in a CSS declaration or a colour attribute, comments removed.
   ['Brand colour terracotta #C65D3B', p => /[:\s,(]#c65d3b\b/u.test(p.css) || p.attributes.includes('#c65d3b')],
   ['Headings in Fraunces', p => /(font(-family)?|--[\w-]+)\s*:[^;}]*fraunces/u.test(p.css)],
@@ -288,20 +368,38 @@ export const requirements = [
 /** Replaced values that should be gone. */
 export const stale = [
   ['Old colour forest green #2F5D50', p => p.css.includes('#2f5d50') || p.attributes.includes('#2f5d50')],
-  ['Old closing time 17:00', p => /(?<![\d:])(17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
+  ['Old closing time 17:00', closesAt(String.raw`(?<![\d:])(17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.))`)],
   // "Fresh every day" is fine; only the old opening pattern counts.
   ['Old hours "open every day"', p => /open (every day|daily|7 days a week|seven days)|every day,? (from )?7|(am|pm|:00)\s*,?\s*(daily|every day)/u.test(p.text)],
   ['Old oat latte price $5.00', p => shows(p.text, 'oat latte', 5)],
 ];
 
+/** The visible elements with one of the given tag names: their attributes and their text, read
+ * through nested tags ("<h2><span>Wholesale</span></h2>" is a heading that says wholesale). */
+function elementsOf(html, names) {
+  const pattern = new RegExp(`<(${names})\\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\\s\\S]*?)<\\/\\1\\s*>`, 'giu');
+  return [...html.matchAll(pattern)].map(([, name, source, inner]) => ({
+    name, attributes: attributesOf(source),
+    text: fold(inner.replace(anyTag, ' ').replace(/<[^>]+>/gu, ' ').replace(/&amp;/gu, '&')).trim(),
+  }));
+}
+
+// An ordering control: a link or button labelled as one ("Order", "Order now", "Place an order"),
+// or a link to an order, checkout or cart page.
+const orderLabel = /^(order|place (an |your )?order|start (an |your )?order|order (now|online|ahead|here|today|pickup|pick-up))\b/u;
+const orderTarget = /(^|[/?#&=.])(order|orders|ordering|checkout|cart)([/?#&=.]|$)/u;
+
 /** Things the client ruled out. */
 export const forbidden = [
   // The eval rules out a wholesale section: a heading, link or form about it. A passing mention
   // is reported separately (see scoreSite), not counted here.
-  ['A wholesale section', p => /<h[1-6][^>]*>[^<]*wholesale|<a\b[^>]*>[^<]*wholesale|<form\b[\s\S]*?wholesale[\s\S]*?<\/form>/u.test(p.html)],
+  ['A wholesale section', p => elementsOf(p.html, 'h[1-6]|a').some(element => element.text.includes('wholesale'))
+    || /<form\b[\s\S]*?wholesale[\s\S]*?<\/form>/u.test(p.html)],
   // The client said never to say it anywhere, so any mention counts.
   ['Says gluten-free', p => /gluten[\s\p{Pd}]?free/u.test(p.text)],
-  ['Online ordering', p => /order online|online order|order ahead|order now|pick-?up order|start (your|an) order/u.test(p.text)],
+  ['Online ordering', p => /order online|online order|order ahead|order now|pick-?up order|start (your|an) order/u.test(p.text)
+    || elementsOf(p.html, 'a|button').some(element => orderLabel.test(element.text)
+      || (element.name === 'a' && orderTarget.test(element.attributes.get('href') ?? '')))],
 ];
 
 /** The one HTML document in an agent's reply, or '' when there is none or more than one. */
@@ -309,7 +407,12 @@ export function htmlOf(reply) {
   const starts = [...reply.matchAll(/<!doctype html/giu)].map(match => match.index);
   if (starts.length !== 1) return '';
   const end = reply.toLowerCase().lastIndexOf('</html>');
-  return end > starts[0] ? reply.slice(starts[0], end + 7) : '';
+  if (end <= starts[0]) return '';
+  // One document: a single <html> element, even when a second one has no doctype of its own.
+  const page = reply.slice(starts[0], end + 7);
+  const opens = page.match(/<html[\s>]/giu)?.length ?? 0;
+  const closes = page.match(/<\/html\s*>/giu)?.length ?? 0;
+  return opens === 1 && closes === 1 ? page : '';
 }
 
 export function scoreSite(html) {

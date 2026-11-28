@@ -249,37 +249,52 @@ export function conditionCost(rows) {
   return `$${total.toFixed(2)}${unknown ? ` (incomplete: ${unknown} agent${unknown === 1 ? '' : 's'} reported no cost)` : ''}`;
 }
 
-/** What a tool result says about the chat: an error, or the line the next page starts at (null: none left). */
+/**
+ * What a tool result says about the chat: an error; an empty read ("No turns at or after
+ * line N", a request past the end); or where the next page starts, as a line and, for a turn
+ * split across pages, a character offset (next null: no page left).
+ */
 export function pageResult(part) {
   const content = part.content;
   const text = typeof content === 'string' ? content
     : Array.isArray(content) ? content.map(piece => (typeof piece?.text === 'string' ? piece.text : '')).join('\n') : '';
-  if (part.is_error) return { failed: true, next: null };
-  const more = /more turns remain\. Call session_read again with fromLine (\d+)/u.exec(text)
-    ?? /Call session_read again with fromLine (\d+) and fromOffset/u.exec(text);
-  return { failed: false, next: more ? Number(more[1]) : null };
+  if (part.is_error) return { failed: true, next: null, offset: 0 };
+  if (/\[No turns at or after line \d+\.\]/u.test(text)) return { failed: false, empty: true, next: null, offset: 0 };
+  const split = /Call session_read again with fromLine (\d+) and fromOffset (\d+)/u.exec(text);
+  if (split) return { failed: false, next: Number(split[1]), offset: Number(split[2]) };
+  const more = /more turns remain\. Call session_read again with fromLine (\d+)/u.exec(text);
+  return { failed: false, next: more ? Number(more[1]) : null, offset: 0 };
 }
+
+const cursorBefore = (a, b) => a.line < b.line || (a.line === b.line && a.offset < b.offset);
+const cursorText = c => (c.offset ? `${c.line}+${c.offset}` : `${c.line}`);
 
 /**
  * How far an agent read the chat, from its session_read calls and what each page said
  * came next: requests made, where each started, cursors it skipped, and whether it
  * reached the end. A later request that starts where an earlier page pointed counts.
+ * The read is complete only when the logged results chain from line 1 to the last page;
+ * a call whose result is missing leaves the rest unverified, and an empty read past the
+ * end reaches nothing.
  */
 export function readCoverage(calls) {
   const reads = calls.filter(call => call.name.endsWith('session_read'));
   const starts = reads.map(call => Number(call.input?.fromLine ?? 1));
   const skipped = [];
   // The chat starts at line 1, so a first request that starts later has skipped pages too.
-  let pending = 1;
+  let pending = { line: 1, offset: 0 };
   let finished = false;
+  let unverified = false;
   for (const [index, call] of reads.entries()) {
-    if (call.failed) continue;
-    if (pending !== null && starts[index] !== pending && starts[index] > pending) skipped.push(`${pending}->${starts[index]}`);
-    if (call.next === undefined) { pending = null; continue; }
-    pending = call.next;
-    if (call.next === null) finished = true;
+    if (call.failed || unverified) continue;
+    const start = { line: starts[index], offset: Number(call.input?.fromOffset ?? 0) };
+    if (pending && cursorBefore(pending, start)) skipped.push(`${cursorText(pending)}->${cursorText(start)}`);
+    // No result was logged for this call, so where its page pointed is unknown.
+    if (call.next === undefined) { unverified = true; continue; }
+    if (call.empty) continue;
+    if (call.next === null) { finished = true; pending = null; } else pending = { line: call.next, offset: call.offset ?? 0 };
   }
-  return { requests: reads.length, starts, skipped, finished, nextUnread: finished ? null : pending };
+  return { requests: reads.length, starts, skipped, finished, unverified: unverified && !finished, nextUnread: finished ? null : pending?.line ?? null };
 }
 
 /** How an agent strayed from its instructions, from its logged tool calls. */
@@ -291,6 +306,7 @@ export function deviations(condition, role, calls) {
   if (readsChat) {
     const coverage = readCoverage(calls);
     if (!coverage.requests) found.push('never read the chat');
+    else if (coverage.unverified) found.push('chat read not verified: a page result was missing');
     else if (!coverage.finished) found.push(`stopped reading the chat early${coverage.nextUnread ? ` (next page at line ${coverage.nextUnread} never read)` : ''}`);
     if (coverage.skipped.length) found.push(`skipped chat pages ${coverage.skipped.join(', ')}`);
   }
