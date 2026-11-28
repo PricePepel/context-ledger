@@ -4707,6 +4707,17 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
   - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
 
+## P4e: copy search checks long values whole (2026-11-27)
+
+Card P4e, branch `ruslan/p4d-copy-budget`, from `main` after #69. #69 was merged at 445e9e4 before the fixes for its last Codex review reached it, so they come here. Synthetic inputs only (`tests/secrets.test.mjs`, `tests/sign.test.mjs`, `tests/signed-review-head.test.mjs`, tests named P4d review 9 to 11).
+
+- **Expected:** a name late in a long line is searched; a bare copy of a long value is replaced whole; every copy that `main` removed is still removed; a session past any of four budgets (2^20 matcher nodes, 2^26 confirm characters, 2^24 collected characters, 2^20 copies) is refused and `handoff --sign` writes nothing; `reviews verify --bundle` warns on a version 1 or 2 bundle.
+- **Codex review of #69 at 445e9e4:** two medium (late names and long tails unchecked; no session-wide memory bound), three low (the reviews-verify warning, format joiners kept in exported text, a widening test that did not widen). All fixed with tests except the joiners, which predate P4d and are kept on purpose by `visibleText`; left for a Backlog card.
+- **Codex round 2 (of 0809bbe):** four medium (a quadratic trailing-punctuation regex, a filter over every end per confirmation, an endpoint list per repeated copy, a lost decoded prefix), two low. All fixed with tests.
+- **Codex round 3 (of 273af4d):** one high (a copy that `main` removed was kept, because ends were worked out on the whole value), one medium (millions of short copies, also on `main`), two low. All fixed with tests; the high and medium tests fail on 273af4d.
+- **Codex round 4 is owed**, of 14a0948.
+- **Suites:** on the #69 merge, `npm run -s test:graph` pass, `node scripts/check.mjs` no findings, `node --test tests/*.test.mjs` 741 pass, 12 skipped, 5 fail under load (two sign tests and three Windows token tests; the sign tests pass alone, the token tests are H15), `npx playwright test` 66 pass and 5 timeouts, which pass on rerun (10 of 10). On 14a0948: the secrets, sign and review-head files pass (117), check clean.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
