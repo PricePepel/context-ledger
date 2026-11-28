@@ -1,11 +1,13 @@
 // The loopback API token (ADR-10). The server writes a fresh random token next to its
 // database at each start, together with the port it listens on; the CLI and the MCP
 // adapter read it and send it as a bearer token, but only to that port; the browser
-// signs in with a one-time code and then holds a session cookie. The server keeps
+// signs in with a one-time code and then holds a session secret in its own origin's
+// storage, which it sends as a header (P1f; not a cookie, which browsers would send to
+// every port on 127.0.0.1). The server keeps
 // only SHA-256 digests; the bearer check compares digests in constant time, and codes
 // and sessions are looked up by their digests. Each port has its own file, so servers
 // on different ports and one database do not replace each other's token.
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, fstatSync, ftruncateSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -121,6 +123,7 @@ const readScript = powershellLines([
   '} finally { $stream.Dispose() }',
 ]);
 const powershellArguments = script => ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+// Options of the read script (the write script uses runWithInput below).
 const powershellOptions = path => ({ env: { ...process.env, [pathVariable]: path }, windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024 });
 
 /**
@@ -148,13 +151,113 @@ function described(output) {
   return { sid, alias, sddl, bytes: base64 === undefined ? undefined : Buffer.from(base64, 'base64') };
 }
 
-/** Windows: creates the token file private from the start and writes the record through the checked handle. */
-function writePrivateFileSync(path, line) {
+// Card H15: on a loaded Windows runner one PowerShell start took more than 30 s, so the
+// write is asynchronous (the server answers 503 until it is done), each attempt has its
+// own bound, and only an attempt that ran out of time is tried once more.
+export const writeAttemptMs = 60_000;
+export const writeAttempts = 2;
+
+/**
+ * Runs a command with this input on its stdin, which is then closed, and resolves with
+ * its stdout. Rejects when it cannot start, exits non-zero, writes more than 64 KiB or
+ * is stopped (out of time, or through `signal`). It settles only once the child has
+ * exited and its stdio has closed, never earlier (a child whose kill failed is waited
+ * for), so no caller acts while the child may still touch a file. `timedOut: true`
+ * means it was still running after `timeoutMs`, nothing else went wrong first and the
+ * kill ended it; only that may be retried. stderr is ignored. Never throws.
+ */
+export function runWithInput(command, args, { env, input, timeoutMs, signal }) {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    // Why the child is being stopped: the first reason wins.
+    let reason;
+    let child;
+    let timer;
+    const stdout = [];
+    let size = 0;
+    const settle = () => {
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const fail = (message, outOfTime = false) => {
+      if (settled) return;
+      settle();
+      reject(Object.assign(new Error(message), { timedOut: outOfTime }));
+    };
+    const stop = why => {
+      reason ??= why;
+      try {
+        child.kill();
+      } catch {
+        // The child is still waited for: 'close' settles.
+      }
+    };
+    function onAbort() { stop('stopped'); }
+    try {
+      child = spawn(command, args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch {
+      fail('The command could not start.');
+      return;
+    }
+    // A child that never started has no pid and no process to wait for; any other
+    // error waits for 'close'.
+    child.on('error', () => { if (child.pid === undefined) fail('The command could not start.'); });
+    child.stdout.on('data', chunk => {
+      size += chunk.length;
+      if (size > 64 * 1024) stop('overflow');
+      else stdout.push(chunk);
+    });
+    child.on('close', code => {
+      if (settled) return;
+      // Only a child that the kill ended (no exit code) ran out of time; one that exited
+      // on its own while the timer fired is judged by what it did.
+      if (reason === 'timeout' && code === null) return fail('The command ran out of time.', true);
+      if (reason !== undefined || signal?.aborted) return fail('The command was stopped.');
+      if (code !== 0) return fail('The command failed.');
+      settle();
+      resolvePromise(Buffer.concat(stdout).toString('utf8'));
+    });
+    timer = setTimeout(() => {
+      // A child that has already exited is waiting only for its 'close'.
+      if (child.exitCode === null && child.signalCode === null) stop('timeout');
+    }, timeoutMs);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdin.on('error', () => { /* the child closed its stdin; its exit says what happened */ });
+    child.stdin.end(input);
+  });
+}
+
+/** The default runner of the write script: Windows PowerShell, the path in its environment. */
+const runPowerShell = (path, input, timeoutMs, signal) => runWithInput(powershell(), powershellArguments(writeScript), { env: { ...process.env, [pathVariable]: path }, input, timeoutMs, signal });
+
+/**
+ * Windows: creates the token file private from the start and writes the record through
+ * the checked handle. `run(path, input, timeoutMs, signal)` runs the write script
+ * (injected by tests). A timed-out attempt, which has exited by then, is retried once
+ * after removing whatever it left at the path; every other failure, and a stop through
+ * `signal`, fails closed at once and empties the record it may have written.
+ */
+async function writePrivateFile(path, line, run, signal) {
   let output;
-  try {
-    output = execFileSync(powershell(), powershellArguments(writeScript), { ...powershellOptions(path), input: line + '\n', stdio: ['pipe', 'pipe', 'ignore'] });
-  } catch {
-    throw new Error('The token file could not be written privately.');
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      output = await run(path, line + '\n', writeAttemptMs, signal);
+      break;
+    } catch (error) {
+      if (error?.timedOut !== true || attempt >= writeAttempts || signal?.aborted) {
+        // A killed attempt may have written the record before it stopped.
+        throw new Error(failedWrite(path, line));
+      }
+      // The attempt was killed and its handle is closed; the next one creates the file
+      // exclusively again, as at the start of every write.
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        throw new Error(failedWrite(path, line));
+      }
+    }
   }
   const found = described(output);
   if (!found || !privateToOwner(found.sddl, found.sid, found.alias)) throw new Error(failedWrite(path, line));
@@ -230,15 +333,23 @@ async function readPrivateFile(path) {
  * or a failed close removes the file; a failure on Windows leaves no token in it. A
  * link in the folder path is not checked. Returns the file's identity ({ dev, ino } as
  * bigints, from an open descriptor: on Windows only a descriptor's stat names the
- * volume) so readers can refuse the file.
+ * volume) so readers can refuse the file. Asynchronous: on Windows it waits for
+ * PowerShell (card H15); `options.signal` (an AbortSignal) stops that wait, killing the
+ * child and failing closed. `options.windows` and `options.run` (the write script's
+ * runner, see writePrivateFile) are for tests.
  */
-export function writeTokenFile(path, token, port) {
+export async function writeTokenFile(path, token, port, { windows: onWindows = windows, run = runPowerShell, signal } = {}) {
   if (!secretPattern.test(token) || !validPort(port)) throw new Error('Invalid token record.');
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  rmSync(path, { force: true });
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    rmSync(path, { force: true });
+  } catch {
+    // A file system message names the path; nothing has been written yet.
+    throw new Error(notWritten);
+  }
   const line = JSON.stringify({ port, token });
-  if (windows) {
-    writePrivateFileSync(path, line);
+  if (onWindows) {
+    await writePrivateFile(path, line, run, signal);
     // The identity comes from a descriptor whose content is this start's record, which
     // nobody else can know, so it is the file just written. Every failure here is the
     // same fixed sentence, so no file system message (which names the path) escapes.
@@ -264,7 +375,13 @@ export function writeTokenFile(path, token, port) {
     if (identity === undefined) throw new Error(failedWrite(path, line));
     return identity;
   }
-  const descriptor = openSync(path, 'wx', 0o600);
+  let descriptor;
+  try {
+    descriptor = openSync(path, 'wx', 0o600);
+  } catch {
+    // Something took the path after it was cleared; the message would name it.
+    throw new Error(notWritten);
+  }
   const record = Buffer.from(line + '\n', 'utf8');
   let identity;
   try {
@@ -381,17 +498,6 @@ export async function tokenForUrl(url, env = process.env) {
   return (await clientToken(Number(parsed.port || 80), env)).token;
 }
 
-/** The value of one cookie in a Cookie header, or undefined. */
-function cookieValue(header, name) {
-  if (typeof header !== 'string') return undefined;
-  for (const part of header.split(';')) {
-    const separator = part.indexOf('=');
-    if (separator < 0) continue;
-    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
-  }
-  return undefined;
-}
-
 /** Keeps a map of digest -> expiry under a size bound, dropping expired and then oldest entries. */
 function remember(map, key, expiresAt, limit, now) {
   for (const [entry, expiry] of map) if (expiry <= now) map.delete(entry);
@@ -409,31 +515,35 @@ function takeValid(map, key, now) {
   return true;
 }
 
+/** The header a signed-in browser sends its session secret in (P1f). */
+export const sessionHeader = 'x-context-ledger-session';
+
 /** The server's side: the token digest, one-time sign-in codes and browser sessions. */
 export function createAuth({ token, port, now = Date.now }) {
   const tokenDigest = digest(token);
   const codes = new Map();
   const sessions = new Map();
-  const cookieName = `context_ledger_${port}`;
 
   const bearer = request => {
     const match = /^Bearer ([A-Za-z0-9_-]{1,256})$/u.exec(request.headers.authorization ?? '');
     return Boolean(match) && timingSafeEqual(digest(match[1]), tokenDigest);
   };
+  // Cookies are not read at all: browsers send them to every port of the host (P1f).
   const session = request => {
-    const value = cookieValue(request.headers.cookie, cookieName);
-    return value !== undefined && secretPattern.test(value) && takeValid(sessions, digestKey(value), now());
+    const value = request.headers[sessionHeader];
+    return typeof value === 'string' && secretPattern.test(value) && takeValid(sessions, digestKey(value), now());
   };
 
   return {
-    cookieName,
+    /** A Set-Cookie value that removes this port's P1e session cookie, if a browser still has one. */
+    clearOldCookie: `context_ledger_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
     /** True when the request carries the bearer token. */
     bearer,
     /** True for this server's token (compared as digests, in constant time). */
     isOwnToken: text => timingSafeEqual(digest(text), tokenDigest),
-    /** True when the request carries the bearer token or a live session cookie. */
+    /** True when the request carries the bearer token or a live browser session. */
     allowed: request => bearer(request) || session(request),
-    /** True when the request carries a live browser session cookie (P2c). */
+    /** True when the request carries a live browser session (P2c). */
     signedIn: request => session(request),
     /** A new one-time sign-in code. */
     mintCode() {
@@ -441,7 +551,7 @@ export function createAuth({ token, port, now = Date.now }) {
       remember(codes, digestKey(code), now() + codeLifetimeMs, maxCodes, now());
       return code;
     },
-    /** Uses up a code; returns the Set-Cookie value of a new session, or undefined. */
+    /** Uses up a code; returns the secret of a new browser session, or undefined. */
     redeem(code) {
       if (typeof code !== 'string' || !secretPattern.test(code)) return undefined;
       const key = digestKey(code);
@@ -450,7 +560,7 @@ export function createAuth({ token, port, now = Date.now }) {
       if (!valid) return undefined;
       const id = newSecret();
       remember(sessions, digestKey(id), now() + sessionLifetimeMs, maxSessions, now());
-      return `${cookieName}=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionLifetimeMs / 1000}`;
+      return id;
     },
   };
 }

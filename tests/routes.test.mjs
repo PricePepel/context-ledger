@@ -308,9 +308,10 @@ test('the server request table answers every probe as before', async t => {
   // LatentError keeps its own status.
   await expect('latent team LatentError', state.post('/api/latent/team', { question: 'runtime-fails' }), 502, { error: 'The latent runtime refused the request (HTTP 500).' });
 
-  // P1e: without the token or a session cookie, every route but the static files and
-  // /login is 401, whatever the method or path, and never reaches a handler. The Host
-  // and URL checks still come first, and the static files stay public.
+  // P1e: without the token or a browser session, every route but the static files (the
+  // sign-in page among them) and POST /api/session (P1f) is 401, whatever the method or
+  // path, and never reaches a handler. The Host and URL checks still come first, and the
+  // static files stay public.
   const signIn = { error: 'Sign in first: run npm run ledger -- login and open the link it prints.' };
   const anonymous = (method, path, headers = {}) => raw(port, { method, path, body: method === 'GET' ? undefined : '{}',
     headers: { 'Content-Type': 'application/json', Origin: origin, ...browser, ...headers } });
@@ -320,6 +321,7 @@ test('the server request table answers every probe as before', async t => {
     ['POST', '/api/latent/read'], ['POST', '/api/latent/transfer'], ['POST', '/api/latent/files'], ['POST', '/api/latent/team'],
     ['POST', '/api/rooms'], ['GET', `/api/rooms/${room.id}`], ['POST', decisions], ['POST', '/api/login'],
     ['GET', '/nope'], ['GET', '/api'], ['GET', '/API/sessions'], ['PUT', '/api/sessions'], ['DELETE', `/api/rooms/${room.id}`],
+    ['GET', '/api/session'], ['PUT', '/api/session'],
   ];
   const seenBefore = runtime.seen.length;
   for (const [method, path] of guarded) {
@@ -330,7 +332,7 @@ test('the server request table answers every probe as before', async t => {
   assert.equal(runtime.seen.length, seenBefore);
   await expect('no token, foreign Host', raw(port, { path: '/api/sessions', headers: { Host: 'evil.example' } }), 403, { error: 'Unrecognized local host.' });
   await expect('no token, bad URL', raw(port, { path: '//api/sessions' }), 400, { error: 'Invalid request URL.' });
-  for (const path of ['/', '/app.js', '/styles.css']) await expect(`no token GET ${path}`, raw(port, { path }), 200);
+  for (const path of ['/', '/app.js', '/styles.css', '/session.js', '/login', '/login.js', '/swarm/session.js']) await expect(`no token GET ${path}`, raw(port, { path }), 200);
   await expect('no token HEAD / is still 404', raw(port, { method: 'HEAD', path: '/' }), 404, '');
 
   if (process.env.ROUTES_PROBE_OUT) {

@@ -12,6 +12,11 @@ export const staticFiles = new Map([
   ['/styles.css', ['styles.css', 'text/css']],
   // Card U8: the pixel look the library and the swarm page share with the console.
   ['/pixel.css', ['pixel.css', 'text/css']],
+  // P1f: the browser's session secret lives in this origin's storage; session.js reads
+  // it for the pages, and the sign-in page turns a one-time code into one.
+  ['/session.js', ['session.js', 'text/javascript']],
+  ['/login', ['login.html', 'text/html']],
+  ['/login.js', ['login.js', 'text/javascript']],
   // The console (card U1): a fixed list, so no other path under /console/ is served.
   ['/console', ['console/index.html', 'text/html']],
   ['/console/', ['console/index.html', 'text/html']],
@@ -23,6 +28,8 @@ export const staticFiles = new Map([
   ...['console.mjs', 'office.mjs', 'office-furniture.mjs', 'sprites.mjs', 'agent-marks.mjs', 'ctm-band.mjs', 'panels.mjs', 'review.mjs', 'swarm-room.mjs', 'swarm-agent.mjs', 'model.mjs', 'source.mjs', 'brain.mjs', 'evidence.mjs']
     .map(name => [`/console/${name}`, [`console/${name}`, 'text/javascript']]),
   ['/console/demo-recording.json', ['console/demo-recording.json', 'application/json']],
+  // The same session.js, so the console's files all stay under /console/ (P1f).
+  ['/console/session.js', ['session.js', 'text/javascript']],
   // Card U6: the console's three OFL fonts, local so no request leaves the loopback host.
   ...['jersey-15', 'inter-tight', 'silkscreen'].map(name => [`/console/fonts/${name}.woff2`, [`../docs/brand/fonts/${name}.woff2`, 'font/woff2']]),
 
@@ -31,6 +38,8 @@ export const staticFiles = new Map([
   ['/swarm/', ['swarm/index.html', 'text/html']],
   ['/swarm/swarm.css', ['swarm/swarm.css', 'text/css']],
   ['/swarm/swarm.mjs', ['swarm/swarm.mjs', 'text/javascript']],
+  // The same session.js, so the swarm page signs its API calls like the library (P1f).
+  ['/swarm/session.js', ['session.js', 'text/javascript']],
 ]);
 
 /** Where a file on the list is on disk. */
