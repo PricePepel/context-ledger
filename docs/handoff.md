@@ -8,6 +8,25 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
+
+## Current checkpoint: T4 big reader by layer streaming (2026-11-28)
+
+Card T4, branch `claude/t4-layer-stream-reader-6d9f82`. Ruslan asked whether AirLLM-style layer streaming (load one decoder layer at a time) could let a big model read a document once on the 16 GB laptop, with small models answering from that reading. `runtime/layer_stream/` measures it: a per-layer streamer built on transformers' meta-device model, streaming from pinned host memory or from the safetensors files, with no new dependency. `python -m layer_stream.measure <phase>` runs one phase per process, and `report` prints the verdicts.
+
+What it found (eval T4 in [the eval log](evals.md)):
+
+- **Streaming is exact and the reading is affordable.** Mistral-7B bf16 with half its layers streamed from host memory reads 2,048 tokens in 1.54 s (0.72 s fully resident, 3.5 s from disk), at 7.9 GiB of GPU memory instead of 14. Generation is the slow case: 0.7 to 0.9 s per token from host memory, 3 s from disk.
+- **The kept KV cache moves and continues exactly.** It takes 131 MB per 1,000 tokens.
+- **A bigger reader reads better than Qwen2.5-1.5B** (Qwen2.5-7B +0.157 F1), but every text summary it writes hands over less than the small model gets by reading the passage itself (−0.22 to −0.32 F1). Only a trained mapper could carry the gain. That is estimated at about 13.8 GPU hours on this laptop with a streamed sender, against M2b-S's 5.4.
+- **Verdict: do not build streaming into the runtime yet.**
+
+Next owner:
+
+1. A big-to-small mapper card needs a sender that both reads well and loads in torch. Qwen2.5-7B is the candidate, but it is AWQ-only here: loading it needs `gptqmodel` (an ADR) or a 15 GB bf16 download, which needs disk space freed first.
+2. The `accelerate` offload comparison is still open. The coordinator agreed to install it in the venv for measurement only, provided nothing in the repository imports it.
+3. Copy-compute overlap (prefetch on a second CUDA stream) is untested.
+4. The Codex review is still owed: Codex was at its usage limit, so a Claude subagent reviewed instead (11 findings, fixed or recorded in the eval). One check needs the GPU: compare the resident loader's logits with `from_pretrained`.
+
 ## Current checkpoint: K1 project context graph (2026-11-27)
 
 PR #109, branch `claude/k1-project-graph`. `scripts/project-context.mjs` reads the board, these notes, the eval log and the architecture notes on every run and prints a short briefing with file and line for each item, so a new session does not read the four files whole (over 1 MB together). AGENTS.md section 1 now says to start with it.
