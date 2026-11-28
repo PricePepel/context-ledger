@@ -680,6 +680,33 @@ class BuildTest(Folders):
         self.assertEqual((verdict["vsHarnessText"], verdict["vsHarnessTextHit"]), (report.UNMEASURED, report.UNMEASURED))
 
 
+class ReaderTest(unittest.TestCase):
+    """A result file read as the current result without the checks another path makes is the
+    mistake L2's review found six times and this card's review found twice more (round 1,
+    findings 1 and 3). So the report has one reader per kind of result, and this fails when
+    a result file is opened anywhere else."""
+
+    def functions_calling(self, module, name):
+        import ast
+        with open(os.path.join(os.path.dirname(__file__), "..", "latent_pairs", module), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        found = set()
+        for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == name:
+                    found.add(function.name)
+        return found
+
+    def test_the_report_reads_a_latent_result_only_through_its_two_checked_readers(self):
+        self.assertEqual(self.functions_calling("report.py", "result_path"), {"measured_pair", "recipe_check"})
+        self.assertEqual(self.functions_calling("report.py", "latent_section"), {"pair_section"})
+        self.assertEqual(self.functions_calling("report.py", "pair_section"), {"build"})
+
+    def test_the_runner_takes_a_pair_as_measured_only_through_bound(self):
+        self.assertEqual(self.functions_calling("run.py", "bound"), {"run_pair"})
+        self.assertEqual(self.functions_calling("report.py", "bound"), {"measured_pair"})
+
+
 class RegisterTest(unittest.TestCase):
     def test_register_refuses_what_is_not_a_pair(self):
         kept = dict(MAPPERS)
