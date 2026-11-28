@@ -1244,3 +1244,23 @@ test('P4d: a version 1 or 2 bundle from before P4d still verifies, with a warnin
   assert.ok(checked.stdout.includes('Redaction: not recorded (a version 1 bundle)'), checked.stdout);
   assert.match(checked.stderr, /^Warning: this bundle was signed before hand-offs were redacted\. Its hand-off was not checked for secrets/);
 });
+
+test('P4d review 9: handoff --sign refuses a session past the copy budget and writes nothing', async t => {
+  const context = await signedBundle(t);
+  // 2,200 distinct 500-character values need more copy-matcher nodes than the budget allows.
+  const text = Array.from({ length: 2200 }, (_, index) => 'password=' + index.toString(36).padStart(4, '0') + 'Qx'.repeat(248)).join('\n');
+  const transcript = JSON.stringify({ type: 'user', uuid: '0000000a-aaaa-4bbb-8ccc-00000000000a', message: { role: 'user', content: text } });
+  const store = openStore(context.database);
+  let id;
+  try {
+    ({ id } = store.importTranscript({ provider: 'claude', source: 'budget.jsonl', transcript }));
+  } finally {
+    store.close();
+  }
+  const bundle = join(context.folder, 'over-budget');
+  const signed = await run(['handoff', id, '--sign', bundle], context.env);
+  assert.notEqual(signed.code, 0);
+  assert.match(signed.stderr, /more secret-like text than the copy check can hold, so it was not redacted and nothing was signed\./u);
+  assert.equal(existsSync(bundle), false);
+  assert.ok(!signed.stdout.includes('Qx'.repeat(8)) && !signed.stderr.includes('Qx'.repeat(8)), 'no value is printed');
+});

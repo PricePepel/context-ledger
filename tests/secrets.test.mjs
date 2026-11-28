@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { handoffMarkdown } from '../src/handoff.mjs';
-import { findSecrets, maskedPreview, redactSession, redactText } from '../src/secrets.mjs';
+import {
+  copyBudgetMessage, copyMatcher, findSecrets, maskedPreview, redactSession, redactText,
+} from '../src/secrets.mjs';
 import { bearer, ledgerToken } from './ledger-auth.mjs';
 
 // Card P4b. Every fake credential is put together here from fragments, so no committed
@@ -880,4 +882,75 @@ test('P4d review 8: a decoded value after a long span, and a value in a query st
     { role: 'user', line: 1, text: 'password=violetorchid&user=alice' },
     { role: 'assistant', line: 2, text: 'violetorchid' },
   ]), '[REDACTED assigned-secret]');
+});
+
+test('P4d review 9: a name after a long first part, and a whole long value, are still found', () => {
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  // Codex review of 2026-11-27: the line's first 512 characters hid the later token=.
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + 'a'.repeat(520) + ' token=LateValue987' },
+    { role: 'assistant', line: 2, text: 'LateValue987' },
+  ]), '[REDACTED assigned-secret]');
+  // A bare copy of a long value lost only its first 512 characters.
+  const long = 'a'.repeat(520) + 'TAILVALUE987';
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + long },
+    { role: 'assistant', line: 2, text: long },
+  ]), '[REDACTED assigned-secret]');
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + long },
+    { role: 'assistant', line: 2, text: `before ${long} after` },
+  ]), 'before [REDACTED assigned-secret] after');
+  // A copy that differs after the first part is still cut, never left whole.
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + long },
+    { role: 'assistant', line: 2, text: 'a'.repeat(520) + 'OTHER' },
+  ]), '[REDACTED assigned-secret]OTHER');
+});
+
+test('P4d review 9: a widened span keeps its end when later, shorter matches merge into it', () => {
+  const long = 'Zq9' + 'b'.repeat(600) + ' Kx7mWord';
+  const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password=' + long },
+    { role: 'user', line: 2, text: 'secret=Kx7mWord' },
+    { role: 'assistant', line: 3, text: `${long} end` },
+  ] });
+  assert.equal(session.messages[2].text, '[REDACTED assigned-secret] end');
+});
+
+test('P4d review 9: the copy check refuses a session past its node or work budget', () => {
+  const entry = value => ({ value, ends: [value.length], kind: 'assigned-secret' });
+  // Codex: 12,000 distinct 500-character values made about six million trie nodes.
+  const many = Array.from({ length: 50 }, (_, index) => entry(index.toString(36).padStart(4, '0') + 'x'.repeat(496)));
+  assert.throws(() => copyMatcher(many, { nodeBudget: 10_000 }), { message: copyBudgetMessage });
+  assert.doesNotThrow(() => copyMatcher(many, { nodeBudget: 30_000 }));
+  // Comparing a long value at each of many places has its own budget.
+  const value = 'y'.repeat(2000);
+  const search = copyMatcher([entry(value)], { workBudget: 100_000 });
+  assert.throws(() => search('z'.repeat(1).concat(value, ' ').repeat(200)), { message: copyBudgetMessage });
+  assert.equal(copyMatcher([entry(value)])(`a ${value} b`).length, 1);
+});
+
+test('P4d review 9: a session with too many long values is refused, not signed half-checked', () => {
+  // 2,200 distinct values of 500 characters need more matcher nodes than the budget allows.
+  const lines = Array.from({ length: 2200 }, (_, index) => 'password=' + index.toString(36).padStart(4, '0') + 'Qx'.repeat(248));
+  const started = performance.now();
+  assert.throws(() => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: lines.join('\n') },
+  ] }), { message: copyBudgetMessage });
+  assert.ok(performance.now() - started < 20_000, 'the refusal took too long');
+});
+
+test('P4d review 9: a copy that holds a direct finding widens it and hides its prefix', () => {
+  const value = 'Synth9-' + fake['aws-access-key-id'];
+  const { session, findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: `password=${value}` },
+    { role: 'user', line: 2, text: `copied ${value} here` },
+  ] });
+  // Line 2's key is found directly; the copy of the whole value starts before it and widens it.
+  const line2 = findings.filter(finding => finding.line === 2);
+  assert.ok(findSecrets(`copied ${value} here`).length === 1, 'the key alone is a direct finding');
+  // Line 1's finding takes its most specific kind, and the copy takes the finding's.
+  assert.equal(session.messages[1].text, 'copied [REDACTED aws-access-key-id] here');
+  assert.deepEqual(line2.map(finding => finding.preview), ['…']);
 });

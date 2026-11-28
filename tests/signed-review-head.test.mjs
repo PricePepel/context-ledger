@@ -219,3 +219,20 @@ test('P3b review: reviews verify reads the ledger read-only and never migrates i
   assert.match(missing.stderr, /No ledger database\./u);
   assert.equal(existsSync(join(context.folder, 'none.sqlite')), false);
 });
+
+test('P4d review: reviews verify --bundle warns that a version 2 hand-off was not redacted', async t => {
+  const context = await ledger(t);
+  const store = openStore(context.database);
+  const markdown = handoffMarkdown(store.get(context.sessionId)) + '\n';
+  store.close();
+  const old = join(context.folder, 'old');
+  await writeBundle(old, buildBundle({ sessionId: context.sessionId, markdown, privateKey: context.privateKey,
+    reviews: { events: 2, head: context.head } }));
+  const audit = await run(['reviews', 'verify', '--bundle', old, '--fingerprint', context.fingerprint], context.env);
+  assert.equal(audit.code, 0, audit.stderr);
+  assert.match(audit.stderr, /signed before hand-offs were redacted/u);
+  // A version 3 bundle, which was redacted, has no such warning.
+  const current = await run(['reviews', 'verify', '--bundle', await sign(context), '--fingerprint', context.fingerprint], context.env);
+  assert.equal(current.code, 0, current.stderr);
+  assert.doesNotMatch(current.stderr, /redacted/u);
+});
