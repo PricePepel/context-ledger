@@ -167,7 +167,8 @@ async function main(argv) {
   }
   const feature = features.find(entry => entry.id === options.feature);
   if (!feature) throw new Error(`No feature ${terminalLabel(JSON.stringify(options.feature))}; node scripts/drive.mjs --list names them.`);
-  if (options.url !== undefined && !/^http:\/\/(?:127\.0\.0\.1|localhost):\d+\/?$/u.test(options.url)) throw new Error('--url must be a loopback ledger, such as http://127.0.0.1:4317.');
+  // P1f review: 127.0.0.1 only, the one origin a browser session is issued for.
+  if (options.url !== undefined && !/^http:\/\/127\.0\.0\.1:\d+\/?$/u.test(options.url)) throw new Error('--url must be a loopback ledger, such as http://127.0.0.1:4317.');
   // A local file: a screenshot of a ledger never goes to a network share (H11 review).
   // Two leading slashes of either kind are a network path on Windows (round 2: "\/server").
   if (options.out !== undefined && /^[\\/]{2}/u.test(options.out)) throw new Error('--out must be a local file, not a network path.');

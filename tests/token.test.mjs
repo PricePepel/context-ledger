@@ -391,6 +391,38 @@ test('the browser signs in once with a short-lived code and then sends its sessi
   assert.equal(server.output().includes(session), false);
 });
 
+// P1f Codex review: localhost may reach ::1, where another program can listen on the same
+// port and serve pages of the origin http://localhost:<port>, which could read a session
+// stored there. A session is issued and honoured for http://127.0.0.1:<port> only.
+test('under the name localhost no browser session is issued or honoured; the bearer token still works', async t => {
+  const place = await temporary(t);
+  const server = await place.start();
+  const { port, token } = server;
+  const local = `localhost:${port}`;
+  const minted = await raw(port, { method: 'POST', path: '/api/login', headers: bearer(token) });
+  const code = codeOf(minted.body.path);
+  const refused = await redeem(server, code, { Host: local, Origin: `http://${local}` });
+  assert.deepEqual({ status: refused.status, body: refused.body }, { status: 403, body: { error: `Sign in at http://127.0.0.1:${port}, not localhost.` } });
+  assert.equal(refused.headers['set-cookie'], undefined);
+  // The refusal used nothing up: the code still signs in at 127.0.0.1.
+  const signedIn = await redeem(server, code);
+  assert.equal(signedIn.status, 200);
+  const browser = sessionHeaders(signedIn.body.session);
+  assert.equal((await raw(port, { path: '/api/sessions', headers: browser })).status, 200);
+  // The same live session sent to the localhost name reads nothing and writes nothing.
+  assert.equal((await raw(port, { path: '/api/sessions', headers: { ...browser, Host: local } })).status, 401);
+  const write = await raw(port, { method: 'POST', path: '/api/import', body: '{}',
+    headers: { ...browser, Host: local, 'Content-Type': 'application/json', Origin: `http://${local}` } });
+  assert.equal(write.status, 401);
+  // Nor does a bearer request carrying it count as a browser for the review route (P2c).
+  const review = await raw(port, { method: 'POST', path: `/api/graphs/${'a'.repeat(64)}/reviews`, body: '{}',
+    headers: { ...browser, ...bearer(token), Host: local, 'Content-Type': 'application/json', Origin: `http://${local}`, 'Sec-Fetch-Site': 'same-origin' } });
+  assert.deepEqual({ status: review.status, body: review.body }, { status: 403, body: { error: 'Nodes are reviewed by people in the browser, signed in.' } });
+  assert.equal((await raw(port, { path: '/api/sessions', headers: { ...bearer(token), Host: local } })).status, 200);
+  // GET /login is a static page on either name; under localhost its POST is what is refused.
+  assert.equal((await raw(port, { path: '/login', headers: { Host: local } })).status, 200);
+});
+
 test('codes expire after 60 seconds and sessions after 12 hours; both are bounded in number', () => {
   let now = 1_000_000;
   const auth = createAuth({ token: 'T'.repeat(43), port: 4317, now: () => now });

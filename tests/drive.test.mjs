@@ -56,6 +56,11 @@ test('the command lists features, and refuses an unknown one or a remote URL', a
   const remote = await run(process.execPath, [script, 'swarm', '--url', 'https://example.com']).then(() => null, error => error);
   assert.equal(remote?.code, 1);
   assert.match(remote.stderr, /--url must be a loopback ledger/u);
+  // P1f review: localhost may reach ::1, and the ledger issues browser sessions only for
+  // the 127.0.0.1 origin.
+  const named = await run(process.execPath, [script, 'swarm', '--url', 'http://localhost:4317']).then(() => null, error => error);
+  assert.equal(named?.code, 1);
+  assert.match(named.stderr, /--url must be a loopback ledger, such as http:\/\/127\.0\.0\.1:4317\./u);
 });
 
 test('the command starts its own ledger on loopback, signs in once, and cleans up', async () => {

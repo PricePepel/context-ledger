@@ -8,7 +8,7 @@ import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './s
 import { createSwarm } from './swarm.mjs';
 import { staticFiles, staticFileUrl } from './static-files.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
-import { codeLifetimeMs, createAuth, newToken, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { codeLifetimeMs, createAuth, newToken, sessionHeader, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 import { installedCommand, printWelcome, startLines } from './welcome.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -372,6 +372,15 @@ const server = createServer(async (request, response) => {
     const origin = `http://${host}`;
     const url = new URL(request.url, origin);
     if (!auth) throw new HttpError(503, 'Context Ledger is starting.');
+    // P1f review: a browser session belongs to the origin http://127.0.0.1:<port> only.
+    // The name localhost may reach ::1, where another program can take this port and
+    // serve pages of the same origin, which could read a session stored there. So under
+    // localhost no session is issued and a session header counts for nothing; the bearer
+    // token, which no page holds, still works.
+    if (host !== `127.0.0.1:${localPort}`) {
+      delete request.headers[sessionHeader];
+      if (url.pathname === '/api/session') throw new HttpError(403, `Sign in at http://127.0.0.1:${localPort}, not localhost.`);
+    }
     const open = staticFiles.has(url.pathname) || (request.method === 'POST' && url.pathname === '/api/session');
     if (!open) {
       if (!auth.allowed(request)) {
