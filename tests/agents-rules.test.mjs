@@ -27,9 +27,33 @@ test('the PR template runs the check and asks about repeated findings', () => {
 
 // Card H12: a rule the check enforces is named once, beside the check, not restated as a
 // manual step that drifts from it.
+// One bullet names the check, its four rules and where a new rule goes; no other bullet
+// asks for a scan of raw characters, HTML sinks or listen calls.
+export function sectionSixProblems(agents) {
+  const section = agents.match(/^## 6\.[^\n]*\n([\s\S]*?)^## 7\./mu)?.[1];
+  if (!section) return ['no section 6'];
+  const bullets = section.split(/\r?\n/u).filter(line => line.startsWith('- '));
+  const checker = bullets.filter(line => /node scripts\/check\.mjs/u.test(line));
+  const problems = [];
+  if (checker.length !== 1) problems.push(`${checker.length} bullets name the check`);
+  const [line = ''] = checker;
+  for (const [name, pattern] of [['loopback', /loopback/iu], ['HTML sinks', /innerHTML|HTML sink/u], ['raw characters', /raw control/iu], ['code points', /code points/iu], ['add to the check', /add to the check/iu]]) {
+    if (!pattern.test(line)) problems.push(`the check bullet does not name ${name}`);
+  }
+  for (const other of bullets.filter(bullet => !checker.includes(bullet))) {
+    if (/\b(?:scan|check that|make sure)\b[^.]*\b(?:raw|control|format|bidi|innerHTML|listen)\b/iu.test(other)) problems.push(`restated: ${other.slice(0, 60)}`);
+  }
+  return problems;
+}
+
 test('AGENTS.md section 6 points to the check instead of restating its rules', () => {
-  const section = read('AGENTS.md').split('## 6.')[1].split('## 7.')[0];
-  assert.match(section, /node scripts\/check\.mjs/u);
-  assert.match(section, /not restate|do not repeat/iu, 'says where a new rule goes');
-  assert.doesNotMatch(section, /check that `?src\/`? and `?tests\/`? contain/iu, 'no manual scan step');
+  assert.deepEqual(sectionSixProblems(read('AGENTS.md')), []);
+});
+
+test('the section 6 rule fails on a removed rule list, a second copy, or a manual scan', () => {
+  const agents = read('AGENTS.md');
+  const checkerLine = agents.split(/\r?\n/u).find(line => line.startsWith('- ') && line.includes('node scripts/check.mjs'));
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, '- Run `node scripts/check.mjs`.')).length, 0, 'rule list removed');
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n${checkerLine}`)).length, 0, 'duplicated');
+  assert.notEqual(sectionSixProblems(agents.replace(checkerLine, `${checkerLine}\n- Scan the tests and source for raw control characters.`)).length, 0, 'manual scan');
 });

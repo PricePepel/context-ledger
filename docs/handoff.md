@@ -12,7 +12,7 @@ Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overvie
 
 Branch `ruslan/h12-prose-diet`. Where `scripts/check.mjs` enforces a rule, the repository no longer says it a second time. Five tests that scanned a card's own files for raw control or format characters are gone (the check reads every tracked file), and `tests/check.test.mjs` shows it covers the SVG, CSS and test files they read. AGENTS.md section 6 names the check and its rules once and says to add a rule to it instead of restating one; `tests/agents-rules.test.mjs` keeps that text. History in `docs/evals.md` and the dated entries here are unchanged.
 
-Next owner: when a card adds a check rule, delete any test or doc line that restated it in the same PR. Splitting `docs/evals.md` and this file into one file per card was discussed and is not part of H12; it would touch every open PR, so it needs its own card once the open PRs have merged.
+Next owner: when a card adds a check rule, delete any test or doc line that restated it in the same PR. Splitting `docs/evals.md` and this file into one file per card was discussed and is not part of H12; it would touch every open PR, so it needs its own card once the open PRs have merged. If it happens, keep what card K1's parser reads: each file named by its card ID or with the ID in a `#` or `##` heading, dates as YYYY-MM-DD in the heading, and `docs/delivery-board.md` as the one table.
 
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 

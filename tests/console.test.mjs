@@ -247,8 +247,8 @@ test('console files stay light and never parse transcript text as HTML', async (
   for (const name of await readdir(consoleDir)) {
     const text = await readFile(new URL(name, consoleDir), 'utf8');
     total += (await stat(new URL(name, consoleDir))).size;
-    // Tab, newline and carriage return are the only control or format characters allowed.
-    assert.doesNotMatch(text, /[[\p{Cc}\p{Cf}]--[\t\n\r]]/v, name);
+    // Card H12: raw control and format characters are scripts/check.mjs's rule, for every
+    // tracked file; this test keeps what only the console needs.
     if (name.endsWith('.mjs')) {
       assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function/u, name);
       if (name === 'swarm-room.mjs') {

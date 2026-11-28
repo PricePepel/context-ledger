@@ -35,10 +35,6 @@ test('tab, line feed and carriage return are allowed, in every kind of text file
   }
   assert.deepEqual(rules(checkFile('docs/a.md', utf8(`shown as ${char(0x202e)}`))), ['raw-character']);
   assert.deepEqual(rules(checkFile('runtime/tests/test_a.py', utf8(`x = "${char(0x2028)}"`))), ['raw-character'], 'tests are not exempt from this rule');
-  // Card H12: the per-card scans this replaced also read SVG, CSS and test files.
-  for (const path of ['public/brand/a.svg', 'public/styles.css', 'tests/a.test.mjs', 'tests/e2e/a.spec.mjs']) {
-    assert.deepEqual(rules(checkFile(path, utf8(`x ${char(0x200b)} y`))), ['raw-character'], path);
-  }
 });
 
 test('a file that is not UTF-8 is a finding; known binary types are skipped', () => {
@@ -140,6 +136,25 @@ test('the command prints one line per finding and exits 1, or exits 0 when clean
     assert.equal(lines.at(-1), 'check: 3 files, 2 findings');
     const { stdout } = await run(process.execPath, [script, clean]);
     assert.equal(stdout.trim(), 'check: 1 file, no findings');
+  } finally {
+    await rm(bad, { recursive: true, force: true });
+    await rm(clean, { recursive: true, force: true });
+  }
+});
+
+// Card H12: the per-card scans this replaced read SVG, CSS, test and benchmark files, and
+// allowed tab, line feed and carriage return. The command reaches each kind from the index.
+test('the command reads the file kinds the removed per-card scans read', async () => {
+  const paths = ['docs/brand/pip.svg', 'public/styles.css', 'tests/a.test.mjs', 'tests/e2e/a.spec.mjs', 'evals/handoff/a.json', 'src/mcp/a.mjs'];
+  const bad = await gitFolder(Object.fromEntries(paths.map(path => [path, `x ${char(0x200b)} y\n`])));
+  const clean = await gitFolder(Object.fromEntries(paths.map(path => [path, 'a\tb\r\nc\n'])));
+  try {
+    const failure = await run(process.execPath, [script, bad]).then(() => null, error => error);
+    assert.ok(failure, 'a raw character fails the command');
+    const found = failure.stdout.trim().split(/\r?\n/u).slice(0, -1).map(line => line.split('  ').slice(0, 2));
+    assert.deepEqual(found.sort(), paths.map(path => [`${path}:1:3`, 'raw-character']).sort());
+    const { stdout } = await run(process.execPath, [script, clean]);
+    assert.equal(stdout.trim(), `check: ${paths.length} files, no findings`);
   } finally {
     await rm(bad, { recursive: true, force: true });
     await rm(clean, { recursive: true, force: true });
