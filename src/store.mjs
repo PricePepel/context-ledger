@@ -9,7 +9,7 @@ import { diffGraphs } from './diff.mjs';
 import { graphPrefixLength, nodeLinkBundle } from './export.mjs';
 import { mountArtifacts } from './artifacts.mjs';
 import { mountReviews, nodeHashes } from './reviews.mjs';
-import { canonicalPacket, isPartyGraph, resolveCitations, serializeGraphPacket, validateGraph } from './graph.mjs';
+import { canonicalPacket, isPartyGraph, packetCitations, resolveCitations, serializeGraphPacket, validateGraph } from './graph.mjs';
 import { groundNodes } from './grounding.mjs';
 import { defaultProject, migrate, refuseNewerSchema, schemaVersion } from './migrate.mjs';
 import { byLine, checkParcel, compatibleTurns, sameTurn } from './parcel.mjs';
@@ -425,6 +425,19 @@ function storeOn(database) {
   `);
   const getGraph = database.prepare('SELECT payload FROM graphs WHERE id = ?');
   const countCitingGraphs = database.prepare('SELECT count(*) AS graphs FROM graphs WHERE session_id = ?');
+  const selectSessionGraphs = database.prepare('SELECT payload FROM graphs WHERE session_id = ?');
+  // A key of the form l:<line> is what an upgrade from before message keys gave a turn
+  // (schema version 3). A fresh import of the same file keys that turn by its UUID or hash.
+  const legacyKey = key => key.startsWith('l:');
+  /** The message keys the stored version 3 graphs of a session cite; a cited key must stay. */
+  const keysCitedByGraphs = sessionId => {
+    const keys = new Set();
+    for (const { payload } of selectSessionGraphs.iterate(sessionId)) {
+      const { packet } = JSON.parse(payload);
+      if (packet.version === 3) for (const key of packetCitations(packet).keys) keys.add(key);
+    }
+    return keys;
+  };
   const deleteSessionRow = database.prepare('DELETE FROM sessions WHERE id = ?');
   const readGraph = id => {
     const row = getGraph.get(id);
@@ -579,7 +592,11 @@ function storeOn(database) {
     const old = readMessages(id);
     const atLine = new Map(messages.map(message => [message.line, message]));
     if (!old.every(message => atLine.has(message.line) && sameTurn(message, atLine.get(message.line)))) throw new ConflictError(excerptsMismatch);
-    const keyAt = new Map(old.map(message => [message.line, message.key]));
+    // A legacy l:<line> key that came in a parcel and that no stored graph cites by key is
+    // only a placeholder: the file's own key replaces it (Codex review of the refresh).
+    const cited = keysCitedByGraphs(id);
+    const kept = old.filter(message => !legacyKey(message.key) || cited.has(message.key));
+    const keyAt = new Map(kept.map(message => [message.line, message.key]));
     const merged = messages.map(message => (keyAt.has(message.line) ? { ...message, key: keyAt.get(message.line) } : message));
     if (new Set(merged.map(message => message.key)).size !== merged.length) throw new ConflictError(excerptsMismatch);
     deleteRows.run(id);
@@ -812,18 +829,23 @@ function storeOn(database) {
           const byKey = new Map(old.map(message => [message.key, message]));
           const byLineHere = new Map(old.map(message => [message.line, message]));
           const lines = new Set(old.map(message => message.line));
-          // A ledger upgraded from before message keys keeps l:<line> keys (schema version
-          // 3), while a fresh import of the same file keys the turn by its UUID or hash. A
-          // version 1 or 2 graph cites lines, so for it a turn on the same line is the same
-          // turn when one side has the legacy key, and the key already here is kept.
+          // One side may key a turn l:<line> (legacy, see legacyKey) and the other by its
+          // UUID or hash. Excerpts here whose legacy key no stored graph cites take the
+          // parcel's real key. Otherwise, for a version 1 or 2 graph, which cites lines, a
+          // turn on the same line is the same turn and the key already here is kept.
           const citesLines = graph.packet.version !== 3;
-          const legacyKey = key => key.startsWith('l:');
+          let citedHere;
+          const rekey = new Map();
           const fresh = [];
           for (const message of incoming) {
             let have = byKey.get(message.key);
-            if (!have && citesLines) {
-              const onLine = byLineHere.get(message.line);
-              if (onLine && (legacyKey(onLine.key) || legacyKey(message.key))) have = onLine;
+            const onLine = have ? undefined : byLineHere.get(message.line);
+            if (onLine && stored.excerpts && legacyKey(onLine.key) && !legacyKey(message.key)
+              && !(citedHere ??= keysCitedByGraphs(session.id)).has(onLine.key)) {
+              have = onLine;
+              rekey.set(onLine.line, message.key);
+            } else if (onLine && citesLines && (legacyKey(onLine.key) || legacyKey(message.key))) {
+              have = onLine;
             }
             // Against a transcript imported here, the parcel shows the turn or a redaction
             // of it. Of two sets of excerpts, either may be the more redacted one.
@@ -833,8 +855,9 @@ function storeOn(database) {
             }
             if (!have) fresh.push(message);
           }
-          if (fresh.length > 0) {
-            const merged = [...old, ...fresh].sort(byLine);
+          if (fresh.length > 0 || rekey.size > 0) {
+            const rekeyed = old.map(message => (rekey.has(message.line) ? { ...message, key: rekey.get(message.line) } : message));
+            const merged = [...rekeyed, ...fresh].sort(byLine);
             const title = titleFor(merged);
             deleteRows.run(session.id);
             writeRows(session.id, merged);

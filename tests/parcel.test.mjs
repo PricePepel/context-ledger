@@ -1164,3 +1164,75 @@ test('R1 review 4: the label guard compares leads and labels in one normal form'
   // The 20 characters are counted as written: a letter that lower-cases to two does not make 19 into 20.
   assert.equal(guarded('expanding', `${'a'.repeat(18)}${point(0x130)}`, `${'a'.repeat(18)}${point(0x130)}`)().parcel.session.messages.length, 1);
 });
+
+// ---- Codex review of the 2026-11-27 refresh, round 2 ----
+
+test('R1 refresh review: a label that copies a value the scanner found by its context is not shared', t => {
+  // Put together from fragments, so no committed line holds a whole assignment.
+  const value = ['fixture', 'value', '7341'].join('-');
+  const assignment = ['pass', 'word=', value].join('');
+  const a = ledger(t, 'a');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'kai.jsonl', transcript: claude([
+    ['user', 'Kai: the deploy notes for the Lyra cluster.'],
+    ['assistant', `Set ${assignment} on the staging box.`],
+    ['user', 'And keep the relay on port 6100.'],
+  ]) });
+  const repeated = 'This graph\'s own text (a label, a name, an artifact or its project) repeats a value the secret scanner found in its transcript, so it was not shared.';
+  // The value alone does not look like a credential, so the first check passes it.
+  const cited = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'secret', kind: 'decision', label: `Staging uses ${value}`, evidenceLines: [2] }] });
+  refusedShare(a.store, cited.id, repeated);
+  // A value from a line the graph does not cite counts too.
+  const uncited = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: `Port 6100, then ${value}`, evidenceLines: [3] }] });
+  refusedShare(a.store, uncited.id, repeated);
+  // Without the value, the same lines are shared, and the cited one is redacted.
+  const plain = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'secret', kind: 'decision', label: 'Staging has a password', evidenceLines: [2] }] });
+  const { parcel } = parcelOf(a.store, plain.id);
+  assert.equal(serializeParcel(parcel).includes(value), false);
+});
+
+test('R1 refresh review: a legacy key that came in a parcel gives way to the real key when no graph cites it by key', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const legacy = clone(parcel);
+  for (const message of legacy.session.messages) message.key = `l:${message.line}`;
+
+  // A version 3 parcel from a fresh import, citing the same turns by their real keys.
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { message: key(3) }] }] });
+  const b = ledger(t, 'b');
+  b.store.receiveParcel(checkParcel(legacy));
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), ['l:2', 'l:3']);
+  const result = carry(a.store, b.store, v3.id);
+  assert.equal(result.added, 0);
+  assert.deepEqual(b.store.get(a.session.id).messages.map(message => message.key), [key(2), key(3)]);
+  assert.equal(b.store.getGraph(a.graph.id).packet.version, 2, 'the line-cited graph still holds');
+
+  // The full transcript replaces an uncited legacy key with its own.
+  const c = ledger(t, 'c');
+  c.store.receiveParcel(checkParcel(legacy));
+  c.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  assert.deepEqual(c.store.get(a.session.id).messages.map(message => message.key), [1, 2, 3, 4, 5].map(key));
+
+  // A legacy key a stored version 3 graph cites stays, and a parcel with the real key is refused.
+  const d = ledger(t, 'd');
+  d.store.receiveParcel(checkParcel(legacy));
+  d.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: 'l:2' }] }] });
+  const dump = d.dump();
+  assert.throws(() => carry(a.store, d.store, v3.id), ConflictError);
+  assert.equal(d.dump(), dump);
+});
+
+test('R1 refresh review: a legacy key must name its own line', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  const forged = clone(parcel);
+  forged.session.messages[0].key = 'l:9';
+  assert.throws(() => checkParcel(forged), error => error instanceof InputError && error.message === 'This is not a version 1 Context Ledger parcel.');
+  const named = clone(parcel);
+  named.session.messages[0].key = 'l:2';
+  assert.equal(checkParcel(named), named);
+});
