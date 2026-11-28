@@ -109,7 +109,7 @@ def mismatch_index(rows, index):
 def mapper_cut(document, sender_offsets, receiver_offsets, cap=MAPPER_TOKENS):
     """What latent_transfer keeps of a document on the receiver's side: each side is cut to
     `cap` tokens, then both keep only the tokens that end within the earlier of the two ends
-    (batch.cut_to_common_end). Returns {docTokens, truncated, keptBytes}."""
+    (rule 1 of align.align_document, which a checkpoint from before L3 keeps). Returns {docTokens, truncated, keptBytes}."""
     ends = [offsets[min(len(offsets), cap) - 1][1] if offsets else 0 for offsets in (sender_offsets, receiver_offsets)]
     limit = min(ends)
     kept = max((end for _, end in receiver_offsets[:cap] if end <= limit), default=0)

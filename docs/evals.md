@@ -4693,6 +4693,286 @@ Compared with run 1 (0.5B to 360M): `swat` F1 0.757 → 0.872, the gap to `t2t` 
 
 Review (Codex, read-only, 2026-11-22): all three pass verdicts follow from the pre-run gates and every figure matches the raw summary. Five wording findings, all fixed in this record: "matches reading the passage" needed an interval (containment and latency intervals added above), the mechanism claim "the receiver is reading this passage" was narrowed to what the controls show, the faster-than-`text` comparison is scoped to this run, intervals are labelled as F1 differences, and the board state is "In review" with "3 gates pass, retention reported". No code changed in this card, so there is no regression test to add.
 
+## L4 — Training-free alignment, StateBridge-style (defined 2026-11-26, before the code)
+
+M2b-S trains one mapper per sender and receiver pair, which does not scale to 5 to 8 models. StateBridge (arXiv 2608.13317) claims a hand-off with no training. This card reads the paper, builds the cross-model version it does not test, and measures it on the M2b-S questions with a mismatched control.
+
+### What the paper does, and what it does not
+
+Read in full on 2026-11-26, with the authors' code (`YanwenPneg/StateBridge`, commit `3f6bf54`, Apache-2.0) read only to confirm the formulas. No code is reused; the implementation here is written from the paper's equations.
+
+**What it does.** A sender writes a message as usual. The final-layer hidden states `S` of the last `K = 64` generated tokens are kept, together with the input embeddings `R` of those same tokens. Both are centred and whitened (ridge `λ = 1e-3`), a rotation `Q` is found in closed form (`Q = UVᵀ` from the SVD of `S_wᵀR_w`), and the result is put back on the embeddings' scale and mean. Each vector is then scaled to the mean norm of the vocabulary embeddings and moved 30% of the way to its nearest vocabulary embedding. The `K` vectors are placed in front of the receiver's prompt as input embeddings.
+
+**What it measures.** A four-agent pipeline (planner, critic, refiner, judge) on GSM8K, AIME24/25, GPQA-Diamond, ARC-Challenge, MedQA, MBPP+ and HumanEval+, with Qwen3-4B, 8B, 32B and OLMo3-7B-Think. Accuracy or pass@1 against a single agent, a text pipeline and LatentMAS. It reports the best or tied-best score on 22 of 26 model and task pairs and, per model, an average gain of 2.4 to 2.9 points over the baseline with the best average, sampled at temperature 0.6.
+
+**What it does not do.**
+
+- **No two different models.** In every run all agents are the same model. The conclusion says so: "Our current setting assumes a shared model and a fixed prefix length", and names different models as future work. The paper has no measurement of a hand-off between two models.
+- **The map is fitted on each message, against that message's own tokens.** It is not a map between two spaces that is fitted once. The receiver side of the fit, `R`, is the embedding of the text the sender just wrote. Between two models with different tokenizers there is no such `R` without sending the text.
+- **No mismatched control.** Random noise is the only replacement-prefix control in its ablation table. It also ablates each component and shows one plan-recovery example, but nothing tests whether the prefix of another example scores the same, and nothing compares the prefix with the plain embeddings of the same tokens.
+- **No intervals, one sampled run per cell,** and `K` and `α` were chosen on MedQA with Qwen3-4B, one of the reported cells.
+- **No timing table** and no receiver below 4B.
+
+**A property of the arithmetic we expect, to be checked before any claim.** The fit uses `K = 64` rows in a space of 2,560 or more dimensions. After centring, 64 rows span at most 63 directions. Whitening sets every one of those directions to the same length on both sides, so the two whitened point sets differ by a rotation exactly, and the rotation maps one onto the other with no residual. Putting the scale back then returns `R` itself (with each singular value `δ` changed to `√(δ² + Kλ)`), whatever `S` was. If that holds, the prefix the paper sends is a function of the decoded tokens only: the last 64 tokens of the text, slightly rescaled, and the hidden states add nothing. This card checks it twice: a unit test on random matrices, and on real states by swapping in another passage's hidden states while keeping the tokens (`per-message, states swapped` below). It is stated here as a prediction, not a finding. *(Superseded on 2026-11-27, before the measured runs: the collapse is not exact in general; see "Corrections before the measured runs" for the two conditions.)*
+
+### What is built
+
+New files only: `runtime/latent_transfer/statebridge.py` (the arithmetic), `runtime/latent_transfer/statebridge_anchors.py` and `statebridge_stats.py` (standard library: vocabulary anchors, intervals, the table), `runtime/latent_transfer/statebridge_eval.py` (the runner) and `runtime/tests/test_statebridge.py`. `align.py` is not edited.
+
+Because the paper's per-message fit has no meaning between two tokenizers, the cross-model version fits one map per pair, once, in closed form:
+
+- **Anchor map (the card's primary).** Anchors are the vocabulary entries both tokenizers share (same text, same word-start marker). The sender side of an anchor is its row in the sender's output embedding (the final layer's states are read by that matrix); the receiver side is its row in the receiver's input embedding. Centre, whiten (ridge `1e-3` × the mean eigenvalue, because the paper's absolute `1e-3` is larger than the eigenvalues of an embedding matrix), rotate (`UVᵀ`, semi-orthogonal when the two widths differ), put back the receiver's scale and mean. No text and no forward pass is needed.
+- **Calibrated map (secondary).** The same closed form, fitted on real sender states instead of output-embedding rows: the sender reads 400 SQuAD *train* passages (seed 0; none is in the evaluation set), and each final-layer state whose own most likely next token is an anchor is paired with the receiver's embedding of that token. Still no gradient step; it needs a few seconds of sender time per pair.
+
+Then, as in the paper: norm calibration to the receiver's mean embedding norm and anchoring with `α = 0.3` over the receiver's whole vocabulary. The vectors go where the passage would be: after the receiver's `Read this passage.` header and before the question (the paper puts them at position 0; its code has the same insertion option).
+
+Two sources of sender states, each with both maps:
+
+- **Summary states (the paper's source).** The sender writes the same 40-word summary as the `t2t` arm; the states of its last 64 generated tokens are sent.
+- **Passage states.** The sender only reads the passage, as in M2b-S; the state at every passage position is sent. No generation, so this is the fast variant. The paper does not do this.
+
+### Arms
+
+Same 300 SQuAD v1.1 validation questions as M2b-S (seed 0, passages that fit 256 tokens for Phi-3.5-mini and Qwen2.5-1.5B, the cap the M2b-S run used; the runner checks the IDs against the M2b-S run on the GPU machine and stops if they differ), greedy, 24 new tokens, the same prompts, token F1 and containment from `latent_transfer.data`.
+
+| Arm | What the receiver gets |
+| --- | --- |
+| `text` | the passage |
+| `closed` | no passage |
+| `t2t` | the sender's 40-word summary as text |
+| `anchor/summary` (primary) | anchor map of the summary states |
+| `anchor/summary` mismatched | the same from the next item's passage |
+| `anchor/summary` zeroed | the same with the sender states set to zero |
+| `calibrated/summary`, `anchor/passage`, `calibrated/passage` | each with its own mismatched control |
+| `swat` (Phi-3.5-mini to Qwen2.5-1.5B only) | the trained M2b-S mapper, checkpoint `ade79c34041fd529` |
+| `per-message` (pairs with one tokenizer only) | the paper's own fit: summary states against the receiver's embeddings of the summary's last 64 tokens, `λ = 1e-3` |
+| `per-message, states swapped` | the same tokens, the hidden states of the next item |
+| `per-message` mismatched | tokens and states of the next item |
+| `tokens` | the receiver's embeddings of the summary's last 64 tokens, untouched |
+
+Pairs (all cached on the laptop, none needs a trained mapper except for the `swat` arm):
+
+| Pair | Why |
+| --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | the M2b-S pair; two families, two tokenizers, receiver below 2B |
+| Qwen2.5-3B → Qwen2.5-1.5B | one tokenizer, receiver below 2B |
+| Phi-3.5-mini → Qwen2.5-3B | two families, receiver above 2B |
+| Qwen2.5-1.5B → Qwen2.5-3B | one tokenizer, small to large |
+| Qwen2.5-3B → Qwen2.5-3B | the paper's own setting (one model) |
+| Qwen2.5-3B → Qwen2.5-0.5B, Phi-3.5-mini → SmolLM2-360M | edge: very small receivers; the second is the lowest tokenizer overlap available |
+
+Llama-3.2-3B is not on the machine and is gated; it is left out and named here.
+
+Reported for every arm: mean F1, containment, mean answer words, mean end-to-end milliseconds (summary arms include the sender writing the summary; passage arms include the sender's forward pass; the one-off map fit is reported apart). For every aligned arm: the paired difference to its mismatched control, to `t2t` and to `closed`, with a paired bootstrap 95% interval (10,000 resamples, seed 0). For every pair: how many anchors, what share of each vocabulary they cover, and on anchors held out of the fit, how often the mapped sender row lands nearest its own receiver row.
+
+### Pass rule (fixed before any run)
+
+For a pair and a variant, the aligned prefix **passes** when both hold:
+
+1. it beats its mismatched control: the 95% interval of `aligned − mismatched` F1 is above zero;
+2. it is at least as good as the text summary: mean F1 of `aligned` ≥ mean F1 of `t2t` (the interval is reported; "clearly better" only if it is above zero).
+
+The primary variant is `anchor/summary`. The other three are named in advance and judged by the same rule; because that is four tries per pair, a pass by a secondary variant with an interval that nearly touches zero counts as "needs a repeat", not a pass. `per-message` is judged apart: it is defined only where the tokenizer is shared, and a pass there says nothing about cross-model use if `states swapped` scores the same.
+
+The verdict is one of: "use it", "use it only for pairs like X", or "does not carry content here". Failing is an acceptable outcome and will be reported as such. No parameter is tuned on the 300 questions; `K`, `α` and `λ` are the paper's.
+
+### Edge cases
+
+- **Receiver below 2B:** Qwen2.5-1.5B (two pairs), Qwen2.5-0.5B, SmolLM2-360M.
+- **Low tokenizer overlap:** Phi-3.5-mini (32k SentencePiece) to Qwen (151k byte-level BPE) and to SmolLM2 (49k). The anchor count and coverage are reported for each.
+- **Emoji and non-English text:** eight hand-written synthetic passages (emoji, Russian, Uzbek, Chinese, Arabic, mixed) with one question each, in `runtime/latent_transfer/statebridge_edge.json`, run through every applicable arm of the Phi-3.5-mini → Qwen2.5-1.5B pair (no per-message arms: two tokenizers). Eight items give no interval; counts are reported, plus the share of each passage's sender tokens that have an anchor.
+
+### Corrections before the measured runs (2026-11-27)
+
+Made after the smoke runs (6 or 8 items, tiny models) and a Codex review of the code, and before any of the 300-question results below existed. No full-run result had been seen when these were written.
+
+- **Passage cap.** The first draft of this section said 384 tokens. The ID check against the M2b-S run failed, which showed that M2b-S used 256. The runner's default is now 256 and the IDs match.
+- **Plain greedy.** The first runner used the receiver's generation defaults, and Qwen ships a repetition penalty of 1.1. M2b-S decodes by plain argmax, so the runner now sets the penalty to 1.0. A test covers it. The sender's summary is written with the sender's defaults, as in M2b-S's `t2t`.
+- **Which state belongs to a token.** "The states of the last 64 generated tokens" means, here and in the authors' code, the state each token was *read from* (the position before it), not the state at the token's own position.
+- **The prediction about the per-message fit needs two conditions** (Codex, high). For `K` rows the argument assumes (a) the centred states span all `K − 1` row directions with covariance eigenvalues far above the ridge, and (b) the reference rows have full rank, 63 for 64 rows. Under both, the output is the reference with its singular values changed as described, up to a term that shrinks as the states grow against the ridge; it is exact only in that limit. A reference of lower rank leaves spare directions, which the rotation fills at the ridge's scale (at most `√(Kλ)` ≈ 0.25 in Frobenius norm each) in a direction picked by the states and by the SVD routine; repeated tokens are one source of lower rank. So the prediction becomes: the prefix is the token embeddings plus a small state-dependent part. The unit tests now cover both conditions, and the run measures how large that part is on real summaries and whether it changes answers.
+- **Mismatched control.** It is the next item *with a different passage*. Of the 300 questions, 23 share a passage with another one, so "the next item" alone could have handed the control the right passage.
+- **States swapped** is compared with the own-states fit at the same number of rows (`per-message, same rows`), so a shorter prefix cannot pass for a hidden-state effect.
+- **Zeroed** sets the sender states to zero and keeps the summary's length. It tests the values of the states, not the length of the prefix.
+- **"Nearly touches zero"** for a secondary variant is a lower bound below 0.02 F1. `per-message` is judged apart and has no such threshold.
+- **Timing.** Controls are not timed. `t2t` and the summary arms share one measured summary time, which includes collecting the hidden states that `t2t` does not need (a small cost that counts against text). When a summary comes from the cache of an earlier pair with the same sender, its time is the one measured then.
+- **Edge items** get means only: no interval and no verdict from eight items.
+
+### Unit tests (written with the code)
+
+Standard library: anchor keys across SentencePiece and byte-level vocabularies, duplicates and broken byte tokens; the paired bootstrap; the pass rule; the table. With torch (skipped without it, like the rest of `latent_transfer`): the fit recovers a known rotation between spaces of equal and unequal width, `Q` has orthonormal columns, the whitened covariances are the identity, norm calibration and anchoring match hand values, the zeroed prefix is constant, the collapse property above, and on a tiny random model the injected prefix of a text's own embeddings decodes exactly like the text.
+
+One command reproduces a pair's table: `python -m latent_transfer.statebridge_eval --sender <id> --receiver <id> --out <file>` from `runtime/` (add `--checkpoint` for the `swat` arm), and `python -m latent_transfer.statebridge_stats <file>...` prints the tables below from the saved files.
+
+### Result (2026-11-27)
+
+Seven pairs on the 16 GB laptop GPU (WSL, bf16, batch 1), 300 SQuAD v1.1 validation questions each, the same IDs as the M2b-S run (checked by the runner), greedy. Parameters as fixed above: `K = 64`, `α = 0.3`, `λ = 1e-3`; nothing was tuned. The aggregate tables in this document are what is committed; the per-item run files stay in `~/l4-statebridge/` on the GPU machine. On Phi-3.5-mini → Qwen2.5-1.5B the runner reproduces M2b-S: `text` 0.779 (M2b-S 0.778), `t2t` 0.461 (0.460), `swat` 0.872 (0.872).
+
+**Verdict: does not carry content here; it does not replace the mapper.** Of the three verdicts fixed above this is the one that applies, and it needs its two parts kept apart. None of the 28 pair and variant checks meets the rule, and all 28 score below the sender's text summary. The two anchor variants, including the primary `anchor/summary`, do not beat their mismatched control on any pair (14 of 14 intervals include zero), and the primary is below the receiver with no passage at all in six of the seven pairs. The two calibrated variants do carry a trace of the right passage: they beat their mismatched control in 11 of 14 checks, by 0.045 to 0.172 F1. That trace is far from usable: they are 0.22 to 0.38 F1 below the text summary everywhere, and against no passage at all 1 of 14 intervals is above zero, 4 are below and 9 include zero. On the pair this card is about, Phi-3.5-mini → Qwen2.5-1.5B, the best aligned variant scores 0.192, the text summary 0.461, no passage 0.191, and the trained mapper 0.872. The paper's own per-message fit, judged apart on the two pairs where it was run, beats its mismatched control by +0.31 and +0.40 F1 and fails the rule because its mean is 0.010 and 0.025 below `t2t`; its differences from the plain embeddings of the same tokens are small with intervals that include zero. It needs a token-by-token match with the receiver's vocabulary, which two different tokenizers do not have. Keep the trained mapper for cross-model hand-offs; where no mapper exists, send text.
+
+**Baselines and the primary variant (mean token F1, 300 questions):**
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | its mismatched | its zeroed | `swat` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.779 | 0.461 | 0.191 | 0.135 | 0.138 | 0.143 | 0.872 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.779 | 0.441 | 0.191 | 0.011 | 0.012 | 0.139 | – |
+| Phi-3.5-mini → Qwen2.5-3B | 0.871 | 0.539 | 0.211 | 0.060 | 0.054 | 0.028 | – |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.871 | 0.418 | 0.211 | 0.004 | 0.006 | 0.000 | – |
+| Qwen2.5-3B → Qwen2.5-3B | 0.871 | 0.472 | 0.211 | 0.010 | 0.005 | 0.143 | – |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.716 | 0.444 | 0.124 | 0.097 | 0.093 | 0.111 | – |
+| Phi-3.5-mini → SmolLM2-360M | 0.418 | 0.359 | 0.106 | 0.100 | 0.098 | 0.105 | – |
+
+**The pass rule, every variant (paired F1 difference with its 95% interval, 10,000 resamples):**
+
+| Pair | Variant | F1 | minus mismatched | minus `t2t` | minus `closed` | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/summary` | 0.135 | -0.003 [-0.018, +0.013] | -0.326 [-0.378, -0.274] | -0.056 [-0.089, -0.024] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/summary` | 0.192 | +0.062 [+0.028, +0.098] | -0.269 [-0.321, -0.216] | +0.001 [-0.038, +0.039] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `anchor/passage` | 0.134 | +0.008 [-0.005, +0.022] | -0.327 [-0.379, -0.275] | -0.057 [-0.087, -0.027] | fail |
+| Phi-3.5-mini → Qwen2.5-1.5B | `calibrated/passage` | 0.178 | +0.045 [+0.017, +0.075] | -0.282 [-0.336, -0.229] | -0.013 [-0.046, +0.020] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/summary` | 0.011 | -0.001 [-0.010, +0.009] | -0.430 [-0.477, -0.383] | -0.180 [-0.215, -0.147] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/summary` | 0.218 | +0.097 [+0.060, +0.135] | -0.223 [-0.272, -0.174] | +0.027 [-0.013, +0.068] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `anchor/passage` | 0.006 | -0.002 [-0.011, +0.006] | -0.435 [-0.482, -0.388] | -0.185 [-0.221, -0.151] | fail |
+| Qwen2.5-3B → Qwen2.5-1.5B | `calibrated/passage` | 0.172 | +0.045 [+0.013, +0.077] | -0.269 [-0.323, -0.216] | -0.019 [-0.056, +0.017] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/summary` | 0.060 | +0.006 [-0.009, +0.021] | -0.479 [-0.534, -0.426] | -0.150 [-0.189, -0.113] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/summary` | 0.159 | +0.090 [+0.059, +0.123] | -0.381 [-0.434, -0.328] | -0.052 [-0.092, -0.012] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `anchor/passage` | 0.072 | +0.019 [-0.006, +0.045] | -0.467 [-0.523, -0.413] | -0.139 [-0.176, -0.102] | fail |
+| Phi-3.5-mini → Qwen2.5-3B | `calibrated/passage` | 0.161 | +0.105 [+0.073, +0.137] | -0.379 [-0.437, -0.322] | -0.050 [-0.085, -0.016] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/summary` | 0.004 | -0.002 [-0.006, +0.001] | -0.414 [-0.466, -0.363] | -0.206 [-0.246, -0.169] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/summary` | 0.178 | +0.114 [+0.077, +0.152] | -0.240 [-0.291, -0.189] | -0.032 [-0.072, +0.007] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `anchor/passage` | 0.005 | +0.004 [-0.001, +0.012] | -0.413 [-0.465, -0.361] | -0.205 [-0.245, -0.168] | fail |
+| Qwen2.5-1.5B → Qwen2.5-3B | `calibrated/passage` | 0.144 | +0.079 [+0.049, +0.112] | -0.274 [-0.328, -0.221] | -0.067 [-0.101, -0.033] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/summary` | 0.010 | +0.005 [-0.002, +0.014] | -0.462 [-0.512, -0.411] | -0.201 [-0.240, -0.163] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/summary` | 0.234 | +0.172 [+0.129, +0.216] | -0.238 [-0.287, -0.189] | +0.023 [-0.026, +0.072] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `anchor/passage` | 0.003 | +0.000 [+0.000, +0.000] | -0.468 [-0.519, -0.419] | -0.207 [-0.247, -0.170] | fail |
+| Qwen2.5-3B → Qwen2.5-3B | `calibrated/passage` | 0.141 | +0.084 [+0.055, +0.115] | -0.331 [-0.386, -0.277] | -0.070 [-0.109, -0.032] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/summary` | 0.097 | +0.004 [-0.017, +0.023] | -0.347 [-0.400, -0.295] | -0.027 [-0.054, -0.002] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/summary` | 0.174 | +0.068 [+0.032, +0.106] | -0.270 [-0.321, -0.219] | +0.050 [+0.016, +0.084] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `anchor/passage` | 0.095 | +0.004 [-0.011, +0.019] | -0.349 [-0.401, -0.297] | -0.029 [-0.056, -0.004] | fail |
+| Qwen2.5-3B → Qwen2.5-0.5B | `calibrated/passage` | 0.139 | +0.022 [-0.009, +0.054] | -0.305 [-0.357, -0.253] | +0.015 [-0.015, +0.045] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/summary` | 0.100 | +0.003 [-0.006, +0.012] | -0.259 [-0.302, -0.217] | -0.005 [-0.024, +0.013] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/summary` | 0.107 | +0.007 [-0.008, +0.023] | -0.253 [-0.295, -0.211] | +0.001 [-0.019, +0.021] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `anchor/passage` | 0.086 | -0.001 [-0.008, +0.006] | -0.273 [-0.316, -0.231] | -0.020 [-0.038, -0.001] | fail |
+| Phi-3.5-mini → SmolLM2-360M | `calibrated/passage` | 0.099 | +0.010 [-0.003, +0.024] | -0.260 [-0.303, -0.217] | -0.007 [-0.028, +0.014] | fail |
+
+**Containment** (share of answers that contain a gold answer; it does not reward short answers, and tells the same story):
+
+| Pair | `text` | `t2t` | `closed` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 0.860 | 0.437 | 0.137 | 0.073 | 0.120 | 0.087 | 0.110 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.860 | 0.400 | 0.137 | 0.003 | 0.153 | 0.000 | 0.107 |
+| Phi-3.5-mini → Qwen2.5-3B | 0.873 | 0.487 | 0.143 | 0.033 | 0.090 | 0.050 | 0.100 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 0.873 | 0.370 | 0.143 | 0.000 | 0.100 | 0.000 | 0.070 |
+| Qwen2.5-3B → Qwen2.5-3B | 0.873 | 0.390 | 0.143 | 0.000 | 0.163 | 0.000 | 0.063 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 0.700 | 0.377 | 0.073 | 0.047 | 0.100 | 0.037 | 0.077 |
+| Phi-3.5-mini → SmolLM2-360M | 0.607 | 0.380 | 0.040 | 0.067 | 0.083 | 0.053 | 0.067 |
+
+**The maps.** Anchors are vocabulary entries both tokenizers have. "Held-out vocabulary rows" is the share of anchors kept out of the fit whose mapped sender output-embedding row lands nearest its own receiver row. "In the run" is the share of prefix positions whose nearest receiver row is the anchor of the token the sender state predicts.
+
+| Pair | Anchors | Share of sender / receiver vocabulary | Passage tokens with an anchor | Anchor map, held-out vocabulary rows | Calibrated map, held-out states | In the run: `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 26,211 | 82% / 17% | 82% | 0.84 | 0.49 | 0.07 | 0.35 | 0.00 | 0.44 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.23 | 0.40 | 0.05 | 0.46 |
+| Phi-3.5-mini → Qwen2.5-3B | 26,211 | 82% / 17% | 82% | 0.86 | 0.50 | 0.08 | 0.36 | 0.01 | 0.44 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 0.98 | 0.49 | 0.10 | 0.34 | 0.06 | 0.46 |
+| Qwen2.5-3B → Qwen2.5-3B | 150,194 | 99% / 99% | 100% | 1.00 | 0.49 | 0.69 | 0.41 | 0.56 | 0.47 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 150,194 | 99% / 99% | 100% | 0.91 | 0.49 | 0.10 | 0.38 | 0.02 | 0.47 |
+| Phi-3.5-mini → SmolLM2-360M | 18,594 | 58% / 38% | 81% | 0.81 | 0.47 | 0.01 | 0.29 | 0.00 | 0.40 |
+
+What these diagnostics show, without isolating a cause: the two vocabulary tables do line up under one rotation, with 81% to 100% of held-out rows landing on their own row across families and sizes. Real final-layer states sent through the same map land on the right row 0% to 23% of the time between different models (10% or less in ten of the twelve cases), so a hidden state does not behave like an output-embedding row. Maps fitted on real states agree more often (29% to 47%), and those are the variants that more often beat their mismatched control. High agreement alone is not enough: in the same-model pair the anchor map lands 56% to 69% of positions on the right row and the receiver still scores 0.01. After anchoring, 70% of each vector's weight is still the mapped state; how far that leaves the prefix from what a receiver was trained to read was not measured.
+
+**Time end to end (mean ms per question; the one-off fits apart):**
+
+| Pair | `text` | `t2t` | `anchor/summary` | `calibrated/summary` | `anchor/passage` | `calibrated/passage` | `swat` | Anchor fit (s) | Calibrated fit (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini → Qwen2.5-1.5B | 316 | 3,267 | 3,400 | 3,326 | 589 | 481 | 385 | 9.1 | 63.8 |
+| Qwen2.5-3B → Qwen2.5-1.5B | 334 | 3,167 | 3,784 | 3,251 | 1,041 | 488 | – | 12.0 | 45.6 |
+| Phi-3.5-mini → Qwen2.5-3B | 336 | 3,314 | 3,388 | 3,366 | 521 | 542 | – | 10.5 | 69.8 |
+| Qwen2.5-1.5B → Qwen2.5-3B | 331 | 2,434 | 2,760 | 2,507 | 602 | 481 | – | 12.0 | 33.6 |
+| Qwen2.5-3B → Qwen2.5-3B | 338 | 3,207 | 3,984 | 3,242 | 1,470 | 654 | – | 15.9 | 47.8 |
+| Qwen2.5-3B → Qwen2.5-0.5B | 200 | 3,078 | 3,228 | 3,133 | 460 | 378 | – | 8.4 | 42.3 |
+| Phi-3.5-mini → SmolLM2-360M | 576 | 3,462 | 3,707 | 3,636 | 921 | 843 | – | 5.1 | 60.0 |
+
+The summary variants cost what the text summary costs, because the sender writes the same summary first (a mean of 3.0 s for Phi-3.5-mini, 2.9 s for Qwen2.5-3B and 2.1 s for Qwen2.5-1.5B, from the summary cache), plus 50 to 330 ms end to end on the five pairs that ran alone; the stages inside that overhead were not timed apart. The passage variants skip the writing and take 0.38 to 1.47 s (0.38 to 0.92 s without the two pairs that also ran the per-message arms, whose CPU fits shared the process). Every passage-arm mean is above the receiver reading the passage itself, and on the Phi pair both are above the trained mapper's 385 ms. The fits are a one-off per pair: 5 to 16 s for the anchor map and 34 to 70 s for the calibrated one, against hours for a trained mapper. That is the method's one real advantage, and it does not help if the result cannot be read.
+
+**The paper's own per-message fit** (run on two of the four pairs that share a tokenizer):
+
+| Pair | `per-message` | mismatched | `tokens` | `t2t` | minus mismatched | minus `tokens` | minus `t2t` | same rows minus states swapped | Same answer with swapped states | Prefix change when states are swapped (mean / max) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen2.5-3B → Qwen2.5-1.5B | 0.430 | 0.124 | 0.426 | 0.441 | +0.306 [+0.257, +0.357] | +0.004 [-0.001, +0.011] | -0.010 [-0.027, +0.004] | -0.003 [-0.017, +0.009] | 279 of 300 | 7.2% / 13.4% |
+| Qwen2.5-3B → Qwen2.5-3B | 0.447 | 0.046 | 0.448 | 0.472 | +0.401 [+0.351, +0.451] | -0.001 [-0.006, +0.003] | -0.025 [-0.046, -0.005] | -0.006 [-0.016, +0.002] | 280 of 300 | 7.5% / 14.5% |
+
+- **It scores like the tokens' own embeddings.** `per-message` and `tokens` (the receiver's embeddings of the same last 64 summary tokens, untouched, in the same place) differ by −0.001 [−0.006, +0.003] and +0.004 [−0.001, +0.011] F1. An interval that includes zero is not proof of equality; it bounds any difference at about 0.01 F1 here.
+- **Swapping the hidden states changed little.** Keeping the tokens and using the hidden states of another passage, at an equal number of rows, changes the prefix vectors by 7.5% and 7.2% on average (at most 14.5% and 13.4%), the F1 by −0.006 [−0.016, +0.002] and −0.003 [−0.017, +0.009] (own states minus swapped), and leaves 280 and 279 of 300 answers identical. No benefit of the original states was detected. Measured on the cached Qwen2.5-3B summaries: condition (a) holds with room (the smallest state eigenvalue is at least 4,700 times the ridge in every summary), and condition (b) almost never does (the last 64 tokens repeat 9.5 tokens on average, and only 2 of 277 summaries have none), which is where a state-dependent part of this size is expected; the run does not separate repeats from other sources.
+- **It is not better than sending that text.** Against the summary as text (the full summary in the ordinary prompt, where `tokens` and `per-message` carry only its last 64 tokens) it is −0.025 [−0.046, −0.005] in the paper's own same-model setting and −0.010 [−0.027, +0.004] from 3B to 1.5B. By the card's rule it beats its mismatched control and is below `t2t` on the mean in both pairs: fail. 84% of the Qwen2.5-3B summaries are 64 tokens or shorter, so for those the prefix covers the whole summary.
+- `per-message` took 2.6 s and 1.6 s longer end to end than `tokens`. That is our float64 CPU fit, not a measurement of the authors' GPU code.
+
+What this does and does not say about the paper: we did not rerun its benchmarks, its models (Qwen3 and OLMo3 are not on this machine), its four-agent pipeline, its sampling or its prefix placement. What we have is the arithmetic (under the two conditions the output is fixed by the token embeddings, shown by unit tests) and two SQuAD runs on Qwen2.5-3B in which the aligned prefix behaved like the embeddings of its own tokens and the original hidden states made no detectable difference. That makes "the prefix is mostly the decoded tokens" a plausible reading of the method. Where the paper's reported gains over a text pipeline come from remains untested.
+
+### Edge cases
+
+- **Receiver below 2B.** All four pairings with a receiver below 2B fail (Qwen2.5-1.5B twice, Qwen2.5-0.5B, SmolLM2-360M), and so do all three with the 3B receiver. Receiver size was not varied apart from model identity, so this says only that a larger receiver did not rescue the method here. On SmolLM2-360M both calibrated intervals against the mismatched control include zero (+0.007 [−0.008, +0.023] and +0.010 [−0.003, +0.024]).
+- **Low tokenizer overlap.** Phi-3.5-mini shares 26,211 entries with Qwen (82% of its own vocabulary, 17% of Qwen's) and 18,594 with SmolLM2 (58% and 38%); 82% and 81% of SQuAD passage tokens have an anchor. The Qwen pairs share 150,194 (99% of the vocabulary; all but 0.04% of passage tokens have an anchor). They fail too, so near-full overlap did not rescue the method. Overlap was not varied apart from model identity either.
+- **Emoji and non-English text** (8 synthetic items, Phi-3.5-mini → Qwen2.5-1.5B, means only, no interval):
+
+  | Arm | F1 | Containment |
+  | --- | --- | --- |
+  | `text` | 0.780 | 0.875 |
+  | `closed` | 0.042 | 0.000 |
+  | `t2t` | 0.789 | 0.875 |
+  | `anchor/summary` | 0.042 | 0.000 |
+  | `anchor/summary mismatched` | 0.042 | 0.000 |
+  | `calibrated/summary` | 0.050 | 0.000 |
+  | `calibrated/summary mismatched` | 0.025 | 0.000 |
+  | `anchor/passage` | 0.025 | 0.000 |
+  | `anchor/passage mismatched` | 0.025 | 0.000 |
+  | `calibrated/passage` | 0.050 | 0.000 |
+  | `calibrated/passage mismatched` | 0.050 | 0.000 |
+  | `anchor/summary zeroed` | 0.025 | 0.000 |
+  | `swat` | 0.812 | 0.750 |
+
+  Text, the text summary and the trained mapper answer most of these (the mapper misses the mixed-script item and half of one Russian name). Every aligned arm has containment 0 on all eight, at the level of no passage. Only 39% to 71% of these passages' sender tokens have an anchor, against 82% on SQuAD.
+
+### What is not covered
+
+One task (extractive questions over one short passage), one seed, one machine, greedy decoding. No multi-step reasoning task of the kind the paper reports. No Llama pair (gated, not on the machine). The seven pairs reuse the same 300 questions, over 277 distinct passages; the intervals are paired by question and do not account for questions that share a passage, nor for looking at 28 checks at once (with every check failing, that does not change the verdict). The four fixed-map variants are this card's adaptation: their fit targets differ from the paper's, and the token budget of a prefix was not matched to the text summary's. The trained mapper is measured on one pair only. The calibrated map was fitted on states from reading 400 passages, not from writing summaries. `K`, `α` and `λ` were not searched; that was the point of fixing them, and a search on these 300 questions would not be evidence.
+
+### Suites and review
+
+Suites on this branch (Windows): `npm run -s test:graph` 9 of 9; `node --test tests/*.test.mjs` 674 tests, 664 passed, 10 skipped, 0 failed (an earlier run while the GPU was busy lost `tests/paging.test.mjs` to the 300 s per-file limit; alone it passed 17 of 17); `npx playwright test` 61 passed, 1 skipped; runtime `python -m unittest discover -s tests -t .` 275 tests, OK with 85 skipped without torch, and 275 OK with none skipped in the WSL environment that has torch (36 of them are this card's).
+
+**Codex review of the code (read-only, 2026-11-27, before the measured runs):** 11 findings, 3 high. All fixed, or answered in "Corrections before the measured runs", before any 300-question result was used; every run in the tables was made after the fixes.
+
+1. *(high)* The claim that the per-message fit ignores the hidden states needed two conditions (states well above the ridge, reference rows of full rank). Wording corrected; two new tests cover states near the ridge and repeated tokens.
+2. *(high)* The summary cache was keyed by question ID only, so another sender's file could be loaded. Now keyed by sender and passage text, and a file names its sender; test added.
+3. *(high)* The mismatched control was "the next item", and 23 of the 300 questions share a passage with another one. Now the next item with a different passage; test added.
+4. *(medium)* Which state belongs to a token was ambiguous in the eval text. It is the state the token is read from, as in the authors' code; wording fixed, no code change.
+5. *(medium)* The zeroed control keeps the summary's length. Stated; not changed.
+6. *(medium)* Controls were timed and text arms embedded their text outside the timer. Controls are no longer timed and embedding is inside the timer.
+7. *(medium)* The states-swapped comparison mixed prefix lengths. It is now made at an equal number of rows; a summary too short to fit raises an error.
+8. *(medium)* A marginal secondary result was stored as passed. It is now "needs a repeat" and not a pass; test changed.
+9. *(medium)* An edge run produced intervals and a verdict from eight items, and a run without the ID check looked the same as a checked one. Edge runs give means only, and the table header says whether the IDs were checked.
+10. *(low)* A fit on rows without variance divided by zero. It is refused; test added.
+11. *(low)* No test showed that resampling keeps pairs together. Test added.
+
+Two more defects were found by the runner's own checks before any result was used: the passage cap (256, not 384) and the receiver's repetition penalty.
+
+**Codex review of this record (read-only, 2026-11-27, against the raw aggregates of the eight runs):** every table cell and every count in the prose matched the aggregates (0 of 28, 11 of 14, six of seven, 1 above / 4 below / 9 including zero, ten of twelve, 280 and 279 of 300). It agreed that the replacement decision follows from the rule, and raised ten wording findings, 3 high, all applied above; none changed a number or needed code.
+
+1. *(high)* "Does not carry content" blurred the rule's two parts. The verdict now says that the anchor variants show no content signal, the calibrated ones show a trace in 11 of 14 checks, and all 28 are below the text summary.
+2. *(high)* The summary of the per-message fit contradicted the rule's own outcome. It now says: beats its mismatched control, fails on the mean against `t2t`, run on two of the four pairs that share a tokenizer.
+3. *(high)* "The hidden states do not matter" and the sentence about the paper's gains went past the evidence. They now say what was measured (no detectable difference on two runs; an interval that includes zero is not equality) and that the source of the paper's gains is untested.
+4. *(medium)* The correction still claimed exactness and asserted that real states meet the first condition. The conditions are restated as a limit, the first prediction is marked as superseded where it stands, and both conditions were then measured on the cached summaries (smallest state eigenvalue at least 4,700 times the ridge; 2 of 277 summaries without a repeated token).
+5. *(medium)* Timing prose gave ranges that left out two pairs and attributed overheads to stages that were not timed apart. Ranges corrected, summary times taken from the cache, the per-message figure given as end-to-end overhead.
+6. *(medium)* "This is why it fails" was an explanation the diagnostics do not isolate. Reworded as observations; the comparison with no passage is given as its three counts.
+7. *(medium)* The edge conclusions blamed neither size nor overlap on evidence that did not vary them apart from model identity. Reworded.
+8. *(medium)* Missing limits added: shared passages and 28 checks at once, the variants being this card's adaptation, no matched token budget, the mapper on one pair, the share of summaries that 64 tokens cover.
+9. *(low)* Two descriptions of the paper narrowed (what it measures between models; which controls it has).
+10. *(low)* What is committed is stated exactly, the board's scope now names all seven pairings, and the edge arms are "every applicable arm".
+
+No regression test applies to wording; the code and its 36 tests are unchanged since the measured runs.
+
+**Repeated findings (AGENTS.md section 4, step 5).** One kind of finding came back: a claim stronger than its evidence, about the per-message fit (code review, finding 1) and again in the results record (findings 3 and 4). The part that is arithmetic is now held by tests: both conditions of the claim have a unit test, so the code cannot drift from what the text says. The part that is wording has no pattern a `scripts/check.mjs` rule could match, because it is a judgement about whether a sentence follows from a table. What catches it is the second review against the raw aggregates, which this card ran and records above. No other finding repeated. After merging `main` at `a3f9a83` and later, `node scripts/check.mjs` reports no findings on 319 files and the runtime suite still passes.
+
 ## S1 — Swarm demo: many agents on one GPU (defined 2026-11-21, before the code)
 
 For the investor demo: many small agents work one task at once on the laptop GPU, the page shows each one live, and the answer arrives in seconds. The research behind the sizing is in `docs/latent-gpu-plan.md` on `claude/m2b-scale`. Latent hand-offs join later as a lane once M2b-S passes; this card is text agents on open models.
@@ -5299,6 +5579,204 @@ H9 and H10 turned review findings that kept coming back into `scripts/check.mjs`
 - `tests/agents-rules.test.mjs` checks that both texts are present, so a later edit cannot drop them silently.
 - **Codex review, round 1:** no high; two medium and two low, fixed: what counts as a repeat was undefined (now: the same rule broken, or the same API misused, as an earlier entry, which the fix cites); the PR checklist let the exception live in the PR instead of `docs/evals.md` (it now points there); the test matched exact wording and missed the exception (it now checks the elements: repeat, cite, check rule or API change, exception recorded in `docs/evals.md`); a blank line at the end of this file.
 - **Codex review, round 2:** no high or medium, so the review stops here. Three low, fixed: the exception now needs that no reliable check rule and no practical API change exists; the test checks the API-change option itself; the H9 handoff line now asks for a check rule as well as the regression test.
+
+## H14 — Windows-only browser test flakes (defined 2026-11-27)
+
+Three Playwright tests failed on Windows runners and passed on a re-run, with no browser code changed: the console demo test (W1 #73, an H9 local run), the handoff test (L3 #96, #101), and the H11 swarm-run feature entry (a local W1 full run). Each failure cost a 30-minute re-run. The card fixes what makes each one depend on timing, not the timeouts.
+
+### What is tested and the expected result
+
+- **Console demo, the read line.** A read line lives 2.4 s, and the test polled for it from outside the page, so a loaded runner could miss every line (#73: not found for 20 s). The page now records each read line as it is added and samples it every frame while it is drawn; the test waits until, in one frame, the first recorded line had opacity above 0.5, a stroke and a non-empty box. Reproduced locally with eight CPU-bound processes: the old test also ran past its 30 s budget, since the 34 s recording plays at speed 1.5 (about 23 s); the test now has 60 s. The same stress run then failed the next line, which waited for exactly one working agent: each publish keeps an agent working for 4 s and the two agents publish 2.7 to 4 s apart at speed 1.5, so that window is short. The recorder also notes which agents were working when the line was added (the office is drawn first), and the test checks that Ali, who published and read, is among them. Only Ali's 20 s publish and Leo's 26 s publish link to the other party, so the first recorded line is Ali's.
+- **H11 swarm-run entry.** A ledger runs one swarm at a time and answers a second with 409. `tests/e2e/swarm.spec.mjs` waits for that slot before each test, but the swarm-run entry in `tests/e2e/features.spec.mjs` ran in parallel with it. Entries that start a run now carry `"runsSwarm": true` in `docs/features.json` and are checked in `swarm.spec.mjs`; `features.spec.mjs` skips them. `tests/e2e/feature-check.mjs` watches `POST /api/swarm/runs` while the page opens the entry: an entry without the mark that asks for a run fails, and so does a marked entry for which the ledger accepted no run (HTTP 200). `tests/drive.test.mjs` checks that the field is a boolean.
+- **Handoff, "Line 2".** Not reproduced: 12 runs under CPU load and 104 runs beside the specs that write the database through the CLI all passed. A candidate cause is in the notes below. The test now waits for the reader's own `GET /api/sessions/<id>` and fails with its status and body when the ledger refuses it, so the next failure says why instead of only "element not found".
+- **Synthetic data:** the repository's demo recording and test fixtures only.
+
+### Notes
+
+- The ledger keeps the rollback journal on purpose (deletes need it) with `busy_timeout = 5000`, and `node:sqlite` is synchronous, so while a CLI process holds the write lock the server's event loop can wait up to 5 s, the same as an assertion's default wait. On Windows, file scanning of the `-journal` file can lengthen that. If the handoff failure comes back with a 500 or a slow response, that is the place to look.
+- **Node suite on #100, and H9 ruled out.** Three Node tests that start a server failed together after about 30 s (#100, run 46025391797). The server printed "Cannot write the access token file next to the database.", the message from its listen callback: on Windows the token file is written by a synchronous PowerShell call with a 30 s timeout (`src/token.mjs`), and under load PowerShell did not finish in time, so the server exited. H9's change from `listen(port, host)` to `listen({ port, host })` is not the cause: every test server uses `PORT=0`, the server was already listening when it exited, Node reads both forms the same way, and the console demo flake predates H9. The token write is security code, so it is card H15, not part of this card.
+- **Codex review, round 1** (of the version before the working-agent change): three medium and two low, fixed. (medium) The recorder kept the highest opacity, the stroke and the size separately, so they could come from different frames; one frame must now have all three. (medium) The working-agent count was still read from the test after the line; it is now recorded with the line, as above. (medium) Whether an entry starts a swarm run was guessed from a `#run` selector, which a `#swarm-run` click would slip past; the page's own requests decide it now. (low) Every feature test was reported at `feature-check.mjs`, a location that runs nothing; the spec files call `test()` themselves and the helper only builds the body. (low) A body that could not be read hid the handoff response's status; the status is reported either way. Accepted: the mid-run screenshot is taken after the wait, so it can show a later moment; it is a picture for people, not a check.
+- **Codex review, round 2:** no high; one medium and three low. (low, fixed) A hidden flash layer would leave the line's own opacity, stroke and box intact: the frame check also needs the line's inherited visibility. (low, fixed) The swarm check counted attempts, so a marked entry whose run the ledger refused with 409 could pass: it now needs an accepted run. (low, fixed) The handoff response wait could time out on its own while the click was still waiting for a missing result: the two are awaited together. (medium, accepted) If the browser's own main thread stalls for more than the line's 2.4 s, the line can be removed before any frame samples it, and the test fails. Such a stall also means the line was never painted, so failing is correct; the CI failures came from polling outside the page, which this card removes. With eight CPU-bound processes running, 20 runs of the one-frame recorder and 20 more after this round all passed.
+## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
+
+Card: L3 on the delivery board. Scope: `runtime/latent_transfer/align.py`, its caller `batch.py`, and a new optional norm calibration step. No training is run.
+
+### The rule in use before this card (rule 1)
+
+Read from `align.py`, `batch.py`, `pair.py`, `train.py` and `evaluate.py` on `main` at 6fa6249.
+
+- **Alignment is by character offsets, not by token index.** `batch.spans` tokenizes the same text with each tokenizer (`add_special_tokens=False`, so no BOS or EOS is added on either side) and takes each token's half-open `[start, end)` character span from the fast tokenizer's offset mapping. Each side is truncated to `max_tokens` (384) on its own.
+- **Position.** `align.sender_positions` gives each sender token a fractional position on the receiver's token axis: with `m` the midpoint of the sender token and `j` the last receiver token that starts at or before `m`, the position is `max(0, j + clip((m - a_j) / (b_j - a_j), 0, 1) - 0.5)`. The mapper uses it as the rotary position of that sender token in cross-attention.
+- **Visibility.** Receiver token `j` may read sender token `i` when `end_i <= end_j` (`align.causal_mask`, vectorized in `batch.make_pair`).
+- **When tokens do not line up:**
+  - One sender token over several receiver tokens: the receiver tokens before the last one cannot read it; a receiver token with no visible sender token reads only the mapper's learned "sink" slot.
+  - Several sender tokens inside one receiver token: all are visible to it, at positions inside that token.
+  - After truncation, `cut_to_common_end` keeps, on each side, the tokens ending at or before the smaller of the two last offsets. A token that crosses that offset is dropped without a record, and the tokens of the other side that sit over its characters stay.
+  - A sender token that no receiver token can read stays in the batch and is never used; nothing counts it.
+  - A document with no tokens on one side raises `ValueError`.
+- `train.py` and `evaluate.py` only keep items that fit `max_tokens` on both sides for stage 2, dev F1 and the SQuAD eval, so truncation happens only in stage 1 batches and the held-out NMSE batches.
+
+### What is tested and the expected result
+
+1. **Audit set.** A fixed, synthetic edge-case set in `runtime/latent_transfer/align_audit.py`: leading and repeated white space, CRLF, tabs, emoji and other astral characters (with a joined emoji sequence), combining marks, CJK, Arabic, very long words, numbers, code, special and chat-template token strings, an empty string, and texts where one side's token covers several of the other's and the reverse. Plus a natural-text column: 200 SQuAD validation passages (public data; only counts are recorded).
+2. **Pairs.** At least four of Phi-3.5-mini, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1, with Phi-3.5 to Qwen2.5 (the M2b-S pair) among them. Tokenizers only, on CPU.
+3. **Reported per pair:** Jaccard overlap of the two vocabularies (tokens compared as the bytes they stand for, special tokens left out); the share of texts split at identical boundaries (exact match); the share of sender positions that are one-to-one (same span as a receiver token), one-to-many (the sender token covers several receiver tokens), many-to-one, crossing, and unaligned (no receiver token over its characters, or no receiver token may read it); and, per tokenizer, tokens whose reported span is not the characters the token stands for.
+4. **Expected after the fixes (rule 2):** on every audit text and pair, (a) the two sides cover exactly the same characters, (b) no token of either side is dropped unless the text was truncated, and then both sides stop at a boundary they share, (c) with the same tokenizer on both sides every position is the token's own index and the mask is lower-triangular, including texts with emoji, (d) no sender token is unreadable, and (e) the number of receiver tokens that see no sender token is carried in the batch. An empty document still raises `ValueError`.
+5. **Norm calibration.** Off by default; with the flag off, outputs are bit-identical to before. The arithmetic (scale = target norm / observed norm, per group or per token, padding left out, an optional cap) is unit-tested without torch, and the tensor version is tested against it when torch is present.
+
+### Acceptance for the code
+
+- Rule 1 stays available and is what a checkpoint without a recorded rule loads with, so the M2b-S numbers can be reproduced; new mappers train with rule 2 and record it.
+- Regression tests for each defect, standard library only for `align.py`; checks that need torch or tokenizers skip when those are absent.
+- The four suites pass; Codex review recorded here.
+
+### L3 results (2026-11-26)
+
+Run with `python -m latent_transfer.align_audit --out audit.json` in `runtime/` (WSL, CPU, tokenizers 0.23.3, transformers 5.20.2): 35 synthetic edge-case texts, 200 SQuAD validation passages (seed 0), five tokenizers, all 20 ordered pairs. The Llama, Mistral and Granite tokenizers are the ones shipped in the quantized repositories already in the local cache. No GPU was used and nothing was trained.
+
+**Two changes to the expectations, made after the Codex review (below).**
+
+- 4(c) said the same tokenizer on both sides gives a lower-triangular mask. That holds for whole-character tokens. A token that is a piece of a character (one of an emoji's four byte tokens) now reads the sender's pieces of that character only once the character is complete, so its row is a subset of the lower triangle. The reason: offsets do not say how many bytes of the character a piece holds, and two tokenizers that cut one emoji into different byte groups could otherwise read a byte ahead. Positions are still the token's own index.
+- 4(d) said no sender token is unreadable. It now reads: no sender token that has characters. A token without characters that only the sender has at the very end of the text (nothing on the receiver comes after it) is kept and reported in `sender_unread`. No audited tokenizer produces one.
+
+**How rule 2 ended up, after the review.** Position and visibility are two separate questions. Position comes from the refined spans (`align.refine_spans`). Visibility and truncation come from what the raw offsets say each token touched (`align.ownership`): a sender token is readable once the receiver has finished every character the sender had touched when it wrote that token, and both sides are cut where each has finished exactly what it has touched.
+
+#### What the tokenizers report
+
+| Tokenizer | Vocabulary (special and added tokens left out) | Family | Adds BOS by default | Edge set: tokens | Pieces of a character sharing its span | Span is not the token's characters | Characters no token covers | Same tokenizer both sides fails, rule 1 / rule 2 (of 35 texts) | 200 passages: tokens | Pieces | Wrong span | Fails, rule 1 / rule 2 (of 200) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5-mini | 31,901 | SentencePiece | no | 613 | 44 | 6 | 0 | 10 / 0 | 38,588 | 0 | 1 | 1 / 0 |
+| Qwen2.5 | 151,643 | byte-level BPE | no | 457 | 20 | 5 | 5 | 5 / 0 | 34,258 | 15 | 0 | 3 / 0 |
+| Llama 3.1 | 128,000 | byte-level BPE | yes | 451 | 26 | 0 | 0 | 4 / 0 | 33,189 | 22 | 0 | 5 / 0 |
+| Mistral v0.3 | 31,872 | SentencePiece | yes | 576 | 31 | 5 | 0 | 8 / 0 | 37,588 | 3 | 1 | 2 / 0 |
+| Granite 3.1 | 49,133 | byte-level BPE | no | 516 | 34 | 0 | 0 | 7 / 0 | 41,370 | 51 | 0 | 11 / 0 |
+
+Positions mapped to the wrong characters, all of two kinds:
+
+- **Phi-3.5 and Mistral: the word marker.** When the text (or the stretch after a line break) starts with a character that cannot carry SentencePiece's word marker (a digit, an emoji, a CJK or Arabic character, a line break), the marker is its own token and reports the span of the character after it. Rule 2 gives the marker the first half of that character; no token is dropped.
+- **Qwen2.5: composed characters.** Qwen normalizes "e" + combining accent to one character. The token reports only the base letter's span and the accent is covered by no token (5 characters in the edge set, none in the 200 passages). Rule 2 joins the accent to that token.
+
+No tokenizer returned a zero-width span, out-of-order spans, or any token for the empty string (`make_pair` refuses it under both rules, as before).
+
+Other things the audit showed, recorded and not changed here (none is an alignment defect):
+
+- **Special-token strings inside a passage become real control tokens** on the tokenizer that knows them: Qwen reads `<|im_end|>` typed in a passage as its end-of-turn token; Phi-3.5 and Mistral read `</s>` as end of sequence. The other tokenizers split the same string into plain characters. The spans line up either way, but a passage can carry a control token into the cache. Worth a Backlog card (`split_special_tokens` for passage text).
+- **The ChatML header is plain text to a non-ChatML sender.** M2b documents start with `<|im_start|>user`. Qwen reads `<|im_start|>` as one token; Phi-3.5 reads it as seven. So in M2b-S the sender reads a header it was not trained on, and with Phi as the receiver six tokens per document read no sender token (the 1,200 in the last column below).
+- **BOS.** Llama 3.1 and Mistral add a BOS by default; Phi-3.5, Qwen2.5 and Granite do not. `batch.spans` turns special tokens off for both sides, so a Llama or Mistral model in this pipeline prefills without its BOS. Rule 2 handles a zero-width BOS on one or both sides (tests), so a harness can add it.
+
+#### Pairs
+
+Vocabulary overlap compares tokens as the bytes they stand for. Jaccard cannot exceed the ratio of the two vocabulary sizes (about 0.21 for a 32k and a 150k vocabulary), so the third column gives the share of the smaller vocabulary that the larger one also has. "Same boundaries" is the share of texts both tokenizers cut at identical places. The five kinds are shares of sender positions, on refined spans; each cell is edge set / 200 raw passages.
+
+| Sender to receiver | Vocabulary Jaccard | Smaller vocabulary found in the larger | Same boundaries | One-to-one | One-to-many | Many-to-one | Crossing | Unaligned |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5 to Qwen2.5 | 0.168 | 82.6% | 11.4% / 0.0% | 50.2% / 76.7% | 1.3% / 0.2% | 43.9% / 22.0% | 4.6% / 1.1% | 0.0% / 0.0% |
+| Phi-3.5 to Llama 3.1 | 0.200 | 83.4% | 17.1% / 0.0% | 47.3% / 72.2% | 0.7% / 0.2% | 47.0% / 26.5% | 5.1% / 1.1% | 0.0% / 0.0% |
+| Phi-3.5 to Mistral v0.3 | 0.607 | 75.6% | 54.3% / 0.5% | 82.7% / 89.6% | 1.0% / 0.7% | 15.2% / 7.9% | 1.1% / 1.8% | 0.0% / 0.0% |
+| Phi-3.5 to Granite 3.1 | 0.291 | 57.3% | 17.1% / 0.5% | 62.2% / 82.1% | 1.8% / 7.7% | 32.1% / 6.7% | 3.9% / 3.5% | 0.0% / 0.0% |
+| Qwen2.5 to Phi-3.5 | 0.168 | 82.6% | 11.4% / 0.0% | 67.4% / 86.4% | 19.9% / 10.9% | 5.3% / 1.3% | 7.4% / 1.4% | 0.0% / 0.0% |
+| Qwen2.5 to Llama 3.1 | 0.644 | 85.6% | 48.6% / 28.0% | 79.4% / 94.8% | 3.1% / 0.0% | 16.2% / 5.1% | 1.3% / 0.0% | 0.0% / 0.0% |
+| Qwen2.5 to Mistral v0.3 | 0.190 | 91.7% | 14.3% / 0.0% | 70.0% / 89.5% | 16.8% / 8.6% | 5.7% / 0.9% | 7.4% / 1.0% | 0.0% / 0.0% |
+| Qwen2.5 to Granite 3.1 | 0.233 | 77.2% | 22.9% / 0.0% | 68.5% / 81.5% | 13.6% / 16.1% | 14.4% / 0.9% | 3.5% / 1.5% | 0.0% / 0.0% |
+| Llama 3.1 to Phi-3.5 | 0.200 | 83.4% | 17.1% / 0.0% | 64.3% / 84.0% | 22.6% / 13.2% | 4.2% / 1.3% | 8.9% / 1.5% | 0.0% / 0.0% |
+| Llama 3.1 to Qwen2.5 | 0.644 | 85.6% | 48.6% / 28.0% | 80.5% / 97.9% | 5.5% / 2.0% | 12.4% / 0.1% | 1.6% / 0.0% | 0.0% / 0.0% |
+| Llama 3.1 to Mistral v0.3 | 0.223 | 91.3% | 22.9% / 0.0% | 67.8% / 87.2% | 19.5% / 10.8% | 4.2% / 1.0% | 8.4% / 1.0% | 0.0% / 0.0% |
+| Llama 3.1 to Granite 3.1 | 0.272 | 77.0% | 25.7% / 0.0% | 67.0% / 78.9% | 15.7% / 18.6% | 13.7% / 0.9% | 3.5% / 1.6% | 0.0% / 0.0% |
+| Mistral v0.3 to Phi-3.5 | 0.607 | 75.6% | 54.3% / 0.5% | 88.0% / 92.0% | 6.6% / 3.2% | 4.2% / 2.9% | 1.2% / 1.9% | 0.0% / 0.0% |
+| Mistral v0.3 to Qwen2.5 | 0.190 | 91.7% | 14.3% / 0.0% | 55.6% / 81.6% | 1.4% / 0.1% | 38.2% / 17.5% | 4.9% / 0.8% | 0.0% / 0.0% |
+| Mistral v0.3 to Llama 3.1 | 0.223 | 91.3% | 22.9% / 0.0% | 53.1% / 77.0% | 1.0% / 0.2% | 40.6% / 22.1% | 5.2% / 0.7% | 0.0% / 0.0% |
+| Mistral v0.3 to Granite 3.1 | 0.327 | 62.6% | 25.7% / 0.0% | 69.8% / 82.4% | 1.7% / 9.8% | 24.0% / 5.1% | 4.5% / 2.7% | 0.0% / 0.0% |
+| Granite 3.1 to Phi-3.5 | 0.291 | 57.3% | 17.1% / 0.5% | 73.8% / 76.6% | 13.2% / 1.9% | 7.2% / 18.6% | 5.8% / 3.0% | 0.0% / 0.0% |
+| Granite 3.1 to Qwen2.5 | 0.233 | 77.2% | 22.9% / 0.0% | 60.7% / 67.5% | 5.0% / 0.0% | 31.8% / 31.5% | 2.5% / 1.0% | 0.0% / 0.0% |
+| Granite 3.1 to Llama 3.1 | 0.272 | 77.0% | 25.7% / 0.0% | 58.5% / 63.3% | 4.8% / 0.0% | 33.7% / 35.7% | 2.9% / 1.0% | 0.0% / 0.0% |
+| Granite 3.1 to Mistral v0.3 | 0.327 | 62.6% | 25.7% / 0.0% | 77.9% / 74.9% | 8.7% / 1.4% | 6.8% / 21.5% | 6.6% / 2.2% | 0.0% / 0.0% |
+
+No sender position is unaligned in any pair: every character is under a token on both sides once the spans are refined.
+
+#### Rule 1 against rule 2
+
+"Passages changed" counts the 200 passages behind the M2b ChatML header (the texts the pipeline aligns, no truncation) where rule 2 gives any sender token a different position or visibility than rule 1. The truncation columns cut both sides to 64 tokens to force the case; "lost" is characters under one side's kept tokens and not under the other's.
+
+| Sender to receiver | Passages changed (of 200) | Sender tokens changed | Rule 1 at 64 tokens: dropped / sender tokens nobody reads / characters lost | Rule 2 at 64: dropped / unread / lost / refused | Edge set, rule 1: dropped, lost | Edge set, rule 2: dropped, lost, unread | Receiver tokens that read no sender token, rule 2 (edge / pipeline) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Phi-3.5 to Qwen2.5 | 3 | 14 of 41,646 | 2,731 / 22 / 78 | 2,755 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 1 / 0 |
+| Phi-3.5 to Llama 3.1 | 5 | 12 of 41,646 | 2,002 / 30 / 86 | 2,034 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 2 / 0 |
+| Phi-3.5 to Mistral v0.3 | 1 | 1 of 41,646 | 357 / 8 / 33 | 368 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 5 / 0 |
+| Phi-3.5 to Granite 3.1 | 11 | 33 of 41,646 | 608 / 6 / 70 | 641 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Qwen2.5 to Phi-3.5 | 3 | 14 of 35,658 | 2,731 / 0 / 78 | 2,755 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 24 / 1,200 |
+| Qwen2.5 to Llama 3.1 | 7 | 25 of 35,658 | 706 / 5 / 5 | 711 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 7 / 1,000 |
+| Qwen2.5 to Mistral v0.3 | 3 | 15 of 35,658 | 2,514 / 0 / 81 | 2,537 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 17 / 1,200 |
+| Qwen2.5 to Granite 3.1 | 11 | 33 of 35,658 | 3,099 / 0 / 151 | 3,154 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 9 / 1,000 |
+| Llama 3.1 to Phi-3.5 | 5 | 22 of 35,589 | 2,002 / 0 / 86 | 2,034 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 17 / 0 |
+| Llama 3.1 to Qwen2.5 | 7 | 28 of 35,589 | 706 / 0 / 5 | 711 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 0 / 0 |
+| Llama 3.1 to Mistral v0.3 | 5 | 22 of 35,589 | 1,783 / 0 / 88 | 1,813 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 10 / 0 |
+| Llama 3.1 to Granite 3.1 | 11 | 35 of 35,589 | 2,348 / 0 / 156 | 2,408 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Mistral v0.3 to Phi-3.5 | 1 | 2 of 40,648 | 357 / 1 / 33 | 368 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 11 / 0 |
+| Mistral v0.3 to Qwen2.5 | 3 | 16 of 40,648 | 2,514 / 23 / 81 | 2,537 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 2 / 0 |
+| Mistral v0.3 to Llama 3.1 | 5 | 14 of 40,648 | 1,783 / 30 / 88 | 1,813 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Mistral v0.3 to Granite 3.1 | 11 | 35 of 40,648 | 754 / 1 / 84 | 795 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 4 / 0 |
+| Granite 3.1 to Phi-3.5 | 11 | 50 of 44,170 | 608 / 20 / 70 | 641 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 18 / 0 |
+| Granite 3.1 to Qwen2.5 | 11 | 51 of 44,170 | 3,099 / 53 / 151 | 3,154 / 0 / 0 / 0 | 2, 3 | 0, 0, 0 | 2 / 0 |
+| Granite 3.1 to Llama 3.1 | 11 | 51 of 44,170 | 2,348 / 58 / 156 | 2,408 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 3 / 0 |
+| Granite 3.1 to Mistral v0.3 | 11 | 51 of 44,170 | 754 / 29 / 84 | 795 / 0 / 0 / 0 | 0, 0 | 0, 0, 0 | 10 / 0 |
+
+Over all 20 pairs: rule 1 left 286 sender tokens unread and 1,664 characters under one side only at 64 tokens, and dropped 16 tokens (24 characters) on the untruncated edge set; rule 2 leaves 0, 0 and 0, at the price of 628 more tokens cut (34,432 against 33,804) because both sides now stop at a shared whole-character boundary. Expectations 4(a) to 4(e) hold on every text and pair.
+
+#### Defects fixed
+
+1. **Pieces of one character shared one span.** With the same tokenizer on both sides, all pieces of an emoji took the last piece's position, and the first piece could read the later ones (10 of 35 edge texts for Phi-3.5, 11 of 200 passages for Granite). Fixed: `align.refine_spans` divides the character among its tokens in order for the position, and no piece reads the character until it is complete.
+2. **A token ending inside a character overlapped the next token** (Granite), and **the word marker claimed the next character** (Phi-3.5, Mistral). Same fix.
+3. **Characters no token covers** (Qwen's composed accents): the composed token could not read the sender's accent token, the sender's composed token could be read by a receiver token that had seen only the base letter, and when the text ended in one, rule 1 dropped the sender's last token without a record. Fixed: uncovered characters belong to the token before them.
+4. **Truncation left tails over different text.** Fixed by `align.common_cut`: both sides stop where each has finished exactly what it has touched, and the two agree.
+5. **Nothing said what did not line up.** The batch now carries `sender_unread`, `receiver_blind` and `dropped`.
+
+Each has a regression test in `runtime/tests/test_align.py` (standard library only for the span arithmetic). An oracle written separately from the code, counting character by character from the raw offsets, checks both directions (no read ahead of the text, no safe read refused) on the fixtures, on every truncation of every fixture pair, and on all 49 ordered pairs of the seven cached tokenizers over the whole edge set.
+
+#### Does this change the M2b-S numbers?
+
+**No number already recorded changes, and nothing was retrained.** A checkpoint saved before this card records no alignment rule and loads with rule 1, which builds the same batches as `main`: compared tensor by tensor against `batch.py` and `align.py` from `origin/main` on 235 texts, four tokenizer pairs and two token budgets (1,880 comparisons, all equal), and held as literals in the tests. So `~/m2b-scale/run1/best.pt` evaluates exactly as it did.
+
+**A mapper trained from now on uses rule 2 and could score differently.** For Phi-3.5 to Qwen2.5 the difference is small on this kind of text: 3 of 200 SQuAD passages and 14 of 41,646 sender tokens (0.03%) align differently; stage 1 batches, which are truncated, also end at a shared boundary now. Whether that moves F1 is not measured. Loading an old checkpoint with rule 2, or a new one with rule 1, is a train and serve mismatch; `TransferPair` picks the rule from the checkpoint so this does not happen by accident, and `evaluate` writes `alignmentRule` into its report.
+
+#### Which pairs look viable by tokenizer overlap
+
+One measured transfer exists in this repository (Phi-3.5 to Qwen2.5, M2b-S), so this is a ranking by overlap, not a tested prediction. The published 0.9 correlation between overlap and transfer quality (arXiv 2603.18908) was not re-measured.
+
+- **Best: Qwen2.5 with Llama 3.1** (Jaccard 0.64, 95 to 98% of positions one-to-one on passages, 28% of passages cut identically) and **Phi-3.5 with Mistral v0.3** (Jaccard 0.61, 90 to 92% one-to-one). Each is a pair of the same tokenizer family. These are the pairs to try first for training-free alignment (`statebridge`), where nothing learns to bridge a boundary mismatch.
+- **Middle: Granite 3.1 with any of the others** (Jaccard 0.23 to 0.33, 63 to 82% one-to-one). Granite's 49k vocabulary splits words that the others keep whole, so about a third of its positions fall inside a longer token of Qwen or Llama.
+- **Weakest by overlap: a SentencePiece tokenizer with a byte-level one** (Phi-3.5 or Mistral with Qwen2.5 or Llama 3.1): Jaccard 0.17 to 0.22, 72 to 90% one-to-one depending on direction. Most of the small vocabulary exists in the large one (83 to 92%), so the low Jaccard is mostly the size gap; the real cost is the 18 to 27% of the small-vocabulary side's positions that sit inside a longer token.
+- **The M2b-S pair is in the weakest group** (Jaccard 0.17, 77% one-to-one from Phi-3.5 to Qwen2.5) and still passed its three gates with a trained mapper and character-span alignment. Low overlap therefore does not rule a pair out for a trained mapper; it is a reason not to expect a training-free method to work on it.
+- **Direction matters.** From the larger vocabulary to the smaller, one sender token covers several receiver tokens (11% of positions from Qwen2.5 to Phi-3.5), and the receiver tokens before the last one read nothing new. From the smaller to the larger, several sender tokens fall inside one receiver token (22% from Phi-3.5 to Qwen2.5), which loses nothing. Small-vocabulary sender to large-vocabulary receiver is the easier direction; M2b-S runs that way.
+
+#### Norm calibration
+
+`runtime/latent_transfer/norm.py`, off by default. `calibrate_cache` rescales each document's mapped keys and values so their RMS per layer and head equals the receiver's own (`sigma`, already in every checkpoint); `calibrate_states` moves hidden-state norms to a target, per document or per token, with an optional cap; `embedding_norm_stats` gives the receiver's input-embedding norm statistics as that target. Switches: `TransferPair(norm_calibration=True)` or `python -m latent_transfer.evaluate --norm-calibration [--norm-max-scale X]`; the report records `normCalibration`. With the flag off the mapped cache goes through the same two calls as before. Its effect on F1 is not measured (that needs the GPU and is the sibling sessions' experiment); stage 2 training does not apply it.
+
+### Codex review of L3 (2026-11-26)
+
+Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc, 40db050 and 482a51b, and a confirmation round on 9df433f. Every finding was reproduced before it was fixed, and each fix has a regression test named for its round in `runtime/tests/test_align.py`.
+
+- **Round 1 (10 findings).** Two tokenizers that cut one emoji into different byte groups could read a byte ahead; a sender token without characters carried earlier text past a receiver BOS and lost its order; `refine_spans` left overlaps longer than one character overlapping; rule 1 positions had changed for zero-width spans; a zero-width token could be taken as a place to truncate, and `max_tokens=None` raised; norm calibration rescaled padding, let a NaN in padding reach real tokens and gave NaN gradients at zero energy; a fraction broke the audit's JSON; the tensor mask compared floats; audit coverage and refusal counts; the word-marker tolerance applied to byte-level tokenizers. All fixed.
+- **Round 2 (4 of the 10 confirmed fixed, 8 findings).** Visibility read from the refined spans still let a receiver read ahead on overlaps longer than one character, and a cut could fall inside one; fixed by taking visibility and cuts from what the raw offsets say each token touched (`align.ownership`). `refine_spans` raised on orderable overlaps and on a sentinel offset; rule 2 positions could land on an empty token; a NaN in a real token was hidden and fp64 input went through fp32; audit miscounts. All fixed. Two accepted as documented rather than changed: the cache scale is taken over the whole document, so it is not prefix-causal (stated in `norm.py` and the handoff); a sender-only empty token at the very end is kept and reported unread.
+- **Round 3 (the round 2 items closed or accepted; 1 medium and 2 low new).** After a nested overlap, an uncovered gap was credited to the wrong sender token; a boundary could leave the overlap it divides; with offsets above 2**53 rule 2 chose a different receiver token than rule 1 on clean spans. All fixed in 9df433f. Codex also reported that rule 1 matched `origin/main` on 20,000 generated pairs and that no retained prefix was unsafe.
+- Found by the fixtures and the audit between rounds, not by Codex: an empty token between the pieces of one character blocked the completing piece from reading its own run; exact fractions gave rule 2 a different last digit than rule 1 on clean text (200 of 200 passages "changed" until fixed).
+- **Confirmation round on 9df433f: no defects above low.** The three round 3 fixes were confirmed with the values Codex evaluated, and its own per-character oracle found no mismatch in `ownership`, `reading_keys` or `common_cut` over 20,000 random span pairs, with and without the text length and at every token budget. One low finding: with offsets above 2**53 and a divided character on the receiver, the float midpoint chose the wrong receiver token. Fixed (the search is exact whenever the receiver has a divided character), with a test.
+- This card does not touch security, export or signing, so no human review is required by AGENTS.md section 4; Ruslan's review of the PR is still welcome.
+
+#### Repeated findings (AGENTS.md section 4, step 5; added 2026-11-27 when the rule landed with H13)
+
+- **No finding repeats an earlier card's entry in this file.** The alignment code had no review record before L3, and none of the section 6 rules that earlier reviews kept returning to (raw invisible characters, HTML sinks, loopback) came up here; `node scripts/check.mjs` reports no findings on this branch.
+- **One finding repeated inside this card,** across rounds 1, 2 and 3: a receiver token could read a sender token that had touched text the receiver had not finished (different byte groups in round 1, overlaps longer than one character in round 2, a gap after a nested overlap in round 3). It was answered with an API change, not a pattern: visibility and truncation no longer take the spans the caller happens to hold. `align.align_document` computes them from the raw offsets (`align.ownership`) and hands back integer reading keys, and `batch.make_pair` uses only those, so a caller cannot build the mask from refined spans again. No `scripts/check.mjs` rule can detect this mistake: it is a property of the arithmetic on arbitrary offsets, not of how the code is written. What guards it instead is the oracle in `runtime/tests/test_align.py`, which counts character by character and fails on any read ahead or refused safe read, on the fixtures, on every truncation and on every cached tokenizer pair.
+
+### Suites for L3 (2026-11-26)
+
+- `python -m unittest discover -s tests -t .` in `runtime/` on Windows (no torch), final commit: 309 tests, OK, 83 skipped.
+- The same in WSL with torch and the cached tokenizers, final commit: 309 tests, OK, none skipped.
+- `npm run -s test:graph`: 9 of 9.
+- `node --test tests/*.test.mjs`: 664 pass, 10 skipped, 0 failed. A first run, made while the audit and a Codex review were using the machine, had 1 failure of 674; only the end of that log was kept, so the test is not identified. The rerun on a quiet machine was clean. This card changes no JavaScript.
+- `npx playwright test`: 61 passed, 1 skipped (run at 40db050; later commits change only Python under `runtime/latent_transfer/` and its test).
+- Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), rerun on the final commit.
+- After merging `main` at c3be893 (2026-11-27, with L4's `statebridge` files and tests): `node scripts/check.mjs` no findings (323 files); the runtime suite 345 tests OK on Windows (102 skipped without torch) and 345 OK in WSL with torch, none skipped, on CPU; the rule 1 comparison equal again. L4's code reaches the alignment only through `TransferPair` with a checkpoint, which loads rule 1, so its recorded numbers do not depend on this card.
 
 ## L2 — Cross-model comparison harness (defined 2026-11-26, before the code)
 

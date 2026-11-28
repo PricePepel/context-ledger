@@ -18,6 +18,9 @@ function watchRequests(page) {
 }
 
 test('the demo plays from empty to finished, and one click shows the proof', async ({ page }) => {
+  // Card H14: the 34 s recording plays at speed 1.5, about 23 s of this test, so the
+  // default 30 s left a loaded Windows runner too little for the rest.
+  test.setTimeout(60_000);
   await mkdir(shotsDir, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   const writes = watchRequests(page);
@@ -27,16 +30,44 @@ test('the demo plays from empty to finished, and one click shows the proof', asy
   await expect(page.locator('.office-agent')).toHaveCount(0);
   await page.screenshot({ path: `${shotsDir}/01-empty.png` });
 
+  // Card H14: a read line lives 2.4 s. Polling it from the test missed it on loaded Windows
+  // runners, so the page records each read line as it is added, and samples it every frame
+  // while it is drawn: whether one frame had it opaque, sized and stroked at once (review:
+  // three separate maxima could come from different frames). The office is drawn
+  // before the line, so the agents working at that moment are recorded too: polling for
+  // exactly one working agent raced the four seconds each publish keeps an agent working.
+  await page.evaluate(() => {
+    window.readFlashes = [];
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const line of record.addedNodes) {
+          if (!(line instanceof SVGLineElement) || !line.classList.contains('flash-read')) continue;
+          const working = [...document.querySelectorAll('.office-agent[data-state="working"]')].map(agent => agent.getAttribute('aria-label'));
+          const seen = { visible: false, working };
+          window.readFlashes.push(seen);
+          const sample = () => {
+            if (!line.isConnected) return;
+            const style = getComputedStyle(line);
+            const box = line.getBoundingClientRect();
+            // Visibility is inherited, so a hidden flash layer counts too (review 2).
+            seen.visible ||= style.visibility === 'visible' && Number(style.opacity) > 0.5 && style.stroke !== 'none' && (box.width > 0 || box.height > 0);
+            requestAnimationFrame(sample);
+          };
+          sample();
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
   await page.getByRole('button', { name: 'Play demo' }).click();
   // Mid-run: Ali's second publish links to two of Leo's nodes, so a read line flashes.
-  await expect(page.locator('.flash-line.flash-read').first()).toBeVisible({ timeout: 20_000 });
-  // Visible means drawn: a coloured stroke that has not faded out yet.
-  // The line fades in, so wait for it to reach a drawn opacity rather than sample once.
-  const flashLine = page.locator('.flash-line.flash-read').first();
-  await expect.poll(() => flashLine.evaluate(line => Number(getComputedStyle(line).opacity)), { timeout: 2000, intervals: [50] })
-    .toBeGreaterThan(0.5);
-  expect(await flashLine.evaluate(line => getComputedStyle(line).stroke)).not.toBe('none');
-  await expect(page.locator('.office-agent[data-state="working"]')).toHaveCount(1);
+  // Visible means drawn: in one frame, a coloured stroke with a size that faded in.
+  // Only Ali's second publish (20 s) and Leo's last (26 s) link to the other party, so the
+  // first read line recorded is Ali's.
+  await page.waitForFunction(() => window.readFlashes[0]?.visible, null, { timeout: 25_000 });
+  const flash = await page.evaluate(() => window.readFlashes[0]);
+  // Ali, who just published and read, is working; Leo may still be from his last publish.
+  expect(flash.working.some(label => /ali/u.test(label))).toBe(true);
+  // The screenshot comes after the wait, so it may show a later moment than the line.
   await page.screenshot({ path: `${shotsDir}/02-mid-run.png` });
 
   await expect(page.locator('body')).toHaveAttribute('data-demo', 'finished', { timeout: 30_000 });

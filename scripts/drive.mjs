@@ -37,6 +37,8 @@ export function loadFeatures(path = join(repo, 'docs', 'features.json')) {
       if (kinds[0] === 'upload') uploadPath(step.upload[1], where);
     }
     if (feature.proof !== undefined && typeof feature.proof !== 'string') throw new Error(`${where}: proof is a selector.`);
+    // Card H14: the ledger runs one swarm at a time, so its tests take turns.
+    if (feature.runsSwarm !== undefined && typeof feature.runsSwarm !== 'boolean') throw new Error(`${where}: runsSwarm is true or false.`);
   }
   return map.features;
 }
