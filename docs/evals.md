@@ -5758,7 +5758,7 @@ Not done, and why:
 - Finding 8 also asked for chain tests built through `make_pair` with real tokenizers and padding. Those need tokenizer files, which this card does not download. T1b's runner checks, per item, that both alignments keep the same pivot tokens, and counts refusals.
 - Finding 11 also asked for the size table to be generated. It is computed with `plan.py` and the test fixes the M2b-S total; the table says it covers these four builds only.
 
-Suites after the fixes: hub tests 51 (38 without torch, 13 skipped; all 51 pass in WSL with torch on the CPU). Runtime suite, `node scripts/check.mjs`, `npm run -s test:graph` and `node --test tests/*.test.mjs`: see the pull request.
+Suites after the fixes: hub tests 51 (38 without torch, 13 skipped; all 51 pass in WSL with torch on the CPU). Runtime suite: 491 tests pass, 115 skipped (no torch on Windows). `node scripts/check.mjs`: 350 files, no findings. `npm run -s test:graph`: pass. `node --test tests/*.test.mjs` (Windows, twice, while L5 was training on the GPU and other sessions were running): 735 of 748 pass, 12 skipped, 1 failed both times, the spend-log test of `tests/handoff-bench.test.mjs` (2 log rows where 6 are expected). That file passes alone, 12 of 12, and this card changes no JavaScript, so the failure is recorded as a load flake of the full run and not investigated further here. `npx playwright test` was not run: no JavaScript or browser code changed.
 
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
