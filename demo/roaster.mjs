@@ -182,7 +182,9 @@ export function pageParts(html) {
     // what is left, such as <!doctype html>, goes after.
     .replace(blockEnd, ' | ').replace(anyTag, ' ').replace(/<[^>]+>/gu, ' ')
     .replace(/&nbsp;/gu, ' ').replace(/&amp;/gu, '&').replace(/&#36;|&dollar;/gu, '$')
-    .replace(/&ndash;|&mdash;|&#8211;|&#8212;/gu, '-').replace(/&quot;|&#34;/gu, '"').replace(/&#39;|&rsquo;|&apos;/gu, "'");
+    .replace(/&ndash;|&mdash;|&#8211;|&#8212;/gu, '-').replace(/&quot;|&#34;/gu, '"').replace(/&#39;|&rsquo;|&apos;/gu, "'")
+    // Nested closings ("</h3></header>") make one break, so "next block" means the next one with text.
+    .replace(/\|(\s*\|)+/gu, '|');
   return { text: fold(text), css: fold(css), attributes: fold(attributes), html: fold(bare) };
 }
 

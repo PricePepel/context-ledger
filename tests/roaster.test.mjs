@@ -236,3 +236,11 @@ test('review 4, round 5: a menu card puts its price in the next block; a one-tim
   const fee = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>Monthly coffee deliveries</p><div>$18</div><div>One-time signup fee</div>'));
   assert.ok(fee.missed.includes('Bean Club, $18 a month'));
 });
+
+test('review 4, round 6: nested closing tags make one block break', () => {
+  const nested = scoreSite(good.replace('<p>Our signature', '<article><header><h3>Oat Latte</h3></header><p>$5.00</p></article><p>Our signature'));
+  assert.ok(nested.stale.includes('Old oat latte price $5.00'));
+  assert.ok(nested.missed.includes('Oat latte $5.25'));
+  const wrapped = scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', '<p>Monthly coffee deliveries</p><div class="price"><p>$18</p></div><p>One-time signup fee</p>'));
+  assert.ok(wrapped.missed.includes('Bean Club, $18 a month'));
+});

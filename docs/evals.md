@@ -6282,6 +6282,10 @@ A fifth round found two medium, the mirror image of items 14 and 15, fixed so th
 17. *(medium)* A menu card that puts the name and the price in two blocks (`<p>Oat Latte</p><p>$5.00</p>`) hid a stale price. An own row may now have its price open the very next block, while a heading followed by a block about something else ("Oat Latte Pairings | Cookie $5.00") still does not count.
 18. *(medium)* A one-time label in the block right after the price ("$18 | One-time signup fee") passed the monthly check. A next block that opens with "one-time" or "upfront" now fails it, while "Sign up once." in the next paragraph still does not.
 
+A sixth round found two medium with one cause: nested closing tags (`</h3></header>`, `</p></div>`) left runs of empty block breaks, so "the next block" was an empty one and items 17 and 18 missed a stale price in a nested menu card and a one-time fee after a wrapped price.
+
+19. *(medium, two findings)* Runs of block breaks now collapse into one, so the next block is always the next one with text. Regression test for both inputs.
+
 The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
 
 Rescoring all 25 saved sites from rounds 1 to 3 with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
