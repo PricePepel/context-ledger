@@ -6040,3 +6040,77 @@ Rounds 4 to 8 were fixed after the measured run. None of their findings applied 
 No human review was requested: the card does not touch security, export or signing.
 
 Suites after the last change (2026-11-27, on the final code with `origin/main` at a3f9a83 merged in): `node scripts/check.mjs` 324 files, no findings; `npm run -s test:graph` 9 pass; `node --test tests/*.test.mjs` 725 pass, 12 skipped; in `runtime/`, `python -m unittest discover -s tests -t .` 334 run, 66 skipped (torch and jinja2 checks), of which `tests.test_latent_compare` is 95, passing on Windows and in WSL; `npx playwright test` 70 pass, 1 skipped, 1 failed: `features.spec.mjs` "swarm-run" (card H11, code this card does not touch) failed in the full run and passed when that spec was run again on its own (9 of 9).
+
+## L1 — Serving levers measured (defined 2026-11-26, before the code)
+
+Card L1. `docs/latent-gpu-plan.md` ranks the levers for running 100 agents on one 16 GB RTX 4090 Laptop GPU, but every number in it is computed or estimated. This card measures them on the laptop (vLLM 0.33.0, WSL2 Ubuntu 24.04), with synthetic data only. The GPU is shared with other sessions through a lock folder, so each run is short and the server is stopped before the lock is released.
+
+### What is measured
+
+A driver, `evals/latent/serving-levers.mjs` (pure helpers in `serving-lib.mjs`), fires N agents at once at one vLLM server. Each agent sends the same system prompt and shared context (the swarm's incident instructions, `src/swarm-task.mjs`, plus an optional shared handbook of K tokens) followed by its own incident report, and asks for the swarm's JSON answer. It reports, per run: wall time until the last agent finishes, agents answered, correct and verified answers (the swarm's own checks), completion tokens per second (aggregate), prompt tokens per second, the prefix-cache hit rate (vLLM `prefix_cache_hits / queries`, delta over the run), peak KV-cache use (polled from `/metrics`), peak GPU memory (`nvidia-smi`, polled), and preemptions. From the server's startup log it reads weights memory, CUDA-graph memory, KV-cache tokens and the maximum concurrency vLLM states. The swarm in `src/swarm.mjs` is also run once at 100 agents (`SWARM_CONCURRENCY=100`) as a cross-check of the driver.
+
+### Rows
+
+1. Baseline, Qwen2.5-7B-Instruct-AWQ, 25, 50 and 100 agents.
+2. vLLM native KV offload (`--kv-offloading-backend native --kv-offloading-size`), same counts. If this version lacks it, the row says so.
+3. FP8 KV: whether Qwen2.5-7B AWQ can run it (calibrated or per-token-head scales), and otherwise the 14B AWQ, with memory and accuracy on the latent dev set (`perf.mjs`, 8 questions × 3).
+4. `--max-num-seqs` 32, 64 and 100 at 100 agents.
+5. Edge cases: more agents than the KV cache holds, a very long shared prefix, a cold start (first request after the server starts).
+
+### Acceptance
+
+- Unit tests (`node:test`) for the pure helpers: startup-log parsing, run summary and the server-argument builder. They run without a GPU.
+- Every row has measured numbers or a stated reason why it cannot be measured here; nothing is estimated and every figure is marked measured.
+- A lever is recommended for the default setup only if it helps its target metric (time to finish, KV capacity or peak GPU memory) without losing correct answers against the baseline in the same session.
+- The figures are for one laptop GPU, one 7B model and one synthetic task, and the doc says so.
+
+### Results — L1 (2026-11-26 and 27)
+
+All figures **measured** on the RTX 4090 Laptop (16 GB), vLLM 0.33.0 in WSL2, Qwen2.5-7B-Instruct-AWQ unless a row says 14B, `--gpu-memory-utilization 0.85`, prefix caching on, one synthetic task (the swarm's incident reports). Agent runs come from `evals/latent/serving-levers.mjs` (the runs were made with the version before the review fixes, which changed only the token averages, the hit-rate rule and timeouts); dev-set rows come from `perf.mjs`; startup figures come from vLLM's log and a wall clock. Every agent starts at the same moment; each run's prefix is salted so a run's hit rate is its own sharing, except the two-wave rows, which repeat their salt on purpose. "Plan-shaped" agents carry about 4,010 prompt tokens each (about 3.0K shared handbook plus 1.0K unique) and answer in at most 160 tokens.
+
+Startup log, baseline: weights 5.29 GiB, CUDA graphs 0.61 GiB (0.37 + 0.24), KV pool 7.32 GiB = 137,136 tokens (max concurrency 4.19× at 32,768 tokens), engine start 25 s. GPU memory reads 14,328–14,742 MiB (about 14.0–14.4 GiB) at every agent count because vLLM reserves its pool at start; the KV-use column is what moves.
+
+| Row | Agents | Wall s | Completion tok/s | Prefix-cache hits | Peak KV use | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 baseline, swarm task (~370 tokens) | 1 / 25 / 50 / 100 | 1.31 / 2.06 / 2.83 / 4.84 | 40 / 641 / 926 / 1085 | 0 / 79% / 82% / 82% | 0.3% / 2% / 4% / 8% | all |
+| 1 baseline, plan-shaped | 25 / 50 / 100 | 11.9 / 21.0 / 42.6 | 111 / 125 / 123 | 71% / 72% / 73% | 23% / 43% / 82% | all |
+| 1 swarm cross-check (`src/swarm.mjs`, concurrency 100) | 100 | 4.58 | — | 81% | 9% | 100/100 |
+| 2 native KV offload, 6 GiB, plan-shaped | 25 / 50 / 100 | 16.5 / 31.1 / 90.8 | 80 / 84 / 58 | 71% / 72% / 73% | 25% / 47% / 91% | all |
+| 2 offload, over capacity (100 × ~5.4K tokens), wave 1 then the same prompts again | 100 | 141.9 then 140.3 | 37 | 53.5% then 54.1% | 96% then 97% | 96/100 both |
+
+Row 2 findings: `--kv-offloading-backend native --kv-offloading-size N` exists in this vLLM. N is limited by `/dev/shm` (7.8 GiB free here: 8 GiB failed at start, 6 GiB worked). It cost KV capacity (pool 137,136 → 123,040 tokens), start time (about 4.5 minutes from process start to ready, against 45–125 s for the other starts) and speed (100 plan-shaped agents took 90.8 s against 42.6 s). Repeating the same 100 prompts after they no longer fit gained nothing (hit rate 54.1% against 53.5%), so on this machine offload did not help; the no-offload over-capacity run below confirms it.
+
+**Row 3, FP8 KV cache.** vLLM 0.33 lists `--kv-cache-dtype` types that compute their own scales per token and head (`fp8_per_token_head`, `int8_per_token_head`, `int4_per_token_head`) next to the plain `fp8`; its `--help` has no flag to calibrate scales, so calibrated scales for the 7B were **not produced** here. All FP8 runs use `--attention-backend TRITON_ATTN`. Dev set = `questions.json`, 8 questions × 3 rounds = 24 reads through `perf.mjs`; 14B runs use strict citations and max length 8192 (the cycle 11 B setup). "Both" = correct and cited.
+
+| Model, KV type | KV pool tokens | Dev set both / correct / cited (of 24) | Read s p50 | Swarm task, 100 agents |
+| --- | --- | --- | --- | --- |
+| 7B AWQ, auto | 137,136 | 18 / 21 / 21 | 5.6 | 100/100 correct |
+| 7B AWQ, `fp8_per_token_head` | 238,640 (1.74×) | 0 of 8 reads (1 round; every read refused, 0/8) | n/a | 0 of 100 usable answers (garbled JSON) |
+| 14B AWQ, auto | 17,104 | 21 / 21 / 24 | 18.0 | not run |
+| 14B AWQ, `fp8` | 34,112 (2.0×) | 22 / 22 / 24 | 14.9 | not run |
+| 14B AWQ, `fp8_per_token_head` | 20,480 (1.2×) | 18 / 20 / 22 | 14.4 | not run |
+
+Findings: the per-token-head scales do not rescue the 7B (it breaks on both the swarm task and the dev set), so the plan's "calibrated scales should fix that" stays untested and is not supported by this run. On the 14B the plain `fp8` doubled the KV pool and lost no answers (22 against 21 of 24; one round of 24 reads per setting, so one answer of difference says nothing about run-to-run variation); `fp8_per_token_head` gave only 1.2× because it stores a scale per token and head, and lost 3 of 24. For the 14B `perf.mjs` also reported "vLLM restarted during the run" for the per-token-head run, so its whole-run counters are not used.
+
+**Row 4, `--max-num-seqs`, 100 agents on the 7B** (same prompts; default is 256):
+
+| max-num-seqs | Swarm task wall s / tok/s | Plan-shaped wall s / tok/s | Plan-shaped peak KV use | KV pool tokens | GPU MiB peak | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| default (256) | 4.84 / 1085 | 42.6 / 123 | 82% | 137,136 | 14742 | 100/100 both |
+| 100 | 5.72 / 917 | 47.1 / 112 | 87% | 128,944 | 13966 | 100/100 both |
+| 64 | 6.22 / 844 | 46.1 / 114 | 57% | 130,544 | 13924 | 100/100 both |
+| 32 | 7.34 / 716 | 44.8 / 117 | 29% | 132,128 | 14028 | 100/100 both |
+
+Capping the number of sequences did not make anything faster on this card: every cap was slower than the default, and it freed about 0.7 GiB of GPU memory (smaller CUDA-graph set) but also shrank the KV pool by 4–6%. The plan's "start with `--max-num-seqs 32` and measure" is answered: do not start there for 100 short agents.
+
+**Row 5, edge cases (7B, default settings, no offload unless stated).**
+
+| Case | Result |
+| --- | --- |
+| More agents than the KV cache holds: 100 agents × about 5.4K tokens (544K prompt tokens in total, about 3K of them shared, against a 137K-token pool) | Nothing failed or was preempted: vLLM queued the extra work. 100/100 answered, 96/100 correct, all 100 verified, 104.4 s (second identical wave 104.7 s), peak KV use 85%, prefix-cache hit rate 53.5% then 54.1%. With 6 GiB offload the same two waves took 141.9 s and 140.3 s. |
+| Very long shared prefix: one 23.5K-token handbook for every agent | 1 agent: 11.5 s (prefill of the prefix, 2,034 prompt tokens/s). 25 agents: 16.3 s, hit rate 95.7%. 100 agents: 29.9 s, hit rate 98.7%, peak KV use 26%, 100/100 answered and verified but only 87/100 correct (accuracy fell with the long context; the short-context runs were 100/100). |
+| Cold start | Process start to answering `/v1/models`: about 45–125 s across the starts here, with the engine's own "init engine" line at 25 s (first start, warm compile cache), 42–88 s later; offload start about 4.5 minutes. The first request after the server was ready took 1.07 s against 0.98 s for the next, one pair, so it shows no large first-request penalty but does not rule out a small one. |
+
+Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
+
+Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
