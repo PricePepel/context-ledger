@@ -71,7 +71,7 @@ test('P3b: signing records the review chain, and verify shows it', async t => {
 
   const verified = await run(['verify', bundle, '--fingerprint', context.fingerprint], context.env);
   assert.equal(verified.code, 0, verified.stderr);
-  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\nRedaction: 0 replacements, by context-ledger-secrets/1\\n$`, 'u'));
+  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\nRedaction: 0 replacements, by context-ledger-secrets/2\\n$`, 'u'));
   const result = await verifyBundle(bundle, { fingerprint: context.fingerprint });
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.reviews, { events: 2, head: context.head });
@@ -218,4 +218,34 @@ test('P3b review: reviews verify reads the ledger read-only and never migrates i
   const missing = await run(['reviews', 'verify'], { CONTEXT_LEDGER_DB: join(context.folder, 'none.sqlite') });
   assert.match(missing.stderr, /No ledger database\./u);
   assert.equal(existsSync(join(context.folder, 'none.sqlite')), false);
+});
+
+test('P4d review: reviews verify --bundle warns that a version 2 hand-off was not redacted', async t => {
+  const context = await ledger(t);
+  const store = openStore(context.database);
+  const markdown = handoffMarkdown(store.get(context.sessionId)) + '\n';
+  store.close();
+  const old = join(context.folder, 'old');
+  await writeBundle(old, buildBundle({ sessionId: context.sessionId, markdown, privateKey: context.privateKey,
+    reviews: { events: 2, head: context.head } }));
+  const audit = await run(['reviews', 'verify', '--bundle', old, '--fingerprint', context.fingerprint], context.env);
+  assert.equal(audit.code, 0, audit.stderr);
+  assert.match(audit.stderr, /signed before hand-offs were redacted/u);
+  // A version 3 bundle, which was redacted, has no such warning.
+  const current = await run(['reviews', 'verify', '--bundle', await sign(context), '--fingerprint', context.fingerprint], context.env);
+  assert.equal(current.code, 0, current.stderr);
+  assert.doesNotMatch(current.stderr, /redacted/u);
+});
+
+test('P4d review 10: reviews verify --bundle warns on a version 1 bundle before refusing it', async t => {
+  const context = await ledger(t);
+  const store = openStore(context.database);
+  const markdown = handoffMarkdown(store.get(context.sessionId)) + '\n';
+  store.close();
+  const old = join(context.folder, 'v1');
+  await writeBundle(old, buildBundle({ sessionId: context.sessionId, markdown, privateKey: context.privateKey }));
+  const audit = await run(['reviews', 'verify', '--bundle', old, '--fingerprint', context.fingerprint], context.env);
+  assert.notEqual(audit.code, 0);
+  assert.match(audit.stderr, /signed before hand-offs were redacted/u);
+  assert.match(audit.stderr, /version 1 and records no review head/u);
 });

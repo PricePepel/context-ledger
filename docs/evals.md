@@ -4707,6 +4707,20 @@ Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the ha
   - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
   - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
 
+## P4e: copy search checks long values whole (2026-11-27)
+
+Card P4e, branch `ruslan/p4d-copy-budget`, from `main` after #69. #69 was merged at 445e9e4 before the fixes for its last Codex review reached it, so they come here. Synthetic inputs only (`tests/secrets.test.mjs`, `tests/sign.test.mjs`, `tests/signed-review-head.test.mjs`, tests named P4d review 9 to 11).
+
+- **Expected:** a name late in a long line is searched; a bare copy of a long value is replaced whole; every copy that `main` removed is still removed; a session past any of four budgets (2^20 matcher nodes, 2^26 confirm characters, 2^24 collected characters, 2^20 copies) is refused and `handoff --sign` writes nothing; `reviews verify --bundle` warns on a version 1 or 2 bundle.
+- **Codex review of #69 at 445e9e4:** two medium (late names and long tails unchecked; no session-wide memory bound), three low (the reviews-verify warning, format joiners kept in exported text, a widening test that did not widen). All fixed with tests except the joiners, which predate P4d and are kept on purpose by `visibleText`; left for a Backlog card.
+- **Codex round 2 (of 0809bbe):** four medium (a quadratic trailing-punctuation regex, a filter over every end per confirmation, an endpoint list per repeated copy, a lost decoded prefix), two low. All fixed with tests.
+- **Codex round 3 (of 273af4d):** one high (a copy that `main` removed was kept, because ends were worked out on the whole value), one medium (millions of short copies, also on `main`), two low. All fixed with tests; the high and medium tests fail on 273af4d.
+- **Codex round 4 (of fb72723):** three medium (a value collected as a decoded form was never decoded itself; one 64 Ki assignment used the confirm budget against itself; direct findings unbounded, also on `main`), four low (duplicate-value ends, marker kinds, a weak widening test, the scanner name). All fixed in ee18e3c with tests that fail on fb72723; new bundles say `context-ledger-secrets/2` and `/1` still verifies.
+- **Codex round 5 (of ee18e3c):** no high, and no replacement `main` makes is lost. Two low fixed in 0fd0209 (test strength). Three medium **open**, all availability: the budgets can refuse a session `main` signs (27,000 short distinct values pass the node budget on `main` and hit it here; 450 long values sharing a 990-character prefix use up the confirm budget; the direct-findings limit applies only after one field's findings are built). They fail closed, so nothing is signed half-checked. Fixing them needs a compact trie, shared confirmation work and a limit inside the P4b scanner.
+- **Accepted open findings (2026-11-28):** Ruslan accepted these three availability findings and approved the merge of #112 ("Yes, merge all three", for P1f #65, H15 #108 and P4e #112, in his own chat, relayed by the coordinating session). The inputs that reproduce them: 9,000 messages with three distinct 46-character `password=` values each (node budget); 450 values of `Ab9` repeated 330 times plus a distinct 46-character suffix (confirm budget); a line `pwd=a` repeated 2^20 + 1 times (direct findings are counted only after the field's findings are built). In each case `handoff --sign` refuses and writes nothing.
+- **Suites on ee18e3c:** `npm run -s test:graph` 9 pass; `node scripts/check.mjs` no findings; `node --test tests/*.test.mjs` 778 pass, 0 fail, 12 skipped; `npx playwright test` 70 pass, 1 skipped, 1 fail (`handoff.spec.mjs`, the H14 flake; it passes 3 of 3 on rerun, and P4e does not touch plain `handoff`).
+- **Earlier suites:** on the #69 merge, `npm run -s test:graph` pass, `node scripts/check.mjs` no findings, `node --test tests/*.test.mjs` 741 pass, 12 skipped, 5 fail under load (two sign tests and three Windows token tests; the sign tests pass alone, the token tests are H15), `npx playwright test` 66 pass and 5 timeouts, which pass on rerun (10 of 10). On 14a0948: the secrets, sign and review-head files pass (117), check clean.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
@@ -5689,6 +5703,58 @@ Nobody had touched #90 since 2026-11-23, and it conflicted with main. Main was m
 - Round 7, high: P4d's copy search indexes the first 512 characters of a found value, so a bare copy of a longer one (one long word, such as a hyphenated passphrase) kept its tail in a carried turn. Before that search, `share` now replaces every exact copy of a found span, or of a word of one, longer than 512 characters. The signed hand-off has the same limit; that is a separate card for P4d's owner. Round 7 confirmed both round 6 fixes.
 - Accepted from P4d (ADR-9a): copies under six characters are not looked for.
 - **Suites at 223f30b with main merged (Windows):** `node scripts/check.mjs` no findings, `npm run -s test:graph` 9/9, `node --test tests/*.test.mjs` 0 failed (13 skipped), `npx playwright test` 72 passed (1 skipped). Still not run between two machines.
+
+## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
+
+R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
+
+### What is tested and the expected result
+
+- **End to end.** `ledger relay serve` prints its address. On ledger A, `ledger share <graph-id> --relay <url>` prints one code. On ledger B, `ledger receive --from <code>` stores the graph with the same ID, as R1's `receive <file>` does, and the relay then holds nothing.
+- **The relay sees only ciphertext.** What the relay holds contains no text of the parcel (a label, a transcript line, the session ID, the graph ID). The parcel is sealed with AES-256-GCM under a key derived from the code's secret, which never reaches the relay.
+- **The code is the key.** A different secret, or a parcel changed by one byte, fails to open, in fixed words, and the ledger is unchanged. A sealed parcel opens only as the version it was sealed as.
+- **One parcel per code.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
+- **A failed receive keeps the parcel.** If B refuses the parcel (for example its graph links to a graph B lacks), the relay still holds it, so B can receive the missing graph and try again.
+- **The relay's own limits.** A request without a bearer token of the right shape is refused (401). A body over the limit is refused (413) without being held. The relay holds at most a fixed number of parcels and bytes and refuses more (507). A parcel expires after 24 hours. Unknown paths give 404 and other methods 405. Responses never echo a token or a body.
+- **The relay cannot reach a ledger.** `src/relay.mjs` imports only Node built-ins. It opens no database and reads no file.
+- **Loopback by default.** `relay serve` listens on 127.0.0.1 unless `--host` names another address, and then says the address must be reachable only by people you trust. `share` warns when the relay address in a code is loopback, since the other machine cannot reach it.
+- **Fixed words on failure.** An unreachable relay, a relay that is not one (wrong health reply), a malformed code, and a missing parcel each give one fixed sentence. Nothing from the network reaches the terminal unescaped, and the code's secret is never printed by `receive`.
+- **R1 is unchanged.** `share --out` and `receive <file>` work as before; `--out` and `--relay` cannot be combined, and neither can a file and `--from`.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/relay.test.mjs`.
+- No new dependency: `node:crypto` (HKDF-SHA-256, AES-256-GCM) and `node:http`.
+- `docs/parcels.md` describes the relay, the code, and what an attacker on the network can and cannot do.
+
+### R2 results (2026-11-23)
+
+- `tests/relay.test.mjs` 14/14: sealing and opening; the code's one spelling; the relay's store, fetch and delete; refusals without a token and to web pages; the size, count, byte and time limits; uploads that must declare a length and count while they arrive; expiry on an idle relay; the imports of `src/relay.mjs`; a relay that is absent, of another version, endless, oversized or redirecting; an upload stored but not confirmed; and the three commands end to end with a relay process and two ledgers, including a parcel the ledger refuses and one changed on the way.
+- Found while building: on Windows an answer sent while the sender is still writing is lost with the connection, so the sender saw a broken connection instead of the reason. A refused upload is now read to its end and dropped (up to 16 MiB) before the relay answers.
+- **Independent security review (a Claude subagent that did not write the code, round 1):** no high. Four medium and six low; all fixed with tests except two noted below.
+  - (medium) Uploads still arriving were not counted, so 64 stalled senders could make the relay hold about 500 MiB while it reported nothing held. A PUT must now declare its length (411 otherwise), and its bytes and its place count against the limits until it ends or breaks off.
+  - (medium) A reader that never read kept its connection for good, and 64 of them shut everyone out. A socket idle for a minute is closed, and each connection carries one request.
+  - (medium) `checkRelay` read the health answer without a limit, so a relay, or someone on an `http` path, could fill the sender's memory. It reads one kilobyte, asks for no compression, and gives up after 10 seconds.
+  - (medium) The code was called one-time, and it is not: fetching does not empty the box, and the 24 hours are kept only by the relay. The command, the docs and ADR-20 now say that whoever has the code can read the parcel and that it must stay secret for good.
+  - (low) The redirect test would have passed with redirects followed; it now redirects to a live second listener and checks that nothing arrives there, for all four calls. The imports test now reads every kind of import and checks what a fresh process loads.
+  - (low) Expiry ran only when a request with a token arrived. A timer now sweeps an idle relay.
+  - (low) The relay checked no Origin, so a page that reached a loopback relay by its own name could fill it. A request that names an origin is refused.
+  - (low) An upload stored but not confirmed left a box nobody held a code for. The sender now deletes the box when the upload fails.
+  - (low) One 30 second limit covered a whole transfer and reported a slow link as an unreachable relay. A transfer has 3 minutes and its own sentence.
+  - (low) `isLoopback` missed `localhost.`, `*.localhost` and the IPv4-mapped form. Added.
+  - Not changed: the timeouts and the connection limit have no test of their own (they are Node settings), and the eval's claim that nothing from the network reaches the terminal rests on the code printing only fixed sentences, which the hostile-relay cases exercise.
+- **Suites after the security review, with R1 and main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 712/723 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. The relay and both ledgers ran on one machine; a transfer between two machines has not been tried.
+
+### Refresh with main and R1, and a fresh Codex review (2026-11-27 and 28)
+
+R1 (with main) was merged in after each R1 change. A read-only Codex review of this PR's own diff (`ruslan/r1-parcels...HEAD`) found one medium and five lows over two rounds, all fixed with tests that fail without the fix; round 2 found no high or medium.
+
+- Medium: a box deleted or expired while a slow download was still sending it freed its room at once, so new uploads could hold more memory than the limit. Those bytes stay counted until the last download ends, and one download has 3 minutes in all (`limits.downloadMs`). The tests drive the relay's handler with a response that never finishes, because Windows takes a whole 8 MiB reply into its own buffers.
+- Low: the client read an answer that said it was compressed (fetch unpacks it anyway); such an answer is now refused unread, and the header is compared exactly (round 2 found the first pattern let `sidentity` through).
+- Low: `receive --from` promised a relay that refused the delete would drop its copy in 24 hours, and stated a delete it can only report; both sentences now say what is known.
+- Main's H9 `loopback-only` check flags `relay serve --host`, the one listener ADR-20 allows beyond loopback. `scripts/check.mjs` names it by file and exact arguments, once; the same call anywhere else, or twice, is still a finding. Low, not changed: the exemption follows the argument text, not the function it sits in.
+- Low, not changed: response bodies the client does not need are left to the transfer timeout instead of being cancelled.
+- **Suites with R1 and main merged (Windows):** see the R1 refresh entry; the relay ran on one machine only.
 
 ## H9 — Repo-wide invariant checks (defined 2026-11-26, before the code)
 
