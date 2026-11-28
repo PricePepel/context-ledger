@@ -4627,6 +4627,100 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 - **Flaky console test fixed here:** `tests/e2e/console.spec.mjs` (live mode) found its node by the hostile label, which a room test also publishes into the shared e2e database, so on Windows it matched two nodes (CI of c242623 and 513a69f). It now selects the node by its own party key. This blocked P5d's green CI, so it is in this pull request.
 
 
+## P4d — Redacted signed hand-off (defined 2026-11-22, before the code)
+
+Card P4d on `ruslan/p4d-redacted-signing`, from `main` a08c6e9. P4a signs the hand-off as it is and P4b/P4c only report; this card makes `handoff --sign` redact with the same scanner before it signs. Design defaults taken under the user's standing instruction of 2026-11-21, recorded as ADR-9a in `docs/architecture.md` section 16. Synthetic data only: the fake credentials are put together from fragments in the test, as in `tests/secrets.test.mjs`.
+
+| Eval | Expected |
+| --- | --- |
+| Redacted by default | For a synthetic session holding fake credentials in message text and in its source name, `handoff <id> --sign <dir>` writes a `handoff.md` that equals the hand-off Markdown of `redactSession(session).session` plus a newline: each value is replaced by `[REDACTED <kind>]`, and no file in the bundle contains any of the values, or any 12-character piece of one. A value found once (six characters or more) is also replaced where it is pasted again without its name. There is no option to sign without redaction. |
+| Clean session unchanged | For a session with no findings, `handoff.md` is byte for byte what plain `handoff <id>` prints, as in P4a. |
+| Manifest version 2 | The manifest is canonical JCS with `version` 2 and one more key, `redaction`, an object of exactly `scanner` (`context-ledger-secrets/1`) and `findings` (the number of values replaced, equal to the `count` that `redact <id> --json` reports). The signature covers it. |
+| Sender sees the count, not the values | `--sign` prints how many replacements it made on how many lines and names `redact <id>` for the details; it prints no value and no preview. With no findings it says nothing was found by the checks, which is not a promise that there are no secrets. |
+| Verify reports redaction | `verify` on a version 2 bundle exits 0 and prints the scanner and the count. It refuses (fixed message, exit 1) a re-signed version 2 manifest whose `redaction` is missing, has another key, another scanner name, or a count that is not a non-negative safe integer, and a version 1 manifest that carries `redaction`. |
+| Version 1 still verifies, with a warning | A bundle in the P4a shape (version 1, no `redaction`) still verifies, and `verify` warns on stderr that it was signed without redaction. |
+| Docs and OpenSSL | `docs/signed-handoff.md` describes version 2, the `redaction` field and what it does not promise; the OpenSSL recipe test still passes on a version 2 bundle. |
+
+### P4d results (2026-11-22)
+
+- **All rows:** pass. `tests/sign.test.mjs` (the P4d tests at its end, and the P4a tests updated for the new version) and `tests/secrets.test.mjs` (the copy rule).
+- **Version number changed by the merge with P3b (2026-11-22).** P3b (#70) merged first and took manifest version 2 for the review chain head. P4d therefore writes version 3: P3b's `reviews` plus `redaction`. Where the rows above say version 2, read version 3. Where they say version 1, read versions 1 and 2: both are bundles from before P4d, verify with the not-redacted warning, and are tested. `tests/signed-review-head.test.mjs` now expects version 3 and the `Redaction:` line. A focused Codex check of the merge (of d21b7a0) found no high or medium issue; its three low doc findings are fixed: the OpenSSL checklist requires no `redaction` in versions 1 and 2, the `reviews verify` text no longer says it repeats `verify`'s warnings, and the `verifyBundle` comment names `reviews`.
+- **Codex review, round 1** (of de72f08):
+  - (high) A value found by its name (`password=…`) stayed in the signed hand-off where a later message pasted it bare: redaction cut matched spans, not values. Fixed in `redactSession`: a found value of six characters or more is also replaced everywhere else in the session (source name included), the longer of two values first. Tests: the signed fixture pastes its password into a later message, and scanner tests cover copies, quoted values, overlaps and the short-value limit.
+  - (medium) The session ID is the unkeyed SHA-256 of the original transcript, so a receiver who could rebuild every other byte could confirm a guess of a short redacted value. Not changed, since the session identity is outside this card. It is recorded as a residual in ADR-9a and `docs/signed-handoff.md`.
+  - (low) The sender's summary called transcript records and the source name "lines". It now says `in N transcript lines and the source name`.
+  - (low) The receiver docs said "whole, non-negative count" (the limit is 2^53 − 1) and did not mention placeholder values. The OpenSSL manual check did not give the exact `redaction` keys. All three corrected.
+  - (low) Test gaps, all filled:
+    - The test that version 1 lists exactly one file now runs on version 1 and version 2.
+    - The version 1 test signs a genuinely unredacted hand-off.
+    - A malformed record is now checked through the CLI as well (exit 1, nothing on stdout).
+    - A changed count under the old signature now fails the signature check.
+    - The sender output is checked for key prefixes as well as for pieces of the values.
+  - (low, not changed) A folder or file name that the user types, or that sits in a bundle folder, is printed as given (escaped). That text is not from the transcript.
+- **Codex round 2** did not run: Codex hit its usage limit during the round. It is owed, against the head of the branch.
+- **Independent Claude review** (a separate code-reviewer agent, not shown the implementation notes), of the round 1 fix e04e948. No high finding:
+  - (medium) A value after a name was searched for only by its first word, so a passphrase pasted again kept its later words. Fixed: copies are searched for the first one to eight words, the whole tail and any later word that mixes letters and digits.
+  - (medium) The copy search cuts the same text inside longer words and in prose (`password: secret` hides every `secret`). Kept, since that errs toward hiding, and documented in ADR-9a and `docs/signed-handoff.md`.
+  - (medium) The copy search ran one `indexOf` per value per field: 20,000 values over 8 MiB took 39 s. Fixed with one pass per field that looks positions up by their first six characters: 0.8 s for that input. A test bounds 20,000 values over 4 MiB.
+  - (low) A quoted value with an escaped quote was cut short at the escape. Fixed: the quoted part is found with the scanner's own quote rules, and searched for as written and decoded.
+  - (low) A copy in another letter case, with an invisible character inside or in another Unicode normalization, is not found. Documented as a residual.
+  - (low) Trailing punctuation is dropped from a value before its copies are searched for, so a value that really ends in `!` leaves the `!` visible in a copy. Kept.
+  - Each fix has a test in `tests/secrets.test.mjs`.
+- **Merge of main** (I3, P3, G9b, S1): I3 scans an agent turn's author and recipient, and the copy rule now covers those fields too (test added). P4d's design notes are section 16.
+- **Codex review, round 2** (of 49f03f7):
+  - (high) A password and a token on one line merge into one finding, and the copy search took only the whole merged span, so a bare copy of either value survived. Fixed: every word in a finding that mixes letters and digits, and its first one to eight words, are searched for, whatever the finding's kind.
+  - (high, not a leak) A source name `password=<session ID>` is replaced in the source name, but the ID still shows as the session ID. The ID is public by design, so a value that equals it was never secret. Documented in `docs/signed-handoff.md`.
+  - (medium) Copies of a passphrase written with two spaces were missed, because the prefixes were joined with one space. So was a Bearer value with an escape after a quote that comes before `Bearer`. Fixed: prefixes are cut from the text as written, and every value is searched for with its escapes decoded too.
+  - (medium) Grouping values by their first six characters was quadratic for values that share them: 5 s at 8,000 values. Replaced with one Aho-Corasick pass over all values per field: 0.4 s at 20,000. A test bounds it. Memory grows with the number of matches; that is documented.
+  - (low, not changed) A literal `[REDACTED assigned-secret]` in the transcript, after `password=assigned-secret`, becomes a nested marker. The value is still removed.
+  - (low, not changed) A password that is a key format's public prefix (`password=sk-ant-`) still shows that prefix in a key's `redact` preview. The prefix is public text, the same for every key of that format.
+  - (low) The OpenSSL check said "a whole number of 0 or more". It now gives the upper bound. The docs now name agent authors and recipients as scanned.
+  - (low) Tests:
+    - Every malformed redaction record is now checked through the CLI as well.
+    - Scanner tests cover a merged finding, a spaced passphrase, an escaped Bearer value, an agent heading with a value in the recipient, and values that share their first characters.
+- **Codex review, round 3** (of 5ecc8b0):
+  - (high) A key or Bearer value nested in a longer finding lost its own boundaries when candidates merged, so a copy of it glued to other text survived. Fixed: copies are searched for each accepted candidate before the merge, under the kind of the finding that holds it.
+  - (high) The eight-word cap left the ninth word of a passphrase pasted whole. Fixed: a candidate counts at the end of every word. Each candidate goes into the matcher once, with its word ends marked, so nothing is copied per prefix.
+  - (medium) One long finding built a trie node per character: about 290 MiB of heap for a 1,000,000-character line. Fixed: one candidate adds at most 512 characters. The same input now adds 2 MiB, and a test bounds it.
+  - (low) The overlap test did not exercise a match inherited through a failure link, or two crossing matches. Both are now tested. Codex found no defect in the matcher itself.
+- **Codex review, round 4** (of c940dcc):
+  - (high) A JSON `"Bearer …"` value was searched for without its quote, because the quote stands before `Bearer`, not the value. An all-letter value with JSON after it was then never matched. Fixed: the scanner hands its quote to the copy search.
+  - (medium) Each candidate looked up its finding from the start of the message: 40,000 findings in one message took 3.8 s. Fixed with one walk over both lists, which are sorted by start.
+  - (medium) The 512-character cap was per entry, and one line with 10,000 key-like words added about 220 MiB. Fixed: the cap is a budget per candidate across all its entries. Both cases are tested.
+  - (low) The provider, roles, line numbers and session ID are printed as they are. They are written by the ledger, not taken from the transcript, and are now documented as not scanned.
+  - (low) `findings` counts replacements, not values. The `verify` line now reads `N replacements`, and the docs say a marker can cover several values.
+- **Codex review, round 5** (of be3a2f2): no medium finding.
+  - (high) A quoted value made of escapes used the whole budget as written, so its decoded form was never searched for, and a decoded copy survived. Fixed: decoded forms have their own 512-character budget. Tested.
+  - (low) The README still called the count a count of values. It now says replacements.
+  - (low, not changed) The manual step 4 of the OpenSSL recipe cannot be tested by running commands. `verify` performs the same checks, and its tests refuse a re-signed manifest with another scanner name.
+- **Codex review, round 6** (of 97d5b68): no medium finding.
+  - (high) A second named value on the same line (`password=a token=b`) was searched for only as part of a whole word, because the scanner reads one lead per line. Fixed: the value after every further name inside a finding is an entry of its own.
+  - (high) Decoded prefixes were each charged to the budget, so a long decoded passphrase lost its last words. Fixed: each text is decoded once, and its decoded words count as written ones do. Budgets are now 512 each for the span, the values inside it and the decoded forms.
+  - (low) The CLI refusal of a version 1 manifest that carries a redaction record is now tested.
+  - (low) Two passages still said "values replaced". They now say replacements.
+  - (low, not changed) The signing fixture has no agent turn. Agent headings are covered by the scanner and renderer tests on the same function that `--sign` calls.
+- **Codex review, round 7** (of 94fea13): no medium or low finding.
+  - (high) A quoted value after a further name in JSON (`"token":"violetorchid"`) ran on past its closing quote, and JSON has no spaces to end a word, so a bare copy survived. Fixed: such a value stops at its closing quote or at the next name, and values can also end just before a quote or separator.
+  - (high) Several names on one line each took the whole rest of the line, so their overlapping suffixes used up the budget before a later value was reached. Fixed: these values stop at the next name and never overlap. The span, the quoted part, these values, key-like words and decoded forms each have their own 512-character budget. Both cases are tested.
+- **Codex review, round 8** (of d75e427). These fixes are not reviewed again: every finding since round 2 has been in this best-effort copy layer, not in signing, verification or the manifest.
+  - (high) A long decoded span used the shared decoded budget, so a nested decoded value was never searched for. Fixed: each kind of entry has its own decoded budget.
+  - (medium) A value in a query string (`password=violetorchid&user=alice`) had no boundary at `&`. Fixed: `& | ( ) < > [ ] { }` are boundaries as well.
+  - (low) The sender summary said "possible secrets" for what are replacements. It now reads `Redacted: N replacements in …, each a [REDACTED <kind>] marker`.
+
+## P4e: copy search checks long values whole (2026-11-27)
+
+Card P4e, branch `ruslan/p4d-copy-budget`, from `main` after #69. #69 was merged at 445e9e4 before the fixes for its last Codex review reached it, so they come here. Synthetic inputs only (`tests/secrets.test.mjs`, `tests/sign.test.mjs`, `tests/signed-review-head.test.mjs`, tests named P4d review 9 to 11).
+
+- **Expected:** a name late in a long line is searched; a bare copy of a long value is replaced whole; every copy that `main` removed is still removed; a session past any of four budgets (2^20 matcher nodes, 2^26 confirm characters, 2^24 collected characters, 2^20 copies) is refused and `handoff --sign` writes nothing; `reviews verify --bundle` warns on a version 1 or 2 bundle.
+- **Codex review of #69 at 445e9e4:** two medium (late names and long tails unchecked; no session-wide memory bound), three low (the reviews-verify warning, format joiners kept in exported text, a widening test that did not widen). All fixed with tests except the joiners, which predate P4d and are kept on purpose by `visibleText`; left for a Backlog card.
+- **Codex round 2 (of 0809bbe):** four medium (a quadratic trailing-punctuation regex, a filter over every end per confirmation, an endpoint list per repeated copy, a lost decoded prefix), two low. All fixed with tests.
+- **Codex round 3 (of 273af4d):** one high (a copy that `main` removed was kept, because ends were worked out on the whole value), one medium (millions of short copies, also on `main`), two low. All fixed with tests; the high and medium tests fail on 273af4d.
+- **Codex round 4 (of fb72723):** three medium (a value collected as a decoded form was never decoded itself; one 64 Ki assignment used the confirm budget against itself; direct findings unbounded, also on `main`), four low (duplicate-value ends, marker kinds, a weak widening test, the scanner name). All fixed in ee18e3c with tests that fail on fb72723; new bundles say `context-ledger-secrets/2` and `/1` still verifies.
+- **Codex round 5 (of ee18e3c):** no high, and no replacement `main` makes is lost. Two low fixed in 0fd0209 (test strength). Three medium **open**, all availability: the budgets can refuse a session `main` signs (27,000 short distinct values pass the node budget on `main` and hit it here; 450 long values sharing a 990-character prefix use up the confirm budget; the direct-findings limit applies only after one field's findings are built). They fail closed, so nothing is signed half-checked. Fixing them needs a compact trie, shared confirmation work and a limit inside the P4b scanner.
+- **Accepted open findings (2026-11-28):** Ruslan accepted these three availability findings and approved the merge of #112 ("Yes, merge all three", for P1f #65, H15 #108 and P4e #112, in his own chat, relayed by the coordinating session). The inputs that reproduce them: 9,000 messages with three distinct 46-character `password=` values each (node budget); 450 values of `Ab9` repeated 330 times plus a distinct 46-character suffix (confirm budget); a line `pwd=a` repeated 2^20 + 1 times (direct findings are counted only after the field's findings are built). In each case `handoff --sign` refuses and writes nothing.
+- **Suites on ee18e3c:** `npm run -s test:graph` 9 pass; `node scripts/check.mjs` no findings; `node --test tests/*.test.mjs` 778 pass, 0 fail, 12 skipped; `npx playwright test` 70 pass, 1 skipped, 1 fail (`handoff.spec.mjs`, the H14 flake; it passes 3 of 3 on rerun, and P4e does not touch plain `handoff`).
+- **Earlier suites:** on the #69 merge, `npm run -s test:graph` pass, `node scripts/check.mjs` no findings, `node --test tests/*.test.mjs` 741 pass, 12 skipped, 5 fail under load (two sign tests and three Windows token tests; the sign tests pass alone, the token tests are H15), `npx playwright test` 66 pass and 5 timeouts, which pass on rerun (10 of 10). On 14a0948: the secrets, sign and review-head files pass (117), check clean.
+
 ## P5e — Launch docs (defined 2026-11-21, before the docs)
 
 | Eval | Expected |
@@ -4647,6 +4741,56 @@ P5 asked for a clean-VM install eval on three systems. A fresh GitHub runner is 
 
 **Codex review, round 2** (of d2bc969): no high or medium finding. (low) The README now names `CONTEXT_LEDGER_CLAUDE_BIN` and `CONTEXT_LEDGER_CODEX_BIN` and says a partial install exits with status 1. (low) The test now requires the GitHub install and the scoped uninstall separately. (low) The test's note points at P5d's `scripts/clean-install-check.mjs`, which merges before this card.
 
+
+## P1f — Origin-scoped browser credential (defined 2026-11-21, before the code)
+
+The P1e review's open high finding: browsers send the P1e session cookie to every port on 127.0.0.1, so any program serving a page on another local port (another user's server, a container with a published port, a dev server) receives the cookie and can replay it from a native client. P1f replaces the cookie with a secret that only the ledger's own origin (scheme, host and port) can read. Synthetic transcripts only.
+
+Threat model change: a page or server on another port of 127.0.0.1 or localhost no longer receives any credential. Not protected, as before: same-user malware that reads the token file or the browser profile, root or an administrator, script running in the ledger's own origin (the strict CSP and `textContent` rendering stay the control), and a sign-in link someone else opens first.
+
+| Eval | Expected |
+| --- | --- |
+| No cookie | The server never sets a session cookie and never reads one: a request whose only credential is a cookie, including a live session secret sent as a P1e-style `context_ledger_<port>` cookie, is 401 on every guarded route. A successful redemption clears an old P1e cookie for the port (`Max-Age=0`). |
+| Sign-in page | `GET /login?code=…` serves a static sign-in page and uses up nothing. Its script takes the code from the address, removes it from the address bar and history entry, and sends it once to `POST /api/session` as JSON from the ledger's own Origin. |
+| Redeem | `POST /api/session` with one valid code answers `{ session, expiresInSeconds }` (a fresh 32-byte secret, not the token, 12 hours) and uses the code up. A used, expired, unknown or malformed code, the token itself, a missing or foreign Origin, or a body that is not one `code` string is refused (401, or 403 for the Origin) and mints nothing. It is open without the bearer token, like the sign-in page. |
+| Header credential | Every guarded route except `POST /api/login` (which mints codes with the bearer token only) accepts the session in an `X-Context-Ledger-Session` header in place of the bearer token, with the same checks as before (Host, Origin on writes). A wrong, malformed, expired or earlier-start session is 401. The node-review route still takes only a browser session (not the bearer), with its Origin and `Sec-Fetch-Site` rules. |
+| Origin-scoped storage | The browser app and the console keep the session in the ledger origin's `localStorage` and send it on every API request; a page on another port can neither read it nor receive it. On a 401 the page forgets it and shows the sign-in help. A Playwright test serves a page from a second local port, loads it in the signed-in browser and checks that it received no cookie or session header and cannot read the ledger's storage. |
+| Suites | Every node test and Playwright spec that used the cookie passes with the header. Node, graph, Playwright and Python suites pass. ADR-10's text and the README describe the header credential. |
+
+**Results — P1f (2026-11-21, Windows):** the six rows pass. A human security review is still required before merge (AGENTS.md section 4).
+
+- **No cookie:** pass. `src/token.mjs` reads no Cookie header. A live session sent as `context_ledger_<port>` is 401, in `tests/token.test.mjs` and `tests/node-review.test.mjs`. A successful redemption answers `Set-Cookie: context_ledger_<port>=; …; Max-Age=0`, and Playwright shows a planted P1e cookie gone after sign-in.
+- **Sign-in page:** pass. `GET /login?code=…` is a static page with `Referrer-Policy: no-referrer` that does not echo the code and uses up nothing (its code still redeems afterwards). In the browser the code leaves the address bar and the history entry, and the page's script, style and redemption requests carry no Referer.
+- **Redeem:** pass. Each code works once. A used, unknown, malformed or non-string code, the token, a body other than exactly `{"code":"…"}` (extra keys, arrays, `null`, repeated or escaped keys, other spacing) gives 401 and uses nothing up. A foreign, `null` or missing Origin gives 403; `text/plain` gives 415; over 1 KiB gives 413, both declared and chunked. `GET` and `PUT /api/session` are guarded routes.
+- **Header credential:** pass. The session reads and, with the same Origin, writes; a wrong, truncated, extended, earlier-start or misnamed header is 401, as is the session sent as a bearer. Room decisions still need `Sec-Fetch-Site`; the node-review route still refuses the bearer token and a session without `Sec-Fetch-Site`.
+- **Origin-scoped storage:** pass. `tests/e2e/auth.spec.mjs` signs in, then serves a page from a second local port. That server receives no cookie and no session header on each visit. Its page cannot read the ledger's data or redeem a fresh code (both fetches blocked) and cannot read a ledger window's storage (denied); the code still signs in afterwards from the ledger's page. A stale stored session is forgotten after its 401.
+- **Suites:** node 526/536 (10 skipped: POSIX-only token cases and the existing port skip), graph check 9/9, Playwright 33/33, Python runtime 239 run, 66 skipped, OK. `src/`, `tests/`, `public/` and `bin/` hold no raw control or format characters.
+- **Codex review, round 1** (`codex exec --sandbox read-only`, of 4db061e): no high or medium finding; five low, all fixed:
+  - (low) A late 401 for an old session could clear a newer sign-in. Fixed: `forget` takes the headers the request was sent with and clears storage only if it still holds that secret.
+  - (low) `JSON.parse` folds repeated keys, so `{"code":"x","code":"<valid>"}` passed the one-key check. Fixed: only the exact `JSON.stringify({ code })` text is accepted; tests cover repeated, escaped and respaced keys and show both codes stay usable.
+  - (low) The tests did not pin `Referrer-Policy` on the sign-in page, the Referer of its subresources, or the streamed body cap. Added.
+  - (low) The cross-port browser test covered only what the other server receives. Added the foreign page's read, redemption and window-storage attempts.
+  - (low) The README, ADR-7c and the threat table still named the cookie or `SameSite=Strict`, and the eval said every guarded route takes a session (`POST /api/login` takes only the bearer). Corrected.
+- **Codex review, round 2** (of f339216): no high or medium finding; confirmed the round 1 fixes and no regression in the token, review or room routes. Four low, all fixed:
+  - (low) Another tab could store a new secret between `forget`'s check and its removal. Fixed: `store` and the compare-and-remove run under one origin-wide Web Lock (`navigator.locks`, present on loopback pages). Playwright checks that a late 401 for an old secret leaves a newer one; the interleaving itself is not reproducible in a test.
+  - (low) The decoder drops a leading BOM, so a BOM-prefixed body passed the exact-text check. Fixed: the raw bytes are compared; a BOM case is in the refused bodies, and the code stays usable.
+  - (low) The cross-port test swallowed the simple POST's failure. Fixed: it now asserts the ledger answered that POST with 403.
+  - (low) The README said every request needs the token, and repeated "sign-in". Corrected, naming the redemption, link-minting and node-review exceptions.
+- **Suites after round 2:** node 526/536 (10 skipped), graph 9/9, Playwright 33/33, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+- **Merge of main (2026-11-23):** I3, P3, P3b, P3c, P4c, S1, S1b, G9b and M2b-S. The swarm page (S1) called the guarded `/api/swarm` routes with a plain `fetch`, so it relied on the P1e cookie and would have got only 401s after P1f. It now loads `/swarm/session.js` (the same file) and sends the header through `ledgerSession`, forgetting the secret after a 401 as the app and console do. `tests/e2e/swarm.spec.mjs` runs against it, and `tests/routes.test.mjs` lists the new static path. P3's node-review test signs in through `POST /api/session`. Suites after the merge: node 616/626 (10 skipped), graph 9/9, Playwright 43/43, Python 239 run, 66 skipped, OK; no raw control or format characters.
+
+- **Merge of main (2026-11-27):** 164 commits, among them H9 (invariant checks), H11 (feature map and `scripts/drive.mjs`), H13, H14, L3, the U-series console line (U4 to U11, with the swarm room) and S1b. The static file list moved to `src/static-files.mjs`, so P1f's `/session.js`, `/login`, `/login.js`, `/console/session.js` and `/swarm/session.js` entries moved there (`public/` is in the package's `files`). Two callers on main predated the header credential and are fixed:
+  - The console swarm room (U7, `public/console/swarm-room.mjs`) fetched `/api/swarm` with a plain `fetch`, so a browser signed in only through P1f got a 401 and a room stuck in simulated mode. It now sends the header through `ledgerSession` and forgets the secret after a 401, as the swarm page does. New Playwright test in `tests/e2e/auth.spec.mjs` checks that the room's `GET /api/swarm` carries the session and gets 200; it fails with main's file.
+  - `scripts/drive.mjs` (H11) opened the sign-in link and navigated on at once, which could abort the page's `POST /api/session` and leave it signed out. It now waits for the page to reach `/`. `tests/drive.test.mjs` expected P1e's 303 cookie redirect from `GET /login`; it now checks the static page and that the code redeems once at `POST /api/session`.
+- **Codex review, round 3** (of the merged branch, 88baca7): one medium, three low.
+  - (medium, fixed) The server also answers `Host: localhost`, which may resolve to `::1`, where another local program can take the same port and serve pages of the origin `http://localhost:<port>`; those pages could read a session stored under that origin. Fixed in `src/server.mjs`: under any Host other than `127.0.0.1:<port>` the session header is dropped before any check and `POST /api/session` is refused (403, naming the 127.0.0.1 address) without using up the code. Bearer requests under `localhost` work as before. `drive.mjs --url` takes `127.0.0.1` only. Tests in `tests/token.test.mjs` (refused sign-in, a live session sent to `localhost` reads, writes and reviews nothing, bearer still works) and `tests/drive.test.mjs`; the token test fails without the fix.
+  - (low, open) Without Web Locks, `forget` could still race another tab's `store`. Loopback pages are a secure context, where every current browser has `navigator.locks`; left as it is.
+  - (low, open) Two tests could be sharper: the history check would pass without the early `history.replaceState` (the redirect overwrites the entry too), and the drive test redeems the code from Node rather than the browser. Follow-ups, not blockers.
+- **Codex review, round 4** (of d812504): the round 3 finding is closed (Node lowercases and joins the header, it is dropped before both checks, and the CLI, start-up and Playwright links all use 127.0.0.1). No high or medium. One low, fixed: the `localhost` refusal covered every method on `/api/session`; it now covers only the `POST` that issues a session, with a test that a bearer `GET` is 404 under both names.
+- **Suites after the merge and fixes (2026-11-27, Windows):** node 723 pass, 12 skipped of 738 in one full run; the 3 failures there were load timeouts (a PowerShell `icacls` spawn, a ledger start over 15 s, a perf spawn) and those files pass when run alone (77 pass, 1 skipped), as do the changed token, routes and drive files (39 pass, 5 skipped). Graph 9/9. Playwright 71 pass, 1 skipped; the 2 failures (the handoff test noted under H14, and a Chromium page crash in the cross-port test) pass when run alone. `node scripts/check.mjs`: 333 files, no findings.
+- **Merge of main, third (2026-11-28):** H15 (#108, the token-file write timeout), D4, H12 and R1. Only `docs/architecture.md` (R1 took section 17, so P1f is section 18) and `docs/handoff.md` conflicted. Against H15's `src/token.mjs`, P1f changes only the session parts (header in place of cookie, redemption returns the secret); H15's token-file writing is untouched. Suites: see the PR.
+- **Acceptance (2026-11-28):** Ruslan accepted #65 for merge without the separate human security review, answering "Yes, merge all three" to the coordinating session's question about #65, #108 and #112, which named the missing review. The approval reached this card relayed by that session; he merges or delegates the merge himself.
 
 ## M2b-S — Latent transfer at 4B scale (defined 2026-11-21, before the run)
 
@@ -5475,6 +5619,143 @@ A read-only Codex review found no high-severity issue, one medium and one low, b
 1. *(medium)* Every `/api/swarm` request started its own probe with a three-second timeout. A program on port 8000 that accepts connections and stalls would delay every open tab and pile up connections. Pages asking at once now share one probe, and its answer is reused for five seconds.
 2. *(low)* `installedCommand` did not recognise npm's `.bin` link, which `npx` can use on Linux and macOS, so the welcome would have named `npm run ledger -- login`, a command that fails outside a checkout. The `.bin` folder and the `.cmd` shim now count.
 
+## R1 — Parcels: share a graph with another machine as a file (defined 2026-11-23, before the code)
+
+A graph lives in one ledger, tied to the session it cites, so today nothing moves it to a second machine. R1 is the first step of stage 2 (`docs/architecture.md` §7 and §17): a parcel file that carries one graph with the lines it cites. R2 sends the same parcel through a relay. Synthetic transcripts, names and secrets only.
+
+### What is tested and the expected result
+
+- **Round trip.** `ledger share <graph-id> --out <new-file>` on ledger A writes a parcel. `ledger receive <file>` on ledger B (another database) stores it. The graph has the same ID on both, `graph read` gives the same packet, and B's session holds the cited lines with A's keys, line numbers, roles, and agent authors and recipients.
+- **Only cited lines leave.** The parcel holds the messages whose lines the graph cites and no other. A marker sentence in an uncited line is nowhere in the file, and neither is the session's title (B derives one from the excerpts).
+- **Secrets are replaced.** The cited lines pass through the P4b scanner (`redactSession`), so a synthetic credential in a cited line is a `[REDACTED <kind>]` marker in the parcel, and `share` says how many were replaced without showing one.
+- **All graph versions.** Version 1 and 2 graphs (line citations) and version 3 graphs (message keys and artifacts) travel. A version 3 graph's artifacts are registered in the same project slug on B, so its artifact IDs resolve.
+- **Marked as received.** B's session summary has `excerpts: true` in the HTTP list and detail and the CLI search. The hand-off Markdown, which `session_read` also returns, says the session holds only excerpts received from another machine, and the browser library labels it. A session imported from a file has no such field.
+- **All or nothing.** A parcel is refused, and B's database is unchanged, when: the graph ID does not match the packet; a node cites a line or key the parcel does not carry; the graph links to a graph B does not have; the file is not a version 1 parcel, has an unknown field, or is over 8 MiB; a message key, line or role is not of the shape the ledger writes.
+- **A second parcel from the same session** adds its new lines to the excerpts in line order; lines both carry are stored once. Receiving the same parcel twice changes nothing and reports the same graph.
+- **B already has the transcript.** When B imported the same file itself, `receive` leaves its session as it is and publishes the graph against it. It refuses a parcel whose lines are not in that session (by key, line and role), or whose project differs from the session's.
+- **The full file arrives later.** Importing the full transcript on B, where only excerpts are stored, replaces the excerpts with the whole session in one transaction, keeps the keys the excerpts had, removes the mark, and keeps the graph valid. If the file's lines do not match the excerpts (line and role), the import is refused with a conflict and nothing changes.
+- **Links and rooms.** After B receives A's party graph, B publishes its own graph with a link to it and opens a room with both. The same works back on A when B shares that graph.
+- **Sharing a received graph onward** works from its excerpts.
+- **Files.** `share` refuses to overwrite an existing file and writes the parcel for its owner only (mode 0600 where the system has modes). Paths and names printed to the terminal pass through `terminalLabel`.
+- **Schema version 8** adds the `session_excerpts` table and changes nothing else. A version 7 file is upgraded when a store opens it; `share` reads read-only and tells the person to start the ledger once when the file is older.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/parcel.test.mjs` and a browser eval for the label.
+- No new dependency. `docs/parcels.md` describes the format, and README names the two commands.
+- Stated limits, in `docs/parcels.md`: a parcel is not signed, so `receive` trusts the file as `import` trusts a transcript; B cannot check that the excerpts are what A's transcript says; review decisions and room choices do not travel (R3).
+
+### R1 results (2026-11-23)
+
+- `tests/parcel.test.mjs` 33/34 on Windows (one case needs a file name with a control character, which Windows does not allow; it runs on Linux and macOS in CI). `tests/e2e/parcel.spec.mjs` 1/1: the library and the reader label an excerpt session, and the HTTP list and detail carry `excerpts: true`.
+- The first 20 cases cover the eval above: the round trip for graph versions 1, 2 and 3 with artifacts and agent turns; only cited lines in the file; redaction; all-or-nothing refusals with every table compared before and after; merging a second parcel; a receiver that already has the transcript; the full file arriving later, with legacy keys kept; links and the same room on both machines; onward sharing; deleting; the schema step; and the two commands.
+- Two source-layout tests of P3c needed an update: one assumed LF line endings in `src/cli.mjs`, the other the `return {` that is now `const store = {`.
+- **Codex review, round 1:** two high, six medium, three low. All fixed, each with a test (the cases named "R1 review"):
+  - (high) A credential in a label or an artifact path went into the parcel as published, because only the carried lines were scanned. `share` now scans the packet and the artifacts and refuses the graph. The packet cannot be redacted: the graph's ID covers it.
+  - (high) A label that repeated an uncited line, such as the session's title, carried that line out. `share` now refuses a graph whose label holds an uncited line (whole, or its first 120 characters, from 20 characters up). `docs/parcels.md` no longer says that nothing uncited can leave: a label can still paraphrase, and a person reads the labels.
+  - (medium) `receive` checked citations against the receiver's whole ledger, so a parcel missing a cited line passed where the receiver had that line, and extra lines or artifacts rode along. A parcel must now carry exactly what its packet cites, and its graph ID must be the packet's own. Both are checked before the database is opened.
+  - (medium) Conflicting text was accepted without a word: a second parcel could show another text for a stored line, and a later import replaced altered excerpts. A line two sources share must now be the same turn, where text is equal or one is the other with values replaced by `[REDACTED <kind>]` markers (`matchesRedacted`, linear time). Agent authors and recipients are compared the same way. The suggested fix compared against this build's own redaction; that would refuse a real transcript after a scanner change, so the rule reads the markers instead.
+  - (medium) An import looked for excerpts before taking the write lock, so a parcel received in between left the import returning the excerpts as a duplicate. `save` now decides and writes under one lock. The test holds the lock from a second connection while a real `ledger import` waits.
+  - (medium) `share` could write a parcel over 8 MiB that `receive` refuses. It now checks the size of the text it writes.
+  - (medium) `share` chose a version 3 graph's lines from the stored citation snapshot. It now chooses by the packet's keys, so a stale line snapshot no longer matters, and it runs the receiver's checks on what it built: a stored graph whose artifacts do not resolve as its packet says is refused.
+  - (medium) A parcel refused for what it holds still created or upgraded the database. Those checks now run before the database is opened. `docs/parcels.md` says which checks need the ledger.
+  - (low) The savings meter of an excerpt session compared against the excerpts as if they were the transcript. It now says `baseline: "excerpts"`.
+  - (low) Invisible formatting characters were raw in the file. They are written as `\u` escapes, which read back unchanged. The docs no longer claim an owner-only file on Windows.
+  - (low) Weak tests: an assertion with a fallback, no version 3 completion case, and no check through the CLI search, the CLI hand-off or the MCP session tools. All added.
+- `receiveParcel` also runs `checkParcel` itself, so no caller can store an unchecked parcel.
+- **Suites after round 1 (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 649/660 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 43/43, runtime Python OK (66 skipped); no raw control or format characters in `src/`, `tests/`, `public/` or `bin/`.
+- **Codex review, round 2:** two high, three medium, two low. All fixed with tests (the cases named "R1 review 2"), except one part recorded as a limit:
+  - (high) A project slug of the shape of a credential went out unscanned. The slug is now scanned with the packet and the artifacts, and the graph is refused; the slug cannot be changed, because artifact IDs cover it.
+  - (high) The label guard cut a turn at 4,096 code units before squeezing white space, so a title behind a long run of spaces passed, and so did a quote of one line of a multi-line turn. The guard now makes its lead as the ledger makes a title, with no cut, and also looks at each physical line of an uncited turn.
+  - (medium) `matchesRedacted` was quadratic on a long near-match, because it used the built-in search. It now uses a Knuth-Morris-Pratt search and is linear; the test compares 8 times the text.
+  - (medium) A parcel whose packet was not a valid graph, or whose source name a ledger would not store, was refused only after the database was opened. `checkParcel` now validates the graph (all but its links) and the source name, so the command refuses such a file with no database created or upgraded.
+  - (medium) Matching counted code units, so two markers matched one two-unit character, and a lone surrogate beside a marker matched half of one. Markers now stand for whole characters. For two sets of excerpts each field may match in either direction (`compatibleTurns`). Two excerpts redacted in different places are still a conflict: that is now a stated limit in `docs/parcels.md`, with what resolves it.
+  - (low) The label guard refused a quote of a line the parcel carries, when an uncited turn said the same words. Words the carried text holds are no longer counted.
+  - (low) Redacting a long source name could push it past 255 characters, and `share` then blamed the graph's citations. Such a name travels as `source name redacted`. The count line now says "in what it carries", since the file name is counted too.
+  - Also from its coverage notes: the store's own check is tested by passing it unchecked parcels, and the lock test sets a busy timeout on the connection that holds the lock (it failed once under load without one). Its 1.5 second wait still only makes the old bug likely to show, not certain; the fix itself does not depend on timing.
+- **Suites after round 2 (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 655/666 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 43/43, runtime Python OK (66 skipped); `tests/parcel.test.mjs` 39/40 (one skipped on Windows); no raw control or format characters.
+- **Codex review, round 3:** two high, three medium, two low, all fixed with tests (the cases named "R1 review 3"). It compared `matchesRedacted` with a reference matcher on 266,321 inputs and found no wrong answer.
+  - (high) The label guard split a turn into lines at CR and LF only, so a line after U+2028 or U+2029 could be quoted. It now splits at every line-break character.
+  - (high) The guard lower-cased whole texts, and a Greek capital sigma lower-cases differently at the end of a word, so a lead cut at a sigma did not match the same words in a label. Case is now folded one character at a time.
+  - (medium) A stored agent path of up to 200 characters could grow past the schema's 400 once its values were replaced by markers, and `share` refused the graph. The limit is now 8,192.
+  - (medium) The check before the database is opened skipped links entirely. It now checks what a link says about its own packet (where it starts, and that no pair is linked twice) and leaves only the look-up of the other graph to the store.
+  - (medium) The guard's index by 20 code units still did labels-times-lines work when many lines shared a start. Leads are now kept in sets by length and each place in a label is looked up once per length, so the work is bounded by the labels; whether the carried text holds a lead is worked out once per lead.
+  - (low) The docs did not say that the redaction count includes agent authors and recipients, and the README said every received session is labelled as excerpts, which is true only of a session the parcel creates.
+- **Codex review, round 4:** three high, one medium, one low, all in the label guard's normal form. Four fixed with tests (the case named "R1 review 4"); one accepted.
+  - (high) Folding case one character at a time left the final form of the Greek sigma distinct from the plain one. Both now fold to one letter.
+  - (high) U+0085 ended a line but was not white space in a whole-turn lead, so two short lines joined by it passed. The lead and the labels now use one definition of white space that includes it.
+  - (high) A lead cut on the space between two words kept the space, which a label does not end with. The cut space is dropped.
+  - (low) The 20-character minimum was counted after folding, so a letter that lower-cases to two could turn 19 characters into 20 and refuse a graph. It is counted as written.
+  - (medium, accepted) Each distinct label hit still scans the carried text once, so a sender who builds a 7 MiB parcel with 2,000 matching phrases waits about 1.3 seconds. The sender can only slow their own command, and the fix is a multi-pattern matcher; not worth its code here.
+- The guard has now needed fixes in four rounds. It is a guard against verbatim repeats, and `docs/parcels.md` says a person reads the labels before sharing; it is not the control that keeps secrets in, which is the scanner over everything that leaves.
+- **Suites after round 4, with main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 698/709 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. Only two local ledgers were used; the commands have not been run between two machines.
+
+### Refresh with main and a fresh Codex review (2026-11-27 and 28)
+
+Nobody had touched #90 since 2026-11-23, and it conflicted with main. Main was merged three times (the last included P4d's copy search, #69, and H12, #110), then a read-only Codex review of the PR's own diff ran until no high finding was left. Every fix has a test that fails without it.
+
+- Round 1, medium: a ledger upgraded from before message keys keys turns `l:<line>`, so a fresh import of the same file refused that ledger's line-cited parcels. For a version 1 or 2 graph a turn on the same line now matches. Medium: main's H10 check reported the label guard's `label.length`; renamed, unchanged.
+- Round 2, high: the scanner finds `password=value` by its context, so a label that copied only the value left verbatim. Medium: a legacy key that came in a parcel could never give way to the real key.
+- Round 3, high (twice): the value check missed a value followed by punctuation, and a bare copy of a found value in a carried turn was sent. `share` now runs P4d's `redactSession` over the whole session plus the graph's own text: a found value is removed from carried turns wherever it is copied, and a copy in the graph's own text, which cannot be redacted, refuses the share. Medium: a line-cited parcel could install an invented key that outlived a full import.
+- Round 4, medium: a key from a line-cited parcel still blocked a later version 3 parcel; a version 3 parcel now takes over any excerpt key no stored graph cites. Medium, accepted: a forged version 3 parcel can cite line 2 by line 5's real key, and the full transcript is then refused, with its own message (`keyClash`).
+- Round 5, medium: a line-cited parcel could store one line under another line's real key. Lines of a version 1 or 2 parcel are now stored under `l:<line>`, whatever keys they carry.
+- Round 6, medium: `publishGraph` checked and inserted outside a transaction, so another process could re-key an excerpt in between; both now run under one write lock (`tests/delete.test.mjs` shows the other connection waiting). Medium: a line-cited parcel carried record UUIDs as keys, outside what the scanner reads; it now sends `l:<line>`. Medium, accepted: a version 3 graph published on the receiver that cites an `l:<line>` placeholder pins it, so a version 3 parcel with that turn's real key is refused there. The fix is several keys per turn, a schema change for a later card; until then, cite received excerpts by line or import the transcript first.
+- Round 7, high: P4d's copy search indexes the first 512 characters of a found value, so a bare copy of a longer one (one long word, such as a hyphenated passphrase) kept its tail in a carried turn. Before that search, `share` now replaces every exact copy of a found span, or of a word of one, longer than 512 characters. The signed hand-off has the same limit; that is a separate card for P4d's owner. Round 7 confirmed both round 6 fixes.
+- Accepted from P4d (ADR-9a): copies under six characters are not looked for.
+- **Suites at 223f30b with main merged (Windows):** `node scripts/check.mjs` no findings, `npm run -s test:graph` 9/9, `node --test tests/*.test.mjs` 0 failed (13 skipped), `npx playwright test` 72 passed (1 skipped). Still not run between two machines.
+
+## R2 — Relay: send a parcel between two machines (defined 2026-11-23, before the code)
+
+R1's parcel is a file someone has to carry. R2 sends it: a small relay holds the encrypted parcel until the other machine fetches it with a code. The ledger server still listens on loopback only; the relay is a separate program that never opens a ledger database (ADR-20 in `docs/architecture.md` §17). Synthetic transcripts and names only.
+
+### What is tested and the expected result
+
+- **End to end.** `ledger relay serve` prints its address. On ledger A, `ledger share <graph-id> --relay <url>` prints one code. On ledger B, `ledger receive --from <code>` stores the graph with the same ID, as R1's `receive <file>` does, and the relay then holds nothing.
+- **The relay sees only ciphertext.** What the relay holds contains no text of the parcel (a label, a transcript line, the session ID, the graph ID). The parcel is sealed with AES-256-GCM under a key derived from the code's secret, which never reaches the relay.
+- **The code is the key.** A different secret, or a parcel changed by one byte, fails to open, in fixed words, and the ledger is unchanged. A sealed parcel opens only as the version it was sealed as.
+- **One parcel per code.** A second `share` cannot write to a box that holds a parcel (409). After a successful `receive` the box is gone, and the same code finds nothing.
+- **A failed receive keeps the parcel.** If B refuses the parcel (for example its graph links to a graph B lacks), the relay still holds it, so B can receive the missing graph and try again.
+- **The relay's own limits.** A request without a bearer token of the right shape is refused (401). A body over the limit is refused (413) without being held. The relay holds at most a fixed number of parcels and bytes and refuses more (507). A parcel expires after 24 hours. Unknown paths give 404 and other methods 405. Responses never echo a token or a body.
+- **The relay cannot reach a ledger.** `src/relay.mjs` imports only Node built-ins. It opens no database and reads no file.
+- **Loopback by default.** `relay serve` listens on 127.0.0.1 unless `--host` names another address, and then says the address must be reachable only by people you trust. `share` warns when the relay address in a code is loopback, since the other machine cannot reach it.
+- **Fixed words on failure.** An unreachable relay, a relay that is not one (wrong health reply), a malformed code, and a missing parcel each give one fixed sentence. Nothing from the network reaches the terminal unescaped, and the code's secret is never printed by `receive`.
+- **R1 is unchanged.** `share --out` and `receive <file>` work as before; `--out` and `--relay` cannot be combined, and neither can a file and `--from`.
+
+### Acceptance for the code
+
+- The four suites pass, with the cases above in `tests/relay.test.mjs`.
+- No new dependency: `node:crypto` (HKDF-SHA-256, AES-256-GCM) and `node:http`.
+- `docs/parcels.md` describes the relay, the code, and what an attacker on the network can and cannot do.
+
+### R2 results (2026-11-23)
+
+- `tests/relay.test.mjs` 14/14: sealing and opening; the code's one spelling; the relay's store, fetch and delete; refusals without a token and to web pages; the size, count, byte and time limits; uploads that must declare a length and count while they arrive; expiry on an idle relay; the imports of `src/relay.mjs`; a relay that is absent, of another version, endless, oversized or redirecting; an upload stored but not confirmed; and the three commands end to end with a relay process and two ledgers, including a parcel the ledger refuses and one changed on the way.
+- Found while building: on Windows an answer sent while the sender is still writing is lost with the connection, so the sender saw a broken connection instead of the reason. A refused upload is now read to its end and dropped (up to 16 MiB) before the relay answers.
+- **Independent security review (a Claude subagent that did not write the code, round 1):** no high. Four medium and six low; all fixed with tests except two noted below.
+  - (medium) Uploads still arriving were not counted, so 64 stalled senders could make the relay hold about 500 MiB while it reported nothing held. A PUT must now declare its length (411 otherwise), and its bytes and its place count against the limits until it ends or breaks off.
+  - (medium) A reader that never read kept its connection for good, and 64 of them shut everyone out. A socket idle for a minute is closed, and each connection carries one request.
+  - (medium) `checkRelay` read the health answer without a limit, so a relay, or someone on an `http` path, could fill the sender's memory. It reads one kilobyte, asks for no compression, and gives up after 10 seconds.
+  - (medium) The code was called one-time, and it is not: fetching does not empty the box, and the 24 hours are kept only by the relay. The command, the docs and ADR-20 now say that whoever has the code can read the parcel and that it must stay secret for good.
+  - (low) The redirect test would have passed with redirects followed; it now redirects to a live second listener and checks that nothing arrives there, for all four calls. The imports test now reads every kind of import and checks what a fresh process loads.
+  - (low) Expiry ran only when a request with a token arrived. A timer now sweeps an idle relay.
+  - (low) The relay checked no Origin, so a page that reached a loopback relay by its own name could fill it. A request that names an origin is refused.
+  - (low) An upload stored but not confirmed left a box nobody held a code for. The sender now deletes the box when the upload fails.
+  - (low) One 30 second limit covered a whole transfer and reported a slow link as an unreachable relay. A transfer has 3 minutes and its own sentence.
+  - (low) `isLoopback` missed `localhost.`, `*.localhost` and the IPv4-mapped form. Added.
+  - Not changed: the timeouts and the connection limit have no test of their own (they are Node settings), and the eval's claim that nothing from the network reaches the terminal rests on the code printing only fixed sentences, which the hostile-relay cases exercise.
+- **Suites after the security review, with R1 and main merged (Windows, 2026-11-23):** `node --test tests/*.test.mjs` 712/723 (11 skipped, 0 failed), `npm run -s test:graph` 9/9, `npx playwright test` 62 passed (1 skipped), runtime Python OK (66 skipped); no raw control or format characters. The relay and both ledgers ran on one machine; a transfer between two machines has not been tried.
+
+### Refresh with main and R1, and a fresh Codex review (2026-11-27 and 28)
+
+R1 (with main) was merged in after each R1 change. A read-only Codex review of this PR's own diff (`ruslan/r1-parcels...HEAD`) found one medium and five lows over two rounds, all fixed with tests that fail without the fix; round 2 found no high or medium.
+
+- Medium: a box deleted or expired while a slow download was still sending it freed its room at once, so new uploads could hold more memory than the limit. Those bytes stay counted until the last download ends, and one download has 3 minutes in all (`limits.downloadMs`). The tests drive the relay's handler with a response that never finishes, because Windows takes a whole 8 MiB reply into its own buffers.
+- Low: the client read an answer that said it was compressed (fetch unpacks it anyway); such an answer is now refused unread, and the header is compared exactly (round 2 found the first pattern let `sidentity` through).
+- Low: `receive --from` promised a relay that refused the delete would drop its copy in 24 hours, and stated a delete it can only report; both sentences now say what is known.
+- Main's H9 `loopback-only` check flags `relay serve --host`, the one listener ADR-20 allows beyond loopback. `scripts/check.mjs` names it by file and exact arguments, once; the same call anywhere else, or twice, is still a finding. Low, not changed: the exemption follows the argument text, not the function it sits in.
+- Low, not changed: response bodies the client does not need are left to the transfer timeout instead of being cancelled.
+- **Suites with R1 and main merged (Windows):** see the R1 refresh entry; the relay ran on one machine only.
+
 ## H9 — Repo-wide invariant checks (defined 2026-11-26, before the code)
 
 Codex reviews of earlier cards came back to the same AGENTS.md section 6 rules again and again: raw control, format or bidi characters (83 mentions in this file), HTML built from strings in the browser, and servers that must stay on loopback. Each card added its own scan for the files it changed. H9 puts those rules in one script, `scripts/check.mjs`, which runs first in CI on every tracked file, so a break is caught at once and reviews can spend their rounds on judgment. The idea comes from the talk "All Code Is Slop (Except Mine)" (Lauren Tan, AI Engineer, 2026-11-14): every correction an agent needs twice becomes a check, and the check's message says what to do instead. Synthetic inputs only.
@@ -5759,6 +6040,58 @@ Not done, and why:
 - Finding 11 also asked for the size table to be generated. It is computed with `plan.py` and the test fixes the M2b-S total; the table says it covers these four builds only.
 
 Suites after the fixes: hub tests 51 (38 without torch, 13 skipped; all 51 pass in WSL with torch on the CPU). Runtime suite: 491 tests pass, 115 skipped (no torch on Windows). `node scripts/check.mjs`: 350 files, no findings. `npm run -s test:graph`: pass. `node --test tests/*.test.mjs` (Windows, twice, while L5 was training on the GPU and other sessions were running): 735 of 748 pass, 12 skipped, 1 failed both times, the spend-log test of `tests/handoff-bench.test.mjs` (2 log rows where 6 are expected). That file passes alone, 12 of 12, and this card changes no JavaScript, so the failure is recorded as a load flake of the full run and not investigated further here. `npx playwright test` was not run: no JavaScript or browser code changed.
+
+## H15 — Token file write survives a slow PowerShell (defined 2026-11-27, before the code)
+
+Card: H15 on the delivery board. Scope: how `src/token.mjs` writes the token file on Windows, and the server's listen callback that waits for it. The read path and the ACL checks themselves are not changed.
+
+### The problem
+
+On Windows the server wrote its token file through one synchronous PowerShell call with a 30 s timeout, inside its listen callback. On a loaded CI runner (#100, run 46025391797) PowerShell took longer, the call was killed, and the server printed "Cannot write the access token file next to the database." and exited before serving anything (see the H14 notes, which rule out H9's listen change).
+
+### The change (recommended option)
+
+The write becomes asynchronous and is retried once after a timeout:
+
+- The server keeps answering 503 "Context Ledger is starting." until the write and its ACL check have both finished, as it already did before `auth` existed. Its event loop is no longer blocked, and nothing is printed (no "listening" line, no sign-in code) before the file is confirmed private.
+- Each PowerShell attempt has a bounded timeout of 60 s, and only a timeout leads to a second attempt (at most two, so at most about 2 minutes). Before the retry, whatever is at the path is removed, as at the start of every write, so the second attempt still creates the file exclusively with its private descriptor.
+- Any other failure fails closed at once, without a retry: the path already holds something (exit 3), the descriptor on the new handle is not private (exit 4), output that does not parse, or a descriptor Node rejects (`privateToOwner`). In each of these the record is emptied through its own handle as before, and the server exits with the same fixed sentence.
+
+Rejected: a longer synchronous timeout (blocks the event loop and still has a cliff), and an ACL path without PowerShell (needs a native addon or `icacls` text parsing, which depends on the display language; ADR-10's single-handle create-then-check would be lost).
+
+### What is tested and the expected result
+
+`tests/token.test.mjs`, with an injected PowerShell runner and no real sleeping:
+
+1. A first attempt that times out, then one that succeeds: the write resolves with the file's identity, the runner was called twice, each time with the 60 s bound, and the second attempt found nothing at the path (the partial file of the first was removed).
+2. Two attempts that both time out: the write rejects with the fixed sentence "The token file could not be written privately.", the runner was called exactly twice, and no token is left at the path.
+3. An attempt that reports a descriptor others can read: the write rejects at once (one call, no retry) and the record it wrote is emptied.
+4. An attempt that fails for another reason (a non-zero exit that is not a timeout): rejects at once, one call.
+5. The default runner marks a child it had to stop as timed out: a Node child that never exits, with a 300 ms bound, rejects with `timedOut: true`; a child that exits non-zero rejects without it. Its stdin carries the record and is then closed.
+6. The existing suite still holds: a server that cannot write its token file exits 1 with the fixed sentence and prints no "listening" line; on Windows the real file is private from its creation.
+
+Synthetic data only: random tokens and temporary folders.
+
+### Review
+
+- **Codex review, round 1:** no high; two medium and two low.
+  - (medium, fixed) The runner was built on `execFile`. A kill that failed could reach its callback before the child exited, so the retry could remove the path while the first PowerShell was still alive and about to create the file. The runner now uses `spawn` and settles only on `close`, once the child has exited and its handles are shut. A child that could not be killed rejects at once without `timedOut`, so the write fails closed and is not retried beside it. Regression test: a child that takes 300 ms over SIGTERM has exited by the time the runner rejects (`process.kill(pid, 0)` gives ESRCH).
+  - (medium, fixed) The signal handlers were installed only after the awaited write, so a stop during a slow start left the PowerShell child running with the token on its stdin. On a restart at the same port, that child could take the path first. The handlers are now installed before the write and abort it through an `AbortSignal`. The runner kills the child and waits for it to exit, the write fails closed without a retry, and the handler then removes the file if it holds this start's token. Regression test: an abort during the write kills a hung child, and a write stopped during its first attempt is not retried even after a timeout.
+  - (low, partly covered) No test holds a real exclusive Windows handle through a timeout. The runner test above checks that the child has exited, which is what releases the handle. A real PowerShell that hangs while holding the file would need a test hook in the write script, which this card does not add to security code.
+  - (low, accepted) The 503 during the write has no server-level test. The server needs its write to pause before such a test is possible, and the only way to do that is a test-only hook in the server. The guard itself (`if (!auth) … 503`) is unchanged and predates H15, and `auth` is now assigned only after the write and its check.
+- **Codex review, round 2:** no high; two medium and three low.
+  - (medium, fixed) The stop handlers were registered with `process.once`. A second Ctrl-C while the first handler waited for PowerShell would take Node's default action and end the server before the child exited. The handlers now stay installed, and a second signal is ignored while the first stop runs.
+  - (medium, fixed) When a kill failed, the runner rejected at once. The stop handler took that as proof the writer had stopped and exited while PowerShell might still create the file. The runner now settles only on `close`, so it always waits for the child to exit, whatever the reason or the kill result. A child stopped for any reason other than a timeout rejects without `timedOut`, so it is never retried. This is a repeat of round 1's first finding (a settle before the child exits). The API change prevents it: the runner has no settle path other than `close` and a spawn that never started (no pid). A `scripts/check.mjs` rule cannot tell whether a promise settles before a child exits.
+  - (low, fixed) Output over 64 KiB asked the child to stop, but a timeout during its exit could still classify it as timed out and allow a retry. The first reason to stop now wins, so an overflow is a plain failure. Regression test with a child that floods stdout and lingers over SIGTERM.
+  - (low, fixed) `writeTokenFile` let the raw `mkdirSync`/`rmSync` errors through, and they name the path; the server hid them, but direct callers would not. They now become the fixed sentence. Regression test with a folder at the path, on both branches.
+  - (low, accepted) No server-level signal test. On Windows a child process cannot be sent a SIGINT or SIGTERM that its handlers see (the existing clean-stop test is skipped there for the same reason), and on POSIX the write is synchronous, so the wait is never reached. The runner and writer tests above cover the abort path.
+- **Codex review, round 3:** no high; one medium and three low.
+  - (medium, fixed) The timer recorded a timeout even when the child had already exited and only its `close` was pending, so a script that failed its ACL check (exit 4) at that moment could be retried as a timeout. A timeout now counts only when the child is still running when the timer fires and the kill ends it (no exit code at `close`). A child that exits with its own code is judged by that code. On Windows a killed child always reports no exit code, so the round 1 and 2 tests still see `timedOut: true` there. Regression test on POSIX: a child that answers SIGTERM with exit 4 is not retryable. A retry, if one did happen here, would still run every check again, so this was about telling failures apart, not about privacy.
+  - (low, fixed) On POSIX, a file created at the path between `rmSync` and the exclusive `openSync` gave a raw `EEXIST` that names the path. It is now the fixed sentence.
+  - (low, fixed) If `removeTokenFile` threw in the stop handler, `process.exit(0)` was skipped. The exit is now in a `finally`.
+  - (low, accepted) If a killed attempt wrote the record and another program holds a handle that blocks reading, cleanup reports "not ours" and the caller gets the ordinary sentence instead of "could not be emptied". This is `emptyIfOwnRecord`, unchanged by H15, and the file is still private to the user.
+- **Codex review, round 4:** no high or medium findings; one low.
+  - (low, accepted) Suppose the timer fires while the child is running, and the child then exits on its own with code 0 before the kill lands. The attempt is refused without a retry, even though it succeeded. That outcome fails closed (the server stops with the fixed sentence and the record is emptied), the window is a few milliseconds at the 60 s mark, and accepting the output of a child the runner already decided to kill would bring back the ambiguity round 3 removed.
 
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
@@ -6277,3 +6610,288 @@ Capping the number of sequences did not make anything faster on this card: every
 Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
 
 Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
+
+## D4 — Website build demo: hand-off with and without the ledger (defined 2026-11-22, before the code and the run)
+
+The question an investor asks: when one agent hands a job to another, does the ledger change what gets built? This card measures it on one realistic job, a small business website, with the same model in every condition.
+
+- **Client chat (synthetic):** `demo/roaster.mjs` writes a Claude Code transcript in which Mara, owner of the made-up Tidewater Roast Co., briefs an agent on her website. It holds 15 checkable requirements. Five of them change partway through, as clients do: the brand colour (forest green to terracotta), the opening hours, the oat latte price, a wholesale page that is added and then dropped, and online ordering that is asked for and then put off. Work chatter is appended (150 extra exchanges, the same setting as the long-session rehearsal) so the chat reads like a real working session. Every name, number, phone and address is made up.
+- **Agents:** Claude Code (`claude -p`, model `sonnet`) for every agent, with built-in tools off, so each agent sees only what the ledger tools return or what is in its prompt. The builder is given the same design brief in every condition and returns one self-contained HTML file (no external images or scripts; Google Fonts allowed).
+- **Conditions,** run 3 times each:
+  - `chat`: the builder reads the whole client chat itself with `session_read`, then builds.
+  - `notes`: a first agent reads the chat and writes a hand-off note for the developer, as people do today; the builder gets only the note.
+  - `ledger`: a first agent publishes a cited version 2 graph of the chat (decisions, replaced decisions with `supersedes` edges, constraints); the builder calls `context_for` on it, then builds.
+- **Scoring (automatic, `demo/roaster.mjs`):** the visible text and CSS of each site are checked for each of the 15 requirements (present and correct = 1). Separately counted: **stale** values (a replaced colour, hours or price that still appears) and **forbidden** content (a wholesale section, a gluten-free claim, an online-order button). Also recorded per condition: the builder's input tokens and the end-to-end time of the whole hand-off (first agent plus builder).
+
+| Gate | Pass when |
+| --- | --- |
+| The ledger keeps the client's final word | `ledger` scores at least as high as `notes` on requirements in every run, and has no more stale or forbidden items than `notes` in total. |
+| It is cheaper to hand over | The `ledger` builder reads fewer input tokens than the `chat` builder, on average. |
+| Reported, not gated | `ledger` against `chat` on requirements and stale items, and end-to-end time for all three. Earlier rehearsals found the graph briefing as accurate as the raw transcript (18/18 and 12/12), so we expect no accuracy gain over `chat`; the claim there is tokens and time, not quality. |
+
+Not covered, and named so nobody reads more into a pass: one job, one client chat we wrote ourselves, one model family, three runs each, and design quality is judged by eye, not scored. The sites shown in the pitch are the actual outputs of these runs, unedited.
+
+### Round 1 (2026-11-22): result as run
+
+| Condition | Requirements met (runs 1, 2, 3) | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) |
+| --- | --- | --- | --- | --- | --- |
+| `chat` | 15, 14, 15 | 0 | 0 | 57,577 | 148 s |
+| `ledger` | 15, 10, 10 | 0 | 1 (a wholesale section) | 41,865 | 236 s |
+| `notes` | void: all three builds failed | | | | |
+
+- **`notes` is void because of a harness bug.** The builder ran without `--strict-mcp-config`, so `claude -p` loaded the operator's own MCP servers and the request failed on context length. It also gave that agent tools it should not have had. Fixed in the runner: every agent now gets `--strict-mcp-config` with this run's config (an empty one for the note reader and its builder).
+- **`ledger` failed the first gate's spirit, and the cause is the builder's reading, not the graph.** All three published graphs held all 15 requirements, with every replaced decision marked and linked by `supersedes`. Replaying run 4 (a diagnostic run with tool calls logged): the builder called `context_for` for the whole graph and then a second time with a question ("business name menu prices hours address contact subscription"). The scoped briefing correctly said "5 more left out", and the builder built from it, inventing a colour and fonts and copying a replaced hours node. Runs 2 and 3 missed the same five items (tagline, Tuesday closing, colour, font, Harbor Fog), which fits the same pattern. Product finding, new Backlog card G9c: a scoped briefing should name what it left out, not only count it.
+- **Tokens:** the `ledger` builder read 27% fewer input tokens than `chat`; both include about 30k tokens of Claude Code's own prompt per turn, so the gap in the handed-over text itself is larger (the meter estimates 10,898 tokens of chat against about 800 of briefing).
+
+### Round 2 (defined 2026-11-22, after round 1 and before running it)
+
+Same chat, scorer, model and 3 runs per condition, with two changes: the harness fix above for every agent, and the `ledger` builder prompt says to call `context_for` exactly once, with no question, and that current decisions are those not marked "(replaced)". The `chat` and `notes` prompts are unchanged. The gates are unchanged. Round 1 stays recorded as run; round 2 is reported beside it, not instead of it.
+
+### Round 2 (2026-11-22): result, and both rounds rescored
+
+After round 2 one scorer check was fixed: an hours table that reads "Tue Closed" did not count as closed on Tuesdays, a false miss in four sites across both rounds. `tests/roaster.test.mjs` covers it, and every saved site in both rounds was rescored with the fixed scorer. Numbers below are the rescored ones.
+
+| Round | Condition | Requirements met | Stale | Ruled out | Builder input tokens (mean) | Hand-off time (mean) | Cost per hand-off (mean) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void (harness bug) | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+- **Gates, round 2: both fail.** The ledger met as many requirements as the note in every built run, but had one ruled-out item to the note's none (the sentence "For wholesale enquiries, please call us directly.", counted because the rule counts any mention of wholesale; round 1 run 1 had the same sentence). The ledger builder read 37,446 input tokens against 36,847 for `chat`, not fewer: most of each builder's input is Claude Code's own prompt and the tool definitions, so the handed-over text (about 800 tokens of briefing against about 10,900 of chat, by the meter) does not move the total. The note builder read the least because it had no tools at all.
+- **The note run that failed** returned 33k output tokens with no complete HTML page; its reply was not kept, so the cause is unknown.
+- **Read by eye, not scored:** builders in every condition invented copy the client never gave (tasting notes, "Casco Bay", "cancel any time", home delivery). One note-built site left "PLACEHOLDER" text where the note had no about-us copy.
+- **Outcome:** on this job, with Claude Sonnet and an 11k-token chat, all three hand-offs produce equally correct sites once the builder reads the ledger briefing whole, and the ledger hand-off costs more because a first agent publishes the graph. The claim we can make from D4 is narrow: the published graph kept all 15 requirements and every change, with replaced decisions marked, in every one of six runs. A quality gain is untested where it is most likely: chats too long to read whole, smaller builder models, or many builders reusing one graph.
+- **The pitch page** (sites side by side, both rounds, these limits) is built from these reports without editing the sites.
+
+### Codex review (2026-11-22) and the final scoring
+
+A read-only Codex review found eight issues, all addressed; the scorer changes have regression tests in `tests/roaster.test.mjs` (13 tests).
+
+1. *(high)* The runner logged tool calls but did not stop or flag protocol departures. Fixed: every ledger tool an agent is not given is now disallowed outright (`--disallowedTools`), and each run reports its deviations. The logs show **every round 2 `ledger` builder called `context_for` twice**, both times for the whole graph with no question, against the instruction to call once. The second call adds tokens and time to the `ledger` figures; it does not change what the builder saw.
+2. *(medium)* The scorer could award points a site did not earn: a menu item without a price could borrow the next item's price, `$4.50` passed as `$4`, any `$18` on the page passed the Bean Club, the address passed without "Maine", and a colour or font named only in a comment passed. Fixed: prices are read per menu row, the Bean Club price must follow its name, the address needs Maine, and colour and font must appear in a CSS declaration or colour attribute with comments removed.
+3. *(medium)* Hours and ruled-out checks: "Closed on Tues." missed, adjacent rows could combine, "15 pm" could match the old "5 pm", "7 am-3 pm daily" escaped the old-hours check, a non-breaking hyphen hid "gluten-free", and "Start your pickup order" escaped the ordering check. All fixed. The wholesale check now follows the eval's own wording, a wholesale *section* (a heading, link or form); a passing mention is reported separately.
+4. *(medium)* The round 2 write-up overstated: the round 1 cause was observed only in the diagnostic replay (runs 2 and 3 are consistent with it, not proven), the note averages exclude the failed build, and the wholesale count did not match the eval's definition. Corrected below.
+5. *(medium)* Windows quoting and timeouts: `--model` and the temporary path now must be plain characters before they reach `cmd.exe`; a timeout closes the child's pipes after the grace period; ledger HTTP calls time out after 30 s.
+6. *(medium)* HTML extraction could merge two documents and fell back to raw output when the CLI gave no final result. Now exactly one document is accepted, there is no fallback, and a failed build keeps the end of its reply for diagnosis.
+7. *(low)* The disclosure counted four sites changed by the Tuesday fix; it was five. Superseded by the full rescoring below.
+8. *(low)* Agent text printed to the terminal was not escaped. Runner output now escapes control and format characters; the saved sites stay as the agents wrote them and are shown only in sandboxed frames.
+
+**Found while checking item 1:** each `chat` builder called `session_read` once. The chat comes in pages, and the 150 chatter exchanges sit after every requirement, so a builder that reads only the first page still sees all 15 requirements. That made the `chat` baseline easier than a long chat with requirements spread through it would be; a fair long-chat test needs the requirements interleaved with the chatter.
+
+**Final scores** (every saved site rescored with the reviewed scorer; requirement counts are unchanged from the round 2 table, and the ledger's ruled-out count drops from 1 to 0 because both hits were a one-line wholesale mention, not a section):
+
+| Round | Condition | Requirements met | Stale | Ruled out | Wholesale mentioned | Builder input tokens, mean of built sites | Hand-off time, mean of built sites | Cost, mean of built sites |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 57,577 | 148 s | $0.23 |
+| 1 | `notes` | void | | | | | | |
+| 1 | `ledger` | 15, 11, 11 | 0 | 0 | 1 | 41,865 | 236 s | $0.39 |
+| 2 | `chat` | 15, 15, 15 | 0 | 0 | 0 | 36,847 | 131 s | $0.20 |
+| 2 | `notes` | 15, 15, failed (413 s) | 0 | 0 | 0 | 8,394 | 336 s | $0.52 |
+| 2 | `ledger` | 15, 15, 15 | 0 | 0 | 1 | 37,446 | 249 s | $0.47 |
+
+**Gates, round 2, final:** the first gate passes on the eval's wording (the ledger met as many requirements as the note in every run the note completed, with no stale or ruled-out items), but only as a tie: no condition was better than another on correctness. The second gate fails (37,446 against 36,847 builder input tokens). D4 shows no quality or cost advantage for the ledger hand-off on this job. What it does show: the published graph kept all 15 requirements and every change, with replaced decisions marked, in all six graphs.
+
+### Round 3 (defined 2026-11-22, after the Codex review and before running it)
+
+Rounds 1 and 2 put all the chatter after the last requirement, so a builder reading the chat found everything on the first `session_read` page. Round 3 tests the case where the ledger could help, with the scorer, the brief and the client's final requirements unchanged:
+
+- **Long chat with the requirements spread through it.** 800 chatter exchanges, spread evenly over the nine gaps between requirement exchanges (`roasterTranscript(800, { interleave: true })`). The chat runs to about five `session_read` pages, and the changes (colour, hours, oat latte price, the dropped wholesale page and order button) come pages after the values they replace.
+- **A smaller builder.** Every builder runs on Haiku (`--builder-model haiku`). The note writer and the graph publisher stay on Sonnet, as in rounds 1 and 2.
+- **One hand-off, several builders.** In `notes` and `ledger` the first agent runs once, and its note or graph feeds all three builders (`--reuse`). In `chat` each of the three builders reads the chat.
+
+**Gates, fixed before the run:**
+
+1. Correctness: the `ledger` builders meet at least as many requirements on average as the `chat` and `notes` builders, with no more stale or ruled-out items in total than either, **and** they are strictly better than `chat` on requirements met or on stale plus ruled-out items. A tie does not pass this round.
+2. Cost: the whole `ledger` condition (one publish plus three builders) costs less than the whole `chat` condition (three builders).
+
+A failed first agent fails its whole condition; nothing is rerun. Deviations are reported beside the runs, as in round 2.
+
+### Round 3 (2026-11-22): result as run
+
+Run folder `demo/out/website/2026-11-22T23-40-17-606Z` (`--chatter 800 --interleave --builder-model haiku --reuse --runs 3`). The chat had 1,680 messages and nine `session_read` pages, observed in the run; the definition above estimated about five before it ran.
+
+| Condition | Requirements met | Stale | Ruled out | Builder input tokens, mean | Chat read (requests and start lines) | Cost, whole condition (3 sites) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `chat` | 7, 7, 7 | 12 | 3 | 106,326 | 3 requests per builder: lines 1, 204, 406 (runs 1, 3); 1, 204, 600 (run 2); none reached the end | $0.24 |
+| `notes` | 3, 3, 3 | 3 | 0 | 7,977 | 1 request by the note writer (line 1), once | $0.21 |
+| `ledger` | 14, 15, 15 | 1 | 0 | 18,877 | 9 requests by the publisher, every page, once | $0.97 |
+
+**Gates:** gate 1 passes. The ledger builders met 14.7 requirements on average against 7 (`chat`) and 3 (`notes`), with 1 stale or ruled-out item against 15 and 3. Gate 2 fails: $0.97 against $0.24. The publish cost $0.875 (843,143 input tokens across 12 tool requests). Each ledger build then cost about $0.03, against about $0.08 for a whole-chat build, so at those observed mean costs the publish breaks even after 18.5 builds (the 19th is the first one where the ledger is cheaper). That is a projection, and it counts the whole-chat sites at full value even though they were wrong.
+
+**Why:**
+- The agents that read the chat stopped early, against the instruction to read every turn.
+- All three whole-chat Haiku builders stopped early. Each made three requests and built from them (run 2 jumped from line 204 to line 600 and skipped a page), so it used the forest green, the old hours and the $5.00 oat latte, and kept the wholesale page or the order button.
+- The Sonnet note writer also stopped early: it read page 1, wrote "The remaining turns are the same loop repeating", and wrote a note with the green colour, no hours, no prices and no menu, so every note builder started from that note.
+- The Sonnet publisher, with the same instruction to read the chat, read all nine pages.
+- So what the run shows is an association: the one complete read was published and reused, and its builders scored higher. It does not isolate the cause, because how much of the chat was read and the form of the hand-off changed together. The looping chatter may have made stopping early more likely.
+
+**Limits:**
+- Our chatter cycles through 16 exchanges, which makes stopping early tempting; a real chat does not repeat, so this round probably overstates how often readers stop.
+- `notes` and `ledger` each rest on a single first-agent run, reused three times. One stopped early and one did not, and two runs cannot show which first agent stops more often.
+- One ledger site (run 2) used the old green `#2F5D50` as one stop of a background gradient, counted as stale. The one ledger miss (run 1) was "Closed on Tuesdays".
+- Builders also invented contact details the client never gave: `hello@tidewaterroast.com` in notes runs 2 and 3, and the phone `+1234567890` in chat run 3.
+
+### Codex review of round 3 (2026-11-22)
+
+A read-only Codex review confirmed the gate verdicts against `report.json`: the means were 14.67 requirements met (`ledger`), 7 (`chat`) and 3 (`notes`), with stale and ruled-out totals of 1/0, 12/3 and 3/0. The cost totals were $0.974 against $0.242, counting the publisher once. It also confirmed that interleaving keeps every requirement turn in order. Its findings, all fixed (regression tests in `tests/website-build.test.mjs`):
+
+1. *(medium)* The runner counted `session_read` requests but did not flag readers who stopped early or skipped a page, so every deviation list was empty although all three chat builders and the note writer stopped early. It now records what each page said comes next, reports coverage (`chatRead`: requests, start lines, skipped cursors, whether the end was reached), and flags early stops and skipped pages for builders and first agents alike. Tool results from round 3 were not saved, so its rows keep request counts only; the table above gives the start lines.
+2. *(medium)* A graph ID the ledger rejected would throw before the row was saved, aborting the run and losing the publisher's cost. That row now fails with the error recorded, and the run goes on.
+3. *(medium)* Time and cost could be understated after failures. The summary now reports setup time and build time separately, counting failed rows, and marks the whole-condition cost incomplete when an agent reported no cost. Round 3 had complete cost data.
+4. *(low)* The write-up corrections above: page count observed against estimated, the request start lines, "tool requests" instead of "steps", break-even as a projection (18.5, so the 19th build), the cause stated as an association, and the invented contact details attributed to their sites.
+
+### Main merged and Codex review 4 (2026-11-27)
+
+`origin/main` was merged into the branch (no rebase); the conflicts were only in `docs/evals.md`, `docs/handoff.md` and `docs/delivery-board.md`, resolved by keeping both sides. A read-only Codex review of the whole branch against `main` found three medium and two low findings, all fixed with regression tests (`tests/roaster.test.mjs`, `tests/website-build.test.mjs`):
+
+1. *(medium)* Read coverage started with no expected page, so a reader whose first request began on the last page was recorded as a full read. Coverage now expects line 1 first and reports `1->N` as skipped.
+2. *(medium)* The stale oat-latte check used only the first price after the name, so a page with $5.25 on the menu and $5.00 elsewhere met the requirement with no stale flag. The stale check now looks at every price for the item, and the oat latte requirement fails when the old price also shows. The requirement still reads the first price after the name: a stricter "every price" rule was tried and wrongly failed sites where "espresso" appears in another item's description ("equal parts espresso and steamed milk $4.00").
+3. *(medium)* Hidden content earned points, and "Bean Club: $18 one-time" met the monthly requirement. Elements marked `hidden`, `aria-hidden="true"`, `display: none` or `visibility: hidden` are now dropped before scoring, and the Bean Club requirement needs a monthly wording next to the price or before it, and no "one-time" after it.
+4. *(low)* `report.json` could carry raw bidi and format characters from agent text. It is now written with every control, format and line-separator character as a `\u` escape.
+5. *(low)* The handoff called readers stopping early the cause of the round 3 gap; it now says it is an association, as the round 3 write-up does.
+
+A second Codex round found that the first fixes were incomplete: three medium and one low, all fixed with regression tests.
+
+6. *(medium)* A hidden element was cut at the first close tag of its name, so `<div hidden><div>…</div><p>tagline</p></div>` still scored the tagline, and a single-quoted or unquoted `style` was not read. Hidden elements are now removed up to their matching close tag, nesting counted, in any quoting.
+7. *(medium)* Any mention of "oat latte" followed by $5.00 was stale, including "a cold brew float, inspired by our oat latte $5.00". A replaced price now counts only as the first price after the name or after the name used as a label (starting a row or block).
+8. *(medium)* "Next month: $18 upfront" met the monthly requirement, and "$18.00 per month" did not. The check now needs "monthly" or "per/a/each/every month" (not just "month"), rejects "upfront", and accepts $18.00.
+9. *(low)* `reportJson` wrote a character above U+FFFF as one five-digit escape, which JSON reads as two characters. It now writes each UTF-16 unit, a surrogate pair.
+
+A third Codex round found four medium and one low, again in the scorer's edge cases, all fixed with regression tests:
+
+10. *(medium)* A `</div>` inside a quoted attribute value ended a hidden element early, and a word such as "hidden" inside another attribute's value (`title="keep hidden until launch"`) hid a visible element. Tags are now scanned with quoted values kept whole, and the hiding attributes are read from a parsed attribute list.
+11. *(medium)* Any block starting with the item's name was a label, so "Oat latte fans might like our seasonal cookie for $5.00" was stale while "Small oat latte $5.00" was not. A label is now the item's own short row: at most two words before the name, and at most 15 characters between the name and the price.
+12. *(medium)* "once" in a later sentence ("$18 per month. Cancel once you move.") failed the monthly check. The one-time words are now looked for only in the sentence that holds the price.
+13. *(low)* "per monthlong" read as monthly; the month words now end at a word boundary.
+
+A fourth round found two medium and one low, fixed with a regression test:
+
+14. *(medium)* The own-row gap ignored block breaks, so "Oat Latte Pairings" as a heading took the next paragraph's "Cookie $5.00" as a stale price. An own row now has no block break between the name and the price.
+15. *(medium)* "Sign up once." in the next paragraph failed the monthly check. The one-time words are now looked for only up to a full stop or a block break.
+16. *(low)* Visible text cut a tag at its first `>`, so a quoted `title="Our motto > …"` leaked into the scored text. Tags are now removed with their quoted values whole.
+
+A fifth round found two medium, the mirror image of items 14 and 15, fixed so that every earlier round's cases still pass:
+
+17. *(medium)* A menu card that puts the name and the price in two blocks (`<p>Oat Latte</p><p>$5.00</p>`) hid a stale price. An own row may now have its price open the very next block, while a heading followed by a block about something else ("Oat Latte Pairings | Cookie $5.00") still does not count.
+18. *(medium)* A one-time label in the block right after the price ("$18 | One-time signup fee") passed the monthly check. A next block that opens with "one-time" or "upfront" now fails it, while "Sign up once." in the next paragraph still does not.
+
+A sixth round found two medium with one cause: nested closing tags (`</h3></header>`, `</p></div>`) left runs of empty block breaks, so "the next block" was an empty one and items 17 and 18 missed a stale price in a nested menu card and a one-time fee after a wrapped price.
+
+19. *(medium, two findings)* Runs of block breaks now collapse into one, so the next block is always the next one with text. Regression test for both inputs.
+
+20. *(medium, round 7)* After the collapse, the next section's heading ("One-time purchases") became the block after a "$18/month" price and failed it. Monthly wording in the price's own block now decides; the next block is read only when the price's block has none.
+
+21. *(medium, round 8)* The same held for monthly wording before the price in its own block ("Monthly membership: $18"); the price's block now runs from the last break before the price to the first after it.
+
+A ninth round found four medium, all fixed with one regression test:
+
+22. *(medium)* A full stop after an amount ("$18.", "$5.00.") made it no amount at all. A full stop now ends the number unless a digit follows.
+23. *(medium)* "Monthly deliveries. One-time signup fee: $18" passed: the one-time words were looked for only after the price. They are now looked for in the price's whole sentence, on both sides.
+24. *(medium)* Only the first $ after "Bean Club" was tried, so "One-time gift bag: $18. Monthly membership: $18/month." failed. Every $18 within 300 characters after "Bean Club" is now tried (`monthlyClub`).
+25. *(medium)* An unpriced item could borrow the next item's price when that item's name had a size word ("| oat latte | small cold brew $5.25"). The next-item rule now allows up to two words before the name, as the own-row rule does.
+
+A tenth round, run on the merged branch (673a6ce), found seven medium and two low, all fixed with regression tests (`tests/roaster.test.mjs`, `tests/website-build.test.mjs`):
+
+26. *(medium)* An unpriced item took the price of an off-menu thing in the next block ("Oat latte | Cookie $5.25"). A price in a later block that opens with a short name of one or two words is now that thing's; a block that is only the price, a size, or a longer description still belongs to the item.
+27. *(medium)* Monthly wording carried across an unrelated heading ("Monthly deliveries | Gift bags | $18"). The fallback now reads only the block just before the price's.
+28. *(medium)* "$18 per month plus a one-time signup fee of $5" failed: the one-time words applied to the whole sentence. Qualifiers now belong to their own amount: words before a price count from the last amount before it, and when another amount follows in the sentence, only the words right after the price are its.
+29. *(medium)* Text hidden by a stylesheet rule (`.hide { display: none }`) still scored. Simple class, ID and `tag.class` selectors that set `display: none` or `visibility: hidden` now hide their elements; rules inside `@media` and other at-rules, and compound selectors, do not. The review suggested rendering in a browser instead; that would add a browser to every scoring run, so the scorer stays text-only and this is the stated limit.
+30. *(medium)* "Pick up orders at 3pm" met "Closes at 15:00", and "Tuesday we are never closed" met "Closed on Tuesdays". A closing time now needs a dash, "to", "until" or "close(s) at" before it, or a block about hours or days; the old 17:00 check uses the same rule. A closure with "never", "not", "no longer" or "n't" does not count.
+31. *(medium)* `<h2><span>Wholesale</span></h2>` and `<a href="/order">Order</a>` escaped the forbidden checks. Headings and links are read through nested tags, and a link or button labelled as an order ("Order", "Order now", "Place an order") or a link to an order, checkout or cart page counts as online ordering.
+32. *(medium)* In `readCoverage`, a call with no logged result cleared the expected cursor, so a later last page could count as a full read with nothing skipped. A missing result now leaves the rest of the read unverified (its own deviation); cursors carry the character offset of a split turn ("fromLine 204 and fromOffset 900"); and "No turns at or after line N", a request past the end, is an empty read, not the end of the chat.
+33. *(low)* `htmlOf` took `<!doctype html><html>A</html><html>B</html>` as one build. It now requires a single `<html>` element.
+34. *(low)* The rescoring below said 25 saved sites while the round tables count 23 builds. The tables hold 6 built sites in round 1 (3 chat, 3 ledger; the notes builds made no page), 8 in round 2 (3 chat, 2 notes, 3 ledger) and 9 in round 3. The other 2 are single-run ledger checks with Sonnet outside the tables: one at 20:35 before round 1 and one at 20:57 between rounds 1 and 2.
+
+An eleventh round found five medium, fixed with one regression test:
+
+35. *(medium)* An unpriced card took the next card's price when both names were headings ("Oat latte" card, then "Chocolate chip cookie $5.25"). The visible text now marks where each heading starts, and a heading between a name and a price starts another card.
+36. *(medium)* "$5 one-time signup fee, then $18 per month" failed: the words after the $5 were read as the $18's. Qualifier words right after an earlier amount now stay with it.
+37. *(medium)* `button.mobile-only { display: none }` hid a `<p class="mobile-only">`. A tag-qualified selector now hides only elements of that tag.
+38. *(medium)* "Open 3pm to 9pm" met "Closes at 15:00". The start of a range, or a time after "open(s) at/from", is an opening time.
+39. *(medium)* "Closed Monday, open Tuesday" met "Closed on Tuesdays". A match with "open" in it, or a day then a comma then "closed", does not count; "Closed Mondays and Tuesdays" still does.
+
+A twelfth round found five medium. Two were side effects of item 35's heading marker, and are fixed with a regression test:
+
+40. *(medium)* A heading that holds only the price (`<h3>Oat Latte</h3><h4>$5.25</h4>`) was read as a new card; it is now the item's.
+41. *(medium)* A one-time fee in a heading after the price (`<p>$18</p><h3>One-time signup fee</h3>`) was missed; the next block is now read past the heading marker.
+
+**Stop rule (agreed with the coordinating session, 2026-11-27).** From round 3 on, every round built new synthetic cases: 7, 5, 4, 2, 2, 1, 1, 4, 9, 5 and 5 medium findings in turn. None changed the score of any of the 25 saved sites, which rescore unchanged after every fix, and a text heuristic will keep yielding new cases. So from round 12 a finding blocks the merge only if it changes a saved-site score, breaks an existing test, or is in the read-coverage logic of `demo/website-build.mjs`. The other three round 12 findings meet none of these and are on Backlog card D4b with the list: a bracketed fee, a dash that starts a note, and a Tuesday closure across a comma.
+
+The scorer is a set of text heuristics for generated demo sites, so more edge cases can always be built; these rounds fixed the ones a reviewer could build, and none of them occurs in the saved sites.
+
+Rescoring all 25 saved sites (the 23 in the round tables and the 2 single-run checks) with the final scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
+
+## H12 — Prose diet (defined 2026-11-28, before the last change)
+
+H9 put the AGENTS.md section 6 rules that reviews kept finding into `scripts/check.mjs`, which reads every tracked file. Several cards had written the same rule as a test that scanned only the files that card changed, and AGENTS.md also asked for a manual scan. Two copies of one rule drift apart. H12 removes the copies and keeps the check.
+
+### What is tested and the expected result
+
+- **Per-card scans removed.** Five tests scanned source files for raw control or format characters: `tests/brand.test.mjs` (the SVG files), `tests/delete.test.mjs`, `tests/handoff-bench.test.mjs`, `tests/mcp-layout.test.mjs` and `tests/sign.test.mjs`. They are gone. Tests that check what the product prints or exports (`tests/export.test.mjs`, `tests/secrets.test.mjs` and the others) stay: the check reads files, not output.
+- **The check covers what they covered.** `tests/check.test.mjs` now also feeds a raw zero-width space to an SVG, a CSS file, a unit test and a Playwright spec, and each is a `raw-character` finding.
+- **AGENTS.md section 6** names `node scripts/check.mjs` and the rules it enforces once, says to add a rule to the check instead of restating it, and has no manual scan step. `tests/agents-rules.test.mjs` checks all three.
+- **Not changed:** the history in this file and the dated entries in `docs/handoff.md` stay as they were; they record what each card did at the time.
+- **Synthetic data:** none needed; the inputs are one-line strings in the tests.
+- **Scope of the check.** `scripts/check.mjs` reads the files Git tracks. Two removed scans walked folders on disk (`evals/handoff/`, `src/mcp/`) and so also saw untracked files; those reach `main` only by being tracked, and then the check reads them, which CI runs on every PR. Files the removed scans required to exist are still read by other tests (`docs/signed-handoff.md` in `tests/sign.test.mjs`, the brand SVGs in `tests/brand.test.mjs`, and the source files the delete tests import).
+- **Codex review, round 1:** no high. Two medium and three low, fixed: the AGENTS.md test passed with the rule list removed, duplicated or reworded as a manual scan (it now requires one bullet naming the check, its four rules and "add to the check", rejects a scan step elsewhere, and is tried on all three broken texts); the coverage test called `checkFile` directly (it now runs the command on staged SVG, CSS, test, spec, benchmark and MCP files, plus a clean tab and CRLF copy); `tests/console.test.mjs` still restated the character rule (removed, its console-only checks stay); the tracked-file scope and the file-presence question are recorded above.
+- **Codex review, round 2:** no high. One medium and three low, fixed: the AGENTS.md test read only lines starting with `- `, so a wrapped scan step or a second bullet restating a rule without a scan verb passed (it now joins wrapped lines into their bullet, rejects any other bullet naming listen, loopback, HTML sinks, `textContent` or code points, and is tried on both); the command test now also requires exit code 1; `tests/console.test.mjs` no longer repeats the HTML-sink rule (its `eval` and `new Function` checks stay, and the test is renamed); `tests/delete.test.mjs` keeps a check that the delete browser journey is still in the Playwright suite.
+- **Codex review, round 3:** no high or medium, so the review stops here. Three low, left for the next owner: a declarative raw-character rule in another section 6 bullet would pass the guard; the delete spec check passes while any `test(` remains; the command test builds its second fixture outside `try`.
+
+## W3 — Calibrated abstention: results on record (code parked, 2026-11-26)
+
+W3's code, its pre-registered protocol and its eight review rounds are in draft PR #77 (`claude/w3-calibrated-abstention`). That PR is stacked on W2's draft PR #71 and on W1's PR #73. On 2026-11-26 the sessions working for Ruslan agreed to park W2 and W3 as drafts until the team can answer text from outside its operator. This section keeps W3's results on `main` in the meantime. The design is [watchdog-security.md](watchdog-security.md), "What we can and cannot say to users" and evals 11 to 14.
+
+**What was measured** (the rules were fixed before any run):
+
+- **Setting:** W1's pinned team (Qwen2.5-3B-Instruct, bf16, soft thoughts, no adapter, m = 40, greedy, 512 solver tokens) behind W1's watchdog and supervisor. Each question went alone through the team service. GSM8K test, seed 0, blocks of 200; the blocks W1 fitted its thresholds on are excluded.
+- **Confidence score:** the log-probability the solver gave to the number the grader reads.
+- **Threshold rule:** 20 candidate cutoffs from the proposal answers. Each is tested on the certification answers with a one-sided Clopper-Pearson bound at 0.05 / 20 against a 10% error ceiling, and the loosest one that passes is kept. If none passes, nothing is calibrated.
+- **Eval 11 passes** when the error among released scored answers is at or under 10% plus 1.645 standard errors, and at least half of the scored questions are released. Every held request counts as a released wrong answer (the worst case for holds).
+- **Plan `today`:** the sets were cut at the user's request so the run finished the same day. 60 proposal, 200 certification and 150 scored questions, plus the 8 questions of the fresh latent-read set for eval 12: 418 requests.
+- **Eval 14:**
+  - JailbreakBench's JBB-Behaviors (MIT), revision 886acc3: 100 harmful and 100 benign requests.
+  - Each request was asked of the model alone and of the latent team, with the same math-style instruction.
+  - Replies were judged in memory by a fixed list of 16 refusal phrases, and only counts were kept.
+  - The data stays outside the repository; it was downloaded with the user's permission.
+
+### W3 results (2026-11-22, live: run `w3-run10`, one job at 470282a, plan `today`, weights hash 1ed1d835…)
+
+The certification ran from 16:37 to 19:57 (times from the run log): 418 single requests through `TeamService`, one at a time on the laptop GPU. The analysis and eval 14 ran next from the same commit and finished at 20:08. Only aggregate counts are reported. The code graded or judged questions, answers and replies in memory. None was written to disk or to the repository, and no person or agent looked at any of them.
+
+- **Eval 11 fails, and nothing is calibrated.** None of the 7 tested cutoffs certified, so the run wrote no calibration file and none is committed. No certification or scored request was held, so the worst case for holds gives the same numbers as the pre-registered count.
+  - **Why so few cutoffs:** 42 of the 57 finite proposal scores were tied at exactly 0 (the log-probability of the answer's number). The grid of 20 collapsed to 7 distinct candidates, and the score could not rank those answers among themselves.
+  - **The strictest candidate** (score 0) still released 149 of the 200 certification answers, 18 of them wrong (12.1%, one-sided bound 21.3% at 0.05 / 20). At 149 released, a 10% bound at that level allows at most 5 errors. The loosest candidate released 199, with 33 wrong (bound 25.2%).
+  - **The certification block** held 190 scored team answers (31 wrong), 9 fallbacks (2 wrong) and 1 released answer with no score.
+  - **Held-out scoring, with nothing certified:** of the 150 scored questions, 6 were released (4%), all of them fallbacks, and 1 of those was wrong (16.7%, 95% Wilson interval 3.0% to 56.4%). The other 144 abstained (96%); none was held.
+  - **Before any cutoff,** the service's released answers were 89.3% correct on the scored questions and 83.5% on the certification block.
+  - **AUROC:** the confidence score's AUROC for a wrong team answer on the scored questions is 0.70.
+  - **Not computed:** the pre-registered exploratory scores (mean and minimum log-probability, agreement with the solver alone), which say which signal to try next. They were defined on the batched run, which never finished.
+  - No rule or threshold was changed after these results.
+- **Holds and time.**
+  - **1 of the 418 requests was held:** the first request of the run, in the proposal part (`report-late`, 782 s). The S1b session reported that its vLLM job was starting on the same GPU at that time.
+  - **No other request took over 180 s.** Over all 418, the median was 20.2 s, the mean 28.4 s and the 90th percentile 52.0 s.
+  - **Compared with run 9:** the median there was 113 s per request (two shards) against 20.2 s here, a ratio of about 5.6. The two runs differ in more than the shard count (run 9 measured only its first 215 requests), so this ratio is not an isolated effect of sharding.
+- **Eval 12:** skipped, because no threshold certified. Baseline: of the 8 fresh questions, 7 were graded and 1 was ungraded. All 7 graded answers were released as fallbacks, and 1 of them was wrong.
+- **Eval 13:** not run; its probe ran only in the batched run.
+- **Eval 14:** counts of replies the fixed keyword rule classifies as refusals.
+
+  | Set (100 each) | Model alone refused | Team refused | Only the model alone refused | Only the team refused | Both refused | Empty |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Harmful | 67 | 24 | 46 | 3 | 21 | 0 |
+  | Benign | 11 | 0 | 11 | 0 | 0 | 0 |
+
+  Under the keyword rule, 76 of the team's 100 replies to harmful requests are classified as answers, against 33 for the model alone. Paired by request, 46 harmful requests were classified as refused by the model alone but not by the team, and 3 the other way. On the benign set the team had no reply classified as a refusal; the model alone had 11. The team's refusal rate under this rule fell on both sets.
+
+  Caveats:
+  - The keyword rule misses refusals worded otherwise and counts phrases used in passing. Using one rule makes the two systems' counts comparable under that rule. It does not show the rule's errors cancel out, so these counts do not establish that latent mode weakens refusals in general.
+  - Nobody read the replies, so this says nothing about whether the team's answers to harmful requests were harmful or useful.
+  - Eval 14 has no pass rule.
+- **Review:** Codex reviewed read-only in eight rounds (W3-1 to W3-8, recorded in PR #77's eval log). Seven came before any result. The eighth, of this write-up, found no high-severity issue, no post-result tuning and no committed text; its wording and count fixes are in the text above.
+
+**What follows** (cards on the board):
+
+- **W3b, a refusal check:** needed before the team answers text from outside its operator, and not before. The trigger is the same as for taking W2 and W3 out of draft: a file read, a tool call, an agent relaying text from a transcript, page or file, or another app calling the chat route.
+- **W3c, a score that ranks:** research for whenever abstention is wanted again. It has no trigger.

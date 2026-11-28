@@ -33,8 +33,12 @@ function renderRows(container, entries, createRow) {
   container.replaceChildren(fragment);
 }
 
-async function request(path, options) {
-  const response = await fetch(path, options);
+// P1f: every API request carries the sign-in session from session.js; a 401 means the
+// ledger no longer knows it (a restart, or 12 hours), so it is forgotten.
+async function request(path, options = {}) {
+  const headers = ledgerSession.headers(options.headers);
+  const response = await fetch(path, { ...options, headers });
+  if (response.status === 401) await ledgerSession.forget(headers);
   const body = await response.json();
   if (!response.ok) throw Object.assign(new Error(body.error || `Request failed (${response.status}).`), { status: response.status });
   return body;
@@ -57,7 +61,9 @@ function resultRow(session) {
   button.dataset.session = session.id;
   button.addEventListener('click', () => openTranscript(session.id, true));
   const count = `${session.messageCount} ${session.messageCount === 1 ? 'message' : 'messages'}`;
-  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count}`, 'result-meta'));
+  // Card R1: a session received from another machine holds only the lines a graph cites.
+  const kind = session.excerpts === true ? ' · excerpts' : '';
+  item.append(button, textElement('p', `${agentNames[session.provider]} · ${count}${kind}`, 'result-meta'));
   return item;
 }
 
@@ -123,7 +129,8 @@ async function openTranscript(id, focusHeading = false) {
     const { session } = await request(`/api/sessions/${encodeURIComponent(id)}`, { signal });
     if (signal.aborted) return;
     readerHeading.textContent = session.title;
-    readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`;
+    readerSource.textContent = `${agentNames[session.provider]} · ${session.source}`
+      + (session.excerpts === true ? ' · excerpts received from another machine' : '');
     renderRows(readerMessages, session.messages, messageRow);
     readerStatus.textContent = '';
     readerDelete.hidden = false;

@@ -21,6 +21,37 @@ Branch `claude/t1-mapper-hub-a864f6`. [mapper-hub.md](mapper-hub.md) is the desi
 - **Needs Ruslan:** whether parts trained through Qwen2.5-3B (non-commercial licence) may ship, and whether the manifest is signed with the P4a key.
 - **Follow-up outside this card:** three citations in other sections of `evals.md` say more than the papers do (arXiv 2603.18908, 2608.04893; see mapper-hub.md section 7).
 
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
+
+PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §18).
+
+- `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
+- `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
+- The CLI, the MCP adapter and the link format are unchanged.
+- Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
+- 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
+- **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
+## Current checkpoint: R2 relay refreshed and reviewed (2026-11-28)
+
+PR #91 (`ruslan/r2-relay`) is stacked on #90 and goes after it; it has R1 and main merged and two rounds of Codex review fixed (in [evals](evals.md) under R2, "Refresh with main and R1"). The relay now keeps counting a deleted parcel's bytes until its downloads end and cuts a download after 3 minutes; the client refuses compressed answers. `scripts/check.mjs` exempts `relay serve`'s one `--host` listen. It adds a listener beyond loopback and encryption, so Ruslan reviews and merges it himself, after #90.
+
+## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
+
+PR #90 (`ruslan/r1-parcels`) has main merged, six rounds of Codex review fixed (in [evals](evals.md) under R1, "Refresh with main"), and green suites. It goes before #91 (R2), which is stacked on it. Changed behaviour: `share` scans the whole session together with the graph's own text, a line-cited parcel carries and stores `l:<line>` keys, and publishing a graph holds the write lock. Two mediums are accepted and written down there. It adds an export path, so Ruslan reviews and merges it himself.
+
+Next owner: R3 (sync), and several keys per turn if the accepted placeholder case matters in practice.
+
+## Current checkpoint: H12 prose diet (2026-11-28)
+
+Branch `ruslan/h12-prose-diet`. Where `scripts/check.mjs` enforces a rule, the repository no longer says it a second time. Five tests that scanned a card's own files for raw control or format characters are gone (the check reads every tracked file), and `tests/check.test.mjs` shows it covers the SVG, CSS and test files they read. AGENTS.md section 6 names the check and its rules once and says to add a rule to it instead of restating one; `tests/agents-rules.test.mjs` keeps that text. History in `docs/evals.md` and the dated entries here are unchanged.
+
+Next owner: when a card adds a check rule, delete any test or doc line that restated it in the same PR. Splitting `docs/evals.md` and this file into one file per card was discussed and is not part of H12; it would touch every open PR, so it needs its own card once the open PRs have merged. If it happens, keep what card K1's parser reads: each file named by its card ID or with the ID in a `#` or `##` heading, dates as YYYY-MM-DD in the heading, and `docs/delivery-board.md` as the one table.
+
+## Current checkpoint: P4e copy-search fixes after #69 (2026-11-27)
+
+#69 (P4d, redacted signed hand-off) was merged at 445e9e4 before its last review fixes reached it. Branch `ruslan/p4d-copy-budget` carries them: copies of long values are confirmed whole, `main`'s bounded entries are kept so nothing it removed is kept, and four session budgets refuse a session rather than sign it half-checked (ADR-9a in architecture section 16; evals under P4e). Codex rounds 4 and 5 ran; three availability findings stay open (the budgets can refuse a session `main` signs; nothing is signed half-checked), and Ruslan accepted them on 2026-11-28 and approved the merge. Next owner: if a real session is refused, harden the budgets (a compact trie, shared confirmation work, a finding cap inside the P4b scanner); evals under P4e list the inputs.
+
 ## Current checkpoint — serving levers measured on the laptop (L1, 2026-11-27)
 
 Branch `claude/l1-serving-levers`. `evals/latent/serving-levers.mjs` fires N agents at once at one vLLM server (swarm task, optional shared handbook and unique notes) and reports time, tokens per second, prefix-cache hit rate, peak KV use and GPU memory; `serving-lib.mjs` holds the pure parts (tests in `tests/serving-levers.test.mjs`). `runtime/serve-vllm.sh` takes `VLLM_MAX_NUM_SEQS`, `VLLM_KV_OFFLOAD_GIB` and `VLLM_KV_DTYPE`. Results are in the L1 section of [the eval log](evals.md); the recommendation is "What to turn on" in [latent-gpu-plan.md](latent-gpu-plan.md): keep prefix caching, leave native KV offload and `--max-num-seqs` off, plain `fp8` KV only on the 14B, the 7B AWQ cannot take FP8 KV. Open: calibrated KV scales for the 7B, more than 100 agents, n-gram speculation at 100 agents. Machine notes: `/dev/shm` caps the offload buffer (7.8 GiB); WSL kills a server started from a session that exits, so start it with `setsid` and keep a `wsl.exe ... sleep` session open; `pkill -f` inside `bash -lc` matches its own command line, use a script file or `[b]in/vllm`.
@@ -55,6 +86,12 @@ For the `cross-model` and `statebridge` sessions:
 - **Which pairs to try:** by tokenizer overlap, Qwen2.5 with Llama 3.1 and Phi-3.5 with Mistral v0.3 are the closest (95 to 98% and 90 to 92% of positions one-to-one); a SentencePiece tokenizer with a byte-level one is the furthest (the M2b-S pair is one of these and still passed with a trained mapper). Send from the smaller vocabulary to the larger when there is a choice.
 
 Not done, for the next owner: the effect of rule 2 and of norm calibration on transfer quality (both need the GPU); a Backlog card for control-token strings inside passages (Qwen reads a typed `<|im_end|>` as the real token); Phi-3.5 reads the ChatML document header as seven plain tokens; Llama and Mistral run without their BOS because the pipeline turns special tokens off.
+## Current checkpoint: H15 the Windows token write survives a slow PowerShell (2026-11-27)
+
+On Windows the server's token-file write is now asynchronous (`writeTokenFile` in `src/token.mjs`, awaited in the listen callback of `src/server.mjs`). Until the file exists and its descriptor is confirmed private, the server answers 503 and prints nothing. Each PowerShell attempt is bounded at 60 s and only a pure timeout is retried, once, after the killed child has exited and the path is cleared. Every other failure fails closed and empties the record, as before. The runner `runWithInput` settles only when its child closes. A stop during the write aborts it and waits for that close. ADR-10a in `docs/architecture.md` records the choice; the eval and three Codex rounds are in the H15 section of `docs/evals.md`. The private-file checks, the write and read scripts and the read path are unchanged.
+
+Next owner: the read path still uses one PowerShell call with a 30 s timeout (`readPrivateFile`), and under heavy local load (100% CPU, about a hundred node processes) client reads in `mcp-live` and `list-api` ran out of time the same way. A bounded retry there is a separate card. PowerShell's "preparing modules for first use" progress shows up on stderr under load; pointing `PSModuleAnalysisCachePath` elsewhere might shorten cold starts, but nobody has measured that. The PR touches token code, so Ruslan merges it. P1f (#65) edits other functions in the same file; whichever lands second merges `main` once.
+
 ## Current checkpoint: H14 Windows-only browser test flakes (2026-11-27)
 
 Three Playwright tests that failed only on loaded Windows runners now wait on the event itself. The console demo test records each read line inside the page and checks it frame by frame, with the agents working at that moment; it has a 60 s budget for its 23 s recording. Feature map entries that start a swarm run carry `"runsSwarm": true` and are checked in `tests/e2e/swarm.spec.mjs`, behind its wait for the ledger's one swarm slot; a new entry that starts a run without the mark fails its test. The handoff test waits for the reader's request and reports its status and body: that failure was not reproduced, so if it comes back, read the status first (the notes in [evals](evals.md) under H14 name SQLite's rollback journal and its 5 s busy timeout as the candidate).
@@ -72,6 +109,22 @@ Next owner: H15. The Node suite on #100 failed because the server's Windows toke
 
 Next owner: when a review finding repeats a kind already seen, add a rule here as well as the regression test (AGENTS.md section 4, step 5). Candidates: label lengths counted in UTF-16 units instead of code points (30 mentions in evals), and a store connection closed twice. The per-card raw-character scans in `tests/delete.test.mjs`, `tests/brand.test.mjs` and `tests/handoff-bench.test.mjs` can go once this has run on `main` for a while. Lesson from this card: in a folder that other sessions share, work in a worktree; another session cut its branch from this one and switched the folder mid-card.
 
+## Current checkpoint — R2 relay: send a parcel between two machines (2026-11-23)
+
+- **What changed.** `ledger relay serve [--host] [--port]` runs a mailbox for sealed parcels (`src/relay.mjs`). `ledger share <graph-id> --relay <url>` seals R1's parcel and prints a code; `ledger receive --from <code>` fetches, opens and stores it, then deletes the relay's copy (`src/relay-client.mjs`, `src/cli.mjs`).
+- **The ledger server is unchanged.** It still binds to loopback. The relay is the one program here that may listen on another address, only with `--host`. It imports only Node built-ins and opens no database; `tests/relay.test.mjs` checks that.
+- **Decisions** are ADR-20 in `docs/architecture.md` §17. User docs are the relay section of `docs/parcels.md`. Stacked on R1's branch.
+- **Needs a human security review** before merge: a listener beyond loopback, and encryption (HKDF-SHA-256, AES-256-GCM from `node:crypto`).
+- **Next.** R3: sync room choices and review events since a cursor through the same relay. Later cards: sign parcels with the P4a key, relay access control, a Docker image for the relay.
+
+## Current checkpoint — R1 parcels: share a graph with another machine (2026-11-23)
+
+- **What changed.** `ledger share <graph-id> --out <file>` writes a parcel (`src/parcel.mjs`, `schemas/parcel-v1.schema.json`): one graph, the lines it cites after the secret scanner, and its artifacts. `ledger receive <file>` stores it in one transaction (`receiveParcel` in `src/store.mjs`). The graph keeps its ID, because the receiver stores the lines under the sender's session ID.
+- **Schema version 8** adds `session_excerpts`. A row marks a session that holds only received lines; its summaries say `excerpts: true`, and the library and the hand-off label it. Importing the full transcript later replaces the excerpts and keeps their keys.
+- **Decisions** are ADR-19 in `docs/architecture.md` §17. User docs are `docs/parcels.md`. Tests are `tests/parcel.test.mjs` and `tests/e2e/parcel.spec.mjs`.
+- **Needs a human security review** before merge: it adds an export path and a schema step.
+- **Next.** R2 sends the same parcel through a relay (`ledger relay serve`, a code that opens the parcel). R3 syncs room choices and review events, so a room agreed on two machines shows both sides. A parcel is not signed yet.
+
 ## Current checkpoint — one pixel look, swarm room and terminal welcome (2026-11-23)
 
 The pixel console line is in `ruslan/console-v0` and goes to `main` with the release PR #88. Ali's U4, U4b and U6 (#51, #55, #56) and U7 to U10 (#82 to #85, #87) were merged on 2026-11-23, with Ali's approval in #56 (he also reviewed the console changes in #83 and #84) and Ruslan's for the release. Once #88 is merged, a fresh install from GitHub gets the pixel console with its swarm room, the library and the swarm page in the same pixel look, the terminal welcome on `start` and `install`, and the brand files in the package (U10: an installed copy used to come up without its colours, fonts and logo).
@@ -82,9 +135,21 @@ Next owner: Ali reports node test failures on his machine that come from its set
 
 U11 (PR #89, merged 2026-11-23): at a terminal `start` explains how to sign in, with the link on a line of its own; piped output is unchanged. The swarm asks `http://127.0.0.1:8000/v1` when `SWARM_URLS` is unset, so a running vLLM is found without a setting, and `SWARM_URLS=off` turns live runs off. Tests that expect a simulated swarm must set `SWARM_URLS=off`.
 
+## Current checkpoint — P4d redacted signed hand-off (2026-11-22)
+
+PR #69, branch `ruslan/p4d-redacted-signing`. `handoff <id> --sign` now redacts before it signs: it runs the P4b/P4c scanner (`redactSession`) over the source name and messages, signs the redacted hand-off, and writes manifest version 3: P3b's `reviews` plus `redaction: { scanner: "context-ledger-secrets/1", findings }`. There is no opt-out. `verify` prints the record, still accepts version 1 and 2 bundles with a warning that they were not redacted, and refuses an unknown scanner name. Decisions are ADR-9a (`docs/architecture.md` section 16); the receiver's view is `docs/signed-handoff.md`.
+
+- **Copies of a found value.** `redactSession` also replaces copies of each found value elsewhere in the session (pasted bare into a later message, in an agent heading). It runs one Aho-Corasick pass per field, with a 512-character budget per kind of entry. Eight Codex rounds and one Claude review shaped it; every finding after round 1 was in this layer. Round 8's fixes are not reviewed again.
+- **Owed before merge:** a human security review (signing and export, AGENTS.md section 4). The reviewer should decide whether the copy layer is worth its complexity, or whether a simpler rule plus the documented residuals is enough.
+- **Next owner:** change `scannerName` in `src/secrets.mjs` whenever a scanner rule changes. ADR-8's allowlist export of cleared excerpts and the passphrase-encrypted key are still open, as is redacting the graph export (G12) and plain `handoff`.
+
 ## Current checkpoint — S1b honest speed-up on the swarm page (2026-11-22)
 
 PR #76: before a live run the ledger times each server alone (one untimed warm-up, then `SWARM_BASELINE_RUNS` timed requests, default 3, on reports from their own seed, median), once per ledger process. "One after another" is now answered agents × solo time per server and "Speed-up" divides it by wall time; the old sum of agents' times under load is only in the API as `agentMsSum`. The KV tile shows the peak during the run. Two Codex rounds, all findings fixed with tests (see evals, S1b). Live check done (evals, S1b): 100 agents on the 7B model show about 21-22x on warm runs (15x on the first run after a server start), against 51-56x from the old figure, and a KV peak of about 5% where the last sample reads 0%. PR #76 is merged. Next owner: update the investor run sheet line that says not to quote the speed-up tile (quote about 21-22x from a warm run).
+
+## Current checkpoint — D4 website build demo (2026-11-22)
+
+Two Claude agents built a coffee-roaster site from one synthetic client chat three ways (builder reads the chat, a hand-off note, or the ledger briefing), 3 runs each, in two rounds. Round 2: all three met 15/15 in every built site; the ledger hand-off cost more ($0.47 against $0.20 for reading the chat) and its builder did not read fewer tokens. Gate 1 passes only as a tie, gate 2 fails. In round 1 a diagnostic replay showed a builder making a second, scoped `context_for` call and building from it (runs 2 and 3 fit the same pattern): Backlog card G9c. The chat put its chatter after the requirements, so whole-chat builders saw everything on the first page; a fair long-chat test interleaves them. Codex review findings are fixed and recorded in evals. Runner: `node demo/website-build.mjs` (spends credits). Round 3 used a nine-page chat with the requirements spread through it, Haiku builders, and one note or graph shared by three builders. Ledger builders met 14, 15 and 15 of 15; whole-chat builders met 7 of 15 with 15 stale or ruled-out items; note builders met 3 of 15. Gate 1 passes, gate 2 fails ($0.97 against $0.24). The gap went with readers stopping early (an association, not an isolated cause: read coverage and hand-off format changed together): whole-chat builders read 3 of 9 pages, and the note writer read 1, while the publisher read all 9. The chatter loops through 16 exchanges, which invites stopping, so this overstates real chats. Next owner: rerun round 3 with non-repeating chatter and several first-agent runs, cut the publish cost (it read the chat in 12 steps, $0.88), and G9c. On 2026-11-27 main was merged in and twelve Codex rounds hardened the scorer and the read-coverage check (evals, D4, items 1-41); the 25 saved sites rescore unchanged, so the results above stand. Remaining synthetic scorer cases are on Backlog card D4b, under the stop rule recorded in evals.
 
 ## Current checkpoint — S1 swarm live on vLLM (2026-11-22)
 
@@ -749,7 +814,7 @@ Branch `claude/p5c-npx-entry`. Read the P5c section of [the eval log](evals.md).
 Branch `claude/p2c-node-approval`. Read the P2c section of [the eval log](evals.md) and ADR-7c ("in practice") in [the architecture](architecture.md) §12.
 
 - Each version 3 node has a `nodeSha256` (JCS of kind, label, status, to and evidence). Decisions are rows keyed by session, party, node ID and hash (schema version 5), so a republish keeps unchanged nodes' decisions.
-- People decide in the browser's **Review** section; the route needs the browser's sign-in cookie and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
+- People decide in the browser's **Review** section; the route needs the browser's sign-in session (a header since P1f) and `Sec-Fetch-Site`. It is an interface boundary: whoever holds the token can mint a sign-in link.
 - **Next owner:** P3 turns these rows into hash-chained events (ADR-6) and adds edit. Ali's prototype (#52) keeps its decisions in browser storage; when it moves to the server, it can call this route.
 
 ## Current checkpoint — P5d clean-install eval (2026-11-21)

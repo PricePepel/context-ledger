@@ -142,6 +142,26 @@ test('the command prints one line per finding and exits 1, or exits 0 when clean
   }
 });
 
+// Card H12: the per-card scans this replaced read SVG, CSS, test and benchmark files, and
+// allowed tab, line feed and carriage return. The command reaches each kind from the index.
+test('the command reads the file kinds the removed per-card scans read', async () => {
+  const paths = ['docs/brand/pip.svg', 'public/styles.css', 'tests/a.test.mjs', 'tests/e2e/a.spec.mjs', 'evals/handoff/a.json', 'src/mcp/a.mjs'];
+  const bad = await gitFolder(Object.fromEntries(paths.map(path => [path, `x ${char(0x200b)} y\n`])));
+  const clean = await gitFolder(Object.fromEntries(paths.map(path => [path, 'a\tb\r\nc\n'])));
+  try {
+    const failure = await run(process.execPath, [script, bad]).then(() => null, error => error);
+    assert.ok(failure, 'a raw character fails the command');
+    assert.equal(failure.code, 1);
+    const found = failure.stdout.trim().split(/\r?\n/u).slice(0, -1).map(line => line.split('  ').slice(0, 2));
+    assert.deepEqual(found.sort(), paths.map(path => [`${path}:1:3`, 'raw-character']).sort());
+    const { stdout } = await run(process.execPath, [script, clean]);
+    assert.equal(stdout.trim(), `check: ${paths.length} files, no findings`);
+  } finally {
+    await rm(bad, { recursive: true, force: true });
+    await rm(clean, { recursive: true, force: true });
+  }
+});
+
 // Codex review, round 1 (H9): one regression test per finding.
 test('round 1 high: only a top-level host that is not overridden counts as loopback', () => {
   const fail = [
@@ -203,6 +223,16 @@ test('round 2 high: a computed host key or an options object with a second argum
   ];
   for (const line of fail) assert.deepEqual(rules(checkFile('src/a.mjs', utf8(line))), ['loopback-only'], line);
   assert.deepEqual(checkFile('src/a.mjs', utf8("server.listen({ ['host']: '127.0.0.1', port: 0 });")), []);
+});
+
+test('R2: only the relay command\'s one listen in src/cli.mjs may name a host from its options', () => {
+  const relay = 'server.listen(port, host, resolve);';
+  assert.deepEqual(checkFile('src/cli.mjs', utf8(relay)), []);
+  // In any other file, or a second time in that file, or with other arguments, it is a finding.
+  assert.deepEqual(rules(checkFile('src/server.mjs', utf8(relay))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8(`${relay}\n${relay}`))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8('server.listen(port, host);'))), ['loopback-only']);
+  assert.deepEqual(rules(checkFile('src/cli.mjs', utf8("server.listen(port, '0.0.0.0', resolve);"))), ['loopback-only']);
 });
 
 test('round 2 medium: an optional call is checked', () => {

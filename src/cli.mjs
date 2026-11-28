@@ -23,6 +23,9 @@ const usage = 'Usage: npm run ledger -- search [--provider claude|codex] [--proj
   '       npm run ledger -- graph publish <packet.json>\n' +
   '       npm run ledger -- graph read <graph-id>\n' +
   '       npm run ledger -- graph export <graph-id> [<graph-id>...]\n' +
+  '       npm run ledger -- share <graph-id> --out <new-file> | --relay <relay-url>\n' +
+  '       npm run ledger -- receive <parcel-file> | --from <code>\n' +
+  '       npm run ledger -- relay serve [--host <address>] [--port <port>]\n' +
   '       npm run ledger -- artifact add commit|pr|file <repo> <ref> [--project <slug>]\n' +
   '       npm run ledger -- artifact list [--project <slug>] [--limit <n>] [--after <id>]\n' +
   '       npm run ledger -- login\n' +
@@ -105,6 +108,28 @@ function command(argv) {
       return { action, path: '/api/sessions/' + positionals[0], sessionId: positionals[0], signDir: values.sign };
     }
   }
+  // Card R1: a parcel carries one graph and the lines it cites to another machine.
+  if (action === 'share') {
+    // Card R2: into a file, or through a relay; one of the two.
+    const { values, positionals } = options(args, { out: { type: 'string' }, relay: { type: 'string' } });
+    const target = values.out ?? values.relay;
+    if (positionals.length === 1 && /^[a-f0-9]{64}$/u.test(positionals[0]) && target && (values.out === undefined) !== (values.relay === undefined)) {
+      return { action, graphId: positionals[0], out: values.out, relay: values.relay };
+    }
+  }
+  if (action === 'receive') {
+    const { values, positionals } = options(args, { from: { type: 'string' } });
+    if (values.from && positionals.length === 0) return { action, code: values.from };
+    if (values.from === undefined && positionals.length === 1 && positionals[0] !== '') return { action, filePath: positionals[0] };
+  }
+  // Card R2: the relay is its own program; it never opens the ledger database.
+  if (action === 'relay' && args[0] === 'serve') {
+    const { values, positionals } = options(args.slice(1), { host: { type: 'string' }, port: { type: 'string' } });
+    const port = values.port === undefined ? 4319 : /^(?:0|[1-9][0-9]{0,4})$/u.test(values.port) ? Number(values.port) : NaN;
+    if (positionals.length === 0 && port <= 65535 && values.host !== '') {
+      return { action: 'relay-serve', relayHost: values.host ?? '127.0.0.1', relayPort: port };
+    }
+  }
   // Card G12: one node-link file for one or more graphs, on stdout.
   if (action === 'graph' && args[0] === 'export' && args.length >= 2 && args.slice(1).every(id => /^[a-f0-9]{64}$/.test(id))) {
     return { action, path: '/api/export?' + new URLSearchParams(args.slice(1).map(id => ['graph', id])), raw: true };
@@ -146,13 +171,14 @@ function command(argv) {
   throw new Error(usage);
 }
 
-async function readGraphPacket(packetPath) {
+/** The bytes of a regular file of at most 8 MiB; `name` starts the error sentences. */
+async function readSmallFile(path, name) {
   let file;
   try {
-    file = await open(packetPath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    file = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     const stat = await file.stat();
-    if (!stat.isFile()) throw new Error('Graph packet must be a regular file.');
-    if (stat.size > maxGraphPacketBytes) throw new Error('Graph packet exceeds 8 MiB.');
+    if (!stat.isFile()) throw new Error(`${name} must be a regular file.`);
+    if (stat.size > maxGraphPacketBytes) throw new Error(`${name} exceeds 8 MiB.`);
 
     // Keep the limit if the file grows between stat and read.
     const buffer = Buffer.allocUnsafe(maxGraphPacketBytes + 1);
@@ -162,15 +188,17 @@ async function readGraphPacket(packetPath) {
       if (bytesRead === 0) break;
       size += bytesRead;
     }
-    if (size > maxGraphPacketBytes) throw new Error('Graph packet exceeds 8 MiB.');
+    if (size > maxGraphPacketBytes) throw new Error(`${name} exceeds 8 MiB.`);
     return buffer.subarray(0, size);
   } catch (error) {
-    if (error.code) throw new Error('Cannot read graph packet file.');
+    if (error.code) throw new Error(`Cannot read ${name.toLowerCase()} file.`);
     throw error;
   } finally {
     await file?.close();
   }
 }
+
+const readGraphPacket = packetPath => readSmallFile(packetPath, 'Graph packet');
 
 /** Card G8: install or uninstall the MCP server and instruction block for each agent. */
 async function setup(mode, args) {
@@ -353,19 +381,27 @@ async function importT3(args) {
   }
 }
 
+// Card P4d: version 1 and 2 bundles were signed before redaction; both verify commands say so.
+const unredactedWarning = 'Warning: this bundle was signed before hand-offs were redacted. ' +
+  'Its hand-off was not checked for secrets; read it with care before you pass it on.';
+
 async function verifyCommand(dir, fingerprint) {
-  const { problems, files, createdAt, session, fingerprint: signer, reviews } = await verifyBundle(dir, { fingerprint });
+  const { problems, files, createdAt, session, fingerprint: signer, reviews, redaction, version } = await verifyBundle(dir, { fingerprint });
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
     throw new Error('Verification failed.');
   }
   const listed = files.map(({ name, bytes }) => name + ' (' + bytes + ' bytes)').join(', ');
-  // Card P3b: version 2 says what the review chain was when it was signed.
+  // Card P3b: version 2 and later say what the review chain was when it was signed.
   const chain = reviews
     ? `Review chain at signing: ${reviews.events} ${reviews.events === 1 ? 'event' : 'events'}, head ${reviews.head}`
     : 'Review chain at signing: not recorded (a version 1 bundle)';
+  // Card P4d: version 3 says what was redacted. The scanner name passed an exact check.
+  const redacted = redaction === null ? `not recorded (a version ${version} bundle)`
+    : `${redaction.findings} ${redaction.findings === 1 ? 'replacement' : 'replacements'}, by ${redaction.scanner}`;
   console.log('Verified: ' + listed + '.\nSession: ' + session + '\nSigned: ' + createdAt +
-    '\nKey fingerprint: ' + signer + '\n' + chain);
+    '\nKey fingerprint: ' + signer + '\n' + chain + '\nRedaction: ' + redacted);
+  if (redaction === null) console.error(unredactedWarning);
   if (fingerprint === undefined) {
     console.error('Warning: the key was not checked. Ask the sender for the key fingerprint ' +
       'and run verify again with --fingerprint.');
@@ -450,6 +486,9 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
       for (const problem of bundle.problems) console.error(problem);
       throw new Error('The signed hand-off did not verify, so its review head is not trusted.');
     }
+    // Card P4d review: an audit of a version 1 or 2 bundle also hears that its hand-off was
+    // not redacted, before a version 1 bundle is refused for having no review head.
+    if (bundle.redaction === null) console.error(unredactedWarning);
     if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
     signed = bundle.reviews;
     trustedHead = signed.head;
@@ -479,13 +518,178 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
   console.log(`Review chain verified: ${count}, with the trusted head at event ${result.trustedAt} (${since} added since).\nHead: ${result.head}`);
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * Card R1 (ADR-19): write a parcel for one stored graph: the packet, the lines it cites
+ * after the secret scanner, and its artifacts. The ledger is read on one read-only
+ * connection, and the file is new and for its owner only.
+ */
+async function shareCommand(graphId, out, relay) {
+  // Card R2: the relay is asked first, so nothing is read for a relay that is not there.
+  let client;
+  let origin;
+  if (relay !== undefined) {
+    client = await import('./relay-client.mjs');
+    origin = client.relayOrigin(relay);
+    await client.checkRelay(origin);
+  }
+  const store = await openCurrentStore(ledgerDatabasePath(), 'share');
+  const { buildParcel } = await import('./parcel.mjs');
+  const { InputError } = await import('./errors.mjs');
+  let built;
+  let total;
+  try {
+    let graph;
+    let session;
+    try {
+      graph = store.getGraph(graphId);
+      session = graph && store.get(graph.packet.sessionId);
+    } catch {
+      throw new Error('Cannot read the ledger database.');
+    }
+    if (!graph || !session) throw new Error('Graph not found.');
+    total = session.messages.length;
+    try {
+      built = buildParcel(graph, session);
+    } catch (error) {
+      // The parcel's own messages are fixed sentences; anything else may carry content.
+      throw error instanceof InputError ? error : new Error('Cannot build a parcel for this graph.');
+    }
+  } finally {
+    store.close();
+  }
+  let secret;
+  if (origin === undefined) {
+    let file;
+    try {
+      // wx: never replace a file, and never write through a link someone left at the path.
+      file = await open(out, 'wx', 0o600);
+    } catch (error) {
+      if (error.code === 'EEXIST') throw new Error('The output file already exists. Choose a new file.');
+      if (error.code === 'ENOENT') throw new Error('The folder of the output file does not exist.');
+      throw new Error('Cannot create the output file.');
+    }
+    try {
+      await file.writeFile(built.text);
+      await file.sync();
+    } catch {
+      throw new Error('Cannot write the output file. Delete what was written and try again.');
+    } finally {
+      await file.close();
+    }
+  } else {
+    // Card R2 (ADR-20): sealed here with a key the relay never gets.
+    secret = client.newSecret();
+    await client.sendSealed(origin, secret, client.sealParcel(secret, built.text));
+  }
+  const lines = built.parcel.session.messages.length;
+  console.log(`${origin === undefined ? `Parcel written to ${terminalLabel(out)}` : `Parcel sent to the relay at ${terminalLabel(origin)}`}\nGraph: ${graphId}\n` +
+    `It carries the ${plural(lines, 'line')} the graph cites, of ${total} in the session.`);
+  if (built.redacted > 0) {
+    console.log(`${plural(built.redacted, 'possible secret')} in what it carries ${built.redacted === 1 ? 'was' : 'were'} replaced by [REDACTED] markers.`);
+  }
+  if (built.links > 0) {
+    console.log(`This graph links to ${plural(built.links, 'other graph')}. The receiving ledger needs ${built.links === 1 ? 'it' : 'them'} first.`);
+  }
+  if (origin === undefined) {
+    console.log('On the other machine, run: ledger receive <this file>');
+    return;
+  }
+  // The code is the last line, alone, so it can be copied whole.
+  console.log('Give this code to the other person over a channel you trust. Anyone who has it can read the parcel, so keep it secret.\n' +
+    'On the other machine, run: ledger receive --from <code>\n' + client.formatCode(origin, secret));
+  if (client.isLoopback(origin)) console.error('Note: the relay address is a loopback address, so only this machine can use this code.');
+}
+
+/** Card R1 (ADR-19): check a parcel file and store its graph and lines, all or nothing. */
+async function receiveCommand(filePath) {
+  const { parseParcel } = await import('./parcel.mjs');
+  await storeParcel(parseParcel(await readSmallFile(filePath, 'Parcel')));
+}
+
+/**
+ * Card R2 (ADR-20): fetch the sealed parcel a code names, open it with the code's secret,
+ * and store it as a parcel file is stored. The relay's copy is deleted only once the
+ * parcel is stored, so a parcel this ledger refuses can be tried again.
+ */
+async function receiveFromCommand(code) {
+  const client = await import('./relay-client.mjs');
+  const { origin, secret } = client.parseCode(code);
+  const sealed = await client.fetchSealed(origin, secret);
+  const { parseParcel } = await import('./parcel.mjs');
+  await storeParcel(parseParcel(client.openParcel(secret, sealed)));
+  console.log(await client.deleteSealed(origin, secret)
+    ? 'The relay says it deleted its sealed copy.'
+    : 'The relay did not confirm that it deleted its sealed copy. A Context Ledger relay deletes a copy after 24 hours; a relay that is not one may keep it.');
+}
+
+/** Card R2: run the relay until the process is stopped. */
+async function relayServeCommand(host, port) {
+  const { createRelay, listeningNotice } = await import('./relay.mjs');
+  const { server } = createRelay();
+  await new Promise((resolve, reject) => {
+    // The system's error names the address, which the person typed; a fixed sentence says enough.
+    server.once('error', () => reject(new Error('The relay could not listen on that address and port. It may be in use.')));
+    server.listen(port, host, resolve);
+  });
+  console.log(listeningNotice(server.address()));
+}
+
+/** A checked parcel into the ledger database: all of it, or nothing. */
+async function storeParcel(parcel) {
+  const { GraphInputError } = await import('./graph.mjs');
+  const { openStore, InputError, ConflictError } = await import('./store.mjs');
+  let store;
+  try {
+    store = openStore(ledgerDatabasePath());
+  } catch (error) {
+    // A newer file is refused in words that name no path; any other error may name one.
+    throw new Error(error?.code === 'LEDGER_SCHEMA' ? error.message : 'Cannot open the ledger database.');
+  }
+  try {
+    const { graph, session, added } = store.receiveParcel(parcel);
+    const party = typeof graph.packet.party === 'string' ? ` of party ${terminalLabel(graph.packet.party)}` : '';
+    console.log(`Received graph ${graph.id}${party} into project ${terminalLabel(session.project)}.`);
+    console.log(session.excerpts === true
+      ? `Session ${session.id}: ${plural(added, 'line')} added; it holds ${plural(session.messageCount, 'excerpt line')} received from another machine.`
+      : `Session ${session.id} was already imported here, so no line was added.`);
+  } catch (error) {
+    // Store, parcel and graph messages are fixed sentences; anything else may carry content.
+    throw error instanceof InputError || error instanceof ConflictError || error instanceof GraphInputError ? error : new Error('The parcel was not stored.');
+  } finally {
+    try { store.close(); } catch { /* the result or error above is what matters */ }
+  }
+}
+
 async function signCommand(sessionId, signDir) {
   // Load the key first, so a missing key fails before anything is read or written.
   const privateKey = await loadSigningKey(signingKeyPath());
   const { session, reviews } = await readLedgerSession(ledgerDatabasePath(), sessionId);
-  const bundle = buildBundle({ sessionId, markdown: handoffMarkdown(session) + '\n', privateKey, reviews });
+  // Card P4d: what is signed is always the redacted hand-off; there is no way to opt out.
+  const { session: redacted, findings } = redactSession(session);
+  const bundle = buildBundle({
+    sessionId, markdown: handoffMarkdown(redacted) + '\n', findings: findings.length, privateKey, reviews,
+  });
   await writeBundle(signDir, bundle);
-  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\nKey fingerprint: ' + bundle.fingerprint);
+  console.log('Signed hand-off written to ' + terminalLabel(signDir) + '\n' + redactionLine(findings, sessionId) +
+    '\nKey fingerprint: ' + bundle.fingerprint);
+}
+
+/** The sender's summary of what signing redacted: counts only, never a value or preview. */
+function redactionLine(findings, sessionId) {
+  if (findings.length === 0) {
+    return 'Redacted: nothing; the secret checks found no value. They cannot find every secret, so read handoff.md before you send it.';
+  }
+  // Counted by transcript line (one message each), with the source name named apart.
+  const lines = new Set(findings.filter(finding => finding.line !== null).map(finding => finding.line)).size;
+  const source = findings.some(finding => finding.line === null);
+  const where = [lines ? `${lines} transcript ${lines === 1 ? 'line' : 'lines'}` : '', source ? 'the source name' : '']
+    .filter(Boolean).join(' and ');
+  // A marker can cover several values that sat together, so the count is of replacements.
+  return `Redacted: ${findings.length} ${findings.length === 1 ? 'replacement' : 'replacements'} in ${where}, ` +
+    'each a [REDACTED <kind>] marker. ' +
+    `Run npm run ledger -- redact ${sessionId} to see where. Read handoff.md before you send it.`;
 }
 
 // The hand-off renderer keeps ZWNJ, ZWJ and tabs; the redaction view escapes every format
@@ -526,9 +730,13 @@ async function main() {
   if (argv[0] === 'import-t3') return importT3(argv.slice(1));
   // Card G8: setup edits the agents' own config files and needs no server.
   if (argv[0] === 'install' || argv[0] === 'uninstall') return setup(argv[0], argv.slice(1));
-  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head } = command(argv);
+  const { action, path, packetPath, body, login, sessionId, provider, filePath, raw, signDir, dir, fingerprint, format, id, head, graphId, out, relay, code, relayHost, relayPort } = command(argv);
   // Card I1: a file import opens the database itself, so it needs no running server or token.
   if (action === 'import') return importFile(provider, filePath);
+  // Card R1: parcels are read from and stored into the database in this process too.
+  if (action === 'share') return shareCommand(graphId, out, relay);
+  if (action === 'receive') return code === undefined ? receiveCommand(filePath) : receiveFromCommand(code);
+  if (action === 'relay-serve') return relayServeCommand(relayHost, relayPort);
   // Card P4a: keys, signing and checking work on local files; signing reads the session
   // from the ledger database in this process, never from whatever answers on PORT.
   if (action === 'keygen') {

@@ -8,7 +8,7 @@ import { maxBudget, maxQuestionCharacters, minBudget, questionLength } from './s
 import { createSwarm } from './swarm.mjs';
 import { staticFiles, staticFileUrl } from './static-files.mjs';
 import { ConflictError, InputError, isProjectSlug, isProvider, openStore, projectSlugRule } from './store.mjs';
-import { codeLifetimeMs, createAuth, newToken, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
+import { codeLifetimeMs, createAuth, newToken, sessionHeader, sessionLifetimeMs, removeTokenFile, tokenFileFor, writeTokenFile } from './token.mjs';
 import { installedCommand, printWelcome, startLines } from './welcome.mjs';
 
 const maxRequestBytes = 8 * 1024 * 1024;
@@ -30,25 +30,32 @@ function requireSameOrigin(request, origin, operation) {
   if (request.headers.origin !== origin) throw new HttpError(403, `${operation} requires the same origin.`);
 }
 
-async function readJson(request, origin, operation) {
+async function readJson(request, origin, operation, limit) {
+  return (await readJsonText(request, origin, operation, limit)).value;
+}
+
+/** The parsed body and the text it was parsed from. */
+async function readJsonText(request, origin, operation, limit = { bytes: maxRequestBytes, text: '8 MiB' }) {
   requireSameOrigin(request, origin, operation);
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new HttpError(415, `${operation} requires application/json.`);
   }
-  if (Number(request.headers['content-length']) > maxRequestBytes) {
-    throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
+  if (Number(request.headers['content-length']) > limit.bytes) {
+    throw new HttpError(413, `${operation} exceeds the ${limit.text} request limit.`);
   }
 
   const chunks = [];
   let size = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > maxRequestBytes) throw new HttpError(413, `${operation} exceeds the 8 MiB request limit.`);
+    if (size > limit.bytes) throw new HttpError(413, `${operation} exceeds the ${limit.text} request limit.`);
     chunks.push(chunk);
   }
 
   try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size)));
+    const bytes = Buffer.concat(chunks, size);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return { value: JSON.parse(text), text, bytes };
   } catch {
     throw new HttpError(400, `${operation} request must contain valid UTF-8 JSON.`);
   }
@@ -160,8 +167,11 @@ function scopeParameters(url) {
 }
 
 // Host, URL and token checks run before this table; each write checks its Origin, in
-// readJson or, for the bodiless DELETE, in requireSameOrigin. Only the static files and
-// /login are open without the token or a cookie.
+// readJson or, for the bodiless DELETE, in requireSameOrigin. Only the static files
+// (the sign-in page among them) and POST /api/session are open without the token or a
+// browser session.
+const signInLimit = { bytes: 1024, text: '1 KiB' };
+const linkFailure = 'This sign-in link was already used, has expired or is not valid. Run npm run ledger -- login for a new one.';
 const routes = [
   ...[...staticFiles].map(([path, [file, contentType]]) => ({
     method: 'GET', path, handler: async ({ response }) => {
@@ -171,15 +181,22 @@ const routes = [
       return sent;
     },
   })),
-  { method: 'GET', path: '/login', handler: ({ response, url }) => {
-    // A one-time code from the start-up line or `npm run ledger -- login` becomes a
-    // session cookie. The code is used up whether or not it was still valid.
-    const codes = url.searchParams.getAll('code');
-    const cookie = codes.length === 1 ? auth.redeem(codes[0]) : undefined;
-    if (!cookie) throw new HttpError(401, 'This sign-in link was already used, has expired or is not valid. Run npm run ledger -- login for a new one.');
-    response.writeHead(303, { Location: '/', 'Set-Cookie': cookie });
-    response.end();
-    return sent;
+  { method: 'POST', path: '/api/session', handler: async ({ request, response, origin }) => {
+    // P1f: the sign-in page (GET /login, a static file) sends the one-time code from the
+    // start-up line or `npm run ledger -- login` here, from this origin, and keeps the
+    // session secret it gets back in this origin's storage. A well-formed code is used
+    // up whether or not it was still valid. No cookie is set, and any P1e cookie of this
+    // port is removed, because browsers send cookies to every port of the host.
+    // The body must be exactly what the page sends, JSON.stringify({ code }): JSON.parse
+    // keeps only the last of repeated keys, so any other spelling is refused unread.
+    // The bytes are compared, not the decoded text, which has lost a leading BOM.
+    const { value: input, bytes } = await readJsonText(request, origin, 'Signing in', signInLimit);
+    const keys = input !== null && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input) : [];
+    const exact = keys.length === 1 && keys[0] === 'code' && typeof input.code === 'string' && bytes.equals(Buffer.from(JSON.stringify(input), 'utf8'));
+    const session = exact ? auth.redeem(input.code) : undefined;
+    if (!session) throw new HttpError(401, linkFailure);
+    response.setHeader('Set-Cookie', auth.clearOldCookie);
+    return { session, expiresInSeconds: sessionLifetimeMs / 1000 };
   } },
   { method: 'POST', path: '/api/login', handler: ({ request }) => {
     // Sign-in codes are made with the token file, not with a browser session.
@@ -246,7 +263,7 @@ const routes = [
   } },
   { method: 'POST', pattern: idPattern('/api/graphs', '/reviews'), handler: async ({ request, origin, params: [id] }) => {
     // People approve, edit or reject nodes in the browser (P2c, P3). The request must carry a browser's
-    // sign-in cookie (the CLI and the MCP adapter hold only the bearer token) and a
+    // sign-in session (the CLI and the MCP adapter hold only the bearer token) and a
     // browser's Sec-Fetch-Site, which page scripts cannot forge. That keeps agent clients
     // out; it does not prove who clicked: a program running as the person can still sign
     // in as a browser does (ADR-10 trusts the OS user; P2c review).
@@ -355,7 +372,17 @@ const server = createServer(async (request, response) => {
     const origin = `http://${host}`;
     const url = new URL(request.url, origin);
     if (!auth) throw new HttpError(503, 'Context Ledger is starting.');
-    if (!staticFiles.has(url.pathname) && url.pathname !== '/login') {
+    // P1f review: a browser session belongs to the origin http://127.0.0.1:<port> only.
+    // The name localhost may reach ::1, where another program can take this port and
+    // serve pages of the same origin, which could read a session stored there. So under
+    // localhost no session is issued and a session header counts for nothing; the bearer
+    // token, which no page holds, still works.
+    if (host !== `127.0.0.1:${localPort}`) {
+      delete request.headers[sessionHeader];
+      if (request.method === 'POST' && url.pathname === '/api/session') throw new HttpError(403, `Sign in at http://127.0.0.1:${localPort}, not localhost.`);
+    }
+    const open = staticFiles.has(url.pathname) || (request.method === 'POST' && url.pathname === '/api/session');
+    if (!open) {
       if (!auth.allowed(request)) {
         response.setHeader('WWW-Authenticate', 'Bearer realm="Context Ledger"');
         throw new HttpError(401, signInHelp);
@@ -388,26 +415,43 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen({ port, host: '127.0.0.1' }, () => {
+server.listen({ port, host: '127.0.0.1' }, async () => {
   const localPort = server.address().port;
   // The plain token lives only in this callback and in the file; auth keeps its digest.
+  // Card H15: on Windows the write waits for PowerShell; until it and its ACL check are
+  // done, auth stays unset, so every request gets 503 and nothing is printed.
   const token = newToken();
+  const ready = createAuth({ token, port: localPort });
+  tokenFile = tokenFileFor(database, localPort);
+  // A clean stop removes the file, so a program that takes the port later gets no
+  // live token from a client. A killed process leaves a dead token behind. A stop during
+  // the write (H15) first stops its PowerShell child and waits for it to exit, so no
+  // writer outlives the server and races the next start.
+  const stopping = new AbortController();
+  let writing;
+  // The handlers stay installed, so a second Ctrl-C during that wait cannot end the
+  // process before the child has exited and the file is cleaned up.
+  const stop = async () => {
+    if (stopping.signal.aborted) return;
+    stopping.abort();
+    try {
+      await writing?.catch(() => {});
+      removeTokenFile(tokenFile, ready.isOwnToken);
+    } finally {
+      process.exit(0);
+    }
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   try {
-    tokenFile = tokenFileFor(database, localPort);
-    tokenIdentity = writeTokenFile(tokenFile, token, localPort);
+    writing = writeTokenFile(tokenFile, token, localPort, { signal: stopping.signal });
+    tokenIdentity = await writing;
   } catch {
+    if (stopping.signal.aborted) return; // the stop handler exits
     console.error(tokenFailure);
     process.exit(1);
   }
-  auth = createAuth({ token, port: localPort });
-  // A clean stop removes the file, so a program that takes the port later gets no
-  // live token from a client. A killed process leaves a dead token behind.
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      removeTokenFile(tokenFile, auth.isOwnToken);
-      process.exit(0);
-    });
-  }
+  if (stopping.signal.aborted) return;
+  auth = ready;
   // Card U9: at a terminal these lines arrive inside the welcome; piped, they are the same
   // two plain lines as before. The server is already listening when this runs. Card U11:
   // a terminal also gets the steps to sign in, naming the login command of this install.

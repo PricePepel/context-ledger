@@ -130,6 +130,9 @@ export function graphContext(graph, session, { question, budget, ...options } = 
       graphTokens,
       savedTokens: handoffTokens - graphTokens,
       savedShare: handoffTokens ? Math.round((1 - graphTokens / handoffTokens) * 1000) / 1000 : 0,
+      // Card R1: a session received from another machine holds only the lines the graph
+      // cites, so the saving is against those lines, not against the whole transcript.
+      ...(session.excerpts === true ? { baseline: 'excerpts' } : {}),
     },
   };
 }
