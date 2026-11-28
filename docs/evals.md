@@ -5777,3 +5777,62 @@ Three read-only rounds with `codex exec --sandbox read-only`, on commits 25f4cfc
 - `npx playwright test`: 61 passed, 1 skipped (run at 40db050; later commits change only Python under `runtime/latent_transfer/` and its test).
 - Rule 1 against `origin/main`: 1,880 batch comparisons equal (4 tokenizer pairs, 235 texts, budgets 384 and 64), rerun on the final commit.
 - After merging `main` at c3be893 (2026-11-27, with L4's `statebridge` files and tests): `node scripts/check.mjs` no findings (323 files); the runtime suite 345 tests OK on Windows (102 skipped without torch) and 345 OK in WSL with torch, none skipped, on CPU; the rule 1 comparison equal again. L4's code reaches the alignment only through `TransferPair` with a checkpoint, which loads rule 1, so its recorded numbers do not depend on this card.
+
+## L5 — Mappers for more model pairs (defined 2026-11-27, before any run)
+
+L2 measured eight models and found a trained mapper for one ordered pair of 56 (Phi-3.5-mini to Qwen2.5-1.5B, M2b-S). L4 showed that a closed-form alignment does not replace the mapper (0 of 28 checks). So the other pairs need a trained mapper each. This card trains them where the laptop GPU allows and measures each one the way M2b-S was measured. Some pairs are expected to fail: a published audit (arXiv 2603.18908) reports that transfer quality follows tokenizer overlap and that receivers under 2B tend to fail. A failed pair is a result and is reported as one.
+
+### Which pairs can be trained here
+
+Training holds the sender, the receiver and the mapper on the GPU at once, and the receiver's loss is backpropagated through the receiver (stage 2). That needs both models loadable in torch.
+
+| Models | Ordered pairs | Status before any run |
+| --- | --- | --- |
+| Qwen2.5-0.5B, 1.5B, 3B, Phi-3.5-mini, Granite-3.1-2B (torch, bf16) | 20, one of them M2b-S | Candidates. The largest two together, Phi-3.5-mini (7.6 GiB of weights) and Qwen2.5-3B (6.2 GiB), are the tight case |
+| Mistral-7B v0.3 (torch, bf16, 14 GiB of weights) with any of the five | 10 | Not expected to be trainable on 16 GiB: with the smallest partner (Qwen2.5-0.5B, 1 GiB) the two models alone take about 15 GiB before the mapper, its optimizer state and any activation. Stated from the weight sizes; the measured peak of run 1 says how much room training needs on top of the weights |
+| Qwen2.5-7B AWQ and Llama-3.1-8B AWQ (vLLM only) with any model | 26 | Out. vLLM does not hand over a KV cache, and L2 found no checkpoint of either that loads in torch on this machine (AWQ and GPTQ need packages the venv does not have; the FP8 Qwen2.5-7B decompresses to 14.2 GiB and thrashes). This card did not find one either; if one turns up it is a new card |
+
+### Decisions taken before the run (ADR-19 in `docs/architecture.md`)
+
+- **One recipe for every pair,** half the M2b-S step counts: stage 1 8,000 steps at batch 4, stage 2 10,000 steps at batch 2, learning rates 3e-4 and 1e-5, QA share 0.7, mapper of 8 blocks, width 384, 6 heads, passages capped at 256 tokens, seed 0, bf16, alignment rule 2. The M2b-S log is the reason: stage 1 was at 0.168 normalized error after 8,000 steps and 0.161 after 15,000, and stage 2 reached its best dev F1 (0.8275 on 100 questions) at step 10,500, with every later evaluation inside the noise of 100 questions. M2b-S took 5.4 hours; half the steps is what lets a batch of pairs fit in a day.
+- **The first run retrains Phi-3.5-mini to Qwen2.5-1.5B with this recipe.** It gives the cost of one mapper (seconds per step in each stage, wall time, peak GPU memory), and it tests the recipe against the registered M2b-S checkpoint on the same items. The recipe is adequate when the lower end of the paired 95% interval of (retrained − registered) `swat` F1 is above −0.05. If it is not, the remaining pairs use the full M2b-S step counts and the batch shrinks to what fits the budget, in the order below. The retrained mapper also uses alignment rule 2 where the registered one uses rule 1 (3 of 200 SQuAD passages differ, L3), so this comparison does not separate the two changes; it bounds them together.
+- **Budget: about 24 hours of GPU time for the first batch.** No new pair starts after that. Pairs not reached are listed with a time estimate from the measured seconds per step.
+- **The document format does not change.** Every pair trains and is measured on the M2b document (a ChatML user turn that opens with "Read this passage."), which is what `latent_compare` sends through a mapper. A Qwen receiver reads its own template. Phi-3.5 and Granite as receivers read it as plain text, so for them the `text_m2b` arm is the receiver reading a foreign template and the harness's `text` arm (its own template, from L2) is the fair passage reference; both are reported. Moving the mapper path to each receiver's own template would change `latent_compare` and every number in its mapper table, so it is a card of its own.
+- **One code change to training:** the answer's end marker. `train.py` taught every receiver to end its answer with the literal `<|im_end|>`. A receiver that does not know that token would learn to spell it out and never stop. The marker becomes the receiver's own end-of-sequence token when `<|im_end|>` is not one token in its vocabulary. Qwen receivers are unchanged.
+- **One seed per pair.** No pair is retrained to look for a better result. A pair that runs out of memory at the recipe's batch sizes is retried once at batch 2 and 1, and recorded as such.
+
+### First batch, in this order
+
+Tokenizer overlap is L3's and L4's measurement: Qwen sizes share one tokenizer (99% of entries); Phi-3.5 and Qwen2.5 share 0.17 to 0.22 of their vocabularies (Jaccard), Granite and the others 0.23 to 0.33. The only close cross-family pairs (Phi-3.5 with Mistral, Qwen2.5 with Llama 3.1) are among the pairs that cannot be trained here, so "close against distant tokenizer" is covered by same family against cross family, and the two axes cannot be separated on this machine.
+
+| # | Sender to receiver | Family | Receiver | Why it is in the batch |
+| --- | --- | --- | --- | --- |
+| 1 | Phi-3.5-mini to Qwen2.5-1.5B | cross | 1.5B, below 2B | The M2b-S pair again: cost, and the check on the recipe |
+| 2 | Qwen2.5-3B to Qwen2.5-1.5B | same | 1.5B | Same tokenizer, large to small |
+| 3 | Qwen2.5-1.5B to Qwen2.5-3B | same | 3B, above 2B | Same tokenizer, small to large |
+| 4 | Phi-3.5-mini to Qwen2.5-3B | cross | 3B | The cross-family pair with a receiver above 2B; the memory limit case |
+| 5 | Granite-3.1-2B to Qwen2.5-1.5B | cross | 1.5B | A third family as sender (GPT-2 style tokenizer) |
+| 6 | Qwen2.5-3B to Qwen2.5-0.5B | same | 0.5B | The smallest receiver, with the tokenizer held equal |
+| 7 | Qwen2.5-1.5B to Phi-3.5-mini | cross | 3.8B | The M2b-S pair reversed; the first receiver that is not Qwen |
+| 8 | Qwen2.5-1.5B to Granite-3.1-2B | cross | 2.5B | A second receiver family, if the budget allows |
+
+### Measurement
+
+`latent_compare`'s latent phase, unchanged, for every trained mapper: the 200 main SQuAD v1.1 validation items of L2 (seed 0, passages that fit 384 tokens on every registered tokenizer) and its edge groups, greedy, 24 new tokens. The sender summaries are the ones L2 wrote, so the `t2t_m2b` arm reads the same text as L2's table. Arms: `swat` (the mapped cache), `mismatched` (the cache of the next item with a different passage), `zeroed` (the sender's cache set to zero), `t2t_m2b` (the receiver reads the sender's 40-word summary), `text_m2b` (the receiver reads the passage), and the harness `text` arm from L2 (the receiver's own template). Token F1 with a bootstrap 95% interval per arm, and paired bootstrap 95% intervals of the difference (10,000 resamples), as in L2.
+
+### Pass rule, fixed before any run
+
+| Verdict | When |
+| --- | --- |
+| **Pass: carries the passage** | `swat − mismatched` and `swat − zeroed` both have the paired 95% interval of the F1 difference above zero, on all 200 main items with no failed item. This is the rule of M2b-S and L4 |
+| Against the text summary (reported for every pair) | `swat − t2t_m2b`: "better" when the interval is above zero, "worse" when it is below zero, otherwise "no detectable difference" |
+| Against reading the passage (reported for every pair) | `swat − text_m2b` and `swat − text` (harness), F1 and hit rate, the same three words. A higher F1 than reading the passage is not claimed as better reading: stage 2 trains SQuAD's short answer style (M2b-S), so the hit rate is read beside it |
+| **Fail** | Either interval of the pass rule reaches zero, or training diverges, or the pair does not fit in memory after the one retry. Reported with its numbers |
+
+Also recorded per pair: best dev F1 and its step, seconds per step in each stage, wall time, peak GPU memory, mean end-to-end time of `swat` against `t2t_m2b`. Not covered, as in M2b-S: budget-matched compaction, a receiver fine-tuned on the same SQuAD data, more than one task, more than one seed.
+
+### Acceptance for the code
+
+- `data.end_marker` returns `<|im_end|>` for a tokenizer that has it as one token and the tokenizer's own end-of-sequence token otherwise, and refuses a tokenizer with neither; unit tests without torch.
+- The new pairs are registered in `latent_compare/models.py` `MAPPERS` with their checkpoint ids, and the latent table shows a measured F1 for them where it said "no mapper yet".
+- The runtime suite, `node scripts/check.mjs`, `npm run -s test:graph`, `node --test tests/*.test.mjs` and `npx playwright test` pass.
