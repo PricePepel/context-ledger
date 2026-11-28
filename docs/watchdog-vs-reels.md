@@ -14,13 +14,13 @@
   - The reel quotes its numbers correctly, generalizes them loosely, and doubles as a funnel for the presenter's own repository.
 - **The two reels describe different approaches, and neither is a safety mechanism.** Reel 1 looks inside the model. Reel 2 changes what surrounds the model, then trains the model to fit. Our watchdogs sit where reel 2 looks, in code around the model, but do the opposite of its method: they verify a frozen model and never train it.
 - **Neither addresses the threats our watchdogs exist for.** Our setting is local, single-user, loopback-only and has no tools. Hand-off integrity, runaway work, secrets entering memory and fail-closed decisions are problems of how data moves. Exact checks and construction settle them, inside the design's trust assumptions: a trusted runtime and code, and hash-pinned frozen weights. A compromised host is out of scope.
-- **Neither fixes the refusal drop, but reel 2 names its likely kind.** With the same weights, a fixed keyword rule classified 24 of the team's replies to 100 harmful requests as refusals, against 67 for the model alone. Nobody read the replies, so the actual refusal rates are unknown. If the drop holds up, it is a harness effect on safety behaviour, of the kind reel 2 shows for task success.
+- **Neither fixes the refusal drop, but reel 2 offers an analogy.** With the same weights, a fixed keyword rule classified 24 of the team's replies to 100 harmful requests as refusals, against 67 for the model alone. Nobody read the replies, so the actual refusal rates are unknown. If judging the replies confirms a difference, it would be analogous to the guide's scores, which depend on the harness, and refusals would have to be measured for the model and team configuration together.
   - Reel 1's line of work could give an exploratory diagnostic: a refusal direction ([Arditi et al., 2024](https://arxiv.org/abs/2406.11717)).
   - The likeliest fix is a harness-level rule in W3b, a refusal check in text, which needs its own eval.
 - **Recommendation: keep the watchdogs, adopt neither approach as a control, and take one idea from each.**
   - From reel 1, when W3b is picked up: one small offline refusal diagnostic.
   - From reel 2: treat the latent team as its own harness for safety, measuring refusals and thresholds per team configuration, not per model.
-  - Skip harness training. It would break the design's frozen-model rule and needs far more hardware than we have.
+  - Skip harness training. Its recipe learns from tool-use attempts our subagents never make. Training the deployed model would break the design's frozen-model rule. And the guide's reported runs used two H100s each.
 
 ## At a glance
 
@@ -29,10 +29,10 @@
 | **What it is** | Code around a frozen model: exact checks at every hand-off, a gateway, a fail-closed supervisor | Interpretability research: label a model's own neurons and trace circuits, run by automated agents | Capability work: the program around a model changes its score; train the model with RL inside several harnesses |
 | **Aim** | Safety assurance for a running latent team | Understanding models | Better task success across agent tools |
 | **Threats it addresses here** | Hand-off integrity, runaway work, secrets (by construction for declared or detected ones, in W2's draft), held answers when an exact check or a report fails | None directly. Later, maybe statistical checks on what the memory means | None directly |
-| **Strongest assurance** | By construction and exact checks (replay bitwise on 400 of 400 clean questions; 19 of 19 tested fault types caught) | Statistical. The essay's own numbers are preliminary and contested | Measurement (benchmarks). Training is statistical by nature |
-| **Cost on our one 16 GB GPU** | Built. +2.2% per question for the checks, audits +18% on average | An inventory of about 793,000 candidate neuron poles in Qwen2.5-3B, most of the work unpriced | Two H100s for 32 to 46 hours per training run, cloud sandboxes, new dependencies |
-| **Applies to latent subagents** | Built for them | One possible route in principle; not in practice now | The lesson yes (the team is a harness); the training no (subagents have no tool loop) |
-| **Refusal drop** | Measured by keyword rule (eval 14); no control yet (W3b) | Could give an exploratory diagnostic | Names its likely kind; training to fix it would break the frozen-model rule |
+| **Strongest assurance** | By construction and exact checks (replay bitwise on 400 of 400 clean questions; 19 of 19 tested fault types caught) | Statistical. The essay's own numbers are preliminary and contested | Exact checks on training attempts, not at run time; benchmark measurement |
+| **Cost on our one 16 GB GPU** | Built. +2.2% per question for the checks, audits +18% on average | An inventory of about 793,000 candidate neuron poles in Qwen2.5-3B, most of the work unpriced | The reported runs used two H100s for 32 to 46 hours each, with a cloud sandbox per attempt. The cost on our laptop is unmeasured |
+| **Applies to latent subagents** | Built for them | One possible route in principle; not in practice now | The lesson yes (the team is a harness); the training recipe no, as written (subagents have no tool handle) |
+| **Refusal drop** | Measured by keyword rule (eval 14); no control yet (W3b) | Could give an exploratory diagnostic | Offers an analogy; training to fix it would break the frozen-model rule |
 | **Verdict** | Keep | Skip as a control; borrow one diagnostic | Skip the training; take the lesson |
 
 ## 1. Reel 1: what it shows, and its source
@@ -116,14 +116,14 @@ What the essay claims (paraphrased; numbers as the essay states them):
 
 ### The primary source
 
-- **The guide:** "The ultimate guide to multi-harness RL", a Hugging Face Space by FineEnvs, <https://huggingface.co/spaces/FineEnvs/multi-harness-rl>. Published 2026-09-24 and updated 2026-10-01, with results compiled through 2026-09-29.
-  - Authors: Adithya S Kolavi, Joel Niklaus, Sergio Paniego Blanco, Leonie Monigatti, Amine Dirhoussi, Ben Burtenshaw, Lewis Tunstall and Leandro von Werra.
-  - It is open: the tasks, the trainer and the training scripts are published with it.
+- **The guide:** "The ultimate guide to multi-harness RL", a Hugging Face Space by FineEnvs, <https://huggingface.co/spaces/FineEnvs/multi-harness-rl>. Published 2026-09-24 according to the page's metadata, and updated 2026-10-01, with results compiled through 2026-09-29.
+  - Authors, from the page's metadata: Adithya S Kolavi, Joel Niklaus, Sergio Paniego Blanco, Leonie Monigatti, Amine Dirhoussi, Ben Burtenshaw, Lewis Tunstall and Leandro von Werra.
+  - It publishes its tasks, training scripts, checkpoints and evaluation curves. Each test cell ran once per checkpoint, and each training run used one seed. The current tutorial uses a different sandbox backend from the reported runs.
 
 What the guide says (paraphrased; numbers as it states them):
 
 1. **The harness changes the score before any training.** A harness is the software between a model and its task. It runs the loop, chooses the tools, builds the context the model reads, interprets what the model sends back and decides when to stop.
-   - LFM2.5-2.6B, before training, on 250 held-out test tasks: 62.1% under Mini-SWE-Agent, 40.0% under Codex, 33.6% under OpenCode and 33.2% under Claude Code (42.2% overall).
+   - LFM2.5-2.6B, before training, on 250 held-out test tasks, each run once per harness: 62.1% under Mini-SWE-Agent, 40.0% under Codex, 33.6% under OpenCode and 33.2% under Claude Code (42.2% overall). 998 of the 1,000 cells were graded.
    - The guide also cites a measurement of the same model, GLM-5.2, at 23% in one harness and 52% in another on SWE-bench Pro.
    - Its conclusion: a score measured in one harness describes the model in that harness, not the model in general.
 2. **A model trained in one harness learns that harness's habits.** The fix it proposes is agentic reinforcement learning inside the harnesses people actually use, run unmodified.
@@ -131,21 +131,33 @@ What the guide says (paraphrased; numbers as it states them):
    - A capture proxy between the harness and the model records the exact tokens the model produced and their probabilities, because training on re-tokenized text would update the model on output it never generated.
 3. **Results on LFM2.5-2.6B:**
    - trained across four harnesses: from 42% to 54% overall, improving under every harness, with 31% fewer tool calls on the tasks both versions solved;
-   - trained in OpenCode alone: from 34% to 58% in OpenCode, much less elsewhere, and 52% overall. The guide says the gap between the two runs' overall scores is within the noise;
+   - trained in OpenCode alone, at step 1,000: from 33.6% to 58.0% in OpenCode and from 33.2% to 42.0% in Claude Code, with smaller gains in the other two. It reached 52.3% overall, against 54.2% for the four-harness run, a gap the guide treats as within the noise;
    - fine-tuning on a 27-billion-parameter teacher's successful attempts scored below both reinforcement-learning runs.
-4. **Cost:** two H100 GPUs per run, about 32 hours of training for the OpenCode-only run and 46 hours for the four-harness run, plus a cloud sandbox per attempt. The guide says it did not track the full cost.
+4. **Cost of the two reported runs:**
+   - two H100 GPUs each;
+   - about 32 hours of training for the OpenCode-only run and 46 hours for the four-harness run, not counting evaluation, queueing and restarts;
+   - one E2B cloud sandbox per attempt. Harbor also supports local Docker.
 
-**What the guide is not:** a safety method. Safety comes up only in operational details, such as the capture proxy binding to localhost by default.
+   The guide says it did not track the full cost.
+
+**What the guide is not:** a safety method for deployed agents. Its integrity controls protect *training*, and they share our watchdogs' habits:
+
+- the capture proxy binds to localhost, and other interfaces need an admin key;
+- it stops a rollout at its model-call budget;
+- each rollout is checked call by call against the harness's own trace file, and any mismatch fails the rollout;
+- a sandbox that died gets no score rather than a wrong one.
+
+It also reports a warning for anyone who would train against a measure. A reward term for submitting anything taught the policy to submit at once. Held-out accuracy fell from 0.740 to 0.178 while the training reward still looked healthy.
 
 ### Checking the reel's numbers
 
 | The reel says | The source says | Status |
 | --- | --- | --- |
-| Same model, same weights: 62% in one tool, 33% in another | 62.1% under Mini-SWE-Agent and 33.2% under Claude Code, for LFM2.5-2.6B before training, on 250 test tasks, each run once | **Correct**, for one small model on one task set |
+| Same model, same weights: 62% in one tool, 33% in another | 62.1% under Mini-SWE-Agent and 33.2% under Claude Code, for LFM2.5-2.6B before training, on 250 test tasks, each run once per harness, with 998 of 1,000 cells graded | **Correct**, for one small model on one task set |
 | The tool around your AI decides half of what you get | A score in one harness describes the model in that harness. Large harness effects also appear for other models (GLM-5.2: 23% against 52%) | **A loose generalization** of real results; "half" is the reel's own framing |
 | Hugging Face measured it | Hugging Face's guide and post | **Correct** |
 
-**Bottom line on the source:** a careful, open and reproducible guide with its own caveats stated. The reel reports it fairly, compared with reel 1, but wraps it in an offer for the presenter's repository. The repository itself is general advice for developer tools, not part of the measured result.
+**Bottom line on the source:** a careful, open guide with its own caveats stated. The reel reports it fairly, compared with reel 1, but wraps it in an offer for the presenter's repository. The repository itself is general advice for developer tools, not part of the measured result.
 
 ## 3. Our side, briefly
 
@@ -200,12 +212,12 @@ An attacker tampering with memory inside the process implies a compromised host,
 
 | Threat | Watchdogs (W1 to W3) | Reel 1: reading neurons | Reel 2: harness and harness training |
 | --- | --- | --- | --- |
-| A hand-off corrupted, swapped or reshaped (a bug, an adapter left loaded, aligned thoughts) | **Exact.** 19 of 19 tested fault types, 64 of 64 questions each. Replay bitwise on 400 clean questions | **No evidence it would.** A reading of meaning is not built to notice a swap of similar content. For comparison only: W1's statistical distance score caught a swap between rows on 9% of questions | **No.** Its capture proxy keeps exact tokens for training, an idea close to our thought record, but checks nothing at run time |
-| Runaway work, a subagent writing text | **Exact** (budgets) | No | Harnesses cap steps and tool calls, as our runtime already does. Nothing to add |
+| A hand-off corrupted, swapped or reshaped (a bug, an adapter left loaded, aligned thoughts) | **Exact.** 19 of 19 tested fault types, 64 of 64 questions each. Replay bitwise on 400 clean questions | **No evidence it would.** A reading of meaning is not built to notice a swap of similar content. For comparison only: W1's statistical distance score caught a swap between rows on 9% of questions | **Not at run time.** For training attempts, the guide's stack captures exact tokens, checks each attempt call by call against the harness's own trace, and fails any attempt that disagrees. That is the same idea as our exact checks and replay, but it protects training data. The guide shows no deployed safety watchdog |
+| Runaway work, a subagent writing text | **Exact** (budgets) | No | The guide's proxy caps model calls per attempt. Our runtime already caps latent steps and text tokens, and the watchdog checks the counts and that no subagent wrote text. Nothing to add |
 | Secrets entering memory or the answer | **By construction** for declared or detected secrets (placeholders, in W2's draft). Undeclared, undetected data can still reach the answer. The scanner is weak, as W2's 25 rounds showed | No guarantee. A "secret-like content" reader would be another detector with error rates. The cache must be treated as the transcript either way, since prompts have been reconstructed from caches | No |
 | Instructions injected through pasted text | Origin labels and permissions fixed before data (W2, parked). No tools today, so little to misuse | In principle a reader could flag circuits that follow instructions found in a document. No evidence, and statistical | No |
 | Wrong answers | Calibrated abstention. **Failed:** the score could not rank answers | Could supply a better confidence signal for W3c. In the [research report](watchdog-research.md) (section 4), hidden-state probes reach AUROC 0.765 to 0.838 (INSIDE) and AUC 0.83 to 0.95 depending on task (Orgad et al.). Hallucination detectors tested on kinds of task they were not trained on fell to chance (Dubanowska et al.). Nothing has been shown on our model | Training raised task success for a 2.6B model in its harnesses. For us it would mean training our model, which the design rules out |
-| Harmful compliance (the refusal drop) | Measured by keyword rule (eval 14). No control yet (W3b, backlog) | Could give an exploratory diagnostic. The essay offers no fix and does not discuss refusals | Names its likely kind: same weights, different harness, different behaviour. Its fix, training, is ruled out |
+| Harmful compliance (the refusal drop) | Measured by keyword rule (eval 14). No control yet (W3b, backlog) | Could give an exploratory diagnostic. The essay offers no fix and does not discuss refusals | An analogy only: same weights, different harness, different measured behaviour (task success there). Its fix, training, is ruled out |
 | A model that schemes or deceives | Not covered. The checks verify how data moved, not what it means | The essay's long-term hope, and unproven. No source here tests it on a model like ours | No |
 | Tampering in transit between processes | **Exact** against tampering in transit (a signed manifest, with repeats refused). It is designed for the first card that moves memory across processes, needs a way to distribute keys, and assumes an honest sender | No | No |
 
@@ -213,18 +225,18 @@ An attacker tampering with memory inside the process implies a compromised host,
 
 | | Watchdogs | Reel 1: reading neurons | Reel 2: harness and harness training |
 | --- | --- | --- | --- |
-| **By construction** | Subagents have no tool handle. Soft thoughts only. Placeholders for declared or detected secrets (W2's draft). Permissions fixed before data is read. Memory and thought records live for the run only, never on disk | None | A harness decides which tools exist, which is construction, but the guide uses it for capability. Our gateway already does this for safety |
-| **Exact check** | Turn structure, configuration, legibility (within a stated tolerance), span ledger, memory checksum, budgets (enforced by the runtime, verified by the watchdog), report schema. Replay, measured as exact in the tested configuration (400 of 400, bitwise) | None. Even the neuron explanations are judged statistically: they won for 164 of 183 neurons | Exact token capture, for training data only |
-| **Statistical check** | Degenerate-record and distance scores (2.0% and 0.5% false alarms, 2.5% combined; integrity only). Agreement with the solver alone. Abstention (not certified) | Everything: the explanations, the "one main job" share (which depends on thresholds), and any reading at run time | Benchmark scores. Each test cell was run once, so the guide itself treats small differences as noise |
-| **Against an attacker** | The exact checks hold inside the trust assumptions. The statistical ones do not, and the design says so | Untested. Our research found that white-box attacks beat every latent-space monitor tested ([Bailey et al.](https://arxiv.org/abs/2412.09565)), and models trained to evade one probe evade others ([Neural Chameleons](https://arxiv.org/abs/2512.11949)) | Not discussed. Training a model inside a harness that contains its monitors is the setting in which models learn to evade them |
+| **By construction** | Subagents have no tool handle. Soft thoughts only. Placeholders for declared or detected secrets (W2's draft). Permissions fixed before data is read. Memory and thought records live for the run only, never on disk | None | A harness decides which tools the model gets, which is construction, but the guide uses it for capability. Our latent subagents have no tool handle, and the gateway design (W2, draft) fixes tool permissions before any data is read |
+| **Exact check** | Turn structure, configuration, legibility (within a stated tolerance), span ledger, memory checksum, budgets (enforced by the runtime, verified by the watchdog), report schema. Replay, measured as exact in the tested configuration (400 of 400, bitwise) | None. Even the neuron explanations are judged statistically: they won for 164 of 183 neurons | Exact token capture, a call-by-call cross-check against the harness's own trace, and a model-call budget, all protecting training attempts |
+| **Statistical check** | Degenerate-record and distance scores (2.0% and 0.5% false alarms, 2.5% combined; integrity only). Agreement with the solver alone. Abstention (not certified) | Everything: the explanations, the "one main job" share (which depends on thresholds), and any reading at run time | Benchmark scores. Each test cell ran once per checkpoint and each run used one seed. The guide treats small differences between checkpoints, and the 1.9-point overall gap, as noise |
+| **Against an attacker** | The exact checks hold inside the trust assumptions. The statistical ones do not, and the design says so | Untested. Our research found that white-box attacks beat every latent-space monitor tested ([Bailey et al.](https://arxiv.org/abs/2412.09565)), and models trained to evade one probe evade others ([Neural Chameleons](https://arxiv.org/abs/2512.11949)) | Not discussed: the guide evaluates task performance. Applying its weight-updating recipe to our team would break the frozen-model rule. The design separately forbids training against the monitors, because models trained to evade one probe evade others |
 
 ### Cost to build and run, and repo rules
 
 | | Watchdogs | Reel 1 on our model | Reel 2 on our model |
 | --- | --- | --- | --- |
-| **Build** | Built (W1), with three recorded review rounds. W2 and W3 have drafts | Qwen2.5-3B has 36 layers × 11,008 MLP neurons: 396,288 neurons, or 792,576 candidate poles counting both signs ([published config](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/raw/main/config.json)). Mapping them the essay's way has two steps. First, collect each neuron's strongest activations over a corpus. Then have an agent write and test an explanation for each pole: up to roughly 800,000 agent tasks for a full inventory. Those would go to an external model or to a local labeller competing for the one GPU. An external model costs money and sends the examples off the machine, so it could use a synthetic corpus only. Corpus collection, storage, validation and GPU contention are unpriced. The essay states no compute budget, and its author describes months of expert work | The guide's runs used two H100s for 32 to 46 hours each, on a smaller model than ours, with a cloud sandbox per attempt. We have one 16 GB laptop GPU. Our subagents also call no tools, so there is no tool loop to train in |
+| **Build** | Built (W1), with three recorded review rounds. W2 and W3 have drafts | Qwen2.5-3B has 36 layers × 11,008 MLP neurons: 396,288 neurons, or 792,576 candidate poles counting both signs ([published config](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/raw/main/config.json)). Mapping them the essay's way has two steps. First, collect each neuron's strongest activations over a corpus. Then have an agent write and test an explanation for each pole: up to roughly 800,000 agent tasks for a full inventory. Those would go to an external model or to a local labeller competing for the one GPU. An external model costs money and sends the examples off the machine, so it could use a synthetic corpus only. Corpus collection, storage, validation and GPU contention are unpriced. The essay states no compute budget, and its author describes months of expert work | The two reported runs used two H100s each, for about 32 and 46 hours of training (not counting evaluation, queueing and restarts), on a slightly smaller model than ours, with one E2B cloud sandbox per attempt. The full cost was not tracked. Harbor also runs on local Docker. Adapting the recipe to one 16 GB laptop GPU is unmeasured. Its demonstrated recipe learns from multi-step tool-use attempts, and our subagents have no tool handle |
 | **Run** | +2.2% for the checks; audits +18% on average, fallbacks +1.4% | The run-time cost of reading labelled neurons is unmeasured. Every label and threshold would need measuring again after each weights change, like our thresholds, and its error rates would need measuring too | A trained model is a new weights hash. Every W1 threshold and reference statistic would need measuring again |
-| **Repo rules** | Plain Python in `runtime/` with torch, already there. No new runtime dependency | A narrow experiment needs only plain torch forward hooks, which W1 already uses, so no new dependency. A full pipeline (attribution graphs, labelling agents, an external API) would likely add runtime dependencies, each needing an ADR, and send data off the machine | TRL, OpenEnv, Harbor and a cloud sandbox: new dependencies, an ADR, and code leaving the machine. It also conflicts with the design's rule that the model is frozen and never trained against the monitors |
+| **Repo rules** | Plain Python in `runtime/` with torch, already there. No new runtime dependency | A narrow experiment needs only plain torch forward hooks, which W1 already uses, so no new dependency. A full pipeline (attribution graphs, labelling agents, an external API) would likely add runtime dependencies, each needing an ADR, and send data off the machine | TRL, OpenEnv and Harbor would likely be new runtime dependencies, each needing an ADR. A cloud sandbox would send attempt workloads off the machine. Training the deployed model also conflicts with the design's frozen-model rule |
 
 ### What each catches that the others miss
 
@@ -241,12 +253,20 @@ An attacker tampering with memory inside the process implies a compromised host,
   - signs of why refusals drop.
 
   None of this has been shown. It would be statistical, unmeasured on our model and untested against attack.
-- **Reel 2's approach catches nothing at run time.** Its value to us is a measurement habit: always report behaviour per harness configuration.
+- **Reel 2's approach checks nothing at run time.** Its training stack applies our watchdogs' habits to training data:
+  - exact records;
+  - an independent call-by-call cross-check;
+  - a failed attempt on any mismatch;
+  - no score for a crashed sandbox, rather than a wrong one.
+
+  Its value to us is that confirmation, plus a measurement habit: always report behaviour per harness configuration.
 
 ## 5. The refusal drop
 
 - **Neither source addresses it.** The essay never mentions refusals. The guide measures task success, not refusals.
-- **Reel 2 names the likely kind of effect.** The latent team is a different harness around the same Qwen2.5-3B: role prompts, latent steps, a shared memory and a solver. With the same weights, keyword-classified refusals moved from 67 to 24 of 100 harmful requests. If that holds up when the replies are judged properly, it is the same kind of effect as task success moving from 62% to 33% between harnesses in the guide.
+- **Reel 2 offers an analogy.** The latent team is a different harness around the same Qwen2.5-3B: role prompts, latent steps, a shared memory and a solver.
+  - With the same weights, keyword-classified refusals moved from 67 to 24 of 100 harmful requests. Keyword matches can shift when wording changes even if actual refusals do not.
+  - If judging the replies confirms a difference, it would be analogous to task success moving from 62% to 33% between harnesses in the guide.
   - So the model's refusal behaviour in text is no guide to its behaviour inside our team until it is measured there.
   - Refusals, like our thresholds, belong to a team configuration, not to a model.
 - **What eval 14 can and cannot say.**
@@ -292,9 +312,9 @@ An attacker tampering with memory inside the process implies a compromised host,
   The design's rule that no model interprets a thought ([Li et al., ICML 2026](https://arxiv.org/abs/2509.13316)) also stands. The essay's explanations are offline and can be tested, which is better than a model describing one activation live. They are still a model's description with an error rate.
 - **Reel 2's lesson applies to latent agents; its method does not.**
   - The latent team is a harness around one model, so its behaviour, refusals included, must be measured as a team.
-  - Its training method needs a tool loop, which our subagents do not have.
-  - It needs far more hardware than one laptop GPU.
-  - It conflicts with the frozen-model rule.
+  - Its demonstrated recipe learns from multi-step tool-use attempts. Our latent subagents have no tool handle, so it does not apply as written.
+  - Its reported runs used two H100s each. The cost on one laptop GPU is unmeasured.
+  - Training the deployed model conflicts with the frozen-model rule.
 - **Reel 1 is mostly marketing.** Its claims (the apocalypse cancelled, 90% of brain cells readable, update your p(doom)) are not in the source, or are stronger than the source. **Its essay is not marketing.** It is a serious, falsifiable research bet by a credible author, already under informed criticism. It is about understanding models, not about guarding a running system.
 - **Reel 2 is accurate but promotional.** Its headline number is right, and "decides half of what you get" stretches it. It ends in an offer for the presenter's repository. **Its guide is solid.** It is open work from Hugging Face with its caveats stated, about making agents more capable, not safer.
 
@@ -304,13 +324,13 @@ An attacker tampering with memory inside the process implies a compromised host,
 2. **Skip neuron reading as a control.** At best it is a statistical check. It is unmeasured on our model and untested against attackers. Mapping a model the essay's way is expensive. And the essay does not claim to be a monitor.
 3. **Skip harness training.**
    - It improves task success, which is not what the watchdogs are for.
-   - It needs a tool loop we do not have, and far more hardware than we have.
+   - Its demonstrated recipe learns from tool-use attempts, which our subagents do not make, and its reported runs used two H100s each.
    - A trained model would void every W1 threshold.
-   - It breaks the design's rule that the model is never trained against its monitors.
+   - Training the deployed model would break the design's frozen-model rule, and the design separately forbids training against the monitors.
 4. **From reel 1, when W3b is picked up:** alongside judging the replies properly, run a small, pre-registered, exploratory refusal-direction diagnostic (section 5) before choosing W3b's fix. If a hidden-state probe is tried for W3c, keep the essay's best habit: write predictions, including near misses, before measuring, so each explanation is specific enough to lose.
 5. **From reel 2, now and for W3b:** treat the team as its own harness for safety.
    - Measure refusals for the team configuration that will ship, not for the model.
-   - Keep pinning thresholds to the full configuration, as W1's threshold file already does (weights hash, soft thoughts, m = 40).
+   - Keep thresholds pinned to the weights hash, and record the setting they were measured in, including thought mode and latent-step count. W1's configuration check already requires soft thoughts and no adapter.
    - Prefer harness-level fixes, such as a text-mode refusal check, over changing the model, each with its own eval.
 6. **What would change this recommendation:**
    - an independent replication of the essay's language-model numbers on a small open model;
@@ -343,7 +363,7 @@ An attacker tampering with memory inside the process implies a compromised host,
 - **Documents not read:** the essay's companion paper "Neurons as an Interpretable Basis", and the PhilArchive response (title and abstract line only). Gorton's response was read in full, but her reproductions were not rerun.
 - **Arditi et al.'s method was not tested on Qwen2.5-3B, alone or in team mode.** Section 5's diagnostic is a proposal, not a result, and its GPU cost is unmeasured.
 - **The 65-minute essay** was read in its summary, method, evidence, title and solution sections, plus the passages on probes, audits and meta-models; the full figure-by-figure appendix was not.
-- **The guide** was read in its introduction, harness definition, benchmark, rewards, setup, baseline and conclusions sections; its training-curve details were not. The GLM-5.2 figure (23% against 52%) is as the guide cites it, not checked at its source.
+- **The guide** was read in its introduction, harness definition, benchmark, rewards, setup, baseline and conclusions sections; its training-curve details were not. The GLM-5.2 figure (23% against 52%) is as the guide cites it, not checked at its source. Its publication date and authors come from the page's metadata.
 
 ## Sources
 
