@@ -954,3 +954,57 @@ test('P4d review 9: a copy that holds a direct finding widens it and hides its p
   assert.equal(session.messages[1].text, 'copied [REDACTED aws-access-key-id] here');
   assert.deepEqual(line2.map(finding => finding.preview), ['…']);
 });
+
+test('P4d review 10: the decoded start of a long escaped value still counts at its end', () => {
+  const BS = String.fromCodePoint(92);
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  // Codex round 2 of 2026-11-27: main cut this copy through ZT; keeping the whole value lost that.
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password="' + (BS + 'u0061').repeat(85) + 'ZTAILvalue"' },
+    { role: 'assistant', line: 2, text: 'a'.repeat(85) + 'ZTOTHER' },
+  ]), '[REDACTED assigned-secret]OTHER');
+});
+
+test('P4d review 10: many failed confirmations against a value with many ends stay fast', () => {
+  const session = { id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password="' + 'a'.repeat(512) + ';'.repeat(65022) + 'X"' },
+    { role: 'assistant', line: 2, text: ('a'.repeat(512) + 'Z').repeat(5000) },
+  ] };
+  const started = performance.now();
+  redactSession(session);
+  // Each failed confirmation filtered about 65,000 ends: about 14 s in Codex's run.
+  assert.ok(performance.now() - started < 3000, `${performance.now() - started} ms`);
+});
+
+test('P4d review 10: a word ending in a long run of punctuation is trimmed in linear time', () => {
+  const session = { id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password="a1' + '!'.repeat(65533) + 'X"' },
+  ] };
+  const started = performance.now();
+  redactSession(session);
+  // An unanchored /[...]+$/ retried the run at every offset.
+  assert.ok(performance.now() - started < 3000, `${performance.now() - started} ms`);
+});
+
+test('P4d review 10: a long value repeated in many messages is collected once', () => {
+  const line = 'password="' + 'a'.repeat(512) + ';'.repeat(65022) + 'X"';
+  const messages = Array.from({ length: 300 }, (_, index) => ({ role: 'user', line: index + 1, text: line }));
+  const before = process.memoryUsage().heapUsed;
+  const started = performance.now();
+  const { findings } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages });
+  const grown = (process.memoryUsage().heapUsed - before) / 2 ** 20;
+  assert.equal(findings.length, 300);
+  // One endpoint list per copy held tens of millions of slots.
+  assert.ok(grown < 200, `${grown} MiB`);
+  assert.ok(performance.now() - started < 10_000, `${performance.now() - started} ms`);
+});
+
+test('P4d review 10: a confirmed long value keeps its end when shorter matches follow inside it', () => {
+  const long = 'A'.repeat(512) + 'B'.repeat(100) + 'C'.repeat(20);
+  const search = copyMatcher([
+    { value: long, ends: [long.length], kind: 'long' },
+    { value: 'B'.repeat(6), ends: [6], kind: 'short' },
+  ]);
+  // The B matches end before the C run; without the largest end the C run would be kept.
+  assert.deepEqual(search(`x ${long} y`).map(({ start, end }) => [start, end]), [[2, 2 + long.length]]);
+});

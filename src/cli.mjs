@@ -458,9 +458,10 @@ async function reviewsVerifyCommand(trustedHead, bundleDir, fingerprint) {
       for (const problem of bundle.problems) console.error(problem);
       throw new Error('The signed hand-off did not verify, so its review head is not trusted.');
     }
-    if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
-    // Card P4d review: an audit of a version 2 bundle also hears that its hand-off was not redacted.
+    // Card P4d review: an audit of a version 1 or 2 bundle also hears that its hand-off was
+    // not redacted, before a version 1 bundle is refused for having no review head.
     if (bundle.redaction === null) console.error(unredactedWarning);
+    if (!bundle.reviews) throw new Error('This signed hand-off is version 1 and records no review head.');
     signed = bundle.reviews;
     trustedHead = signed.head;
   }

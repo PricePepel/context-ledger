@@ -236,3 +236,16 @@ test('P4d review: reviews verify --bundle warns that a version 2 hand-off was no
   assert.equal(current.code, 0, current.stderr);
   assert.doesNotMatch(current.stderr, /redacted/u);
 });
+
+test('P4d review 10: reviews verify --bundle warns on a version 1 bundle before refusing it', async t => {
+  const context = await ledger(t);
+  const store = openStore(context.database);
+  const markdown = handoffMarkdown(store.get(context.sessionId)) + '\n';
+  store.close();
+  const old = join(context.folder, 'v1');
+  await writeBundle(old, buildBundle({ sessionId: context.sessionId, markdown, privateKey: context.privateKey }));
+  const audit = await run(['reviews', 'verify', '--bundle', old, '--fingerprint', context.fingerprint], context.env);
+  assert.notEqual(audit.code, 0);
+  assert.match(audit.stderr, /signed before hand-offs were redacted/u);
+  assert.match(audit.stderr, /version 1 and records no review head/u);
+});
