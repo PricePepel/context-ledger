@@ -16,7 +16,9 @@
  * number whenever a rule is added, removed or changed, so a receiver can tell which
  * checks a bundle was redacted with.
  */
-export const scannerName = 'context-ledger-secrets/1';
+export const scannerName = 'context-ledger-secrets/2';
+// Card P4e: /2 checks long copies whole (P4e); /1 bundles, signed by P4d builds, still verify.
+export const knownScanners = Object.freeze(['context-ledger-secrets/1', scannerName]);
 
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
@@ -410,6 +412,9 @@ export const maxEntryUnits = 2 ** 24;
 // And the copies found: each is a span, a finding and a marker (Codex round 3; a short
 // value pasted five million times made five million of each).
 export const maxCopySpans = 2 ** 20;
+// And the direct findings, counted field by field (Codex round 4: one character after
+// pwd= three million times made three million findings and markers).
+export const maxFindings = 2 ** 20;
 export const copyBudgetMessage = 'This session holds more secret-like text than the copy check can hold, ' +
   'so it was not redacted and nothing was signed.';
 // Scanned by hand, not by a regular expression: an unanchored /[...]+$/ retried a long run
@@ -448,12 +453,17 @@ function wordEnds(value) {
  * as a key does; its quoted part; and each of these decoded, when it holds an escape.
  * Only the candidate's first maxEntryLength characters are read. seen holds the values
  * already collected for the session, which are skipped before their endpoints are worked
- * out, and budget counts their characters against maxEntryUnits.
+ * out, and budget counts their characters against maxEntryUnits. Every value of the
+ * candidate is decoded, collected before or not (Codex round 4: a value first collected as
+ * another's decoded form was then never decoded itself); decodedFrom keeps that to once.
  */
-function copyEntries(text, candidate, seen = new Set(), budget = { units: 0 }) {
+function copyEntries(text, candidate, seen = new Set(), budget = { units: 0 }, decodedFrom = new Set()) {
   const entries = [];
+  const values = [];
   const add = value => {
-    if (value.length < minCopyLength || seen.has(value)) return;
+    if (value.length < minCopyLength) return;
+    values.push(value);
+    if (seen.has(value)) return;
     seen.add(value);
     budget.units += value.length;
     if (budget.units > maxEntryUnits) throw new Error(copyBudgetMessage);
@@ -487,10 +497,11 @@ function copyEntries(text, candidate, seen = new Set(), budget = { units: 0 }) {
   // Each text is decoded once, and its decoded words count as written ones do. A text longer
   // than the matcher's part is also decoded up to that part, so the decoded start of a long
   // escaped value still counts at its end, as before the whole value was kept (Codex round 2).
-  for (const entry of [...entries]) {
-    if (!entry.value.includes('\\')) continue;
-    add(decoded(entry.value));
-    if (entry.value.length > maxCopyLength) add(decoded(entry.value.slice(0, maxCopyLength)));
+  for (const value of [...values]) {
+    if (!value.includes('\\') || decodedFrom.has(value)) continue;
+    decodedFrom.add(value);
+    add(decoded(value));
+    if (value.length > maxCopyLength) add(decoded(value.slice(0, maxCopyLength)));
   }
   return entries;
 }
@@ -579,10 +590,14 @@ export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = m
   const kindOf = [''];
   // Nodes at depth maxCopyLength where a longer value's first part ends: the whole values.
   const longer = new Map();
-  const seen = new Set();
+  // The same value given twice counts at every end either gave, with the first one's kind.
+  const byValue = new Map();
   for (const { value, ends, kind } of entries) {
-    if (seen.has(value)) continue;
-    seen.add(value);
+    const known = byValue.get(value);
+    if (known) known.ends.push(...ends);
+    else byValue.set(value, { value, ends: [...ends], kind });
+  }
+  for (const { value, ends, kind } of byValue.values()) {
     const counted = [...new Set(ends.filter(end => end >= minCopyLength))].sort((a, b) => a - b);
     if (!counted.length) continue;
     const cut = value.length > maxCopyLength;
@@ -650,10 +665,14 @@ export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = m
         work += 1;
         if (work > workBudget) throw new Error(copyBudgetMessage);
         const from = at + 1 - maxCopyLength;
+        // Only an end that fits in the rest of the text can be reached (Codex round 4: a
+        // 64 Ki value compared against itself at every later place used the whole budget).
+        const fits = largestEndWithin(whole.ends, text.length - from);
+        if (fits === undefined) continue;
         const last = spans.at(-1);
-        if (last && last.start <= from && last.end >= from + whole.ends.at(-1)) continue;
+        if (last && last.start <= from && last.end >= from + fits) continue;
         let same = maxCopyLength;
-        const limit = Math.min(whole.value.length, text.length - from);
+        const limit = fits;
         while (same < limit && text.charCodeAt(from + same) === whole.value.charCodeAt(same)) same += 1;
         work += same - maxCopyLength;
         if (work > workBudget) throw new Error(copyBudgetMessage);
@@ -720,12 +739,19 @@ export function redactSession(session) {
       }
     }
   });
-  const found = fields.map(field => findSecrets(field.text));
+  let direct = 0;
+  const found = fields.map(field => {
+    const spans = findSecrets(field.text);
+    direct += spans.length;
+    if (direct > maxFindings) throw new Error(copyBudgetMessage);
+    return spans;
+  });
   // Copies are searched for each candidate the scanner accepted, before candidates merge
   // into findings, so a key inside a longer finding keeps its own boundaries.
   const entries = [];
   const seen = new Set();
   const budget = { units: 0 };
+  const held = [];
   fields.forEach((field, index) => {
     const spans = found[index];
     if (!spans.length) return;
@@ -734,11 +760,14 @@ export function redactSession(session) {
     for (const candidate of [...candidates(field.text), ...spans].sort((a, b) => a.start - b.start)) {
       while (at < spans.length - 1 && spans[at].end <= candidate.start) at += 1;
       const holder = spans[at].start <= candidate.start && candidate.start < spans[at].end ? spans[at] : candidate;
-      for (const entry of [...boundedCopyEntries(field.text, candidate, seen, budget), ...copyEntries(field.text, candidate, seen, budget)]) {
-        entries.push({ ...entry, kind: holder.kind });
-      }
+      held.push({ text: field.text, candidate, kind: holder.kind });
+      for (const entry of boundedCopyEntries(field.text, candidate, seen, budget)) entries.push({ ...entry, kind: holder.kind });
     }
   });
+  const decodedFrom = new Set();
+  for (const { text, candidate, kind } of held) {
+    for (const entry of copyEntries(text, candidate, seen, budget, decodedFrom)) entries.push({ ...entry, kind });
+  }
   const copiesIn = entries.length ? copyMatcher(entries) : () => [];
   const findings = [];
   let source = session.source;

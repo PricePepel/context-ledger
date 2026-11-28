@@ -71,7 +71,7 @@ test('P3b: signing records the review chain, and verify shows it', async t => {
 
   const verified = await run(['verify', bundle, '--fingerprint', context.fingerprint], context.env);
   assert.equal(verified.code, 0, verified.stderr);
-  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\nRedaction: 0 replacements, by context-ledger-secrets/1\\n$`, 'u'));
+  assert.match(verified.stdout, new RegExp(`\\nReview chain at signing: 2 events, head ${context.head}\\nRedaction: 0 replacements, by context-ledger-secrets/2\\n$`, 'u'));
   const result = await verifyBundle(bundle, { fingerprint: context.fingerprint });
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.reviews, { events: 2, head: context.head });

@@ -909,7 +909,8 @@ test('P4d review 9: a name after a long first part, and a whole long value, are 
 });
 
 test('P4d review 9: a widened span keeps its end when later, shorter matches merge into it', () => {
-  const long = 'Zq9' + 'b'.repeat(600) + ' Kx7mWord';
+  // The short value sits strictly inside the long one, which goes on past it (Codex round 4).
+  const long = 'Zq9' + 'b'.repeat(600) + ' Kx7mWord ' + 'c'.repeat(40);
   const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
     { role: 'user', line: 1, text: 'password=' + long },
     { role: 'user', line: 2, text: 'secret=Kx7mWord' },
@@ -1037,4 +1038,47 @@ test('P4d review 11: the copy check refuses a session past its collected-charact
   assert.throws(() => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
     { role: 'user', line: 1, text: lines.join('\n') },
   ] }), { message: copyBudgetMessage });
+});
+
+test('P4d review 12: a value collected first as another one\'s decoded form is still decoded itself', () => {
+  const BS = String.fromCodePoint(92);
+  const p = 'SyntheticPhrase'.repeat(39);
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  // Codex round 4: the first line's decoded value is the second's raw value.
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + p + BS + BS + 'ZTail987' },
+    { role: 'user', line: 2, text: 'password=' + p + BS + 'ZTail987' },
+    { role: 'assistant', line: 3, text: p + 'ZTail987' },
+  ]), '[REDACTED assigned-secret]');
+});
+
+test('P4d review 12: one long assignment is not refused for comparing against itself', () => {
+  const { session } = redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password=' + 'A'.repeat(64000) },
+  ] });
+  assert.equal(session.messages[0].text, 'password=[REDACTED assigned-secret]');
+});
+
+test('P4d review 12: a session with more direct findings than the budget is refused', () => {
+  assert.throws(() => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'pwd=a\n'.repeat(2 ** 20 + 1) },
+  ] }), { message: copyBudgetMessage });
+});
+
+test('P4d review 12: the same value given twice counts at the ends of both', () => {
+  const search = copyMatcher([
+    { value: 'ABCDEFgh', ends: [8], kind: 'first' },
+    { value: 'ABCDEFgh', ends: [6, 8], kind: 'second' },
+  ]);
+  assert.deepEqual(search('x ABCDEF y').map(({ start, end }) => [start, end]), [[2, 8]]);
+});
+
+test('P4d review 12: a copy keeps the kind main gave it when a whole value also covers it', () => {
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  // Codex round 4: with whole values first, this marker turned from assigned-secret to bearer-token.
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'Authorization: Bearer ' + 'A'.repeat(520) + ' Kx7mWord' },
+    { role: 'user', line: 2, text: 'password=Kx7mWord' },
+    { role: 'assistant', line: 3, text: 'Kx7mWord' },
+  ]), '[REDACTED assigned-secret]');
 });
