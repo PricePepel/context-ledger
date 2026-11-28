@@ -1374,3 +1374,27 @@ test('R1 refresh review 6: a line-cited parcel carries l:<line> keys, not the re
   b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
   assert.equal(carry(a.store, b.store, a.graph.id).added, 0);
 });
+
+// ---- Codex review of the 2026-11-27 refresh, round 7 ----
+
+test('R1 refresh review 7: a copy of a found value longer than 512 characters is redacted whole', t => {
+  // One long word of plain words: no part looks like a key, so the copy search knows it
+  // only by its first 512 characters.
+  const long = Array.from({ length: 40 }, () => ['violet', 'finch', 'harbor', 'lantern'].join('-')).join('-');
+  assert.ok(long.length > 900);
+  const a = ledger(t, 'a');
+  const session = a.store.importTranscript({ provider: 'claude', source: 'kai.jsonl', transcript: claude([
+    ['user', `Kai: ${['pass', 'word='].join('')}${long}`],
+    ['assistant', `Copied it: ${long}`],
+    ['user', 'And keep the relay on port 6100.'],
+  ]) });
+  const graph = a.store.publishGraph({ version: 2, sessionId: session.id, party: 'kai', edges: [],
+    nodes: [{ id: 'relay', kind: 'decision', label: 'The relay has a password', evidenceLines: [2, 3] }] });
+  const { parcel, redacted } = parcelOf(a.store, graph.id);
+  const text = serializeParcel(parcel);
+  // Before the fix the first 512 characters were marked and the rest was sent.
+  for (const piece of [long.slice(0, 40), long.slice(500, 540), long.slice(-12)]) assert.equal(text.includes(piece), false, piece);
+  assert.equal(/\]-?[a-z]/u.test(parcel.session.messages[0].text), false, 'nothing follows the marker');
+  assert.ok(redacted >= 1);
+  // A label cannot hold it: labels are shorter than 512 characters (the graph schema).
+});
