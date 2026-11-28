@@ -111,6 +111,13 @@ def nmse(pair, batches):
     return sum(values) / len(values)
 
 
+def gpu_reserved():
+    """GPU memory torch holds right now, in GiB."""
+    if not torch.cuda.is_available():
+        return {}
+    return {"reservedGiB": round(torch.cuda.memory_reserved() / 2 ** 30, 2)}
+
+
 def gpu_peak():
     """Peak GPU memory of this process so far, in GiB: what the tensors took and what torch
     held for them. The second is what has to fit on the card."""
@@ -118,6 +125,21 @@ def gpu_peak():
         return {}
     return {"peakAllocatedGiB": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2),
             "peakReservedGiB": round(torch.cuda.max_memory_reserved() / 2 ** 30, 2)}
+
+
+def release_calibration_memory():
+    """Hand torch's cached GPU blocks back after sigma calibration, and start the peak
+    counters again so they describe training.
+
+    Calibration prefills 16 batches of 16 documents and keeps every cache until sigma is
+    computed. On Phi-3.5-mini to Qwen2.5-1.5B that is 13.2 GiB in use at its peak, and torch
+    keeps 17.5 GiB reserved afterwards for a training loop that needs 11.5 GiB. On a 16 GiB
+    card under WSL the reserve spills into host memory and every step runs about ten times
+    slower (L5, run 1).
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
 
 def fits(pair, text, max_tokens):
@@ -182,7 +204,8 @@ def main():
         pair.mapper.sigma.copy_(calibrate_sigma([c.keys for c in caches], [c.values for c in caches],
                                                 [b.receiver_mask for b in calib]).to(pair.device))
         del caches
-        log(event="calibrated", sigmaKeys=round(float(pair.mapper.sigma[..., 0].mean()), 4),
+        release_calibration_memory()
+        log(event="calibrated", **gpu_reserved(), sigmaKeys=round(float(pair.mapper.sigma[..., 0].mean()), 4),
             sigmaValues=round(float(pair.mapper.sigma[..., 1].mean()), 4))
         optimizer = torch.optim.AdamW(params, lr=args.lr1, betas=(0.9, 0.95), weight_decay=1e-3)
         log(event="stage1", nmse=round(nmse(pair, val_batches), 4), step=0)
