@@ -646,6 +646,58 @@ function storeOn(database) {
     }
   }
 
+  // The messages a packet is checked against, the check and the insert run under one write
+  // lock, so a parcel or an import in another process cannot re-key an excerpt between the
+  // check and the insert (Codex review of the R1 refresh, round 6). receiveParcel already
+  // holds the lock when it publishes.
+  let holdingWriteLock = false;
+  function publishUnderLock(packet) {
+    const sessionId = packet?.sessionId;
+    if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
+      throw new InputError('Graph requires a valid transcript session ID.');
+    }
+    if (!getSummary.get(sessionId)) throw new InputError('Graph transcript session not found.');
+
+    // P1c: the messages come from their rows; G7 grounds each node in them.
+    const messages = readMessages(sessionId);
+    const sourceLines = messages.map(message => message.line);
+    // P2a: a link must stay in the project of the session this graph cites.
+    // A session or graph without a resolved project matches nothing (P2a review).
+    const project = getSummary.get(sessionId).project ?? null;
+    // P2b: version 3 cites this session's messages by key and this project's artifacts.
+    const options = {
+      lookupGraph: id => readGraph(id),
+      sameProject: id => project !== null && graphProject(id) === project,
+      messageKeys: messages.map(message => message.key),
+      hasArtifact: id => artifacts.artifactInProject(id, project),
+    };
+    validateGraph(packet, sourceLines, options);
+    // Derive from the canonical form so derived ID lists follow its order.
+    const ordered = canonicalPacket(packet);
+    const derived = validateGraph(ordered, sourceLines, options);
+    const canonical = serializeGraphPacket(ordered);
+    const id = createHash('sha256').update(canonical).digest('hex');
+    // P2b: a version 3 graph stores what its citations resolved to, so every reader
+    // gets lines (and artifacts) without parsing keys again; G7 grounds on those lines.
+    let citations;
+    if (ordered.version === 3) {
+      const lineAt = new Map(messages.map(message => [message.key, message.line]));
+      citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
+    }
+    const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
+    // P2c: and the hash a person approves or rejects, per node.
+    const versionThree = citations ? { citations, nodeHashes: nodeHashes(ordered) } : {};
+    const payload = { packet: JSON.parse(canonical), ...derived, ...versionThree, ...groundNodes(ordered, messages, linesOf) };
+    try {
+      insertGraph.run(id, sessionId, JSON.stringify(payload));
+    } catch (error) {
+      // Another connection deleted the session after it was read above.
+      if (/FOREIGN KEY constraint failed/u.test(error?.message)) throw new InputError('Graph transcript session not found.');
+      throw error;
+    }
+    return { id, ...JSON.parse(getGraph.get(id).payload) };
+  }
+
   const store = {
     /**
      * Stores a transcript in a project (the default one when none is named), creating
@@ -751,50 +803,19 @@ function storeOn(database) {
     },
 
     publishGraph(packet) {
-      const sessionId = packet?.sessionId;
-      if (typeof sessionId !== 'string' || !/^[a-f0-9]{64}$/u.test(sessionId)) {
-        throw new InputError('Graph requires a valid transcript session ID.');
-      }
-      if (!getSummary.get(sessionId)) throw new InputError('Graph transcript session not found.');
-
-      // P1c: the messages come from their rows; G7 grounds each node in them.
-      const messages = readMessages(sessionId);
-      const sourceLines = messages.map(message => message.line);
-      // P2a: a link must stay in the project of the session this graph cites.
-      // A session or graph without a resolved project matches nothing (P2a review).
-      const project = getSummary.get(sessionId).project ?? null;
-      // P2b: version 3 cites this session's messages by key and this project's artifacts.
-      const options = {
-        lookupGraph: id => readGraph(id),
-        sameProject: id => project !== null && graphProject(id) === project,
-        messageKeys: messages.map(message => message.key),
-        hasArtifact: id => artifacts.artifactInProject(id, project),
-      };
-      validateGraph(packet, sourceLines, options);
-      // Derive from the canonical form so derived ID lists follow its order.
-      const ordered = canonicalPacket(packet);
-      const derived = validateGraph(ordered, sourceLines, options);
-      const canonical = serializeGraphPacket(ordered);
-      const id = createHash('sha256').update(canonical).digest('hex');
-      // P2b: a version 3 graph stores what its citations resolved to, so every reader
-      // gets lines (and artifacts) without parsing keys again; G7 grounds on those lines.
-      let citations;
-      if (ordered.version === 3) {
-        const lineAt = new Map(messages.map(message => [message.key, message.line]));
-        citations = resolveCitations(ordered, key => lineAt.get(key), id => artifacts.getArtifact(id));
-      }
-      const linesOf = citations ? node => citations.find(entry => entry.id === node.id).lines : undefined;
-      // P2c: and the hash a person approves or rejects, per node.
-      const versionThree = citations ? { citations, nodeHashes: nodeHashes(ordered) } : {};
-      const payload = { packet: JSON.parse(canonical), ...derived, ...versionThree, ...groundNodes(ordered, messages, linesOf) };
+      if (holdingWriteLock) return publishUnderLock(packet);
+      database.exec('BEGIN IMMEDIATE');
+      holdingWriteLock = true;
+      let pending = true;
       try {
-        insertGraph.run(id, sessionId, JSON.stringify(payload));
-      } catch (error) {
-        // Another connection deleted the session after it was read above.
-        if (/FOREIGN KEY constraint failed/u.test(error?.message)) throw new InputError('Graph transcript session not found.');
-        throw error;
+        const graph = publishUnderLock(packet);
+        database.exec('COMMIT');
+        pending = false;
+        return graph;
+      } finally {
+        holdingWriteLock = false;
+        if (pending) database.exec('ROLLBACK');
       }
-      return { id, ...JSON.parse(getGraph.get(id).payload) };
     },
 
     getGraph: readGraph,
@@ -821,6 +842,7 @@ function storeOn(database) {
       const incoming = (graph.packet.version === 3 ? [...session.messages] : session.messages.map(message => ({ ...message, key: `l:${message.line}` })))
         .sort(byLine);
       database.exec('BEGIN IMMEDIATE');
+      holdingWriteLock = true;
       let pending = true;
       try {
         const stored = getSummary.get(session.id);
@@ -893,6 +915,7 @@ function storeOn(database) {
         pending = false;
         return { graph: published, session: summary, added };
       } finally {
+        holdingWriteLock = false;
         if (pending) database.exec('ROLLBACK');
       }
     },

@@ -248,8 +248,12 @@ test('R1: a parcel that fails any check is refused and changes nothing', t => {
     p => { p.artifacts = [{ kind: 'commit', repo: 'orbit-labs/adapter', ref: '6100abcdef0', id: 'a'.repeat(64) }]; },
     p => { p.graph.packet = []; },
   ]) refused(changed(change), InputError, notParcel);
-  refused(changed(p => { p.session.messages[1].line = p.session.messages[0].line; }), InputError, 'A parcel must carry each message once.');
-  refused(changed(p => { p.session.messages[1].key = p.session.messages[0].key; }), InputError, 'A parcel must carry each message once.');
+  // A version 2 parcel keys each line l:<line>, so a moved line no longer names its key.
+  refused(changed(p => { p.session.messages[1].line = p.session.messages[0].line; }), InputError, notParcel);
+  refused(changed(p => { p.session.messages[1].line = p.session.messages[0].line; p.session.messages[1].key = `l:${p.session.messages[1].line}`; }),
+    InputError, 'A parcel must carry each message once.');
+  // The same key on two lines: an l:<line> key then names the wrong line for one of them.
+  refused(changed(p => { p.session.messages[1].key = p.session.messages[0].key; }), InputError, notParcel);
   // An artifact the ledger would not register is refused by the same rule as `artifact add`.
   refused(changed(p => { p.artifacts = [{ kind: 'commit', repo: 'no-slash', ref: '6100abcdef0' }]; }), InputError);
 
@@ -1352,4 +1356,21 @@ test('R1 refresh review 5: a line-cited parcel cannot put one line under the rea
     nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }, { message: key(3) }] }] });
   assert.equal(carry(a.store, b.store, v3.id).graph.id, v3.id);
   assert.deepEqual(b.store.get(a.session.id).messages.map(message => [message.line, message.key]), [[2, key(2)], [3, key(3)], [5, 'l:5']]);
+});
+
+// ---- Codex review of the 2026-11-27 refresh, round 6 ----
+
+test('R1 refresh review 6: a line-cited parcel carries l:<line> keys, not the record UUIDs', t => {
+  const a = vera(t);
+  const { parcel } = parcelOf(a.store, a.graph.id);
+  assert.deepEqual(parcel.session.messages.map(message => message.key), ['l:2', 'l:3']);
+  for (const n of [1, 2, 3, 4, 5]) assert.equal(serializeParcel(parcel).includes(uuid(n)), false, uuid(n));
+  // A version 3 graph cites keys, so its parcel carries them.
+  const v3 = a.store.publishGraph({ version: 3, sessionId: a.session.id, party: 'vera', edges: [],
+    nodes: [{ id: 'port', kind: 'decision', label: 'Port 6100', evidence: [{ message: key(2) }] }] });
+  assert.deepEqual(parcelOf(a.store, v3.id).parcel.session.messages.map(message => message.key), [key(2)]);
+  // A ledger that imported the file receives the line-cited parcel as before.
+  const b = ledger(t, 'b');
+  b.store.importTranscript({ provider: 'claude', source: 'vera.jsonl', transcript: claude(veraTurns) });
+  assert.equal(carry(a.store, b.store, a.graph.id).added, 0);
 });

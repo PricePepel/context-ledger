@@ -264,6 +264,10 @@ export function buildParcel(graph, session) {
   } catch {
     source = redactedSourceName;
   }
+  // A version 1 or 2 graph cites lines, and the receiver stores its lines under l:<line>
+  // whatever keys they carry, so the sender's keys are not sent: a key is a record's UUID
+  // or a hash of it, which the scanner does not read (Codex review of the refresh, round 6).
+  const keyOf = graph.packet.version === 3 ? message => message.key : message => `l:${message.line}`;
   const parcel = {
     format: parcelFormat,
     version: 1,
@@ -272,8 +276,11 @@ export function buildParcel(graph, session) {
       id: session.id,
       provider: session.provider,
       source,
-      messages: redacted.messages.map(({ key, line, role, text, author, recipient }) => (
-        role === 'agent' ? { key, line, role, text, author, recipient } : { key, line, role, text })).sort(byLine),
+      messages: redacted.messages.map(message => {
+        const { line, role, text, author, recipient } = message;
+        const key = keyOf(message);
+        return role === 'agent' ? { key, line, role, text, author, recipient } : { key, line, role, text };
+      }).sort(byLine),
     },
     artifacts: [...artifacts.values()],
     graph: { id: graph.id, packet: graph.packet },
