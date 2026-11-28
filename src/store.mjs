@@ -814,7 +814,12 @@ function storeOn(database) {
       // Checked here too, so no caller can store a parcel that was not checked.
       const { project, session, graph } = checkParcel(parcel);
       const name = sourceName(session.source);
-      const incoming = [...session.messages].sort(byLine);
+      // A version 1 or 2 graph cites lines, so the keys its parcel carries are checked
+      // against nothing and could be any other line's real key. Its lines are stored under
+      // the placeholder l:<line>, which no other line can hold, and a version 3 parcel or the
+      // full transcript supplies the real key later (Codex review of the refresh, round 5).
+      const incoming = (graph.packet.version === 3 ? [...session.messages] : session.messages.map(message => ({ ...message, key: `l:${message.line}` })))
+        .sort(byLine);
       database.exec('BEGIN IMMEDIATE');
       let pending = true;
       try {
