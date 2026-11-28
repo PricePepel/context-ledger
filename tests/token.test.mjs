@@ -421,6 +421,12 @@ test('under the name localhost no browser session is issued or honoured; the bea
   assert.equal((await raw(port, { path: '/api/sessions', headers: { ...bearer(token), Host: local } })).status, 200);
   // GET /login is a static page on either name; under localhost its POST is what is refused.
   assert.equal((await raw(port, { path: '/login', headers: { Host: local } })).status, 200);
+  // Round 2: only the POST that issues a session is refused; other methods answer as on
+  // 127.0.0.1 (no such route).
+  for (const name of [local, `127.0.0.1:${port}`]) {
+    const probe = await raw(port, { path: '/api/session', headers: { ...bearer(token), Host: name } });
+    assert.deepEqual({ status: probe.status, body: probe.body }, { status: 404, body: { error: 'Not found.' } }, name);
+  }
 });
 
 test('codes expire after 60 seconds and sessions after 12 hours; both are bounded in number', () => {

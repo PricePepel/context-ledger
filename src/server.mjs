@@ -379,7 +379,7 @@ const server = createServer(async (request, response) => {
     // token, which no page holds, still works.
     if (host !== `127.0.0.1:${localPort}`) {
       delete request.headers[sessionHeader];
-      if (url.pathname === '/api/session') throw new HttpError(403, `Sign in at http://127.0.0.1:${localPort}, not localhost.`);
+      if (request.method === 'POST' && url.pathname === '/api/session') throw new HttpError(403, `Sign in at http://127.0.0.1:${localPort}, not localhost.`);
     }
     const open = staticFiles.has(url.pathname) || (request.method === 'POST' && url.pathname === '/api/session');
     if (!open) {

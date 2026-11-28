@@ -8,14 +8,17 @@ Project context lives here and in [the eval log](evals.md). Git commits are the 
 
 Research: [Nessie integrations](https://nessielabs.com/docs/integrations-overview) and [Nessie session handoffs](https://nessielabs.com/docs/resume-agent-session). The project implements its own interfaces using public behavior as a reference.
 
-## Current checkpoint — P1f origin-scoped browser credential (2026-11-21)
+## Current checkpoint — P1f origin-scoped browser credential (2026-11-21, refreshed 2026-11-27)
 
 PR #65, branch `ruslan/p1f-origin-credential`. **It needs a human security review before merge.** It closes the P1e review's open high finding: browsers sent the P1e session cookie to every port on 127.0.0.1. The browser session is now a 32-byte secret in the ledger origin's `localStorage`, sent as `X-Context-Ledger-Session`; the server reads no cookie (ADR-10a in `docs/architecture.md` §14).
 
 - `GET /login?code=…` is a static page (`public/login.html`, `public/login.js`) that uses up nothing; its script strips the code from the address and posts it once to `POST /api/session` (same Origin, JSON, 1 KiB cap, one `code` string). The answer is `{ session, expiresInSeconds }` and a `Set-Cookie` that removes any P1e cookie of the port.
 - `public/session.js` (also served as `/console/session.js` and `/swarm/session.js`) adds the header to the requests of the library app, the console and the swarm page, and forgets the secret on a 401.
 - The CLI, the MCP adapter and the link format are unchanged.
-- **Next owner:** a human security review of the PR. Then P1's remaining items (project delete and retention). The P3 review routes take the browser session as the P2c route does.
+- Sessions are issued and honoured only for the origin `http://127.0.0.1:<port>`: under `Host: localhost` (which may reach `::1`, where another program can take the port) `POST /api/session` is refused and a session header counts for nothing; the bearer token still works there (Codex round 3, 2026-11-27).
+- 2026-11-27: main merged in (164 commits). The console swarm room and `scripts/drive.mjs` now use the header session; the static list lives in `src/static-files.mjs`. Reviews and suites are in [evals](evals.md) under P1f.
+- **Next owner:** Ruslan: the human security review and the merge (browser-auth code; nobody else merges it). Open lows, not blockers: a sharper history test and a browser-level drive sign-in test. Then P1's remaining items (project delete and retention).
+
 ## Current checkpoint — L3 tokenizer alignment audit (2026-11-26)
 
 Card L3, branch `claude/l3-tokenizer-align-cc0178`. The alignment between two models' tokens (`runtime/latent_transfer/align.py`) was already by character offsets, not token index. The audit ran five tokenizers (Phi-3.5, Qwen2.5, Llama 3.1, Mistral v0.3, Granite 3.1), all 20 ordered pairs, on 35 hard synthetic texts and 200 SQuAD passages; tables in [evals](evals.md) under L3. No GPU, no training.
