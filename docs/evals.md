@@ -5646,6 +5646,8 @@ Synthetic data only: random tokens and temporary folders.
   - (low, fixed) On POSIX, a file created at the path between `rmSync` and the exclusive `openSync` gave a raw `EEXIST` that names the path. It is now the fixed sentence.
   - (low, fixed) If `removeTokenFile` threw in the stop handler, `process.exit(0)` was skipped. The exit is now in a `finally`.
   - (low, accepted) If a killed attempt wrote the record and another program holds a handle that blocks reading, cleanup reports "not ours" and the caller gets the ordinary sentence instead of "could not be emptied". This is `emptyIfOwnRecord`, unchanged by H15, and the file is still private to the user.
+- **Codex review, round 4:** no high or medium findings; one low.
+  - (low, accepted) Suppose the timer fires while the child is running, and the child then exits on its own with code 0 before the kill lands. The attempt is refused without a retry, even though it succeeded. That outcome fails closed (the server stops with the fixed sentence and the record is emptied), the window is a few milliseconds at the 60 s mark, and accepting the output of a child the runner already decided to kill would bring back the ambiguity round 3 removed.
 
 ## L3 — Tokenizer alignment audit (defined 2026-11-26, before the code)
 
