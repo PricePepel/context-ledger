@@ -16,7 +16,9 @@
  * number whenever a rule is added, removed or changed, so a receiver can tell which
  * checks a bundle was redacted with.
  */
-export const scannerName = 'context-ledger-secrets/1';
+export const scannerName = 'context-ledger-secrets/2';
+// Card P4e: /2 checks long copies whole (P4e); /1 bundles, signed by P4d builds, still verify.
+export const knownScanners = Object.freeze(['context-ledger-secrets/1', scannerName]);
 
 // Keys have letters and digits; a long hyphenated word that starts with sk- does not.
 const mixed = value => /[A-Za-z]/u.test(value) && /[0-9]/u.test(value);
@@ -392,14 +394,43 @@ export function maskedPreview(text, finding) {
 // before it (pasted into a later message, say). Shorter values are removed only where
 // they were found: a copy search for them would cut ordinary words and numbers.
 const minCopyLength = 6;
-// What one candidate adds to the copy search is capped, with a budget for each kind of
-// entry (its span, its quoted part, the values after names inside it, its key-like
-// words) and one more for each kind's decoded forms,
-// so one long finding cannot fill the heap; a longer value is still found by its first
-// characters and its first inner values.
+// The matcher holds each value's first characters, and a match there is compared with the
+// whole value before the replacement widens (Codex review of 2026-11-27): a value longer
+// than that part is still replaced whole, and a name late in a long line is still seen.
 const maxCopyLength = 512;
-const trailingPunctuation = /[,.;:!?)\]}>"'`]+$/u;
-const leadingQuotes = /^["'`]+/u;
+// How much of one candidate is read for entries at all: its first 64 Ki characters.
+const maxEntryLength = 64 * 1024;
+// Budgets for the whole session. Past either, redaction refuses the session instead of
+// signing a hand-off whose copies were not all checked: the matcher's nodes (memory) and
+// the characters compared to confirm long values (time). A node takes about 125 bytes,
+// so the matcher stays near 128 MiB at most.
+export const maxCopyNodes = 2 ** 20;
+export const maxConfirmWork = 2 ** 26;
+// And the characters of distinct entries kept while they are collected (Codex round 2 of
+// 2026-11-27: a value repeated in many messages kept one endpoint list per copy).
+export const maxEntryUnits = 2 ** 24;
+// And the copies found: each is a span, a finding and a marker (Codex round 3; a short
+// value pasted five million times made five million of each).
+export const maxCopySpans = 2 ** 20;
+// And the direct findings, counted field by field (Codex round 4: one character after
+// pwd= three million times made three million findings and markers).
+export const maxFindings = 2 ** 20;
+export const copyBudgetMessage = 'This session holds more secret-like text than the copy check can hold, ' +
+  'so it was not redacted and nothing was signed.';
+// Scanned by hand, not by a regular expression: an unanchored /[...]+$/ retried a long run
+// of punctuation at every offset (Codex round 2 of 2026-11-27, quadratic in a 64 Ki word).
+const trailingPunctuation = new Set(',.;:!?)]}>"\'`');
+const quotes = new Set('"\'`');
+function withoutTrailing(word) {
+  let end = word.length;
+  while (end > 0 && trailingPunctuation.has(word[end - 1])) end -= 1;
+  return word.slice(0, end);
+}
+function withoutLeadingQuotes(word) {
+  let start = 0;
+  while (start < word.length && quotes.has(word[start])) start += 1;
+  return word.slice(start);
+}
 
 /**
  * Where a value could end: the end of each word, trailing punctuation left out, and just
@@ -408,7 +439,7 @@ const leadingQuotes = /^["'`]+/u;
  */
 const separators = /["'`,;&|()<>[\]{}]/gu;
 function wordEnds(value) {
-  const ends = [...value.matchAll(/\S+/gu)].map(match => match.index + match[0].replace(trailingPunctuation, '').length);
+  const ends = [...value.matchAll(/\S+/gu)].map(match => match.index + withoutTrailing(match[0]).length);
   for (const match of value.matchAll(separators)) ends.push(match.index);
   return ends;
 }
@@ -420,29 +451,86 @@ function wordEnds(value) {
  * span that holds several, so the entries are its span; every value after a further name
  * inside it (a second password= on the line); every word that mixes letters and digits,
  * as a key does; its quoted part; and each of these decoded, when it holds an escape.
+ * Only the candidate's first maxEntryLength characters are read. seen holds the values
+ * already collected for the session, which are skipped before their endpoints are worked
+ * out, and budget counts their characters against maxEntryUnits. Every value of the
+ * candidate is decoded, collected before or not (Codex round 4: a value first collected as
+ * another's decoded form was then never decoded itself); decodedFrom keeps that to once.
  */
-function copyEntries(text, candidate) {
-  // A budget per kind of entry, and one more per kind for its decoded forms.
-  const budget = new Map();
+function copyEntries(text, candidate, seen = new Set(), budget = { units: 0 }, decodedFrom = new Set()) {
+  const entries = [];
+  const values = [];
+  const add = value => {
+    if (value.length < minCopyLength) return;
+    values.push(value);
+    if (seen.has(value)) return;
+    seen.add(value);
+    budget.units += value.length;
+    if (budget.units > maxEntryUnits) throw new Error(copyBudgetMessage);
+    entries.push({ value, ends: [...wordEnds(value), value.length] });
+  };
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxEntryLength));
+  add(span);
+  // The quote the scanner saw (it can stand before Bearer), else the character before.
+  const before = candidate.start > 0 ? text[candidate.start - 1] : '';
+  const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
+  if (quote) {
+    const close = quotedEnd(text, candidate.start, quote);
+    if (close <= candidate.end) add(text.slice(candidate.start, Math.min(close, candidate.start + span.length)));
+  }
+  // A value after each further name inside the span runs to its closing quote, or else to
+  // the next name.
+  const leads = freeTextLeads.flatMap(rule => [...span.matchAll(new RegExp(rule.lead.source, rule.lead.flags))])
+    .map(match => ({ at: match.index, after: match.index + match[0].length })).sort((a, b) => a.at - b.at);
+  leads.forEach((lead, index) => {
+    const stop = index + 1 < leads.length ? leads[index + 1].at : span.length;
+    const open = /["'`]/u.test(span[lead.after] ?? '') ? span[lead.after] : '';
+    const from = lead.after + (open ? 1 : 0);
+    add(span.slice(from, open ? Math.min(quotedEnd(span, from, open), stop) : stop));
+  });
+  for (const match of span.matchAll(/\S+/gu)) {
+    for (const piece of match[0].split(new RegExp(separators.source + '+', 'u'))) {
+      const bare = withoutTrailing(withoutLeadingQuotes(piece));
+      if (mixed(bare)) add(bare);
+    }
+  }
+  // Each text is decoded once, and its decoded words count as written ones do. A text longer
+  // than the matcher's part is also decoded up to that part, so the decoded start of a long
+  // escaped value still counts at its end, as before the whole value was kept (Codex round 2).
+  for (const value of [...values]) {
+    if (!value.includes('\\') || decodedFrom.has(value)) continue;
+    decodedFrom.add(value);
+    add(decoded(value));
+    if (value.length > maxCopyLength) add(decoded(value.slice(0, maxCopyLength)));
+  }
+  return entries;
+}
+
+/**
+ * The entries main had before P4e, kept exactly beside the whole-value entries (Codex
+ * round 3 of 2026-11-27): each kind of entry (span, quoted part, values after names,
+ * key-like words, and each one decoded) shares maxCopyLength characters, and the ends are
+ * worked out on the part kept, so a copy of a value's first characters that main removed
+ * is still removed. More entries only widen what is replaced.
+ */
+function boundedCopyEntries(text, candidate, seen, budget) {
+  const pools = new Map();
   const entries = [];
   const add = (value, pool) => {
-    const left = budget.get(pool) ?? maxCopyLength;
+    const left = pools.get(pool) ?? maxCopyLength;
     if (left <= 0 || value.length < minCopyLength) return;
     const kept = value.slice(0, left);
-    budget.set(pool, left - kept.length);
-    entries.push({ value: kept, ends: [...wordEnds(kept), kept.length], pool });
+    pools.set(pool, left - kept.length);
+    entries.push({ value: kept, pool });
   };
   const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
   add(span, 'span');
-  // The quote the scanner saw (it can stand before Bearer), else the character before.
   const before = candidate.start > 0 ? text[candidate.start - 1] : '';
   const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
   if (quote) {
     const close = quotedEnd(text, candidate.start, quote);
     if (close <= candidate.end) add(text.slice(candidate.start, close), 'quoted');
   }
-  // A value after each further name inside the span runs to its closing quote, or else to
-  // the next name, so these values never overlap and share one budget fairly.
   const leads = freeTextLeads.flatMap(rule => [...span.matchAll(new RegExp(rule.lead.source, rule.lead.flags))])
     .map(match => ({ at: match.index, after: match.index + match[0].length })).sort((a, b) => a.at - b.at);
   leads.forEach((lead, index) => {
@@ -453,69 +541,160 @@ function copyEntries(text, candidate) {
   });
   for (const match of span.matchAll(/\S+/gu)) {
     for (const piece of match[0].split(new RegExp(separators.source + '+', 'u'))) {
-      const bare = piece.replace(leadingQuotes, '').replace(trailingPunctuation, '');
+      const bare = withoutTrailing(withoutLeadingQuotes(piece));
       if (mixed(bare)) add(bare, 'words');
     }
   }
-  // Each text is decoded once, and its decoded words count as written ones do.
   for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), entry.pool + ' decoded');
-  return entries.map(({ value, ends }) => ({ value, ends }));
+  // Deduplicated after the pools are spent, so each pool keeps exactly what it kept before.
+  const fresh = [];
+  for (const { value } of entries) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    budget.units += value.length;
+    if (budget.units > maxEntryUnits) throw new Error(copyBudgetMessage);
+    fresh.push({ value, ends: [...wordEnds(value), value.length] });
+  }
+  return fresh;
+}
+
+/** The largest of the sorted ends that is at most limit, by binary search, or undefined. */
+function largestEndWithin(ends, limit) {
+  let low = 0;
+  let high = ends.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (ends[middle] <= limit) low = middle + 1;
+    else high = middle;
+  }
+  return low ? ends[low - 1] : undefined;
 }
 
 /**
  * A matcher for many values at once (Aho-Corasick over UTF-16 code units): one pass over a
  * text finds, at every position, the longest value that ends there, so the time grows
- * with the text, the values' total length and the matches, not with their product. An
- * entry is added once, with a value ending at each of its counted lengths.
+ * with the text, the values' total length and the matches, not with their product. The
+ * matcher holds each value's first maxCopyLength units. Where those match, the text is
+ * compared with the whole value and the match widened to the longest of the value's
+ * counted ends that the text repeats. Nodes are flat arrays and one edge map; past either
+ * session budget (nodeBudget, workBudget) it throws copyBudgetMessage.
  */
-function copyMatcher(entries) {
-  const nodes = [{ next: new Map(), fail: 0, length: 0, kind: '' }];
+export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = maxConfirmWork, spanBudget = maxCopySpans } = {}) {
+  const edges = new Map();
+  const edge = (node, unit) => edges.get(node * 65536 + unit);
+  const parent = [0];
+  const unitOf = [0];
+  const depth = [0];
+  const fail = [0];
+  const length = [0];
+  const kindOf = [''];
+  // Nodes at depth maxCopyLength where a longer value's first part ends: the whole values.
+  const longer = new Map();
+  // The same value given twice counts at every end either gave, with the first one's kind.
+  const byValue = new Map();
   for (const { value, ends, kind } of entries) {
-    const counted = new Set(ends.filter(length => length >= minCopyLength));
-    const last = Math.max(0, ...counted);
+    const known = byValue.get(value);
+    if (known) known.ends.push(...ends);
+    else byValue.set(value, { value, ends: [...ends], kind });
+  }
+  for (const { value, ends, kind } of byValue.values()) {
+    const counted = [...new Set(ends.filter(end => end >= minCopyLength))].sort((a, b) => a - b);
+    if (!counted.length) continue;
+    const cut = value.length > maxCopyLength;
+    const last = cut ? maxCopyLength : counted.at(-1);
+    const countedHere = new Set(counted.filter(end => end <= maxCopyLength));
+    // A value longer than the matcher's part counts at its cut, so that part is always replaced.
+    if (cut) countedHere.add(maxCopyLength);
     let node = 0;
     for (let at = 0; at < last; at += 1) {
       const unit = value.charCodeAt(at);
-      let child = nodes[node].next.get(unit);
+      let child = edge(node, unit);
       if (child === undefined) {
-        child = nodes.push({ next: new Map(), fail: 0, length: 0, kind: '' }) - 1;
-        nodes[node].next.set(unit, child);
+        child = parent.length;
+        if (child >= nodeBudget) throw new Error(copyBudgetMessage);
+        parent.push(node); unitOf.push(unit); depth.push(at + 1); fail.push(0); length.push(0); kindOf.push('');
+        edges.set(node * 65536 + unit, child);
       }
       node = child;
-      if (counted.has(at + 1) && at + 1 > nodes[node].length) Object.assign(nodes[node], { length: at + 1, kind });
+      if (countedHere.has(at + 1) && at + 1 > length[node]) { length[node] = at + 1; kindOf[node] = kind; }
+    }
+    const rest = cut ? counted.filter(end => end > maxCopyLength) : [];
+    if (rest.length) {
+      if (!longer.has(node)) longer.set(node, []);
+      longer.get(node).push({ value, ends: rest, kind });
     }
   }
-  // Breadth first: a node's failure link is the longest proper suffix that is a node, and
-  // it inherits that suffix's longest value when it has none of its own.
-  const queue = [...nodes[0].next.values()];
-  for (let head = 0; head < queue.length; head += 1) {
-    const node = queue[head];
-    for (const [unit, child] of nodes[node].next) {
-      let fail = nodes[node].fail;
-      while (fail !== 0 && !nodes[fail].next.has(unit)) fail = nodes[fail].fail;
-      const target = nodes[fail].next.get(unit);
-      nodes[child].fail = target !== undefined && target !== child ? target : 0;
-      if (nodes[child].length === 0) Object.assign(nodes[child], { length: nodes[nodes[child].fail].length, kind: nodes[nodes[child].fail].kind });
-      queue.push(child);
+  // Breadth first (by depth): a node's failure link is the longest proper suffix that is a
+  // node, and it inherits that suffix's longest value when it has none of its own.
+  const byDepth = Array.from({ length: maxCopyLength + 1 }, () => []);
+  for (let node = 1; node < parent.length; node += 1) byDepth[depth[node]].push(node);
+  for (const level of byDepth) {
+    for (const node of level) {
+      if (depth[node] > 1) {
+        let link = fail[parent[node]];
+        let target = edge(link, unitOf[node]);
+        while (target === undefined && link !== 0) {
+          link = fail[link];
+          target = edge(link, unitOf[node]);
+        }
+        fail[node] = target !== undefined && target !== node ? target : 0;
+      }
+      if (length[node] === 0) { length[node] = length[fail[node]]; kindOf[node] = kindOf[fail[node]]; }
     }
   }
+  let work = 0;
+  let made = 0;
   return text => {
     const spans = [];
     let node = 0;
     for (let at = 0; at < text.length; at += 1) {
       const unit = text.charCodeAt(at);
-      while (node !== 0 && !nodes[node].next.has(unit)) node = nodes[node].fail;
-      node = nodes[node].next.get(unit) ?? 0;
-      const { length, kind } = nodes[node];
-      if (!length) continue;
-      // Ends only grow, so a new match merges with the spans it overlaps at the end.
-      let start = at + 1 - length;
-      let spanKind = kind;
+      let next = edge(node, unit);
+      while (next === undefined && node !== 0) {
+        node = fail[node];
+        next = edge(node, unit);
+      }
+      node = next ?? 0;
+      if (!length[node]) continue;
+      let start = at + 1 - length[node];
+      let end = at + 1;
+      let spanKind = kindOf[node];
+      // The first part of a longer value: compare the rest, unless a span already covers it.
+      for (const whole of longer.get(node) ?? []) {
+        // Every value looked at costs one unit, skipped or not, plus each character compared.
+        work += 1;
+        if (work > workBudget) throw new Error(copyBudgetMessage);
+        const from = at + 1 - maxCopyLength;
+        // Only an end that fits in the rest of the text can be reached (Codex round 4: a
+        // 64 Ki value compared against itself at every later place used the whole budget).
+        const fits = largestEndWithin(whole.ends, text.length - from);
+        if (fits === undefined) continue;
+        const last = spans.at(-1);
+        if (last && last.start <= from && last.end >= from + fits) continue;
+        let same = maxCopyLength;
+        const limit = fits;
+        while (same < limit && text.charCodeAt(from + same) === whole.value.charCodeAt(same)) same += 1;
+        work += same - maxCopyLength;
+        if (work > workBudget) throw new Error(copyBudgetMessage);
+        const reached = largestEndWithin(whole.ends, same);
+        if (reached !== undefined && from + reached > end) {
+          start = Math.min(start, from);
+          end = from + reached;
+          spanKind = whole.kind;
+        }
+      }
+      // A new match merges with the spans it overlaps at the end. A widened span can end
+      // after later matches, so the merged span keeps the largest end.
+      let merged = false;
       while (spans.length && spans.at(-1).end > start) {
         const last = spans.pop();
         if (last.start <= start) { start = last.start; spanKind = last.kind; }
+        end = Math.max(end, last.end);
+        merged = true;
       }
-      spans.push({ kind: spanKind, start, end: at + 1, prefix: 0 });
+      // A disjoint span is a new copy, counted for the session before it is made.
+      if (!merged && ++made > spanBudget) throw new Error(copyBudgetMessage);
+      spans.push({ kind: spanKind, start, end, prefix: 0 });
     }
     return spans;
   };
@@ -560,10 +739,19 @@ export function redactSession(session) {
       }
     }
   });
-  const found = fields.map(field => findSecrets(field.text));
+  let direct = 0;
+  const found = fields.map(field => {
+    const spans = findSecrets(field.text);
+    direct += spans.length;
+    if (direct > maxFindings) throw new Error(copyBudgetMessage);
+    return spans;
+  });
   // Copies are searched for each candidate the scanner accepted, before candidates merge
   // into findings, so a key inside a longer finding keeps its own boundaries.
   const entries = [];
+  const seen = new Set();
+  const budget = { units: 0 };
+  const held = [];
   fields.forEach((field, index) => {
     const spans = found[index];
     if (!spans.length) return;
@@ -572,9 +760,14 @@ export function redactSession(session) {
     for (const candidate of [...candidates(field.text), ...spans].sort((a, b) => a.start - b.start)) {
       while (at < spans.length - 1 && spans[at].end <= candidate.start) at += 1;
       const holder = spans[at].start <= candidate.start && candidate.start < spans[at].end ? spans[at] : candidate;
-      for (const entry of copyEntries(field.text, candidate)) entries.push({ ...entry, kind: holder.kind });
+      held.push({ text: field.text, candidate, kind: holder.kind });
+      for (const entry of boundedCopyEntries(field.text, candidate, seen, budget)) entries.push({ ...entry, kind: holder.kind });
     }
   });
+  const decodedFrom = new Set();
+  for (const { text, candidate, kind } of held) {
+    for (const entry of copyEntries(text, candidate, seen, budget, decodedFrom)) entries.push({ ...entry, kind });
+  }
   const copiesIn = entries.length ? copyMatcher(entries) : () => [];
   const findings = [];
   let source = session.source;

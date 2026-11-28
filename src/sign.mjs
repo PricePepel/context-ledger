@@ -12,7 +12,7 @@ import { constants } from 'node:fs';
 import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, rmdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { scannerName } from './secrets.mjs';
+import { knownScanners, scannerName } from './secrets.mjs';
 import { terminalLabel } from './text.mjs';
 
 export const bundleFormat = 'context-ledger-signed-handoff';
@@ -509,8 +509,8 @@ function checkManifest(manifest) {
   if (manifest.version === 3) {
     const { redaction } = manifest;
     if (!isPlainObject(redaction) || !sameKeys(redaction, ['findings', 'scanner'])) return;
-    // Only this build's scanner is known; a later rule version is a later build's bundle.
-    if (redaction.scanner !== scannerName) return;
+    // Only the scanners this build knows; a later rule version is a later build's bundle.
+    if (!knownScanners.includes(redaction.scanner)) return;
     if (!Number.isSafeInteger(redaction.findings) || redaction.findings < 0) return;
   }
   if (manifest.format !== bundleFormat || manifest.algorithm !== 'Ed25519') return;
