@@ -134,6 +134,32 @@ def sample(rows, count, seed):
     return rows[:count]
 
 
+CALIBRATION_DOCS = 16  # documents per calibration draw, and the most one prefill holds
+
+
+def calibration_chunk(batch1):
+    """How many of a draw's 16 documents are prefilled at once: all of them at the recipe's
+    stage 1 batch of 4 (as every run so far), fewer when a run was started with smaller
+    batches because it had run out of memory. The draws, and so the random stream that
+    follows them, are the same either way."""
+    return max(1, min(CALIBRATION_DOCS, batch1 * 4))
+
+
+def close_torn_line(log_path):
+    """End a log whose last line was cut off, so the next event starts on a line of its own
+    and a reader that skips the broken line does not lose the event after it."""
+    try:
+        with open(log_path, "rb+") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                return
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                handle.write(b"\n")
+    except FileNotFoundError:
+        pass
+
+
 # SQuAD's official answer normalization and token F1.
 def normalize(text):
     text = text.lower()

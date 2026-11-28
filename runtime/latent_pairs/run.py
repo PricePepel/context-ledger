@@ -116,7 +116,8 @@ def run_logged(command, log_path):
 
 def timed(folder, status, kind, command, log_name, runner, clock=time.time):
     """Run one process and charge its time to the pair. The start is written down first, so a
-    run that is cut off can still be charged for (reconcile)."""
+    run that is cut off can still be charged for (reconcile). What the run left behind is
+    read from its own files afterwards (replay), never only from this process's memory."""
     status["running"] = {"kind": kind, "startedAt": clock(), "log": log_name}
     save_status(folder, status)
     code, seconds = runner(command, os.path.join(folder, log_name))
@@ -124,6 +125,35 @@ def timed(folder, status, kind, command, log_name, runner, clock=time.time):
     status.pop("running", None)
     save_status(folder, status)
     return code
+
+
+def replay(folder, status):
+    """Act on what the last training process left in its files, before another one starts.
+
+    The runner can be cut off between a trainer's exit and the note of what that exit meant.
+    The trainer's own files still say it: a `diverged` event ends the pair, and an
+    out-of-memory error in the output of a run at the recipe's batches starts the one retry.
+    Returns the reason the pair has failed, or None.
+    """
+    if status.get("retry") == "moving":   # cut off while the first attempt was being set aside
+        set_aside(folder)
+        status["retry"] = "ready"
+        save_status(folder, status)
+    if diverged(folder):
+        return "training diverged (a loss or gradient that is not a number)"
+    if finished(folder):
+        return None
+    if out_of_memory(tail(os.path.join(folder, "train.out"))):
+        if status.get("smallBatches"):
+            return "out of GPU memory at the small batches too"
+        # Written down before anything is moved, so an interruption here cannot bring the
+        # first attempt, or its stage 1 checkpoint, back.
+        status.update({"smallBatches": True, "retriedAfterOutOfMemory": True, "retry": "moving"})
+        save_status(folder, status)
+        set_aside(folder)
+        status["retry"] = "ready"
+        save_status(folder, status)
+    return None
 
 
 def reconcile(folder, status):
@@ -170,11 +200,13 @@ def set_aside(folder):
 def train(folder, sender, receiver, status, full_steps, runner=run_logged):
     """Train one pair, with the one small-batch retry after running out of memory.
     Returns None when it finished, else the reason it did not."""
-    if status.get("retry") == "moving":   # cut off while the first attempt was being set aside
-        set_aside(folder)
-        status["retry"] = "ready"
-        save_status(folder, status)
-    for small in ([True] if status.get("smallBatches") else [False, True]):
+    for _ in range(2):   # the recipe's batches, then at most the one retry
+        reason = replay(folder, status)
+        if reason:
+            return reason
+        if finished(folder):
+            return None
+        small = bool(status.get("smallBatches"))
         settings = recipe(full_steps=full_steps, small_batches=small)
         stage1 = os.path.join(folder, "stage1.pt")
         resume = stage1 if os.path.exists(stage1) else None
@@ -182,23 +214,16 @@ def train(folder, sender, receiver, status, full_steps, runner=run_logged):
         status.update({"state": "training", "settings": settings, "smallBatches": small,
                        "stage2Restarts": status.get("stage2Restarts", 0) + (1 if resume else 0)})
         code = timed(folder, status, "train", command, "train.out", runner)
-        if code == 0 and finished(folder):
-            return None
         output = tail(os.path.join(folder, "train.out"))
         if code == DIVERGED or diverged(folder):
             return "training diverged (a loss or gradient that is not a number)"
+        if code == 0 and finished(folder):
+            return None
         if not out_of_memory(output):
             return f"training exited with code {code}: {last_line(output)}"
         if small:
             return "out of GPU memory at the small batches too"
-        # Out of memory at the recipe's batches. The retry is written down before anything is
-        # moved, so an interruption here cannot bring the first attempt back.
-        status.update({"smallBatches": True, "retriedAfterOutOfMemory": True, "retry": "moving"})
-        save_status(folder, status)
-        set_aside(folder)
-        status["retry"] = "ready"
-        save_status(folder, status)
-    return "training did not finish"
+    return replay(folder, status) or "training did not finish"
 
 
 def result_path(compare, sender, receiver):
@@ -253,20 +278,54 @@ def run_pair(root, compare, sender, receiver, full_steps, runner, say, items_id=
         say(f"{sender}->{receiver}: already measured")
         return
     status.update({"sender": sender, "receiver": receiver, "fullSteps": full_steps})
+    # Through train() also when the log already ends with `done`: a run that diverged is
+    # failed whatever a later process wrote after it.
     if not finished(folder):
         say(f"{sender}->{receiver}: training")
-        reason = train(folder, sender, receiver, status, full_steps, runner)
-        if reason:
-            status.update({"state": "failed", "reason": reason})
-            save_status(folder, status)
-            say(f"{sender}->{receiver}: failed, {reason}")
-            return
+    reason = train(folder, sender, receiver, status, full_steps, runner)
+    if reason:
+        status.update({"state": "failed", "reason": reason})
+        save_status(folder, status)
+        say(f"{sender}->{receiver}: failed, {reason}")
+        return
     say(f"{sender}->{receiver}: measuring")
     reason = measure(folder, sender, receiver, compare, status, runner, items_id)
     # A pair whose measurement failed is tried again on the next call: its mapper exists.
     status.update({"state": "trained", "reason": reason} if reason else {"state": "measured", "reason": None})
     save_status(folder, status)
     say(f"{sender}->{receiver}: {status['state']}" + (f", {reason}" if reason else ""))
+
+
+EVIDENCE = ("itemsId", "registeredCheckpoint", "retrainedCheckpoint", "registeredResultSha256", "retrainedResultSha256",
+            "retrainedCheckpointSha256")
+
+
+def same_evidence(saved, now):
+    """Whether a saved recipe decision was made from the results that are there now."""
+    return all(saved.get(key) is not None and saved.get(key) == now.get(key) for key in EVIDENCE)
+
+
+def preflight(compare, repro, first, items_id):
+    """What must hold before any GPU work: two different run folders, both with L2's item
+    sets, and the first pair's harness inputs in the folder it is measured into.
+    Raises ValueError with the reason."""
+    from latent_compare.run import fingerprint
+    if os.path.realpath(compare) == os.path.realpath(repro):
+        raise ValueError("--compare and --repro are the same folder: the retrained first pair would overwrite the "
+                         "registered checkpoint's result")
+    for name, folder in (("--compare", compare), ("--repro", repro)):
+        groups = load_json(os.path.join(folder, "items.json"))
+        if not groups:
+            raise ValueError(f"{name} ({folder}) has no readable items.json")
+        if fingerprint(groups) != items_id:
+            raise ValueError(f"{name} ({folder}) holds item set {fingerprint(groups)}, not L2's {items_id}")
+    for kind, key in (("summaries", first[0]), ("receive", first[1])):
+        if not os.path.exists(os.path.join(repro, kind, f"{key}.json")):
+            raise ValueError(f"--repro has no {kind}/{key}.json: copy L2's summaries and receive folders into it, "
+                             "so the retrained pair is compared with the same text arms")
+    registered = load_json(result_path(compare, *first))
+    if not registered:
+        raise ValueError("--compare has no result of the registered checkpoint for the first pair")
 
 
 def default_decide(root, compare, repro):
@@ -280,24 +339,36 @@ def run_batch(root, compare, repro, pairs=None, budget=BUDGET_HOURS, runner=run_
     the budget and the recipe decision are always the whole batch's."""
     batch = list(batch or BATCH)
     first = batch[0]
+    try:
+        preflight(compare, repro, first, items_id)
+    except ValueError as error:
+        say(f"not started: {error}")
+        return
     for sender, receiver in (pairs or batch):
-        if (sender, receiver) == first:
-            # The check on the recipe is made with the recipe's own step counts.
-            run_pair(root, repro, sender, receiver, False, runner, say, items_id)
-            continue
-        decision = load_json(os.path.join(root, RECIPE_FILE))
-        if not decision:
-            try:
-                decision = decide(root, compare, repro)
-            except ValueError as error:
-                say(f"{sender}->{receiver}: not started, the recipe is not decided: {error}")
-                return
-            save_json(os.path.join(root, RECIPE_FILE), decision)
-            say(f"recipe decided: {'adequate' if decision['adequate'] else 'not adequate, full M2b-S steps from here'}")
         used = hours_used(root, batch)
         if not within_budget(used, budget):
             say(f"{sender}->{receiver}: not started, {used:.1f} h of the {budget} h budget are used")
             continue
+        if (sender, receiver) == first:
+            # The check on the recipe is made with the recipe's own step counts.
+            run_pair(root, repro, sender, receiver, False, runner, say, items_id)
+            continue
+        # The decision is made again from the results as they are now, every time. A saved
+        # decision only stands while it was made from these same files (Codex review, round 2).
+        try:
+            now = decide(root, compare, repro)
+        except ValueError as error:
+            say(f"{sender}->{receiver}: not started, the recipe is not decided: {error}")
+            return
+        decision = load_json(os.path.join(root, RECIPE_FILE))
+        if not decision:
+            decision = now
+            save_json(os.path.join(root, RECIPE_FILE), decision)
+            say(f"recipe decided: {'adequate' if decision['adequate'] else 'not adequate, full M2b-S steps from here'}")
+        elif not same_evidence(decision, now):
+            say(f"{sender}->{receiver}: not started, recipe.json was decided from other results than the ones in the "
+                "run folders now; settle which stand, then remove recipe.json to decide again")
+            return
         run_pair(root, compare, sender, receiver, bool(decision["fullSteps"]), runner, say, items_id)
 
 

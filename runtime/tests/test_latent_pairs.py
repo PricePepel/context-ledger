@@ -13,7 +13,7 @@ import unittest
 from latent_compare import run as harness
 from latent_compare.models import MAPPERS, MODELS
 from latent_pairs import evaluate, plan, report, run
-from latent_transfer.data import END, end_ids, end_marker, single_token
+from latent_transfer.data import END, calibration_chunk, close_torn_line, end_ids, end_marker, single_token
 
 try:
     import torch
@@ -222,6 +222,14 @@ class Runner:
         return self.measure_code, self.seconds / 10
 
 
+def decided(adequate=True, **evidence):
+    """A recipe decision as report.recipe_decision returns it, with the evidence it was made from."""
+    made = {"adequate": adequate, "fullSteps": not adequate, "itemsId": ITEMS_ID, "registeredCheckpoint": REGISTERED,
+            "retrainedCheckpoint": "again1", "registeredResultSha256": "r" * 64, "retrainedResultSha256": "n" * 64,
+            "retrainedCheckpointSha256": "c" * 64}
+    return {**made, **evidence}
+
+
 class Folders(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -232,6 +240,10 @@ class Folders(unittest.TestCase):
             os.makedirs(os.path.join(base, "latent"))
             os.makedirs(os.path.join(base, "receive"))
             self.write(os.path.join(base, "items.json"), ITEMS)
+            # L2's text arms, which the first pair is compared with in the folder it is measured into.
+            os.makedirs(os.path.join(base, "summaries"))
+            self.write(os.path.join(base, "summaries", f"{FIRST[0]}.json"), {})
+            self.write(os.path.join(base, "receive", f"{FIRST[1]}.json"), {})
         self.write(run.result_path(self.compare, *FIRST), latent(checkpoint=REGISTERED))
         self.said = []
 
@@ -241,7 +253,7 @@ class Folders(unittest.TestCase):
 
     def go(self, runner, pairs=None, decide=None, **options):
         run.run_batch(self.root, self.compare, self.repro, pairs, runner=runner, say=self.said.append, batch=BATCH,
-                      items_id=ITEMS_ID, decide=decide or (lambda *_: {"adequate": True, "fullSteps": False}), **options)
+                      items_id=ITEMS_ID, decide=decide or (lambda *_: decided()), **options)
 
     def folder(self, pair):
         return os.path.join(self.root, plan.pair_name(*pair))
@@ -366,9 +378,12 @@ class RunTest(Folders):
     def test_r1_3_a_result_in_another_run_folder_does_not_count(self):
         self.go(Runner(), pairs=[SAME])
         other = os.path.join(self.root, "other")
+        os.makedirs(os.path.join(other, "latent"))
+        self.write(os.path.join(other, "items.json"), ITEMS)
+        self.write(run.result_path(other, *FIRST), latent(checkpoint=REGISTERED))
         again = Runner()
         run.run_batch(self.root, other, self.repro, [SAME], runner=again, say=self.said.append, batch=BATCH,
-                      items_id=ITEMS_ID, decide=lambda *_: {"adequate": True, "fullSteps": False})
+                      items_id=ITEMS_ID, decide=lambda *_: decided())
         self.assertEqual(len(again.calls), 1)
         self.assertEqual(again.calls[0][again.calls[0].index("--out") + 1], other)
 
@@ -393,7 +408,7 @@ class RunTest(Folders):
 
     def test_r1_4_a_recipe_that_is_not_adequate_brings_the_full_steps_back(self):
         runner = Runner()
-        self.go(runner, decide=lambda *_: {"adequate": False, "fullSteps": True})
+        self.go(runner, decide=lambda *_: decided(adequate=False))
         first, second = runner.calls[0], runner.calls[2]
         self.assertEqual(first[first.index("--stage1-steps") + 1], "8000")     # the check itself uses the recipe
         self.assertEqual(second[second.index("--stage1-steps") + 1], "15000")
@@ -401,15 +416,88 @@ class RunTest(Folders):
         self.assertTrue(self.status(SAME)["fullSteps"])
         self.assertTrue(run.load_json(os.path.join(self.root, run.RECIPE_FILE))["fullSteps"])
 
-    def test_r1_4_the_decision_is_made_once_and_kept(self):
-        calls = []
+    def test_r1_4_the_saved_decision_stands_while_its_evidence_does(self):
+        self.go(Runner(), pairs=[FIRST, SAME], decide=lambda *_: decided(adequate=False))
+        # Decided again from the same files: whatever the new call says, the saved decision is the one used.
+        runner = Runner()
+        self.go(runner, pairs=[SMALL], decide=lambda *_: decided(adequate=True))
+        self.assertEqual(runner.calls[0][runner.calls[0].index("--stage1-steps") + 1], "15000")
 
-        def decide(*_):
-            calls.append(1)
-            return {"adequate": True, "fullSteps": False}
-        self.go(Runner(), decide=decide)
-        self.go(Runner(), decide=decide)
-        self.assertEqual(len(calls), 1)
+    # Codex review, round 2 -------------------------------------------------
+    def test_r2_1_one_folder_for_both_results_is_refused_before_anything_runs(self):
+        runner = Runner()
+        run.run_batch(self.root, self.compare, os.path.join(self.compare, ".", ""), None, runner=runner,
+                      say=self.said.append, batch=BATCH, items_id=ITEMS_ID, decide=lambda *_: decided())
+        self.assertEqual(runner.calls, [])
+        self.assertIn("same folder", self.said[-1])
+        self.assertEqual(run.load_json(run.result_path(self.compare, *FIRST))["checkpoint"], REGISTERED)
+
+    def test_r2_2_a_decision_made_from_other_results_stops_the_batch(self):
+        self.go(Runner(), pairs=[FIRST, SAME])
+        for changed in ({"retrainedResultSha256": "x" * 64}, {"retrainedCheckpointSha256": "y" * 64},
+                        {"registeredResultSha256": "z" * 64}, {"itemsId": "another-set"}):
+            runner = Runner()
+            self.go(runner, pairs=[SMALL], decide=lambda *_, changed=changed: decided(**changed))
+            self.assertEqual(runner.calls, [], changed)
+            self.assertIn("decided from other results", self.said[-1])
+
+    def test_r2_2_a_decision_that_can_no_longer_be_made_stops_the_batch(self):
+        self.go(Runner(), pairs=[FIRST, SAME])
+
+        def gone(*_):
+            raise ValueError("the retrained phi3.5>qwen1.5 is not measured")
+        runner = Runner()
+        self.go(runner, pairs=[SMALL], decide=gone)
+        self.assertEqual(runner.calls, [])
+
+    def test_r2_3_an_out_of_memory_exit_is_acted_on_even_when_the_runner_died_before_noting_it(self):
+        folder = self.folder(SAME)
+        os.makedirs(folder)
+        # As the files are when the runner is cut off right after the trainer's exit was charged.
+        with open(os.path.join(folder, "train.out"), "w", encoding="utf-8") as handle:
+            handle.write("torch.OutOfMemoryError: CUDA out of memory.\n")
+        with open(os.path.join(folder, "stage1.pt"), "w", encoding="utf-8") as handle:
+            handle.write("the first attempt's stage 1")
+        with open(os.path.join(folder, "log.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": "start"}) + "\n")
+        run.save_status(folder, {"state": "training", "smallBatches": False, "trainSeconds": 50.0})
+        runner = Runner()
+        self.go(runner, pairs=[SAME])
+        first = runner.calls[0]
+        self.assertEqual((first[first.index("--batch1") + 1], first[first.index("--batch2") + 1]), ("2", "1"))
+        self.assertNotIn("--resume", first)
+        self.assertTrue(os.path.exists(os.path.join(folder, "attempt1", "stage1.pt")))
+        self.assertTrue(self.status()["retriedAfterOutOfMemory"])
+
+    def test_r2_7_the_budget_holds_for_the_first_pair_too(self):
+        runner = Runner()
+        self.go(runner, budget=0)
+        self.assertEqual(runner.calls, [])
+
+    def test_r2_8_a_diverged_run_stays_failed_after_a_restart_that_finished(self):
+        folder = self.folder(SAME)
+        os.makedirs(folder)
+        # The trainer wrote `diverged`; the runner died before noting it; a later process ran to `done`.
+        with open(os.path.join(folder, "log.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write("".join(json.dumps(row) + "\n" for row in [{"event": "diverged", "stage": 2, "step": 900}] + LOG))
+        with open(os.path.join(folder, "best.pt"), "w", encoding="utf-8") as handle:
+            handle.write("weights")
+        run.save_status(folder, {"state": "training"})
+        runner = Runner()
+        self.go(runner, pairs=[SAME])
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.status()["state"], "failed")
+        self.assertIn("diverged", self.status()["reason"])
+
+    def test_r2_10_the_first_pair_s_text_arms_must_be_where_it_is_measured(self):
+        os.remove(os.path.join(self.repro, "summaries", f"{FIRST[0]}.json"))
+        runner = Runner()
+        self.go(runner)
+        self.assertEqual(runner.calls, [])
+        self.assertIn("summaries", self.said[-1])
+        os.remove(os.path.join(self.repro, "items.json"))
+        self.go(runner)
+        self.assertIn("items.json", self.said[-1])
 
     def test_r1_5_an_interruption_while_the_first_attempt_is_set_aside_does_not_bring_it_back(self):
         folder = self.folder(SAME)
@@ -637,6 +725,38 @@ class BuildTest(Folders):
         with self.assertRaises(ValueError):
             report.recipe_decision(self.root, self.compare, self.repro, batch=BATCH, items_id=ITEMS_ID, main_items=COUNT)
 
+    def test_r2_4_the_registered_checkpoint_measured_as_the_first_pair_gets_no_l5_row(self):
+        # The registered checkpoint sits in the first pair's folder as best.pt and is measured
+        # into the repro folder: every digest matches, and it is still the baseline.
+        self.measured({FIRST: latent(checkpoint=REGISTERED)}, pairs=[FIRST])
+        self.assertEqual(self.status(FIRST)["state"], "measured")
+        summary = self.build()
+        entry = summary["pairs"]["phi3.5>qwen1.5"]
+        self.assertNotIn("verdict", entry)
+        self.assertIn("which is the baseline", entry["notVerified"])
+        self.assertIn("which is the baseline", summary["recipeCheck"]["notMade"])
+        self.assertNotIn("**Pass**", report.render(summary))
+
+    def test_r2_4_a_checkpoint_file_changed_after_the_measurement_gets_no_verdict(self):
+        self.measured({SAME: latent(checkpoint="same1")}, pairs=[SAME])
+        with open(os.path.join(self.folder(SAME), "best.pt"), "w", encoding="utf-8") as handle:
+            handle.write("other weights")
+        entry = self.build()["pairs"]["qwen3>qwen1.5"]
+        self.assertNotIn("verdict", entry)
+        self.assertIn("best.pt is not the checkpoint file", entry["notVerified"])
+
+    def test_r2_2_the_decision_carries_the_digests_it_was_made_from(self):
+        self.measured({FIRST: latent(checkpoint="again1")}, pairs=[FIRST])
+        decision = report.recipe_decision(self.root, self.compare, self.repro, batch=BATCH, items_id=ITEMS_ID, main_items=COUNT)
+        recorded = self.status(FIRST)["result"]
+        self.assertEqual(decision["retrainedResultSha256"], recorded["sha256"])
+        self.assertEqual(decision["retrainedCheckpointSha256"], recorded["checkpointSha256"])
+        self.assertEqual(decision["registeredResultSha256"], run.sha256_file(run.result_path(self.compare, *FIRST)))
+        self.assertTrue(run.same_evidence(decision, dict(decision)))
+        for key in run.EVIDENCE:
+            self.assertFalse(run.same_evidence(decision, {**decision, key: "changed"}), key)
+            self.assertFalse(run.same_evidence({k: v for k, v in decision.items() if k != key}, decision), key)
+
     def test_r1_2_another_item_set_is_refused(self):
         self.measured({SAME: latent(checkpoint="same1")}, pairs=[SAME])
         with self.assertRaisesRegex(ValueError, "not L2's"):
@@ -704,7 +824,49 @@ class ReaderTest(unittest.TestCase):
 
     def test_the_runner_takes_a_pair_as_measured_only_through_bound(self):
         self.assertEqual(self.functions_calling("run.py", "bound"), {"run_pair"})
-        self.assertEqual(self.functions_calling("report.py", "bound"), {"measured_pair"})
+        self.assertEqual(self.functions_calling("report.py", "measured_pair"), {"recipe_check", "build"})
+
+
+class TrainerHelperTest(unittest.TestCase):
+    def test_r2_6_a_cut_off_last_line_is_closed_before_the_next_event(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = os.path.join(folder, "log.jsonl")
+            close_torn_line(target)   # no log yet: nothing to do
+            self.assertFalse(os.path.exists(target))
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"event": "start"}) + "\n" + '{"event": "stage1", "st')
+            close_torn_line(target)
+            with open(target, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"event": "start", "second": True}) + "\n")
+            rows = run.read_log(folder)
+            self.assertEqual(rows, [{"event": "start"}, {"event": "start", "second": True}])
+            self.assertEqual(report.cost(rows)["trainerStarts"], 2)
+            close_torn_line(target)   # a whole last line is left alone
+            self.assertEqual(run.read_log(folder), rows)
+
+    def test_r2_9_small_batches_calibrate_in_smaller_prefills(self):
+        self.assertEqual(calibration_chunk(4), 16)    # the recipe: as every run so far
+        self.assertEqual(calibration_chunk(16), 16)
+        self.assertEqual(calibration_chunk(2), 8)     # the out-of-memory retry
+        self.assertEqual(calibration_chunk(1), 4)
+
+    def test_r2_9_the_peak_that_has_to_fit_includes_calibration(self):
+        rows = [{"event": "start", "time": 0},
+                {"event": "calibrated", "calibrationPeakReservedGiB": 14.1, "calibrationPeakAllocatedGiB": 13.0, "time": 1},
+                {"event": "stage1-eval", "step": 1000, "peakReservedGiB": 12.0, "peakAllocatedGiB": 11.5, "time": 2}]
+        cost = report.cost(rows)
+        self.assertEqual((cost["runPeakReservedGiB"], cost["runPeakAllocatedGiB"]), (14.1, 13.0))
+        self.assertEqual(report.cost(LOG)["runPeakReservedGiB"], 13.5)
+
+    def test_r2_6_the_kept_checkpoint_s_step_is_the_one_written_with_the_save(self):
+        rows = [{"event": "start", "time": 0},
+                {"event": "stage2-eval", "step": 500, "devF1": 0.8, "time": 1},
+                {"event": "saved", "path": "best.pt", "id": "kept", "devF1": 0.8, "step": 500, "time": 1.5},
+                {"event": "stage2-eval", "step": 1000, "devF1": 0.8, "time": 2}]   # the same score later, not saved
+        self.assertEqual(report.cost(rows)["bestStep"], 500)
+        for row in rows:
+            row.pop("step", None) if row["event"] == "saved" else None
+        self.assertEqual(report.cost(rows)["bestStep"], 500)   # a log from before the step was written
 
 
 class RegisterTest(unittest.TestCase):
@@ -735,6 +897,14 @@ class TrainerSourceTest(unittest.TestCase):
         self.assertEqual(source.count("if not finite(loss, norm):"), 2)
         self.assertEqual(source.count("sys.exit(DIVERGED)"), 2)
         self.assertIn(f"DIVERGED = {run.DIVERGED}", source)
+
+    def test_r2_5_and_11_the_evaluator_always_measures_afresh_and_puts_the_table_back(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "latent_pairs", "evaluate.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("harness.phase_latent(out, sender, receiver, groups, True)", source)
+        body = source[source.index("kept = dict(MAPPERS)"):]
+        self.assertLess(body.index("try:"), body.index("register("))
+        self.assertLess(body.index("finally:"), body.index("MAPPERS.update(kept)"))
 
     def test_r1_9_calibration_holds_one_batch_and_its_peak_is_logged_before_the_reset(self):
         source = self.source("train.py")

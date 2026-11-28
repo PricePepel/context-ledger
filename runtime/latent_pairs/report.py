@@ -13,6 +13,7 @@ was made from L2's item set. Anything else is shown as not verified, with the re
 """
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 
@@ -21,7 +22,7 @@ from latent_compare import run as harness
 from latent_compare.models import MAPPERS, MODELS
 
 from .plan import BATCH, FULL_STEPS, ITEMS_ID, MAIN_ITEMS, RECIPE, ordered_pairs, pair_name, trainable_pairs, untrainable
-from .run import bound, load_json, load_status, read_log, result_path
+from .run import load_json, load_status, read_log, result_path, sha256_file
 
 CARD = "L5"
 PASS_ARMS = ("mismatched", "zeroed")
@@ -93,17 +94,24 @@ def cost(rows, status=None):
         if steps:
             result[f"{stage}SecPerStep"] = steps[-1]["secPerStep"]
             result[f"{stage}Steps"] = steps[-1]["step"]
-    for key in ("peakAllocatedGiB", "peakReservedGiB", "calibrationPeakReservedGiB"):
+    for key in ("peakAllocatedGiB", "peakReservedGiB", "calibrationPeakAllocatedGiB", "calibrationPeakReservedGiB"):
         peaks = [row[key] for part in (with_stage1[-1:] + [last]) for row in part if key in row]
         if peaks:
             result[key] = max(peaks)
+    # What has to fit on the card: the larger of the calibration and the training peak.
+    for kind in ("Allocated", "Reserved"):
+        both = [result[key] for key in (f"peak{kind}GiB", f"calibrationPeak{kind}GiB") if key in result]
+        if both:
+            result[f"runPeak{kind}GiB"] = max(both)
     saved = [row for row in last if row.get("event") == "saved" and row.get("path") == "best.pt"]
     evals = {row["step"]: row for row in last if row.get("event") == "stage2-eval" and row.get("step")}
     if saved and "devF1" in saved[-1]:
         result["bestDevF1"] = saved[-1]["devF1"]
         result["bestCheckpoint"] = saved[-1].get("id")
-        steps = [step for step, row in evals.items() if row["devF1"] == saved[-1]["devF1"] and row["time"] <= saved[-1]["time"]]
-        result["bestStep"] = max(steps) if steps else None
+        # The step the trainer wrote with the save. A log from before it did has only the
+        # evaluations: the save follows its own evaluation, so that is the last one before it.
+        before = [step for step, row in evals.items() if row["time"] <= saved[-1]["time"]]
+        result["bestStep"] = saved[-1].get("step") or (max(before) if before else None)
     starts = [row for row in last if row.get("event") == "start"]
     if starts:
         result["mapperParams"] = starts[-1].get("mapperParams")
@@ -168,17 +176,35 @@ def receive_of(compare, receiver, items_id):
     return data if data and data.get("itemsId") == items_id else None
 
 
-def measured_pair(root, compare, sender, receiver, items_id):
-    """(result file, None) for a pair whose recorded measurement stands, else (None, reason)."""
+def measured_pair(root, compare, sender, receiver, items_id, not_checkpoint=None):
+    """(result file, None) for a pair whose recorded measurement stands, else (None, reason).
+
+    The bytes that are checked against the recorded digest are the bytes that are parsed.
+    `not_checkpoint` is a checkpoint id the result must not be from: the registered M2b-S
+    checkpoint is the baseline of the first pair, never its L5 row.
+    """
     folder = os.path.join(root, pair_name(sender, receiver))
     status = load_status(folder)
     if status.get("state") != "measured":
         return None, None   # not a result yet; its state says why
-    if not bound(folder, status, compare, sender, receiver, items_id):
-        return None, "the result file is not the one recorded for this pair's checkpoint"
-    data = load_json(result_path(compare, sender, receiver))
+    result, target, checkpoint = status.get("result") or {}, result_path(compare, sender, receiver), os.path.join(folder, "best.pt")
+    mismatch = "the result file is not the one recorded for this pair's checkpoint"
+    if result.get("path") != os.path.abspath(target) or result.get("itemsId") != items_id:
+        return None, mismatch
+    try:
+        with open(target, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None, mismatch
+    if hashlib.sha256(raw).hexdigest() != result.get("sha256"):
+        return None, mismatch
+    if not os.path.exists(checkpoint) or sha256_file(checkpoint) != result.get("checkpointSha256"):
+        return None, "best.pt is not the checkpoint file the result was made from"
+    data = json.loads(raw.decode("utf-8"))
     if data.get("itemsId") != items_id:
         return None, f"the result is from item set {data.get('itemsId')}"
+    if not_checkpoint is not None and data.get("checkpoint") == not_checkpoint:
+        return None, f"the result is from the registered checkpoint {not_checkpoint}, which is the baseline, not a retrained mapper"
     return data, None
 
 
@@ -206,23 +232,28 @@ def recipe_check(root, compare, repro, first, registered_id, items_id=ITEMS_ID, 
     Raises ValueError when either side is not a complete, verified result."""
     groups = load_groups(repro, items_id, main_items)
     load_groups(compare, items_id, main_items)
-    new, reason = measured_pair(root, repro, *first, items_id)
+    if os.path.realpath(compare) == os.path.realpath(repro):
+        raise ValueError("the compare and repro folders are the same folder")
+    new, reason = measured_pair(root, repro, *first, items_id, not_checkpoint=registered_id)
     if not new:
         raise ValueError(f"the retrained {first[0]}>{first[1]} is not measured" + (f": {reason}" if reason else ""))
-    old = load_json(result_path(compare, *first))
+    baseline = result_path(compare, *first)
+    old = load_json(baseline)
     if not old or old.get("itemsId") != items_id:
         raise ValueError("the registered checkpoint has no result from L2's item set in the compare folder")
     if old.get("checkpoint") != registered_id:
         raise ValueError(f"the compare folder's result is from checkpoint {old.get('checkpoint')}, not the registered {registered_id}")
-    if new.get("checkpoint") == registered_id:
-        raise ValueError("the retrained result is from the registered checkpoint itself")
     joined = [{"new": new["results"].get(item["id"], {}).get("swat"),
                "registered": old["results"].get(item["id"], {}).get("swat")} for item in groups["main"]]
     difference = harness_report.paired(joined, "new", "registered")
     if not difference or difference["n"] != main_items:
         raise ValueError(f"only {difference['n'] if difference else 0} of {main_items} items ran with both checkpoints")
     values = [record["new"]["f1"] for record in joined]
+    recorded = load_status(os.path.join(root, pair_name(*first)))["result"]
     return {"pair": f"{first[0]}>{first[1]}", "registeredCheckpoint": registered_id, "retrainedCheckpoint": new["checkpoint"],
+            # What the decision was made from: the runner keeps a saved decision only while these still hold.
+            "itemsId": items_id, "registeredResultSha256": sha256_file(baseline),
+            "retrainedResultSha256": recorded["sha256"], "retrainedCheckpointSha256": recorded["checkpointSha256"],
             "retrainedF1": round(sum(values) / len(values), 4), "retrainedMinusRegistered": difference,
             "margin": RECIPE_MARGIN, "adequate": difference["low"] > RECIPE_MARGIN}
 
@@ -253,7 +284,8 @@ def build(root, compare, repro, batch=None, items_id=ITEMS_ID, main_items=MAIN_I
         entry = {"sender": MODELS[sender]["id"], "receiver": MODELS[receiver]["id"],
                  "state": status.get("state", "not started"), "reason": status.get("reason"),
                  "cost": cost(read_log(folder), status)}
-        data, reason = measured_pair(root, where, sender, receiver, items_id)
+        data, reason = measured_pair(root, where, sender, receiver, items_id,
+                                     not_checkpoint=MAPPERS[first]["id"] if (sender, receiver) == first else None)
         if data:
             section = pair_section(groups, where, sender, receiver, data, items_id)
             entry.update({"checkpoint": section["checkpoint"], "arms": section["arms"], "intervals": section["intervals"],
@@ -334,7 +366,7 @@ def render(summary):
         [[name, state_text(entry),
           num(entry["cost"].get("stage1SecPerStep")), num(entry["cost"].get("stage2SecPerStep")),
           num(entry["cost"].get("trainHours"), 2), num(entry["cost"].get("measureHours"), 2),
-          f"{num(entry['cost'].get('peakReservedGiB'), 2)} / {num(entry['cost'].get('peakAllocatedGiB'), 2)}",
+          f"{num(entry['cost'].get('runPeakReservedGiB'), 2)} / {num(entry['cost'].get('runPeakAllocatedGiB'), 2)}",
           f"{num(entry['cost'].get('bestDevF1'), 4)} ({entry['cost'].get('bestStep') or '—'})",
           "2 and 1" if entry["cost"].get("smallBatches") else "4 and 2",
           "M2b-S" if entry["cost"].get("fullSteps") else "half"] for name, entry in summary["pairs"].items()]))

@@ -21,7 +21,8 @@ import time
 import torch
 import torch.nn.functional as F
 
-from .data import doc_text, f1, question_suffix, squad, wikitext
+from .data import (CALIBRATION_DOCS, calibration_chunk, close_torn_line, doc_text, f1, question_suffix, squad,
+                   wikitext)
 from .mapper import SigmaStats, parameter_count
 from .pair import RECEIVER, SENDER, TransferPair
 
@@ -199,6 +200,8 @@ def main():
     torch.manual_seed(args.seed)
     cap_gpu_memory()
 
+    close_torn_line(log_path)
+
     def log(**fields):
         fields["time"] = round(time.time(), 1)
         print(json.dumps(fields), flush=True)
@@ -228,11 +231,14 @@ def main():
         # One calibration batch on the GPU at a time: with all 16 caches held at once a pair
         # with a 3B receiver does not fit before training has even started (Codex review, L5).
         stats = SigmaStats()
+        chunk = calibration_chunk(args.batch1)
         for _ in range(16):
-            calib = pair.pair([doc_text(p) for p in rng.sample(wiki, 16)], args.max_tokens)
-            cache = pair.receiver_cache(calib)
-            stats.add(cache.keys, cache.values, calib.receiver_mask)
-            del cache, calib
+            docs = [doc_text(p) for p in rng.sample(wiki, CALIBRATION_DOCS)]
+            for at in range(0, CALIBRATION_DOCS, chunk):
+                calib = pair.pair(docs[at:at + chunk], args.max_tokens)
+                cache = pair.receiver_cache(calib)
+                stats.add(cache.keys, cache.values, calib.receiver_mask)
+                del cache, calib
         pair.mapper.sigma.copy_(stats.sigma().to(pair.device))
         calibration_peak = {f"calibration{key[0].upper()}{key[1:]}": value for key, value in gpu_peak().items()}
         release_calibration_memory()
@@ -303,7 +309,7 @@ def main():
             if score > best:
                 best = score
                 checkpoint_id = pair.save(os.path.join(out, "best.pt"), {"stage": 2, "step": step + 1, "devF1": score})
-                log(event="saved", path="best.pt", id=checkpoint_id, devF1=round(score, 4))
+                log(event="saved", path="best.pt", id=checkpoint_id, devF1=round(score, 4), step=step + 1)
     pair.save(os.path.join(out, "last.pt"), {"stage": 2, "steps": args.stage2_steps})
     log(event="done", bestDevF1=round(best, 4), **gpu_peak())
 
