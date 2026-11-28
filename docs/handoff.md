@@ -25,6 +25,7 @@ Next owner:
 1. A big-to-small mapper card needs a sender that both reads well and loads in torch. Qwen2.5-7B is the candidate, but it is AWQ-only here: loading it needs `gptqmodel` (an ADR) or a 15 GB bf16 download, which needs disk space freed first.
 2. The `accelerate` offload comparison is still open. The coordinator agreed to install it in the venv for measurement only, provided nothing in the repository imports it.
 3. Copy-compute overlap (prefetch on a second CUDA stream) is untested.
+4. The Codex review is still owed: Codex was at its usage limit, so a Claude subagent reviewed instead (11 findings, fixed or recorded in the eval). One check needs the GPU: compare the resident loader's logits with `from_pretrained`.
 
 ## Current checkpoint: R1 parcels refreshed and reviewed (2026-11-28)
 

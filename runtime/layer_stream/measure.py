@@ -89,6 +89,41 @@ def kv_from_blob(blob, config, device):
     return DynamicCache(ddp_cache_data=[(k.to(device), v.to(device)) for k, v in data], config=config)
 
 
+def cache_bytes(cache):
+    return sum(layer.keys.numel() * layer.keys.element_size() + layer.values.numel() * layer.values.element_size()
+               for layer in cache.layers)
+
+
+def kv_then_decode(reader, out, before_decode=None):
+    """Size, move and reload the passage's cache, then time one decode step on top of it.
+
+    The cache is measured first: the decode step appends its token to the cache in place, and
+    an earlier version serialized the grown cache (2,049 tokens for a 2,048-token passage).
+    """
+    import torch
+    cache = out.past_key_values
+    tokens = cache.layers[0].keys.shape[-2]
+    size = cache_bytes(cache)
+    start = time.perf_counter()
+    blob = kv_blob(cache)
+    saved = time.perf_counter()
+    kv_from_blob(blob, reader.config, reader.device)
+    reader.sync()
+    loaded = time.perf_counter()
+    token = int(out.logits[0, -1].argmax())
+    if before_decode:
+        before_decode()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    begin = time.perf_counter()
+    reader.forward([token], cache)
+    reader.sync()
+    decode = time.perf_counter() - begin
+    return {"kvTokens": tokens, "kvBytes": size, "kvSerializedBytes": len(blob),
+            "kvToHostAndSerializeSeconds": round(saved - start, 4), "kvLoadToGpuSeconds": round(loaded - saved, 4),
+            "decodeStepSeconds": round(decode, 4)}
+
+
 def bandwidth(reader):
     """Host-to-device GB/s for one streamed layer's tensors (pinned when the reader pinned them)."""
     import torch
@@ -135,35 +170,18 @@ def phase_timing(args):
                 runs.append(time.perf_counter() - start)
                 reads.append(reader.stats["readSeconds"])
                 peaks.append(torch.cuda.max_memory_allocated())
-            cache = out.past_key_values
-            kv_bytes = sum(layer.keys.numel() * layer.keys.element_size() + layer.values.numel() * layer.values.element_size()
-                           for layer in cache.layers)
-            # One decode step on top of the passage: the price of every generated token.
-            token = int(out.logits[0, -1].argmax())
-            if args.mode == "disk":
-                drop_page_cache()
-            torch.cuda.synchronize()
-            start = time.perf_counter()
-            reader.forward([token], cache)
-            reader.sync()
-            decode = time.perf_counter() - start
-            start = time.perf_counter()
-            blob = kv_blob(cache)
-            saved = time.perf_counter()
-            kv_from_blob(blob, reader.config, reader.device)
-            torch.cuda.synchronize()
-            loaded = time.perf_counter()
+            kv = kv_then_decode(reader, out, drop_page_cache if args.mode == "disk" else None)
             seconds = statistics.median(runs)
             record["lengths"][str(length)] = {
                 "prefillSeconds": round(seconds, 4), "runs": [round(r, 4) for r in runs],
                 "secondsPer1kTokens": round(seconds / length * 1000, 4),
                 "diskReadSeconds": round(statistics.median(reads), 4) if args.mode == "disk" else None,
-                "peakGpuGiB": round(max(peaks) / 2 ** 30, 3), "decodeStepSeconds": round(decode, 4),
-                "kvBytes": kv_bytes, "kvBytesPer1kTokens": round(kv_bytes / length * 1000),
-                "kvSerializedBytes": len(blob), "kvToHostAndSerializeSeconds": round(saved - start, 4),
-                "kvLoadToGpuSeconds": round(loaded - saved, 4)}
-            print(length, record["lengths"][str(length)], flush=True)
-            del out, cache, blob
+                "peakGpuGiB": round(max(peaks) / 2 ** 30, 3), **kv,
+                "kvBytesPer1kTokens": round(kv["kvBytes"] / length * 1000)}
+            if kv["kvTokens"] != length:
+                raise RuntimeError(f"The cache measured holds {kv['kvTokens']} tokens, not {length}.")
+            print(length, json.dumps(record["lengths"][str(length)]), flush=True)
+            del out
     finally:
         reader.close()
     save(args.out, f"timing-{label(args)}.json", record)
@@ -210,7 +228,7 @@ def phase_exact(args):
             moved = reader.greedy(ids, eos, cache=kv_from_blob(blob, reader.config, reader.device), cached=count)
             rows.append({"id": item["id"], "promptTokens": len(ids), "prefixTokens": count, "argmax": argmax,
                          "whole": whole, "split": split, "moved": moved, "kvSerializedBytes": len(blob)})
-            print(item["id"], len(ids), whole == split, split == moved, flush=True)
+            print(json.dumps([item["id"], len(ids), whole == split, split == moved]), flush=True)
     finally:
         reader.close()
     save(args.out, f"exact-{label(args)}.json", {**info, "items": rows})

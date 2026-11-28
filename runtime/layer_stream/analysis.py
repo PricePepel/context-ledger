@@ -55,6 +55,8 @@ def quality(receives):
     model's own text. Q2: each bigger reader's summary read by the small model vs the small text."""
     small = receives[SMALL]
     small_text = arm_f1(small, "text")
+    if not small_text:
+        raise ValueError(f"{SMALL} has no main-set text answers to compare with.")
     q1, q2 = {}, {}
     for key in BIG_READERS:
         if key in receives:
@@ -114,11 +116,16 @@ def mapper_cost(resident, streamed):
 
 
 def verdict(s1, s2_pass, s3, q1, q2):
+    """The rule table fixed before the run. None for a check means its file is missing."""
+    if None in (s1, s2_pass, s3, q1, q2):
+        return "incomplete: a check has no measurement"
     if not (s1 and s2_pass):
         return "do not build: the read-once step is not affordable or not exact"
     if not q1:
         return "do not build: on this task a bigger reader adds nothing a small reader lacks"
-    if s3 and q2:
+    if not s3:
+        return "outside the rule table: the cache did not survive the move (S3 fails)"
+    if q2:
         return "build: a streamed reader writing a summary helps small models"
     return "do not build yet: the gain exists but only a trained big-to-small mapper could carry it"
 
@@ -141,9 +148,9 @@ def report(out, l2):
             result["s2Disk"] = s2(timings["disk-50"])
         if "resident" in timings:
             result["mapperCost"] = mapper_cost(timings["resident"], timings["cpu-50"])
-            result["secondsPerGiBStreamed"] = {key: round(stream_rate(timings["resident"], t), 4)
-                                               for key, t in timings.items() if key != "resident"}
+            rates = {key: stream_rate(timings["resident"], t) for key, t in timings.items() if key != "resident"}
+            result["secondsPerGiBStreamed"] = {key: round(rate, 4) for key, rate in rates.items() if rate is not None}
     exact = result.get("exact", {})
-    result["verdict"] = verdict(exact.get("s1Pass", False), result.get("s2", {}).get("pass", False),
-                                exact.get("s3Pass", False), result["quality"]["q1Pass"], result["quality"]["q2Pass"])
+    result["verdict"] = verdict(exact.get("s1Pass"), result.get("s2", {}).get("pass"),
+                                exact.get("s3Pass"), result["quality"]["q1Pass"], result["quality"]["q2Pass"])
     return result

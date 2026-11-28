@@ -3,6 +3,7 @@
 The streamer itself runs only in the WSL venv; its checks skip without torch.
 """
 import unittest
+import unittest.mock
 
 from layer_stream import analysis
 
@@ -69,6 +70,17 @@ class VerdictTest(unittest.TestCase):
         self.assertTrue(analysis.verdict(True, True, True, True, True).startswith("build"))
         self.assertTrue(analysis.verdict(True, True, True, True, False).startswith("do not build yet"))
 
+    def test_a_failed_move_is_outside_the_table_and_missing_files_are_incomplete(self):
+        # Review finding 2: S3 failing used to read as "only a mapper could carry it", and a
+        # missing exact file as "not affordable or not exact".
+        self.assertTrue(analysis.verdict(True, True, False, True, True).startswith("outside the rule table"))
+        self.assertTrue(analysis.verdict(True, True, False, True, False).startswith("outside the rule table"))
+        self.assertTrue(analysis.verdict(None, True, None, True, False).startswith("incomplete"))
+
+    def test_a_small_model_without_text_answers_is_refused(self):
+        with self.assertRaises(ValueError):
+            analysis.quality({"qwen1.5": {"results": {"long-000": {"text": {"f1": 1.0}}}}})
+
     def test_s2_uses_the_2048_token_row(self):
         timing = {"lengths": {"2048": {"secondsPer1kTokens": 5.0}}}
         self.assertTrue(analysis.s2(timing)["pass"])
@@ -102,6 +114,37 @@ class SplitTest(unittest.TestCase):
         self.assertIsNone(stream.layer_of("model.layers_extra.weight"))
         with self.assertRaises(ValueError):
             stream.split_names(names, 11, 12)
+
+
+@unittest.skipUnless(HAVE_TORCH, "torch is not installed")
+class KvThenDecodeTest(unittest.TestCase):
+    def test_the_cache_is_measured_before_the_decode_step_grows_it(self):
+        # Review finding 1: the serialized cache held the decode token too (2,049 of 2,048).
+        import types
+
+        from transformers import DynamicCache
+
+        from layer_stream import measure
+        layers, heads, dim, length = 2, 1, 4, 5
+        cache = DynamicCache(ddp_cache_data=[(torch.zeros(1, heads, length, dim), torch.zeros(1, heads, length, dim))
+                                             for _ in range(layers)])
+
+        class Reader:
+            config, device = None, torch.device("cpu")
+
+            def sync(self):
+                pass
+
+            def forward(self, ids, cache):
+                for index in range(layers):   # what a real decode step does: append in place
+                    cache.update(torch.ones(1, heads, 1, dim), torch.ones(1, heads, 1, dim), index)
+
+        out = types.SimpleNamespace(past_key_values=cache, logits=torch.zeros(1, 1, 3))
+        with unittest.mock.patch.object(measure, "kv_from_blob", lambda blob, config, device: None):
+            kv = measure.kv_then_decode(Reader(), out)
+        self.assertEqual(kv["kvTokens"], length)
+        self.assertEqual(kv["kvBytes"], layers * 2 * heads * dim * length * 4)
+        self.assertEqual(cache.layers[0].keys.shape[-2], length + 1)   # the decode step did run
 
 
 if __name__ == "__main__":

@@ -172,7 +172,9 @@ class StreamedModel:
         start = time.perf_counter()
         prefix = f"{LAYER_PREFIX}{index}."
         names = [prefix + local for local in self.streamed[index]]
-        tensors = {name[len(prefix):]: t.to(self.dtype) for name, t in read_tensors(self.files, names).items()}
+        # clone(): safetensors may hand out tensors backed by a memory map, whose pages would then be
+        # read inside the copy to the GPU, outside this timer (T4 review).
+        tensors = {name[len(prefix):]: t.to(self.dtype).clone() for name, t in read_tensors(self.files, names).items()}
         self.stats["readSeconds"] += time.perf_counter() - start
         return tensors
 
