@@ -201,6 +201,46 @@ const strings = value => {
   return [];
 };
 
+// P4d's copy search indexes at most the first 512 characters of a found value, so a copy
+// of a longer one would keep its tail (Codex review of the refresh, round 7). Before that
+// search, every exact copy of a found span longer than that, or of a word of one, is
+// replaced whole. The cost is a plain substring search per long value, which are rare.
+const longCopyLength = 512;
+const longCopyKind = 'long-secret';
+function markLongCopies(session) {
+  const fieldsOf = message => ['text', 'author', 'recipient'].filter(field => typeof message[field] === 'string');
+  const texts = [session.source, ...session.messages.flatMap(message => fieldsOf(message).map(field => message[field]))];
+  const values = new Set();
+  for (const text of texts) {
+    if (typeof text !== 'string') continue;
+    for (const { start, end } of findSecrets(text)) {
+      const span = text.slice(start, end);
+      for (const value of [span, ...span.split(/[\s\x85]+/u)]) if (value.length > longCopyLength) values.add(value);
+    }
+  }
+  const marks = [];
+  if (values.size === 0) return { session, marks };
+  // Longest first, so a word inside a longer span does not split it.
+  const ordered = [...values].sort((a, b) => b.length - a.length);
+  const mark = (text, line) => {
+    let out = text;
+    for (const value of ordered) {
+      if (out.includes(value)) {
+        out = out.split(value).join(`[REDACTED ${longCopyKind}]`);
+        marks.push(line);
+      }
+    }
+    return out;
+  };
+  const source = typeof session.source === 'string' ? mark(session.source, null) : session.source;
+  const messages = session.messages.map(message => {
+    const copy = { ...message };
+    for (const field of fieldsOf(message)) copy[field] = mark(message[field], message.line);
+    return copy;
+  });
+  return { session: { ...session, source, messages }, marks };
+}
+
 // Used when the transcript's file name, once redacted, is no longer a name a ledger stores.
 const redactedSourceName = 'source name redacted';
 
@@ -243,7 +283,9 @@ export function buildParcel(graph, session) {
   // be redacted, so a copy there refuses the share (Codex review of the refresh, rounds 2
   // and 3). Like the signed hand-off, a copy shorter than six characters is not looked for.
   const own = ownText.map((text, index) => ({ role: 'user', line: -1 - index, key: `own:${index}`, text }));
-  const scanned = redactSession({ source: session.source, messages: [...session.messages, ...own] });
+  const { session: marked, marks } = markLongCopies({ source: session.source, messages: [...session.messages, ...own] });
+  const scanned = redactSession(marked);
+  for (const line of marks) scanned.findings.push({ line, kind: longCopyKind });
   if (scanned.session.messages.slice(session.messages.length).some((message, index) => message.text !== ownText[index])) {
     throw new InputError('This graph\'s own text (a label, a name, an artifact or its project) repeats a value the secret scanner found in its transcript, so it was not shared.');
   }
