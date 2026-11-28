@@ -24,3 +24,12 @@ test('the PR template runs the check and asks about repeated findings', () => {
   assert.match(line, /scripts\/check\.mjs/u);
   assert.match(line, /docs\/evals\.md/u, 'the exception is recorded in docs/evals.md');
 });
+
+// Card H12: a rule the check enforces is named once, beside the check, not restated as a
+// manual step that drifts from it.
+test('AGENTS.md section 6 points to the check instead of restating its rules', () => {
+  const section = read('AGENTS.md').split('## 6.')[1].split('## 7.')[0];
+  assert.match(section, /node scripts\/check\.mjs/u);
+  assert.match(section, /not restate|do not repeat/iu, 'says where a new rule goes');
+  assert.doesNotMatch(section, /check that `?src\/`? and `?tests\/`? contain/iu, 'no manual scan step');
+});

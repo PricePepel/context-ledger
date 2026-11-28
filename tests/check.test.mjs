@@ -35,6 +35,10 @@ test('tab, line feed and carriage return are allowed, in every kind of text file
   }
   assert.deepEqual(rules(checkFile('docs/a.md', utf8(`shown as ${char(0x202e)}`))), ['raw-character']);
   assert.deepEqual(rules(checkFile('runtime/tests/test_a.py', utf8(`x = "${char(0x2028)}"`))), ['raw-character'], 'tests are not exempt from this rule');
+  // Card H12: the per-card scans this replaced also read SVG, CSS and test files.
+  for (const path of ['public/brand/a.svg', 'public/styles.css', 'tests/a.test.mjs', 'tests/e2e/a.spec.mjs']) {
+    assert.deepEqual(rules(checkFile(path, utf8(`x ${char(0x200b)} y`))), ['raw-character'], path);
+  }
 });
 
 test('a file that is not UTF-8 is a finding; known binary types are skipped', () => {

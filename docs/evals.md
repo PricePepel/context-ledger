@@ -6194,3 +6194,15 @@ Capping the number of sequences did not make anything faster on this card: every
 Codex review (read-only, two rounds): round 1 found 11 points (token averages divided by usable answers, counter resets, KV peak 0 without samples, missing timeouts, KV dtype arguments, doc wording); all fixed with tests. Round 2 found two more, both fixed: a restart now voids every counter delta, and the `nvidia-smi` sample settles at its deadline. Known limit: a restart is detected only through a counter going down, not through the server's start time.
 
 Not done: a second hardware, a second model family for rows 4 and 5, and more than one round of the dev set for the 7B per-token-head run (it failed every read). Calibrated KV scales and Int4/Int8 KV types were not tested.
+
+## H12 — Prose diet (defined 2026-11-28, before the last change)
+
+H9 put the AGENTS.md section 6 rules that reviews kept finding into `scripts/check.mjs`, which reads every tracked file. Several cards had written the same rule as a test that scanned only the files that card changed, and AGENTS.md also asked for a manual scan. Two copies of one rule drift apart. H12 removes the copies and keeps the check.
+
+### What is tested and the expected result
+
+- **Per-card scans removed.** Five tests scanned source files for raw control or format characters: `tests/brand.test.mjs` (the SVG files), `tests/delete.test.mjs`, `tests/handoff-bench.test.mjs`, `tests/mcp-layout.test.mjs` and `tests/sign.test.mjs`. They are gone. Tests that check what the product prints or exports (`tests/export.test.mjs`, `tests/secrets.test.mjs` and the others) stay: the check reads files, not output.
+- **The check covers what they covered.** `tests/check.test.mjs` now also feeds a raw zero-width space to an SVG, a CSS file, a unit test and a Playwright spec, and each is a `raw-character` finding.
+- **AGENTS.md section 6** names `node scripts/check.mjs` and the rules it enforces once, says to add a rule to the check instead of restating it, and has no manual scan step. `tests/agents-rules.test.mjs` checks all three.
+- **Not changed:** the history in this file and the dated entries in `docs/handoff.md` stay as they were; they record what each card did at the time.
+- **Synthetic data:** none needed; the inputs are one-line strings in the tests.
