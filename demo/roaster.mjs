@@ -117,7 +117,10 @@ const blockEnd = /<\/(li|tr|p|div|h[1-6]|section|article|header|footer|ul|ol|tab
 
 /** Visible body text, CSS and attribute values of a page, each folded to lower case. */
 export function pageParts(html) {
-  const bare = html.replace(/<!--[\s\S]*?-->/gu, ' ');
+  // Hidden elements are not shown to a visitor, so they earn nothing and their text is not read.
+  // A hidden element that nests its own tag name is cut at the first close: still never shown.
+  const bare = html.replace(/<!--[\s\S]*?-->/gu, ' ')
+    .replace(/<([a-z][\w-]*)\b(?=[^>]*(\shidden(\s|=|>|\/)|aria-hidden\s*=\s*"true"|style\s*=\s*"[^"]*(display\s*:\s*none|visibility\s*:\s*hidden)))[^>]*>[\s\S]*?<\/\1\s*>/giu, ' ');
   const css = [...bare.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/giu)].map(match => match[1])
     .concat([...bare.matchAll(/style\s*=\s*"([^"]*)"/giu)].map(match => match[1]))
     .join(' ').replace(/\/\*[\s\S]*?\*\//gu, ' ');
@@ -138,8 +141,9 @@ const menu = ['espresso', 'cortado', 'oat latte', 'cold brew'];
  * menu item starts a new row or block in between (so an item without a price cannot borrow
  * the next one's). A description that mentions "espresso" mid-sentence does not end the item.
  */
-function priceOf(text, item) {
+function pricesOf(text, item) {
   const others = menu.filter(name => name !== item);
+  const found = [];
   for (const match of text.matchAll(new RegExp(`\\b${item}\\b`, 'gu'))) {
     const rest = text.slice(match.index + item.length, match.index + item.length + 200);
     const dollar = rest.indexOf('$');
@@ -150,11 +154,17 @@ function priceOf(text, item) {
     // between ends where the price starts, so the "$" is put back for the label test.
     if (dollar < 0 || others.some(name => label(name).test(between + '$'))) continue;
     const amount = /^\$\s?(\d+(?:\.\d{2})?)(?![\d.])/u.exec(rest.slice(dollar));
-    if (amount) return Number(amount[1]);
+    if (amount) found.push(Number(amount[1]));
   }
-  return null;
+  return found;
 }
-const priced = (item, amount) => p => priceOf(p.text, item) === amount;
+// The item's price is the first one after its name: later matches are often the item named in
+// another item's description ("equal parts espresso and steamed milk $4.00"). The stale check
+// below looks at every match, and a page that also shows a replaced price loses the requirement.
+const priced = (item, amount, replaced = []) => p => {
+  const prices = pricesOf(p.text, item);
+  return prices[0] === amount && !prices.some(price => replaced.includes(price));
+};
 const day = String.raw`\btues?(day)?s?\b`;
 
 /** The client's final word: 15 requirements, each a test on the page. */
@@ -170,10 +180,13 @@ export const requirements = [
   ['Headings in Fraunces', p => /(font(-family)?|--[\w-]+)\s*:[^;}]*fraunces/u.test(p.css)],
   ['Espresso $3.25', priced('espresso', 3.25)],
   ['Cortado $4.00', priced('cortado', 4)],
-  ['Oat latte $5.25', priced('oat latte', 5.25)],
+  ['Oat latte $5.25', priced('oat latte', 5.25, [5])],
   ['Cold brew $4.75', priced('cold brew', 4.75)],
   ['Features the Harbor Fog blend', p => p.text.includes('harbor fog')],
-  ['Bean Club, $18 a month', p => /bean club[^$]{0,300}\$\s?18(?![\d.])/u.test(p.text)],
+  // Monthly, not just $18: "a month", "/mo", "per month" or "monthly" next to the price or before it.
+  ['Bean Club, $18 a month', p => [...p.text.matchAll(/bean club([^$]{0,300})\$\s?18(?![\d.])([^$]{0,30})/gu)].some(([, before, after]) =>
+    !/one[\s\p{Pd}]?time|once/u.test(after.slice(0, 20)) &&
+    (/^[\s|]*(\/\s*mo(nth)?\b|a month|per month|each month|every month|monthly|month)/u.test(after) || /month/u.test(before)))],
   ['Phone (207) 555-0143', p => p.text.replace(/\D/gu, '').includes('2075550143')],
   ['Email hello@tidewater.example', p => p.text.includes('hello@tidewater.example')],
 ];
@@ -184,7 +197,7 @@ export const stale = [
   ['Old closing time 17:00', p => /(?<![\d:])(17:00|17\.00|5\s?(:00)?\s?(pm|p\.m\.))/u.test(p.text)],
   // "Fresh every day" is fine; only the old opening pattern counts.
   ['Old hours "open every day"', p => /open (every day|daily|7 days a week|seven days)|every day,? (from )?7|(am|pm|:00)\s*,?\s*(daily|every day)/u.test(p.text)],
-  ['Old oat latte price $5.00', p => priceOf(p.text, 'oat latte') === 5],
+  ['Old oat latte price $5.00', p => pricesOf(p.text, 'oat latte').includes(5)],
 ];
 
 /** Things the client ruled out. */

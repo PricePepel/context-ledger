@@ -138,3 +138,29 @@ test('an interleaved chat keeps every requirement turn, in order, with chatter b
   assert.ok(at('terracotta, #C65D3B') > spread.length / 2);
   assert.ok(at('Make it warm and welcoming') > spread.length - 200);
 });
+
+test('review 4: an old price elsewhere on the page is stale and loses the requirement', () => {
+  const both = good.replace('<p>Our signature', '<p>Oat latte $5.00 all week.</p><p>Our signature');
+  const score = scoreSite(both);
+  assert.ok(score.stale.includes('Old oat latte price $5.00'));
+  assert.ok(score.missed.includes('Oat latte $5.25'));
+});
+
+test('review 4: hidden content earns nothing', () => {
+  for (const hide of ['<p hidden>', '<p aria-hidden="true">', '<p style="display: none">']) {
+    const score = scoreSite(good.replace('<p>Roasted slow, poured fresh.</p>', `${hide}Roasted slow, poured fresh.</p>`));
+    assert.ok(score.missed.includes('Tagline "Roasted slow, poured fresh."'), hide);
+  }
+  const shown = scoreSite(good.replace('<p>Roasted slow', '<p class="hiddenish">Roasted slow'));
+  assert.deepEqual(shown.missed, []);
+});
+
+test('review 4: the Bean Club must be $18 a month, not a one-time $18', () => {
+  const name = 'Bean Club, $18 a month';
+  const swap = text => scoreSite(good.replace('<p>$18 a month for a bag of fresh beans.</p>', text)).missed.includes(name);
+  assert.equal(swap('<p>$18 one-time for a bag of fresh beans.</p>'), true);
+  assert.equal(swap('<p>A bag of beans: $18.</p>'), true);
+  assert.equal(swap('<p>$18/month, a fresh bag each month.</p>'), false);
+  assert.equal(swap('<p>Monthly subscription: $18</p>'), false);
+  assert.equal(swap('<p>$18 per month.</p>'), false);
+});

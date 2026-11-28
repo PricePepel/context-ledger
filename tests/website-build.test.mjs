@@ -1,7 +1,7 @@
 // Card D4: the website runner's read coverage, deviations and cost (Codex review of round 3).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { conditionCost, deviations, pageResult, readCoverage } from '../demo/website-build.mjs';
+import { conditionCost, deviations, pageResult, readCoverage, reportJson } from '../demo/website-build.mjs';
 
 const read = (fromLine, next) => ({ name: 'mcp__context-ledger__session_read', input: fromLine ? { sessionId: 'x', fromLine } : { sessionId: 'x' }, failed: false, next });
 const more = line => ({ type: 'tool_result', content: [{ type: 'text', text: `[Partial result: 9 more turns remain. Call session_read again with fromLine ${line}.]\nturns` }] });
@@ -41,4 +41,18 @@ test('review: a shared first agent is costed once, and a missing cost is marked'
   assert.equal(conditionCost(rows), '$0.70');
   rows.push({ shared: true, first, builder: { costUsd: null } });
   assert.equal(conditionCost(rows), '$0.70 (incomplete: 1 agent reported no cost)');
+});
+
+test('review 4: a first request that starts on a later page has skipped the pages before it', () => {
+  const calls = [read(812, null)];
+  assert.deepEqual(readCoverage(calls).skipped, ['1->812']);
+  assert.deepEqual(deviations('chat', 'builder', calls), ['skipped chat pages 1->812']);
+  assert.deepEqual(readCoverage([read(1, 204), read(204, null)]).skipped, []);
+});
+
+test('review 4: report.json escapes bidi, format and line-separator characters', () => {
+  const rlo = String.fromCodePoint(0x202e);
+  const out = reportJson({ note: `a${rlo}b${String.fromCodePoint(0x2028)}c${String.fromCodePoint(0x200b)}d${String.fromCodePoint(0x85)}e` });
+  assert.doesNotMatch(out, /[\p{Cf}\p{Zl}\p{Zp}\u{80}-\u{9f}]/u);
+  assert.deepEqual(JSON.parse(out), { note: `a${rlo}b${String.fromCodePoint(0x2028)}c${String.fromCodePoint(0x200b)}d${String.fromCodePoint(0x85)}e` });
 });

@@ -5909,3 +5909,15 @@ A read-only Codex review confirmed the gate verdicts against `report.json`: the 
 2. *(medium)* A graph ID the ledger rejected would throw before the row was saved, aborting the run and losing the publisher's cost. That row now fails with the error recorded, and the run goes on.
 3. *(medium)* Time and cost could be understated after failures. The summary now reports setup time and build time separately, counting failed rows, and marks the whole-condition cost incomplete when an agent reported no cost. Round 3 had complete cost data.
 4. *(low)* The write-up corrections above: page count observed against estimated, the request start lines, "tool requests" instead of "steps", break-even as a projection (18.5, so the 19th build), the cause stated as an association, and the invented contact details attributed to their sites.
+
+### Main merged and Codex review 4 (2026-11-27)
+
+`origin/main` was merged into the branch (no rebase); the conflicts were only in `docs/evals.md`, `docs/handoff.md` and `docs/delivery-board.md`, resolved by keeping both sides. A read-only Codex review of the whole branch against `main` found three medium and two low findings, all fixed with regression tests (`tests/roaster.test.mjs`, `tests/website-build.test.mjs`):
+
+1. *(medium)* Read coverage started with no expected page, so a reader whose first request began on the last page was recorded as a full read. Coverage now expects line 1 first and reports `1->N` as skipped.
+2. *(medium)* The stale oat-latte check used only the first price after the name, so a page with $5.25 on the menu and $5.00 elsewhere met the requirement with no stale flag. The stale check now looks at every price for the item, and the oat latte requirement fails when the old price also shows. The requirement still reads the first price after the name: a stricter "every price" rule was tried and wrongly failed sites where "espresso" appears in another item's description ("equal parts espresso and steamed milk $4.00").
+3. *(medium)* Hidden content earned points, and "Bean Club: $18 one-time" met the monthly requirement. Elements marked `hidden`, `aria-hidden="true"`, `display: none` or `visibility: hidden` are now dropped before scoring, and the Bean Club requirement needs a monthly wording next to the price or before it, and no "one-time" after it.
+4. *(low)* `report.json` could carry raw bidi and format characters from agent text. It is now written with every control, format and line-separator character as a `\u` escape.
+5. *(low)* The handoff called readers stopping early the cause of the round 3 gap; it now says it is an association, as the round 3 write-up does.
+
+Rescoring all 25 saved sites from rounds 1 to 3 with the fixed scorer gives the same scores, misses, stale and ruled-out items as before, so every recorded result above stands, including the "no advantage" result of rounds 1 and 2.
