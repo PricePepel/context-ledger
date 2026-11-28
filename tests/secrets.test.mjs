@@ -976,7 +976,7 @@ test('P4d review 10: many failed confirmations against a value with many ends st
   assert.ok(performance.now() - started < 3000, `${performance.now() - started} ms`);
 });
 
-test('P4d review 10: a word ending in a long run of punctuation is trimmed in linear time', () => {
+test('P4d review 10: a long run of punctuation before a last letter is scanned in linear time', () => {
   const session = { id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
     { role: 'user', line: 1, text: 'password="a1' + '!'.repeat(65533) + 'X"' },
   ] };
@@ -1007,4 +1007,34 @@ test('P4d review 10: a confirmed long value keeps its end when shorter matches f
   ]);
   // The B matches end before the C run; without the largest end the C run would be kept.
   assert.deepEqual(search(`x ${long} y`).map(({ start, end }) => [start, end]), [[2, 2 + long.length]]);
+});
+
+test('P4d review 11: every copy main removed is still removed, such as the start of a value cut by punctuation', () => {
+  const run = messages => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages }).session.messages.at(-1).text;
+  // Codex round 3 of 2026-11-27: main's 512-character part ended in !!, so it counted at 510.
+  const start = 'a'.repeat(510);
+  assert.equal(run([
+    { role: 'user', line: 1, text: 'password=' + start + '!!X' },
+    { role: 'assistant', line: 2, text: start },
+  ]), '[REDACTED assigned-secret]');
+});
+
+test('P4d review 11: the copy check refuses a session with more copies than its span budget', () => {
+  const search = copyMatcher([{ value: 'Synth9', ends: [6], kind: 'assigned-secret' }], { spanBudget: 1000 });
+  assert.equal(search('Synth9 '.repeat(1000)).length, 1000);
+  assert.throws(() => search('Synth9 '), { message: copyBudgetMessage });
+  // Through redactSession: one short value pasted far more often than the budget allows.
+  assert.throws(() => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: 'password=Synth9' },
+    { role: 'assistant', line: 2, text: 'Synth9 '.repeat(2 ** 20 + 1) },
+  ] }), { message: copyBudgetMessage });
+});
+
+test('P4d review 11: the copy check refuses a session past its collected-characters budget', () => {
+  // 257 distinct 64 Ki values sharing their first 512 characters need few nodes but many characters.
+  const shared = 'c'.repeat(512);
+  const lines = Array.from({ length: 257 }, (_, index) => 'password=' + shared + index.toString(36).padStart(3, '0') + 'd'.repeat(65536 - 515));
+  assert.throws(() => redactSession({ id: 'a'.repeat(64), provider: 'claude', source: 'x.jsonl', messages: [
+    { role: 'user', line: 1, text: lines.join('\n') },
+  ] }), { message: copyBudgetMessage });
 });

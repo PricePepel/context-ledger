@@ -407,6 +407,9 @@ export const maxConfirmWork = 2 ** 26;
 // And the characters of distinct entries kept while they are collected (Codex round 2 of
 // 2026-11-27: a value repeated in many messages kept one endpoint list per copy).
 export const maxEntryUnits = 2 ** 24;
+// And the copies found: each is a span, a finding and a marker (Codex round 3; a short
+// value pasted five million times made five million of each).
+export const maxCopySpans = 2 ** 20;
 export const copyBudgetMessage = 'This session holds more secret-like text than the copy check can hold, ' +
   'so it was not redacted and nothing was signed.';
 // Scanned by hand, not by a regular expression: an unanchored /[...]+$/ retried a long run
@@ -492,6 +495,58 @@ function copyEntries(text, candidate, seen = new Set(), budget = { units: 0 }) {
   return entries;
 }
 
+/**
+ * The entries main had before P4e, kept exactly beside the whole-value entries (Codex
+ * round 3 of 2026-11-27): each kind of entry (span, quoted part, values after names,
+ * key-like words, and each one decoded) shares maxCopyLength characters, and the ends are
+ * worked out on the part kept, so a copy of a value's first characters that main removed
+ * is still removed. More entries only widen what is replaced.
+ */
+function boundedCopyEntries(text, candidate, seen, budget) {
+  const pools = new Map();
+  const entries = [];
+  const add = (value, pool) => {
+    const left = pools.get(pool) ?? maxCopyLength;
+    if (left <= 0 || value.length < minCopyLength) return;
+    const kept = value.slice(0, left);
+    pools.set(pool, left - kept.length);
+    entries.push({ value: kept, pool });
+  };
+  const span = text.slice(candidate.start, Math.min(candidate.end, candidate.start + maxCopyLength));
+  add(span, 'span');
+  const before = candidate.start > 0 ? text[candidate.start - 1] : '';
+  const quote = candidate.quote || (/["'`]/u.test(before) ? before : '');
+  if (quote) {
+    const close = quotedEnd(text, candidate.start, quote);
+    if (close <= candidate.end) add(text.slice(candidate.start, close), 'quoted');
+  }
+  const leads = freeTextLeads.flatMap(rule => [...span.matchAll(new RegExp(rule.lead.source, rule.lead.flags))])
+    .map(match => ({ at: match.index, after: match.index + match[0].length })).sort((a, b) => a.at - b.at);
+  leads.forEach((lead, index) => {
+    const stop = index + 1 < leads.length ? leads[index + 1].at : span.length;
+    const open = /["'`]/u.test(span[lead.after] ?? '') ? span[lead.after] : '';
+    const from = lead.after + (open ? 1 : 0);
+    add(span.slice(from, open ? Math.min(quotedEnd(span, from, open), stop) : stop), 'named');
+  });
+  for (const match of span.matchAll(/\S+/gu)) {
+    for (const piece of match[0].split(new RegExp(separators.source + '+', 'u'))) {
+      const bare = withoutTrailing(withoutLeadingQuotes(piece));
+      if (mixed(bare)) add(bare, 'words');
+    }
+  }
+  for (const entry of [...entries]) if (entry.value.includes('\\')) add(decoded(entry.value), entry.pool + ' decoded');
+  // Deduplicated after the pools are spent, so each pool keeps exactly what it kept before.
+  const fresh = [];
+  for (const { value } of entries) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    budget.units += value.length;
+    if (budget.units > maxEntryUnits) throw new Error(copyBudgetMessage);
+    fresh.push({ value, ends: [...wordEnds(value), value.length] });
+  }
+  return fresh;
+}
+
 /** The largest of the sorted ends that is at most limit, by binary search, or undefined. */
 function largestEndWithin(ends, limit) {
   let low = 0;
@@ -513,7 +568,7 @@ function largestEndWithin(ends, limit) {
  * counted ends that the text repeats. Nodes are flat arrays and one edge map; past either
  * session budget (nodeBudget, workBudget) it throws copyBudgetMessage.
  */
-export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = maxConfirmWork } = {}) {
+export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = maxConfirmWork, spanBudget = maxCopySpans } = {}) {
   const edges = new Map();
   const edge = (node, unit) => edges.get(node * 65536 + unit);
   const parent = [0];
@@ -573,6 +628,7 @@ export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = m
     }
   }
   let work = 0;
+  let made = 0;
   return text => {
     const spans = [];
     let node = 0;
@@ -610,11 +666,15 @@ export function copyMatcher(entries, { nodeBudget = maxCopyNodes, workBudget = m
       }
       // A new match merges with the spans it overlaps at the end. A widened span can end
       // after later matches, so the merged span keeps the largest end.
+      let merged = false;
       while (spans.length && spans.at(-1).end > start) {
         const last = spans.pop();
         if (last.start <= start) { start = last.start; spanKind = last.kind; }
         end = Math.max(end, last.end);
+        merged = true;
       }
+      // A disjoint span is a new copy, counted for the session before it is made.
+      if (!merged && ++made > spanBudget) throw new Error(copyBudgetMessage);
       spans.push({ kind: spanKind, start, end, prefix: 0 });
     }
     return spans;
@@ -674,7 +734,9 @@ export function redactSession(session) {
     for (const candidate of [...candidates(field.text), ...spans].sort((a, b) => a.start - b.start)) {
       while (at < spans.length - 1 && spans[at].end <= candidate.start) at += 1;
       const holder = spans[at].start <= candidate.start && candidate.start < spans[at].end ? spans[at] : candidate;
-      for (const entry of copyEntries(field.text, candidate, seen, budget)) entries.push({ ...entry, kind: holder.kind });
+      for (const entry of [...boundedCopyEntries(field.text, candidate, seen, budget), ...copyEntries(field.text, candidate, seen, budget)]) {
+        entries.push({ ...entry, kind: holder.kind });
+      }
     }
   });
   const copiesIn = entries.length ? copyMatcher(entries) : () => [];
